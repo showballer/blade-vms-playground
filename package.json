@@ -1,0 +1,56 @@
+{
+  "name": "blade-vms-playground",
+  "version": "1.0.0",
+  "private": true,
+  "overrides": {
+    "exceljs": { "uuid": "11.1.1" }
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w @blade/web",
+    "dev:desktop": "npm run dev -w @blade/desktop",
+    "desktop": "npm run start -w @blade/desktop",
+    "worker": "node --env-file=apps/web/.env.local scripts/backup-worker.mjs",
+    "build": "npm run build -w @blade/web && npm run build -w @blade/desktop",
+    "typecheck": "tsc --noEmit -p apps/web/tsconfig.json && tsc --noEmit -p apps/desktop/tsconfig.json",
+    "db:setup": "node scripts/setup-mysql.mjs",
+    "db:migrate": "node --env-file=apps/web/.env.local scripts/migrate.mjs",
+    "test:api": "node --env-file=apps/web/.env.local scripts/test-api.mjs",
+    "test:admin-contracts": "node --env-file=apps/web/.env.local scripts/test-admin-contracts.mjs",
+    "test:audit-query": "node --env-file=apps/web/.env.local scripts/test-audit-query.mjs",
+    "test:developer-api": "tsx scripts/test-developer-api.ts",
+    "test:web-role-markup": "tsx --tsconfig apps/web/tsconfig.json scripts/test-web-role-markup.tsx",
+    "test:core": "tsx scripts/test-core.ts",
+    "test:sync": "node scripts/prepare-desktop.mjs && node scripts/test-sync.cjs",
+    "test:batch": "node scripts/prepare-desktop.mjs && node scripts/test-batch.cjs",
+    "test:batch-api": "node scripts/prepare-desktop.mjs && node --env-file=apps/web/.env.local scripts/test-batch-api.mjs",
+    "test:result-data": "tsx scripts/test-result-data.ts",
+    "test:report": "tsx scripts/test-report-details.ts",
+    "test:import": "node scripts/prepare-desktop.mjs && tsx scripts/test-import-data.ts",
+    "test:import-api": "node --env-file=apps/web/.env.local scripts/test-import-api.mjs",
+    "test:health": "tsx scripts/test-health-data.ts",
+    "test:health-api": "node --env-file=apps/web/.env.local scripts/test-health-api.mjs",
+    "test:health-trend": "tsx scripts/test-health-trend-data.ts",
+    "test:health-trend-api": "node --env-file=apps/web/.env.local --import tsx scripts/test-health-trend-api.ts",
+    "test:baseline": "tsx scripts/test-baseline-data.ts",
+    "test:baseline-api": "node --env-file=apps/web/.env.local --import tsx scripts/test-baseline-api.ts",
+    "test:rotation": "tsx scripts/test-rotation-data.ts",
+    "test:signal": "tsx scripts/test-signal-input.ts",
+    "test:signal-api": "node --env-file=apps/web/.env.local --import tsx scripts/test-signal-api.ts",
+    "test:rotation-api": "node --env-file=apps/web/.env.local scripts/test-rotation-api.mjs",
+    "test:modal": "tsx scripts/test-modal-data.ts",
+    "test:modal-api": "node scripts/prepare-desktop.mjs && node --env-file=apps/web/.env.local scripts/test-modal-api.mjs",
+    "package:windows": "npm run package:windows -w @blade/desktop"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "jszip": "^3.10.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}

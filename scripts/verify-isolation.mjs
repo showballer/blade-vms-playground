@@ -1,0 +1,17 @@
+import {execFileSync} from "node:child_process";
+import {readFileSync,writeFileSync} from "node:fs";
+import assert from "node:assert/strict";
+const container="starlight-mysql";
+const sql=query=>execFileSync("docker",["exec","-i",container,"sh","-c",'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot -N'],{input:query,encoding:"utf8"}).trim();
+const before=readFileSync("artifacts/docker-before.txt","utf8").trim().split("\n").map(line=>line.split(" ").slice(0,2).join(" ")).sort();
+const current=execFileSync("docker",["ps","--format","{{.ID}} {{.Names}} {{.Status}}"],{encoding:"utf8"});
+assert.deepEqual(current.trim().split("\n").map(line=>line.split(" ").slice(0,2).join(" ")).sort(),before,"容器集合发生变化，请核查，脚本不会自动修改容器");
+const initial=readFileSync("artifacts/databases-before.txt","utf8").split("\n").filter(Boolean).sort();
+const schemas=sql("SHOW DATABASES;").split("\n").sort();
+assert.deepEqual(schemas.filter(x=>x!=="blade_vms_playground"),initial);
+const grants=sql("SHOW GRANTS FOR 'blade_vms_app'@'%';");
+assert.ok(grants.includes("ON `blade_vms_playground`.*"));
+assert.ok(!grants.includes("ALL PRIVILEGES")&&!grants.includes("GRANT OPTION"));
+writeFileSync("artifacts/docker-after.txt",current);
+writeFileSync("artifacts/isolation-verification.json",JSON.stringify({time:new Date().toISOString(),containersUnchanged:true,onlyAddedSchema:"blade_vms_playground",dedicatedAccount:"blade_vms_app",privileges:grants.split("\n"),note:"验证容器集合、数据库集合与授权边界；不是对其他库全部行内容的校验"},null,2));
+console.log("PASS 容器集合未变；仅新增项目库；应用账号权限限于项目库");

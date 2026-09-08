@@ -1,0 +1,32 @@
+import assert from "node:assert/strict";
+import { readFileSync, writeFileSync, statSync, readdirSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { listPackage, extractFile } from "@electron/asar";
+import JSZip from "jszip";
+const zip = "apps/desktop/release/BladeVMS-1.0.0-win.zip";
+const exe = readFileSync("apps/desktop/release/win-unpacked/BladeVMS.exe");
+assert.equal(exe.toString("ascii", 0, 2), "MZ");
+const pe = exe.readUInt32LE(0x3c);
+assert.equal(exe.toString("ascii", pe, pe + 4), "PE\u0000\u0000");
+assert.equal(exe.readUInt16LE(pe + 4), 0x8664);
+assert.equal(exe.readUInt16LE(pe + 24), 0x20b);
+const files = listPackage("apps/desktop/release/win-unpacked/resources/app.asar");
+const asar = "apps/desktop/release/win-unpacked/resources/app.asar";
+const archive = await JSZip.loadAsync(readFileSync(zip));
+for (const file of ["BladeVMS.exe", "resources/app.asar"]) {
+  assert.ok(archive.file(file), "ZIP 缺少发行文件：" + file);
+  assert.ok((await archive.file(file).async("nodebuffer")).equals(readFileSync("apps/desktop/release/win-unpacked/" + file)), "ZIP 与待发布目录不一致：" + file);
+}
+assert.ok(extractFile(asar, "electron/main.cjs").toString().includes('"blade:save-data"'));
+assert.ok(extractFile(asar, "electron/preload.cjs").toString().includes('"blade:save-data"'));
+const secretFiles = files.filter((f) => /(^|\/)(\.env(?:\..*)?|blade-settings\.json|blade-offline\.json)$|\.(pem|key)$/.test(f));
+assert.deepEqual(secretFiles, []);
+assert.ok(files.some((f) => f.endsWith("/task-metadata.cjs")));
+for (const name of ["sync.cjs", "sync-data.cjs", "workspace.cjs", "batch.cjs", "batches.cjs", "import-data.cjs", "imports.cjs"]) assert.ok(files.some((f) => f.endsWith("/" + name)));
+const verifiedCurrentFiles = ["electron/main.cjs", "electron/preload.cjs", "electron/sync.cjs", "electron/sync-data.cjs", "electron/workspace.cjs", "electron/task-metadata.cjs", "electron/batch.cjs", "electron/batches.cjs", "electron/import-data.cjs", "electron/imports.cjs", "electron/rotation-data.cjs", "dist/index.html", ...readdirSync("apps/desktop/dist/assets").map((name) => "dist/assets/" + name)];
+verifiedCurrentFiles.push("electron/modal-data.cjs", "electron/demo-data.json");
+verifiedCurrentFiles.push("electron/signal-input.cjs", "electron/result-data.cjs", "electron/data-export.cjs");
+for (const file of verifiedCurrentFiles) assert.ok(extractFile(asar, file).equals(readFileSync("apps/desktop/" + file)), "发行包文件与当前代码不一致：" + file);
+const report = { time: new Date().toISOString(), zip, bytes: statSync(zip).size, sha256: createHash("sha256").update(readFileSync(zip)).digest("hex"), architecture: "Windows x64 PE32+", asarFiles: files.length, secretFiles, sharedMetadataValidator: true, nativeSyncIncluded: true, nativeBatchIncluded: true, verifiedCurrentFiles, nativeWindowsTested: false };
+writeFileSync("artifacts/windows-package-verification.json", JSON.stringify(report, null, 2));
+console.log("PASS Windows x64 包结构、共享校验器与敏感配置排除；未做 Windows 实机运行测试");

@@ -1,0 +1,11 @@
+node_modules/
+.next/
+dist/
+release/
+*.tsbuildinfo
+.env*
+!.env.example
+.data/
+artifacts/
+test-results/
+.DS_Store
