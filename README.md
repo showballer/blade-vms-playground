@@ -8,7 +8,7 @@
 
 ## 快速启动
 
-建议 Node.js 22 LTS（至少 22.12）或更新的受支持 LTS、npm 10+。在 `playground` 目录执行：
+建议 Node.js 22 LTS（至少 22.12）或更新的受支持 LTS、npm 10+。在 `blade-vms` 目录执行：
 
 ```bash
 npm ci
