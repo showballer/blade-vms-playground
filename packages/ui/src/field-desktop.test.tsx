@@ -104,7 +104,7 @@ check("采集确认正文与操作区分离，三个安全条件仍须逐项确�
   assert.ok(html.includes('aria-label="关闭弹窗"'));
 });
 check("窄屏记录表保留所有列并提供键盘可聚焦的横向滚动区域", () => {
-  const html = renderToStaticMarkup(<FieldRecordingList recordings={[{ id: "long", name: "户外叶片采集任务".repeat(10), samples: 500000, sampleRate: 218750, status: "incomplete" }]} busy={false} onSelect={() => {}} />);
+  const html = renderToStaticMarkup(<FieldRecordingList recordings={[{ id: "long", name: "户外叶片采集任务".repeat(10), startedAt: "2026-09-09T01:00:00Z", samples: 500000, sampleRate: 218750, status: "incomplete" }]} busy={false} onSelect={() => {}} />);
   assert.ok(html.includes('role="region"'));
   assert.ok(html.includes('tabindex="0"'));
   assert.ok(html.includes("可横向滚动查看所有列"));
