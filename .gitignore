@@ -17,3 +17,7 @@ services/acquisition/.venv/
 services/acquisition/.venv-build/
 __pycache__/
 *.pyc
+apps/desktop/resources/prerequisites/
+apps/desktop/build/payload.generated.nsh
+apps/desktop/resources/.acquisition-stage-*/
+apps/desktop/resources/.acquisition-previous-*/

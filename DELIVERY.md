@@ -1,5 +1,11 @@
 # 开发交付说明
 
+## 桌面 1.2.0 完整依赖包（2026-09-09）
+
+新增 Windows x64 原生构建与安装验证流程，内置 Python 采集服务、设备 DLL 和许可材料、VC++ 运行库安装处理。构建时校验解释器、所有服务原生模块的 x64 架构、18 个 SDK 导出及必要资源，防止误交付缺依赖壳包。现有 Python/Conda 与应用内置运行时隔离，保留用户环境和历史数据。
+
+交付说明与现场步骤见 [WINDOWS_TEST_GUIDE.md](WINDOWS_TEST_GUIDE.md)。自动化结果以 Windows CI 及随包校验报告为准；没有真实硬件波形、UDP 丢包或长期吞吐通过的声明。以下 1.1.0/1.0 内容保留为历史记录。
+
 ## 桌面 1.1.0 更新（2026-09-09）
 
 Windows EXE 已切换为真实现场工作台：本机 admin 与首次改密、无网登录、Python 进程托管、HTTP/WS 接入、原始分块与 SQLite 索引；移除 EXE 离线演示入口。缺失 Python 服务/厂商 DLL 时仅提示错误，不生成模拟数据。Windows 服务需在实机构建/选择后联调，当前 Mac 构建的壳包不包含 Windows Python 二进制或厂商驱动。具体边界和步骤见 [FIELD_INTEGRATION.md](FIELD_INTEGRATION.md)。下文是 1.0 业务交付与验证历史，不代表 1.1 已完成设备或算法验收。

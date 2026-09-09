@@ -6,7 +6,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { EventEmitter } = require("node:events");
-const { createFieldService } = require("../apps/desktop/electron/field-service.cjs");
+const { createFieldService, windowsServiceEnvironment } = require("../apps/desktop/electron/field-service.cjs");
 
 const idle = () => ({ state: "idle", error: null, receiver: { connected: false }, recording: null });
 const acquiring = () => ({ state: "acquiring", error: null, receiver: { connected: true }, recording: { id: "recording-1", state: "acquiring" } });
@@ -86,6 +86,99 @@ test("start is single-flight and secret stays in process environment and authent
   }
   assert.equal(JSON.stringify(results).includes(secret), false);
   assert.equal(f.sockets[0].protocols[1] === secret, true);
+});
+
+test("Windows service ignores installed Python, Conda, venv and inherited DLL search paths", () => {
+  const source = Object.freeze({
+    PATH: "C:\\Python32;C:\\Python312;C:\\Miniconda\\Library\\bin;C:\\project\\.venv\\Scripts",
+    Path: "C:\\other-python;C:\\old-sdk", pAtH: "C:\\another-python",
+    PYTHONHOME: "C:\\Python32", pythonpath: "C:\\unrelated-packages",
+    PYTHONSTARTUP: "C:\\startup.py", PYTHONUSERBASE: "C:\\user-packages",
+    PYTHONINSPECT: "1", PYTHONUNBUFFERED: "0", PYTHONWARNINGS: "error",
+    CONDA_PREFIX: "C:\\Miniconda", CONDA_DEFAULT_ENV: "other-project", VIRTUAL_ENV: "C:\\project\\.venv",
+    _PYI_APPLICATION_HOME_DIR: "C:\\other-bundled-app", _PYI_ARCHIVE_FILE: "C:\\other-app.exe",
+    _MEIPASS2: "C:\\other-app\\runtime", PYINSTALLER_RESET_ENVIRONMENT: "0",
+    SystemRoot: "D:\\Windows", WINDIR: "C:\\incorrect-windows", SystemDrive: "C:",
+    TEMP: "D:\\Users\\测试用户\\Temp", TMP: "D:\\Users\\测试用户\\Temp",
+    USERPROFILE: "D:\\Users\\测试用户", LOCALAPPDATA: "D:\\Users\\测试用户\\AppData\\Local",
+    APPDATA: "D:\\Users\\测试用户\\AppData\\Roaming", PROGRAMDATA: "D:\\ProgramData", LANG: "zh_CN.UTF-8",
+    DATABASE_URL: "private-data", BLADE_SERVICE_TOKEN: "caller-token", BLADE_SERVICE_PORT: "8000",
+  });
+  const before = { ...source };
+  const env = windowsServiceEnvironment({
+    file: "D:\\Applications\\旋转叶片测振\\acquisition\\BladeAcquisition.exe",
+    dataDir: "D:\\Users\\测试用户\\field-data", dll: "E:\\SDK\\DeviceCommunication.dll",
+    port: 54321, secret: "new-random-token", source,
+  });
+  assert.deepEqual(source, before, "building child environment must never mutate user/system environment");
+  assert.deepEqual(env.PATH.split(";"), [
+    "D:\\Applications\\旋转叶片测振\\acquisition",
+    "D:\\Applications\\旋转叶片测振\\acquisition\\_internal",
+    "D:\\Applications\\旋转叶片测振\\acquisition\\vendor",
+    "D:\\Windows\\System32", "D:\\Windows", "D:\\Windows\\System32\\Wbem",
+  ]);
+  assert.equal(env.SystemRoot, "D:\\Windows");
+  assert.equal(env.WINDIR, "D:\\Windows");
+  assert.equal(env.SystemDrive, "D:");
+  assert.equal(env.PYTHONUNBUFFERED, "1");
+  for (const key of ["TEMP", "TMP", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "PROGRAMDATA", "LANG"]) {
+    assert.equal(env[key], source[key]);
+  }
+  for (const key of Object.keys(source)) {
+    if (/^(?:PYTHON(?!UNBUFFERED)|CONDA|VIRTUAL_ENV|_PYI|_MEIPASS|PYINSTALLER|DATABASE_URL)/i.test(key)) {
+      assert.equal(Object.hasOwn(env, key), false, `${key} must not cross the process boundary`);
+    }
+  }
+  assert.equal(Object.keys(env).filter(key => key.toLowerCase() === "path").length, 1);
+  assert.equal(env.BLADE_SERVICE_PORT, "54321");
+  assert.equal(env.BLADE_SERVICE_TOKEN, "new-random-token");
+  assert.equal(env.BLADE_POLYTEC_DLL, "E:\\SDK\\DeviceCommunication.dll");
+  assert.equal(env.BLADE_DATA_DIR, "D:\\Users\\测试用户\\field-data");
+});
+
+test("Windows environment allowlist handles mixed casing and never emits duplicate names", () => {
+  const env = windowsServiceEnvironment({ file: "C:\\App\\BladeAcquisition.exe", dataDir: "C:\\data",
+    dll: "C:\\App\\vendor\\DeviceCommunication.dll", port: 32100, secret: "secret",
+    source: { sYsTeMrOoT: "E:/Windows/", SystemRoot: "F:\\wrong", tEmP: "E:\\temp", tmp: "E:\\tmp",
+      UserProfile: "E:\\Users\\admin", LocalAppData: "E:\\local", aPpDaTa: "E:\\roaming", pAtH: "C:\\Conda" } });
+  assert.equal(env.SystemRoot, "E:\\Windows\\");
+  assert.equal(env.SystemDrive, "E:");
+  assert.equal(env.TEMP, "E:\\temp");
+  assert.equal(env.TMP, "E:\\tmp");
+  assert.equal(env.USERPROFILE, "E:\\Users\\admin");
+  assert.equal(env.LOCALAPPDATA, "E:\\local");
+  assert.equal(env.APPDATA, "E:\\roaming");
+  const names = Object.keys(env).map(key => key.toLowerCase());
+  assert.equal(new Set(names).size, names.length);
+  assert.equal(env.PATH.includes("Conda"), false);
+});
+
+test("missing or unusable Windows root cannot turn inherited PATH into a fallback", () => {
+  const build = source => windowsServiceEnvironment({ file: "C:\\App\\BladeAcquisition.exe", dataDir: "C:\\data",
+    dll: "C:\\App\\vendor\\DeviceCommunication.dll", port: 32100, secret: "secret", source });
+  for (const source of [{}, { SystemRoot: "relative\\Windows", PATH: "C:\\Python" },
+    { SystemRoot: "C:\\Windows;C:\\Python", WINDIR: "\\\\server\\share", Path: "C:\\Conda" }]) {
+    const env = build(source);
+    assert.equal(env.SystemRoot, "C:\\Windows");
+    assert.equal(env.SystemDrive, "C:");
+    assert.equal(env.PATH.includes("Python") || env.PATH.includes("Conda") || env.PATH.includes("server"), false);
+  }
+  assert.equal(build({ SystemRoot: "invalid", windir: "F:\\Windows" }).SystemRoot, "F:\\Windows");
+});
+
+test("service startup passes only the isolated environment without invoking system Python", async (t) => {
+  const environment = Object.freeze({ Path: "C:\\Miniconda\\Scripts;C:\\Python32", SystemRoot: "C:\\Windows",
+    PYTHONHOME: "C:\\Python32", PYTHONPATH: "C:\\foreign-packages", VIRTUAL_ENV: "C:\\venv", CONDA_PREFIX: "C:\\Miniconda" });
+  const f = fixture(t, { options: { environment } });
+  await f.service.start();
+  const child = f.children[0];
+  assert.equal(child.file, path.join(f.directory, "BladeAcquisition.exe"));
+  assert.equal(child.options.cwd, f.directory);
+  assert.equal(child.options.shell, false);
+  assert.deepEqual(child.args, []);
+  assert.equal(child.options.env.PATH.includes("Miniconda") || child.options.env.PATH.includes("Python32"), false);
+  for (const key of ["Path", "PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV", "CONDA_PREFIX"]) assert.equal(Object.hasOwn(child.options.env, key), false);
+  assert.equal(environment.Path, "C:\\Miniconda\\Scripts;C:\\Python32");
 });
 
 test("missing executable and non-Windows platform never start a process", async (t) => {

@@ -19,10 +19,46 @@ function freePort() {
 }
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+function windowsServiceEnvironment({ file, dataDir, dll, port, secret, source = process.env }) {
+  // Windows environment names are case-insensitive. Emit each allowed variable
+  // once; passing both PATH and Path lets Node choose an unintended value.
+  const inherited = new Map();
+  for (const [key, value] of Object.entries(source)) {
+    if (typeof value === 'string' && !inherited.has(key.toUpperCase())) inherited.set(key.toUpperCase(), value);
+  }
+  const env = {};
+  for (const key of ['TEMP', 'TMP', 'USERPROFILE', 'LOCALAPPDATA', 'APPDATA', 'PROGRAMDATA', 'LANG']) {
+    const value = inherited.get(key);
+    if (value !== undefined) env[key] = value;
+  }
+  const localDirectory = value => typeof value === 'string' && /^[A-Za-z]:[\\/]/.test(value) && !/[;\0]/.test(value);
+  const systemRoot = [inherited.get('SYSTEMROOT'), inherited.get('WINDIR')].find(localDirectory) || 'C:\\Windows';
+  env.SystemRoot = path.win32.normalize(systemRoot);
+  env.WINDIR = env.SystemRoot;
+  env.SystemDrive = path.win32.parse(env.SystemRoot).root.slice(0, 2);
+  const serviceDirectory = path.win32.dirname(file);
+  // Never reuse the caller's PATH, Python/Conda/venv variables, or PyInstaller
+  // parent-process flags. All dependencies belong to this onedir distribution.
+  // An explicitly selected external SDK is loaded by absolute path and its own
+  // add_dll_directory scope in Python, not added to the global search path.
+  env.PATH = [...new Set([
+    serviceDirectory,
+    path.win32.join(serviceDirectory, '_internal'),
+    path.win32.join(serviceDirectory, 'vendor'),
+    path.win32.join(env.SystemRoot, 'System32'),
+    env.SystemRoot,
+    path.win32.join(env.SystemRoot, 'System32', 'Wbem'),
+  ])].join(';');
+  Object.assign(env, { BLADE_SERVICE_PORT: String(port), BLADE_SERVICE_TOKEN: secret,
+    BLADE_DATA_DIR: dataDir, BLADE_POLYTEC_DLL: dll, PYTHONUNBUFFERED: '1' });
+  return env;
+}
+
 // The service credential and address never cross the preload bridge. The renderer
 // receives only bounded data; it cannot choose URLs, executable arguments or files.
 function createFieldService({ getConfig, dataDir, resourcesDir, platform = process.platform,
   spawnImpl = spawn, fetchImpl = global.fetch, WebSocketImpl = global.WebSocket,
+  environment = process.env,
   startupTimeoutMs = 25000, requestTimeoutMs = 12000, terminationTimeoutMs = 5000 }) {
   let child = null, opening = null, state = 'stopped', error = null;
   let port = null, secret = '', socket = null, cachedFrame = null, receivedAt = 0;
@@ -134,12 +170,7 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
       state = 'starting'; error = null; stopping = false; logTail = '';
       const current = ++generation;
       port = await freePort(); secret = randomBytes(32).toString('hex');
-      const env = {};
-      for (const key of ['PATH', 'Path', 'SystemRoot', 'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'USERPROFILE', 'LOCALAPPDATA', 'APPDATA', 'LANG']) {
-        if (process.env[key] !== undefined) env[key] = process.env[key];
-      }
-      Object.assign(env, { BLADE_SERVICE_PORT: String(port), BLADE_SERVICE_TOKEN: secret,
-        BLADE_DATA_DIR: dataDir, BLADE_POLYTEC_DLL: dllPath(), PYTHONUNBUFFERED: '1' });
+      const env = windowsServiceEnvironment({ file, dataDir, dll: dllPath(), port, secret, source: environment });
       try {
         const processChild = spawnImpl(file, [], { cwd: path.dirname(file), env,
           shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -265,4 +296,4 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
   }
   return { start, status, frame, begin, stop, recordings, shutdown, serviceInfo };
 }
-module.exports = { createFieldService, failure };
+module.exports = { createFieldService, windowsServiceEnvironment, failure };

@@ -1,6 +1,6 @@
 {
   "name": "@blade/desktop",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "private": true,
   "type": "module",
   "description": "BladeVMS 现场采集与分析工作台",
@@ -11,7 +11,8 @@
     "start": "electron .",
     "prebuild": "node ../../scripts/prepare-desktop.mjs",
     "build": "vite build",
-    "package:windows": "npm run build && electron-builder --win nsis zip --x64",
+    "verify:windows-payload": "node ../../scripts/verify-windows-payload.cjs --write-nsis",
+    "package:windows": "npm run verify:windows-payload && npm run build && electron-builder --win nsis zip --x64",
     "package:mac": "npm run build && electron-builder --mac dir --arm64"
   },
   "devDependencies": {
@@ -36,7 +37,11 @@
       "electron/bootstrap-admin.json",
       "package.json"
     ],
-    "extraResources": [{ "from": "resources/acquisition", "to": "acquisition", "filter": ["**/*", "!.gitkeep"] }],
+    "beforePack": "build/before-pack.cjs",
+    "extraResources": [
+      { "from": "resources/acquisition", "to": "acquisition", "filter": ["**/*", "!.gitkeep"] },
+      { "from": "resources/prerequisites", "to": "prerequisites", "filter": ["**/*", "!.gitkeep"] }
+    ],
     "win": {
       "target": [
         {
@@ -57,7 +62,9 @@
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
-      "deleteAppDataOnUninstall": false
+      "deleteAppDataOnUninstall": false,
+      "include": "build/installer.nsh",
+      "runAfterFinish": false
     },
     "mac": {
       "target": "dir",

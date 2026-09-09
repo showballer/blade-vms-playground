@@ -2,9 +2,9 @@
 
 以 `../原型/旋转叶片测振系统-双通道原型.dc.html` 和 `../原型/原型-截图/` 的 18 张截图为依据。
 
-本项目包含 Next.js Web 管理端与业务 API、Electron Windows 现场工作台、共享 React UI。**桌面 1.1.0 已切换为真实现场采集入口**：本机 admin、首次改密、Python 进程托管、SDK 接入适配、SQLite 索引及原始分块落盘；缺少 Windows 服务包或厂商 DLL 时明确提示，不回退演示数据。实机设备联调与算法仍待完成。
+本项目包含 Next.js Web 管理端与业务 API、Electron Windows 现场工作台、共享 React UI。**桌面 1.2.0 为完整依赖的现场联调包构建**：本机 admin、首次改密、内置隔离 Python 运行时与采集服务、Polytec x64 DLL、VC++ 运行库安装处理、SQLite 索引及原始分块落盘。缺少必需组件时打包失败，不交付空壳或回退演示数据。真实设备联调与算法验收仍待完成。
 
-**最新 Windows 使用、账号边界和统一打包步骤以 [FIELD_INTEGRATION.md](FIELD_INTEGRATION.md) 为准。** 下文保留的在线/离线业务工作区、算法演示及原型模块说明是 1.0 业务实现记录，并非 1.1 EXE 的现行入口；Web 不变，已有数据不删除。
+**最新 Windows 安装、登录和设备联调步骤以 [WINDOWS_TEST_GUIDE.md](WINDOWS_TEST_GUIDE.md) 为准。** 数据存储和接口边界见 [FIELD_INTEGRATION.md](FIELD_INTEGRATION.md)。下文保留的在线/离线业务工作区、算法演示及原型模块说明是 1.0 业务实现记录，并非现行 EXE 入口；Web 不变，已有数据不删除。
 
 交付范围、需求覆盖与已知验证限制见 [DELIVERY.md](DELIVERY.md)。Windows 包已交叉构建；Windows 实机与最新宽报告的浏览器打印仍需目标环境验收。
 
