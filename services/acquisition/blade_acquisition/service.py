@@ -4,6 +4,7 @@ import asyncio
 import copy
 import hmac
 import ipaddress
+import math
 import os
 import threading
 from collections import deque
@@ -11,12 +12,14 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, StrictBool, field_validator
 
 from .receiver import Batch, PolytecReceiver, ReceiverConfig
 from .storage import DISPLAY_LIMIT, RecordingStore, empty_waveform
+from .waveform import WaveformReader, make_wave
+from .device import DevicePanel, WRITABLE
 
 
 @dataclass(frozen=True)
@@ -77,10 +80,30 @@ class StartRequest(BaseModel):
         return value
 
 
+class DeviceRequest(BaseModel):
+    deviceIp: str = Field(min_length=7, max_length=15)
+    action: str = Field(pattern="^(read|set|autofocus)$")
+    key: str | None = Field(default=None, max_length=32)
+    value: str | int | None = None
+    expected: str | int | None = None
+    confirmChange: StrictBool = False
+    confirmLaser: StrictBool = False
+
+    _address = field_validator("deviceIp")(StartRequest.valid_address.__func__)
+
+    @field_validator("value", "expected")
+    @classmethod
+    def bounded_value(cls, value):
+        if isinstance(value, str) and (len(value) > 120 or "\x00" in value):
+            raise ValueError("无效配置值")
+        return value
+
+
 class AcquisitionController:
     def __init__(self, settings: Settings, receiver_factory=PolytecReceiver):
         self.settings = settings
         self.store = RecordingStore(settings.data_dir / "recordings")
+        self.wave_reader = WaveformReader(self.store)
         self.receiver_factory = receiver_factory
         self.lock = threading.RLock()
         self.operation_lock = threading.Lock()
@@ -89,7 +112,11 @@ class AcquisitionController:
         self.thread: threading.Thread | None = None
         self.stop_event = threading.Event()
         self.device_ip = self.host_ip = ""
-        self.rows: deque = deque(maxlen=DISPLAY_LIMIT)
+        self.rows: deque = deque(maxlen=250_000)
+        self.device_busy = False
+        self.device_snapshot = None
+        self.device_warning = None
+        self.device_warning_ip = None
 
     def status(self) -> dict:
         with self.lock:
@@ -101,22 +128,60 @@ class AcquisitionController:
                                  "dllAvailable": bool(self.settings.dll_path and Path(self.settings.dll_path).is_file()),
                                  "dataLossAssessment": "unverified"},
                     "recording": copy.deepcopy(self.writer.manifest) if self.writer else None,
+                    "deviceBusy": self.device_busy,
+                    "deviceWarning": self.device_warning,
+                    "deviceSettings": copy.deepcopy(self.device_snapshot),
                     "indexWarning": self.store.index_error}
 
-    def frame(self) -> dict:
+    def frame(self, window_ms=None) -> dict:
         with self.lock:
             status = self.status()
-            wave = empty_waveform()
-            if self.rows:
-                rows = list(self.rows)
-                wave.update(sampleRate=status["receiver"]["sampleRate"], sampleStart=rows[0][0],
-                            values=[row[1] for row in rows], rssi=[row[2] for row in rows],
-                            overrange=[row[3] for row in rows])
-            return {**status, "waveform": wave}
+            rate = status["receiver"]["sampleRate"]
+            size = min(250_000, max(1, math.ceil(rate * window_ms / 1000))) if rate and window_ms else DISPLAY_LIMIT
+            rows = list(self.rows)[-size:]
+            origin = self.writer.manifest.get("sampleOrigin") if self.writer else None
+        wave = make_wave(rows, rate, origin)
+        return {**status, "waveform": wave}
+
+    def configure_device(self, request: DeviceRequest):
+        if request.action == "set" and (not request.confirmChange or request.key not in WRITABLE):
+            raise HTTPException(422, "请明确确认修改支持的配置项。")
+        if request.action == "autofocus" and not request.confirmLaser:
+            raise HTTPException(422, "自动聚焦需要明确确认激光安全。")
+        if not self.operation_lock.acquire(blocking=False):
+            raise HTTPException(409, "设备操作进行中，请等待完成。")
+        try:
+            with self.lock:
+                if self.thread and self.thread.is_alive():
+                    raise HTTPException(409, "采集期间不可读取控制配置或修改设备，请先停止并保存。")
+                self.device_busy = True
+                # A failed/uncertain write must not leave old values marked as verified.
+                self.device_snapshot = None
+            panel = DevicePanel(ReceiverConfig(request.deviceIp, "", self.settings.dll_path))
+            result = panel.run_command(request.action, request.key, request.value, request.expected)
+            with self.lock:
+                self.device_snapshot = result
+                laser = result.get("fields", {}).get("laser", {})
+                if result.get("deviceIp") == self.device_warning_ip and laser.get("supported") and laser.get("value") == 0:
+                    self.device_warning = None
+                    self.device_warning_ip = None
+            return result
+        except (OSError, RuntimeError, ValueError) as exc:
+            if request.action != "read":
+                with self.lock:
+                    self.device_warning_ip = request.deviceIp
+                    self.device_warning = f"设备 {request.deviceIp} 上次修改/聚焦未确认完成。请现场确认激光关闭，然后重新读取该设备配置；确认前禁止开始采集。"
+            raise HTTPException(503, f"设备配置操作未确认完成：{exc}。请重新读取配置；异常时须现场确认激光已关闭。") from exc
+        finally:
+            with self.lock:
+                self.device_busy = False
+            self.operation_lock.release()
 
     def start(self, request: StartRequest) -> dict:
         with self.operation_lock:
             with self.lock:
+                if self.device_warning:
+                    raise HTTPException(409, self.device_warning)
                 if self.thread and self.thread.is_alive():
                     raise HTTPException(409, "已有采集运行或正在收尾，请先停止。")
                 receiver = self.receiver_factory(ReceiverConfig(request.deviceIp, request.hostIp, self.settings.dll_path))
@@ -139,8 +204,11 @@ class AcquisitionController:
                 self.thread.start()
                 return self.status()
 
-    def _ready(self, rate: float, origin: float) -> None:
+    def _ready(self, rate: float, origin: float, receiver=None) -> None:
         with self.lock:
+            if receiver is not None:
+                self.writer.manifest["deviceSettings"] = getattr(receiver, "device_settings", None)
+                self.writer.manifest["velocityRangeMps"] = getattr(receiver, "velocity_range_mps", None)
             self.writer.ready(rate, origin)
             if not self.stop_event.is_set():
                 self.state = "acquiring"
@@ -149,7 +217,7 @@ class AcquisitionController:
         with self.lock:
             self.writer.write(batch)
             # This is a display window, never the source for raw persistence.
-            offset = max(0, len(batch.values) - DISPLAY_LIMIT)
+            offset = max(0, len(batch.values) - self.rows.maxlen)
             self.rows.extend((batch.sample_start + index, batch.values[index],
                               batch.rssi[index] if index < len(batch.rssi) else None,
                               batch.overrange[index]) for index in range(offset, len(batch.values)))
@@ -157,7 +225,7 @@ class AcquisitionController:
     def _run(self, receiver) -> None:
         failure = None
         try:
-            receiver.run(self.stop_event, self._ready, self._receive)
+            receiver.run(self.stop_event, lambda rate, origin: self._ready(rate, origin, receiver), self._receive)
         except Exception as exc:
             failure = str(exc)
             self.stop_event.set()
@@ -172,6 +240,9 @@ class AcquisitionController:
                 self.state = "error" if failure else "idle"
 
     def stop(self) -> dict:
+        with self.lock:
+            if self.device_busy:
+                raise HTTPException(409, "设备配置/聚焦仍在进行，请等待完成并现场确认激光状态。")
         with self.operation_lock:
             with self.lock:
                 thread = self.thread
@@ -226,8 +297,12 @@ def create_app(settings: Settings, receiver_factory=PolytecReceiver) -> FastAPI:
         return controller.status()
 
     @app.get("/api/field/frame")
-    def frame():
-        return controller.frame()
+    def frame(window_ms: int | None = Query(default=None, ge=1, le=1000)):
+        return controller.frame(window_ms)
+
+    @app.post("/api/field/device")
+    def device(request: DeviceRequest):
+        return controller.configure_device(request)
 
     @app.post("/api/field/start")
     def start(request: StartRequest):
@@ -257,6 +332,22 @@ def create_app(settings: Settings, receiver_factory=PolytecReceiver) -> FastAPI:
                 raise HTTPException(404, str(exc)) from exc
             except (OSError, ValueError) as exc:
                 raise HTTPException(500, f"无法读取采集记录：{exc}") from exc
+
+    @app.get("/api/field/recordings/{recording_id}/waveform")
+    def recording_waveform(recording_id: str, start: int = Query(default=0, ge=0, le=2**53 - 1),
+                           end: int | None = Query(default=None, ge=1, le=2**53 - 1)):
+        if end is not None and end <= start:
+            raise HTTPException(422, "结束样本必须大于起始样本。")
+        with controller.lock:
+            manifest = copy.deepcopy(controller.writer.manifest) if controller.writer and controller.writer.id == recording_id else None
+        try:
+            return controller.wave_reader.read(recording_id, start, end, manifest)
+        except KeyError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except BlockingIOError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except (OSError, ValueError) as exc:
+            raise HTTPException(500, f"无法读取波形：{exc}") from exc
 
     @app.websocket("/ws/field")
     async def field_socket(socket: WebSocket):

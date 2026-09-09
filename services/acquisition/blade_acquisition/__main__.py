@@ -11,11 +11,12 @@ from .service import Settings, create_app
 
 def self_check() -> dict:
     """Bind the shipped SDK only; never open a connection or invoke any SDK function."""
-    from .receiver import PolytecReceiver, ReceiverConfig
+    from .receiver import ReceiverConfig
+    from .device import DevicePanel
 
     base = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[1]
     dll = Path(os.environ.get("BLADE_POLYTEC_DLL") or base / "vendor" / "DeviceCommunication.dll").resolve()
-    receiver = PolytecReceiver(ReceiverConfig("", "", str(dll)))
+    receiver = DevicePanel(ReceiverConfig("", "", str(dll)))
     try:
         api = receiver._load_api()
         return {"frozen": bool(getattr(sys, "frozen", False)), "executable": sys.executable,

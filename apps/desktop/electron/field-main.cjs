@@ -25,6 +25,7 @@ function persistConfig(next) {
 }
 async function idleRequired() {
   const status = await service.status();
+  if (status.deviceBusy) throw failure('设备配置进行中，请等待完成并确认激光状态', 409);
   if (status.receiver?.running || ['starting', 'acquiring', 'stopping'].includes(status.state)) throw failure('请先停止采集并确认保存，再修改服务设置或退出登录', 409);
   if (status.service.error && status.service.state === 'ready') throw failure('服务状态未知，请先停止采集或关闭软件检查数据，不能直接替换正在运行的服务', 409);
 }
@@ -62,11 +63,13 @@ async function dispatch(options) {
   auth.requireSession();
   switch (action) {
     case 'status': return service.status();
-    case 'frame': return service.frame();
+    case 'frame': return service.frame(options.windowMs);
     case 'start': return service.begin(options.config);
     case 'stop': return service.stop();
     case 'recordings': return service.recordings();
     case 'recording': return service.recordings(options.id);
+    case 'waveform': return service.waveform(options.id, options.start, options.end);
+    case 'device': return service.device(options.request);
     case 'configureService': return chooseProgram('executable');
     case 'configureDll': return chooseProgram('dll');
     case 'restartService':
@@ -90,6 +93,12 @@ async function closeSafely() {
     // successful start and leave a hardware-owning process without a UI.
     await serial(async () => {
       const snapshot = await service.status();
+      if (snapshot.deviceBusy) {
+        await dialog.showMessageBox(win, { type: 'warning', buttons: ['返回等待'],
+          message: '设备配置或聚焦尚未结束，暂不自动退出服务',
+          detail: '请等待操作结束。若 SDK 长时间无响应，请先在现场确认并物理关闭激光，再由现场人员检查采集服务进程；不能仅凭关闭窗口确认激光已关。' });
+        return;
+      }
       if (snapshot.receiver?.running || ['starting', 'acquiring', 'stopping'].includes(snapshot.state)) {
         const answer = await dialog.showMessageBox(win, { type: 'question', buttons: ['继续采集', '停止保存并退出'], defaultId: 0, cancelId: 0,
           message: '正在采集，是否停止并保存后退出？' });
@@ -98,7 +107,7 @@ async function closeSafely() {
       try { await service.shutdown(); }
       catch {
         const answer = await dialog.showMessageBox(win, { type: 'warning', buttons: ['返回检查', '退出并保留未完成数据'], defaultId: 0, cancelId: 0,
-          message: '无法确认本次采集已完整保存', detail: '服务可能已异常。强制退出后请检查本机数据目录里的 incomplete/error 记录；不要将其当作完整采集。' });
+          message: '无法确认本次采集已完整保存', detail: '服务可能已异常。请先在现场确认激光已关闭。强制退出后检查本机数据目录里的 incomplete/error 记录；不要将其当作完整采集。' });
         if (answer.response !== 1) return;
         await service.shutdown({ force: true });
       }
@@ -147,7 +156,7 @@ else {
       try {
         trusted(event);
         const execute = () => dispatch(options);
-        const result = ['session', 'status', 'frame', 'recordings', 'recording'].includes(options?.action)
+        const result = ['session', 'status', 'frame', 'recordings', 'recording', 'waveform'].includes(options?.action)
           ? await execute() : await serial(execute);
         return { status: 200, data: result };
       } catch (error) { return { status: error.status || 500, data: { error: error.message || '本机操作失败' } }; }

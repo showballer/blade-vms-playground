@@ -11,7 +11,7 @@ from blade_acquisition.__main__ import main, self_check
 class SelfCheckTests(unittest.TestCase):
     def test_loads_bindings_without_hardware_or_service(self):
         api = SimpleNamespace(**{f"PolySymbol{i}": lambda: self.fail("SDK must not be called") for i in range(18)})
-        with patch("blade_acquisition.receiver.PolytecReceiver._load_api", return_value=api), patch("blade_acquisition.__main__.Settings.from_environment", side_effect=AssertionError("service must not start")):
+        with patch("blade_acquisition.device.DevicePanel._load_api", return_value=api), patch("blade_acquisition.__main__.Settings.from_environment", side_effect=AssertionError("service must not start")):
             result = self_check()
         self.assertEqual(result["sdkSymbols"], 18)
         self.assertTrue(result["dllLoaded"])

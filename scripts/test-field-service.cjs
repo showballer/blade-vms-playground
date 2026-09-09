@@ -11,6 +11,26 @@ const { createFieldService, windowsServiceEnvironment } = require("../apps/deskt
 const idle = () => ({ state: "idle", error: null, receiver: { connected: false }, recording: null });
 const acquiring = () => ({ state: "acquiring", error: null, receiver: { connected: true }, recording: { id: "recording-1", state: "acquiring" } });
 const waveform = values => ({ sampleRate: 1000, unit: "m/s", values, rssi: [], overrange: [] });
+
+test("waveform bridge permits only bounded sample ranges and no arbitrary paths", async t => {
+  const f = fixture(t, { fetch: ({ route }) => response(route.includes('/waveform') ? { waveform: waveform([1]) } : idle()) });
+  for (const id of ['../secret', 'http://remote', 'x'.repeat(32), 'record?file=1']) await assert.rejects(f.service.waveform(id), { status: 400 });
+  for (const [start, end] of [[-1, 10], [1.2, 10], [10, 2], [Infinity, 100], [0, Number.MAX_SAFE_INTEGER + 1]]) await assert.rejects(f.service.waveform('a'.repeat(32), start, end), { status: 400 });
+  await f.service.waveform('a'.repeat(32), 10, 20);
+  const url = new URL(f.requests.at(-1).url);
+  assert.equal(url.searchParams.get('start'), '10');
+  assert.equal(url.searchParams.get('end'), '20');
+});
+
+test("device bridge requires explicit consent and refuses modifying an active capture", async t => {
+  const f = fixture(t);
+  await assert.rejects(f.service.device({ deviceIp: '192.168.104.50', action: 'set', key: 'laser', value: 1, confirmChange: true }), { status: 400 });
+  await assert.rejects(f.service.device({ deviceIp: '192.168.104.50', action: 'autofocus' }), { status: 400 });
+  await assert.rejects(f.service.frame(50000), { status: 400 });
+  const active = fixture(t, { fetch: () => response(acquiring()) });
+  await assert.rejects(active.service.device({ deviceIp: '192.168.104.50', action: 'read' }), { status: 409 });
+  assert.ok(active.requests.every(request => request.route !== 'device'));
+});
 function deferred() {
   let resolve, reject;
   const promise = new Promise((yes, no) => { resolve = yes; reject = no; });

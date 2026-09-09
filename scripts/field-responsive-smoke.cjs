@@ -156,8 +156,14 @@ app.on('browser-window-created', (_event, win) => {
       win.setMinimumSize(360, 240);
       win.setContentSize(size.width, size.height);
       wc.setZoomFactor(size.zoom);
-      await pause(120);
-      const actual = await js('({ width: innerWidth, height: innerHeight, dpr: devicePixelRatio })');
+      // Chromium may apply a restored per-origin zoom after did-finish-load.
+      // Wait for real geometry and reassert the intended test scale, not a fixed sleep.
+      let actual;
+      await waitFor(async () => {
+        wc.setZoomFactor(size.zoom);
+        actual = await js('({ width: innerWidth, height: innerHeight, dpr: devicePixelRatio })');
+        return Math.abs(actual.width - size.width / size.zoom) <= 2 && Math.abs(actual.height - size.height / size.zoom) <= 2;
+      }, 'native viewport geometry');
       assert.ok(Math.abs(actual.width - size.width / size.zoom) <= 2 && Math.abs(actual.height - size.height / size.zoom) <= 2,
         `Native viewport did not resize: ${JSON.stringify({ size, actual, contentSize: win.getContentSize() })}`);
       return actual;

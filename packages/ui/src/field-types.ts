@@ -18,6 +18,23 @@ export type FieldWaveform = {
   rssi: (number | null)[];
   rssiUnit?: "%";
   overrange: boolean[];
+  sampleOrigin?: number | null;
+  rangeStart?: number;
+  rangeEnd?: number;
+  sourceSamples?: number;
+  representation?: "raw" | "envelope";
+  envelope?: { start: number; end: number; min: number; max: number; rssiMin: number | null; rssiMax: number | null; missing: number; overrange: number }[];
+  overrangeCount?: number;
+  missingRssiCount?: number;
+  latest?: { velocity: number; rssi: number | null };
+};
+export type FieldDeviceSettings = {
+  deviceIp: string; readAt: number; source: string; error?: string;
+  fields: Record<string, { supported: boolean; writable?: boolean; value?: string | number; options?: (string | number)[]; percent?: number; error?: string }>;
+};
+export type FieldDeviceRequest = {
+  deviceIp: string; action: "read" | "set" | "autofocus"; key?: string;
+  value?: string | number; expected?: string | number; confirmChange?: true; confirmLaser?: true;
 };
 export type FieldRecording = {
   id: string;
@@ -32,6 +49,9 @@ export type FieldRecording = {
   status: "incomplete" | "complete" | "error";
   unit?: "m/s";
   error?: string;
+  sampleOrigin?: number | null;
+  velocityRangeMps?: number | null;
+  deviceSettings?: FieldDeviceSettings | null;
 };
 export type FieldRecordingDetail = {
   recording: FieldRecording;
@@ -47,16 +67,22 @@ export type FieldStatus = {
   state: "idle" | "starting" | "acquiring" | "stopping" | "error";
   error?: string;
   indexWarning?: string | null;
+  deviceBusy?: boolean;
+  deviceWarning?: string | null;
+  deviceSettings?: FieldDeviceSettings | null;
   receiver?: Record<string, unknown>;
   recording?: FieldRecording;
   waveform?: FieldWaveform;
 };
 export type FieldRequestOptions =
-  | { action: "session" | "logout" | "status" | "frame" | "stop" | "recordings" | "openDataDirectory" | "restartService" | "configureService" | "configureDll" }
+  | { action: "session" | "logout" | "status" | "stop" | "recordings" | "openDataDirectory" | "restartService" | "configureService" | "configureDll" }
+  | { action: "frame"; windowMs?: number }
   | { action: "login"; username: string; password: string }
   | { action: "changePassword"; currentPassword: string; newPassword: string }
   | { action: "start"; config: FieldConfig & { confirmLaser: true } }
-  | { action: "recording"; id: string };
+  | { action: "recording"; id: string }
+  | { action: "waveform"; id: string; start?: number; end?: number }
+  | { action: "device"; request: FieldDeviceRequest };
 export type FieldRequest = (options: FieldRequestOptions) => Promise<{ status: number; data: unknown }>;
 
 export function validateFieldConfig(config: FieldConfig): string | null {
@@ -76,7 +102,7 @@ export function fieldSampleX(waveform: FieldWaveform, index: number): number {
 }
 
 export function fieldCanStart(status: FieldStatus | null): boolean {
-  return Boolean(status?.service.state === "ready" && status.service.dllConfigured && !fieldIsActive(status) && ["idle", "error"].includes(status.state));
+  return Boolean(status?.service.state === "ready" && status.service.dllConfigured && !status.deviceBusy && !status.deviceWarning && !fieldIsActive(status) && ["idle", "error"].includes(status.state));
 }
 
 export function fieldIsActive(status: FieldStatus | null): boolean {

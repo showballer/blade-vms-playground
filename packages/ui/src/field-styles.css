@@ -70,6 +70,38 @@
 .field-legend.green i { background: #17976d; }
 .field-wave-svg { width: 100%; height: auto; display: block; overflow: visible; }
 .field-wave-svg text { fill: #8a99ad; font-size: 10px; font-variant-numeric: tabular-nums; }
+.field-wave-options, .field-range-inputs { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 9px; margin: 12px 0; }
+.field-wave-options label, .field-range-inputs label { display: grid; gap: 5px; color: #6c7d92; font-size: 11px; min-width: 0; max-width: 100%; }
+.field-wave-options select, .field-wave-options input, .field-range-inputs input, .field-device-row select { font: inherit; border: 1px solid #d9e2ef; background: #fbfcfe; border-radius: 5px; padding: 7px 8px; color: #405574; max-width: 100%; min-width: 0; min-height: 32px; }
+.field-wave-options input, .field-range-inputs input { width: 154px; }
+.field-plot { min-width: 0; }
+.field-plot-warning { display: block; color: #ac6a22; padding: 4px 8px; font-size: 10px; }
+.field-wave-svg.pannable { cursor: grab; touch-action: pan-y; user-select: none; }
+.field-wave-svg.pannable:active { cursor: grabbing; }
+.field-full-waveform h3 { font-size: 12px; color: #526981; margin: 16px 0 5px; }
+.field-wave-overview { position: relative; border: 1px solid #e0e8f3; border-radius: 6px; background: #f9fbfe; margin: 14px 0; padding: 10px 0 0; }
+.field-wave-overview > strong { display: block; padding: 0 14px; font-size: 11px; color: #71849c; }
+.field-overview-track { position: absolute; left: 8.94%; right: 5.65%; top: 37%; bottom: 30%; touch-action: none; }
+.field-overview-selection { position: absolute; top: 0; bottom: 0; border: 1px solid #407bc6; background: #2d6cc01c; cursor: grab; min-width: 3px; }
+.field-overview-selection > span { position: absolute; top: 0; bottom: 0; width: 12px; cursor: ew-resize; background: #407bc66b; touch-action: none; }
+.field-overview-selection > span:first-child { left: -6px; }
+.field-overview-selection > span:last-child { right: -6px; }
+.field-pan-slider { display: grid; gap: 6px; color: #6c7d92; font-size: 11px; margin: 12px 0; }
+.field-pan-slider input { width: 100%; accent-color: #2d6cc0; }
+.field-wave-loading { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 50px 15px; color: #7a8da5; font-size: 12px; background: #f8fafd; min-height: 200px; }
+.field-wave-loading svg { flex-shrink: 0; }
+.field-device-panel { grid-column: 1 / -1; }
+.field-device-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 0 24px; margin: 10px 0 18px; }
+.field-device-row { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 0; border-bottom: 1px solid #ecf0f6; font-size: 11px; }
+.field-device-row > div { min-width: 110px; flex: 1; }
+.field-device-row strong, .field-device-row small { display: block; overflow-wrap: anywhere; }
+.field-device-row strong { color: #4d6381; font-weight: 600; }
+.field-device-row small { margin-top: 5px; color: #8697ad; }
+.field-device-row select { max-width: 150px; }
+.field-device-snapshot { max-width: 600px; margin: 12px 0; }
+.field-recorded-settings { border-top: 1px solid #e8edf5; margin-top: 20px; padding-top: 12px; color: #657e9e; font-size: 11px; }
+.field-recorded-settings summary { cursor: pointer; }
+@media (max-width: 900px) { .field-device-fields { grid-template-columns: 1fr; } }
 .field-chart-empty { min-height: 224px; padding: 16px; text-align: center; border: 1px dashed #e3e9f1; border-radius: 6px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: #bec9d7; background: #fbfcfe; }
 .field-chart-empty strong { color: #8191a7; font-size: 12px; font-weight: 500; }
 .field-chart-empty span { color: #a2aebe; font-size: 10px; }
@@ -81,6 +113,8 @@
 .field-metric-grid > div > span { color: #8c9aaf; font-size: 10px; }
 .field-metric-grid strong { font-size: 20px; color: #405574; font-weight: 550; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .field-metric-grid small { font-size: 9px; color: #97a4b7; font-weight: 400; margin-left: 5px; }
+.field-metric-grid strong { font-size: clamp(15px, 1.35vw, 20px); overflow-wrap: normal; }
+.field-metric-grid strong small { display: block; margin-left: 0; margin-top: 4px; }
 .field-metric-grid .field-metric-warning strong { color: #c57b29; }
 .field-details { margin: 0; display: grid; gap: 12px; font-size: 10px; }
 .field-details > div { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }

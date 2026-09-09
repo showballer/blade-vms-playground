@@ -6,11 +6,13 @@ import {
   Play, Radio, RefreshCw, Settings, ShieldCheck, Square, X,
 } from "lucide-react";
 import { Button, Dialog } from "./common";
+import { FieldWaveChart, FieldWaveOptions, FieldRecordingViewer, hasWave, waveBounds, waveLimit, type TimeMode, type VelocityUnit } from "./field-waveform";
+import { FieldDevicePanel, FieldDeviceSnapshot } from "./field-device";
 import {
   fieldCanStart, fieldDate, fieldIsActive, fieldSampleX, validateFieldConfig,
   type FieldConfig, type FieldRecording, type FieldRecordingDetail,
   type FieldRequest, type FieldRequestOptions, type FieldSession,
-  type FieldStatus, type FieldWaveform,
+  type FieldStatus, type FieldWaveform, type FieldDeviceSettings,
 } from "./field-types";
 
 function fieldBridge(): FieldRequest | undefined {
@@ -110,47 +112,7 @@ export function FieldPasswordPanel({ mandatory, busy, error, onSave, onCancel }:
   </section>;
 }
 
-export function FieldWaveChart({ waveform, kind = "velocity" }: { waveform?: FieldWaveform; kind?: "velocity" | "rssi" }) {
-  const chart = useMemo(() => {
-    if (!waveform || !waveform.values.length) return null;
-    const data = kind === "rssi" ? waveform.rssi : waveform.values;
-    const finite = data.filter((value): value is number => typeof value === "number" && Number.isFinite(value));
-    if (!finite.length) return null;
-    const width = 850, height = kind === "rssi" ? 140 : 275;
-    const left = 67, right = 21, top = 20, bottom = 32;
-    let minimum = kind === "rssi" ? 0 : Math.min(...finite);
-    let maximum = kind === "rssi" ? Math.max(100, ...finite) : Math.max(...finite);
-    const margin = maximum === minimum ? Math.max(Math.abs(maximum) * 0.1, 0.000001) : (maximum - minimum) * 0.12;
-    if (kind !== "rssi") { minimum -= margin; maximum += margin; }
-    const pointX = (index: number) => left + index / Math.max(1, waveform.values.length - 1) * (width - left - right);
-    const pointY = (value: number) => top + (maximum - value) / (maximum - minimum) * (height - top - bottom);
-    let lastValid = false;
-    const path = data.map((value, index) => {
-      if (typeof value !== "number" || !Number.isFinite(value)) { lastValid = false; return ""; }
-      const command = lastValid ? "L" : "M";
-      lastValid = true;
-      return `${command}${pointX(index).toFixed(2)},${pointY(value).toFixed(2)}`;
-    }).join(" ");
-    return { width, height, left, right, top, bottom, minimum, maximum, pointX, pointY, path };
-  }, [waveform, kind]);
-  if (!chart || !waveform) return <div className={`field-chart-empty ${kind === "rssi" ? "compact" : ""}`}><AudioLines size={28} /><strong>{kind === "rssi" ? "等待真实 RSSI 数据" : "等待真实振动数据"}</strong><span>连接设备并开始采集后显示，不生成模拟波形。</span></div>;
-  const { width, height, left, right, top, bottom, minimum, maximum, pointY, path } = chart;
-  const format = (number: number) => Math.abs(number) > 0 && Math.abs(number) < 0.001 ? number.toExponential(1) : Number(number.toPrecision(5)).toLocaleString("zh-CN");
-  return <svg className="field-wave-svg" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={kind === "rssi" ? "真实 RSSI 回波强度曲线，单位百分比" : "真实 CH1 振动速度曲线，单位米每秒"}>
-    {Array.from({ length: kind === "rssi" ? 3 : 5 }, (_, index) => {
-      const yValue = minimum + (maximum - minimum) * index / (kind === "rssi" ? 2 : 4), y = pointY(yValue);
-      return <g key={index}><line x1={left} y1={y} x2={width - right} y2={y} stroke="#e9eef5" /><text x={left - 11} y={y + 4} textAnchor="end">{format(yValue)}</text></g>;
-    })}
-    {Array.from({ length: 6 }, (_, index) => {
-      const sampleIndex = Math.round((waveform.values.length - 1) * index / 5), x = chart.pointX(sampleIndex);
-      return <text key={index} x={x} y={height - 12} textAnchor="middle">{format(fieldSampleX(waveform, sampleIndex))}</text>;
-    })}
-    <path d={path} fill="none" stroke={kind === "rssi" ? "#17976d" : "#2d6cc0"} strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
-    {waveform.values.length === 1 && <circle cx={left} cy={pointY((kind === "rssi" ? waveform.rssi[0] : waveform.values[0]) || 0)} r="2.5" fill={kind === "rssi" ? "#17976d" : "#2d6cc0"} />}
-    <text x={left} y={top - 7}>{kind === "rssi" ? "%" : "m/s"}</text>
-    <text x={width - right} y={height - bottom - 5} textAnchor="end">{waveform.sampleRate && waveform.sampleRate > 0 ? "时间 / ms" : "样本序号"}</text>
-  </svg>;
-}
+export { FieldWaveChart } from "./field-waveform";
 
 export function FieldServicePanel({ status, busy, onAction }: {
   status: FieldStatus | null; busy: boolean;
@@ -208,11 +170,16 @@ export function FieldDesktopApp() {
   const [notice, setNotice] = useState("");
   const [confirmStart, setConfirmStart] = useState(false);
   const [changingPassword, setChangingPassword] = useState(false);
+  const [windowMs, setWindowMs] = useState(20), [refreshMs, setRefreshMs] = useState(500);
+  const [timeMode, setTimeMode] = useState<TimeMode>("clock"), [velocityUnit, setVelocityUnit] = useState<VelocityUnit>("mm/s");
+  const [scale, setScale] = useState(0.5), [paused, setPaused] = useState(false);
+  const [displayWave, setDisplayWave] = useState<FieldWaveform | undefined>(undefined);
   const generation = useRef(0);
   const mounted = useRef(true);
 
   const clearSession = useCallback(() => {
     generation.current += 1; setSession(null); setStatus(null); setRecordings([]); setRecordingsLoaded(false); setSelected(null);
+    setDisplayWave(undefined); setPaused(false);
     setConfirmStart(false); setChangingPassword(false); setPollError(""); setNotice("");
   }, []);
   const handleError = useCallback((cause: unknown) => {
@@ -243,7 +210,7 @@ export function FieldDesktopApp() {
     const epoch = generation.current;
     async function poll() {
       try {
-        const next = await fieldCall<FieldStatus>({ action: "frame" });
+        const next = await fieldCall<FieldStatus>({ action: "frame", windowMs });
         if (canceled || epoch !== generation.current) return;
         setStatus(next); setPollError("");
         const signature = `${next.state}:${next.recording?.id || ""}`;
@@ -256,11 +223,13 @@ export function FieldDesktopApp() {
         if (cause instanceof FieldRequestError && cause.status === 401) { clearSession(); setError("本机会话已失效，请重新登录"); return; }
         setPollError(messageOf(cause));
       }
-      if (!canceled) timer = setTimeout(poll, 250);
+      if (!canceled) timer = setTimeout(poll, refreshMs);
     }
     void poll();
     return () => { canceled = true; clearTimeout(timer); };
-  }, [session, refreshRecordings, clearSession]);
+  }, [session, refreshRecordings, clearSession, windowMs, refreshMs]);
+  useEffect(() => { if (!paused && status?.waveform) setDisplayWave(status.waveform); }, [status?.waveform, paused]);
+  useEffect(() => { setPaused(false); setScale(status?.recording?.velocityRangeMps || 0.5); }, [status?.recording?.id, status?.recording?.velocityRangeMps]);
 
   async function operate(action: string, fn: () => Promise<void>) {
     if (busy) return;
@@ -296,9 +265,11 @@ export function FieldDesktopApp() {
   const active = fieldIsActive(status);
   const ready = fieldCanStart(status);
   const waveform = status?.waveform;
-  const latestVelocity = waveform?.values.at(-1);
-  const latestRssi = waveform?.rssi.at(-1);
-  const overrange = waveform?.overrange.filter(Boolean).length;
+  const latestVelocity = waveform?.latest?.velocity ?? waveform?.values.at(-1);
+  const latestRssi = waveform?.latest ? waveform.latest.rssi : waveform?.rssi.at(-1);
+  const overrange = waveform?.overrangeCount ?? waveform?.overrange.filter(Boolean).length;
+  const displayVelocity = typeof latestVelocity === "number" ? latestVelocity * (velocityUnit === "mm/s" ? 1000 : 1) : null;
+  const velocityLabel = displayVelocity !== null && Number.isFinite(displayVelocity) ? Math.abs(displayVelocity) > 0 && Math.abs(displayVelocity) < 0.001 ? displayVelocity.toExponential(3) : Number(displayVelocity.toPrecision(5)).toString() : "—";
 
   return <div className="field-app"><FieldTitlebar />
     {loading ? <div className="field-loading"><LoaderCircle className="spin" size={25} /><p>正在打开本机工作台…</p></div> : !session ? <FieldLoginPanel available={Boolean(fieldBridge())} busy={Boolean(busy)} error={error} onLogin={async (username, password) => {
@@ -307,9 +278,11 @@ export function FieldDesktopApp() {
       <header className="field-header"><div className="field-brand"><div className="field-brand-icon"><Activity size={19} /></div><span>BladeVMS <small>现场采集工作台</small></span></div><div className="field-header-right"><span className="field-local-label"><HardDrive size={13} />本机运行 · 无需互联网</span><span className="field-header-user"><span className="field-avatar">A</span>{session.user.name || session.user.username}</span><Button variant="ghost" disabled={Boolean(busy) || active} onClick={() => setChangingPassword(true)} aria-label="修改本机密码"><LockKeyhole size={15} /></Button><Button variant="ghost" disabled={Boolean(busy) || active} onClick={() => void logout()} title={active ? "请先停止并保存采集" : "退出本机账号"}><LogOut size={15} />退出</Button></div></header>
       {active && <div className="field-live-controls" aria-label="采集安全控制"><p><strong>{status ? stateLabels[status.state] : "采集服务运行中"}</strong> · 滚动页面或切换栏目后，仍可在此停止并保存。</p><Button type="button" variant="danger" disabled={Boolean(busy) || status?.state === "stopping"} onClick={() => void stopAcquisition()}>{busy === "stop" ? <LoaderCircle className="spin" size={15} /> : <Square size={13} />}停止并保存</Button></div>}
       <div className="field-workspace"><aside className="field-sidebar"><p>现场作业</p><button className={screen === "acquisition" ? "active" : ""} onClick={() => setScreen("acquisition")}><Activity size={17} />数据采集</button><button className={screen === "recordings" ? "active" : ""} onClick={() => { setScreen("recordings"); void operate("recordings", refreshRecordings); }}><HardDrive size={17} />本机记录</button><button className={screen === "service" ? "active" : ""} onClick={() => setScreen("service")}><Settings size={17} />设备与服务</button><p>算法扩展</p><button disabled title="等待 Python 算法接口，不提供演示结果"><Radio size={17} />旋转测振<span>待接入</span></button><button disabled title="等待 Python 算法接口，不提供演示结果"><AudioLines size={17} />信号处理<span>待接入</span></button><div className="field-sidebar-note"><CircleHelp size={17} /><strong>数据边界</strong><span>当前接入为 CH1 振动速度及 RSSI 回波强度，不是双路振动信号。</span></div></aside>
-        <main className="field-content"><div className="field-page-heading"><div><span className="field-eyebrow">WINDOWS · FIELD WORKSTATION</span><h1>{screen === "acquisition" ? "数据采集" : screen === "recordings" ? "本机采集记录" : "设备与本机服务"}</h1><p>{screen === "acquisition" ? "从真实设备读取，原始数据由本机采集服务独立保存。" : screen === "recordings" ? "查看真实采集任务与有限波形预览，完整数据保存在本机目录。" : "准备好设备驱动和采集服务后，即可在无网环境中工作。"}</p></div><span className={`field-badge ${status?.state === "acquiring" ? "green" : status?.state === "error" ? "red" : ""}`}><span className="field-status-dot" />{status ? stateLabels[status.state] : "读取状态中"}</span></div>
+        <main className="field-content"><div className="field-page-heading"><div><span className="field-eyebrow">WINDOWS · FIELD WORKSTATION</span><h1>{screen === "acquisition" ? "数据采集" : screen === "recordings" ? "本机采集记录" : "设备与本机服务"}</h1><p>{screen === "acquisition" ? "从真实设备读取，原始数据由本机采集服务独立保存。" : screen === "recordings" ? "浏览全程波形，通过概览拖动、缩放和时间区间定位。" : "准备好设备驱动和采集服务后，即可在无网环境中工作。"}</p></div><span className={`field-badge ${status?.state === "acquiring" ? "green" : status?.state === "error" ? "red" : ""}`}><span className="field-status-dot" />{status ? stateLabels[status.state] : "读取状态中"}</span></div>
           {(error || pollError) && <div className="field-error field-global-message" role="alert"><AlertTriangle size={17} /><span>{error || pollError}</span></div>}
           {notice && <div className="field-success field-global-message" role="status"><Check size={17} /><span>{notice}</span></div>}
+          {status?.deviceWarning && <p className="field-notice warning" role="alert">{status.deviceWarning}</p>}
+          {busy === "device" && <p className="field-notice warning">设备配置操作进行中，请等待结果。自动聚焦涉及激光，请留意现场状态。</p>}
           {status?.indexWarning && <div className="field-notice warning field-global-message" role="status"><AlertTriangle size={17} /><span>本机索引提示：{status.indexWarning}</span></div>}
           {screen === "acquisition" && <div className="field-acquisition-grid"><div className="field-main-column">
             <section className="field-card"><div className="field-section-heading"><div><h2>采集任务</h2><p>选择本机连接设备的网卡 IP；不会自动修改电脑的网络配置。</p></div><span className="field-badge">真实设备模式</span></div>
@@ -321,16 +294,24 @@ export function FieldDesktopApp() {
                 {!ready && !active && <p className="field-inline-help">尚不能开始采集，请在“本机采集服务”中确认服务已就绪且设备 DLL 已配置。</p>}
               </form>
             </section>
-            <section className="field-card field-wave-card"><div className="field-section-heading"><div><h2>CH1 · 振动速度</h2><p>实时显示抽样窗口；完整原始数据由 Python 服务保存。</p></div><span className="field-legend"><i />m/s</span></div><FieldWaveChart waveform={waveform} /><div className="field-chart-foot"><span>窗口点数 {count(waveform?.values.length)}</span><span>显示步长 {waveform?.sampleStride ? `${count(waveform.sampleStride)} 个样本` : waveform?.values.length ? "1 个样本" : "—"}</span><span>未接入转速 / 相位 / 第二路振动</span></div></section>
-            <section className="field-card field-wave-card"><div className="field-section-heading"><div><h2>RSSI · 激光回波强度</h2><p>用于判断回波信号质量，不代表第二路振动。</p></div><span className="field-legend green"><i />%</span></div><FieldWaveChart waveform={waveform} kind="rssi" /></section>
-          </div><div className="field-right-column"><section className="field-card"><div className="field-section-heading"><h2>采集指标</h2><span className="field-subtext">真实接收值</span></div><div className="field-metric-grid"><div><span>采样率</span><strong>{waveform?.sampleRate ? count(waveform.sampleRate) : "—"}<small>Hz</small></strong></div><div><span>当前振动速度</span><strong>{typeof latestVelocity === "number" && Number.isFinite(latestVelocity) ? latestVelocity.toPrecision(5) : "—"}<small>m/s</small></strong></div><div><span>当前 RSSI</span><strong>{typeof latestRssi === "number" && Number.isFinite(latestRssi) ? latestRssi.toFixed(1) : "—"}<small>%</small></strong></div><div className={overrange ? "field-metric-warning" : ""}><span>窗口超量程点数</span><strong>{waveform?.values.length ? count(overrange) : "—"}<small>点</small></strong></div></div></section>
+            <section className="field-card field-wave-card"><div className="field-section-heading"><div><h2>CH1 · 振动速度</h2><p>固定纵轴、分段刷新；显示设置不改变原始采集数据。</p></div><span className="field-legend"><i />{velocityUnit}</span></div>
+              <div className="field-wave-options"><label>时间窗<select aria-label="实时显示时间窗" value={windowMs} onChange={event => setWindowMs(Number(event.target.value))}>{[20, 100, 500, 1000].map(value => <option key={value} value={value}>{value} ms</option>)}</select></label><label>刷新间隔<select aria-label="刷新间隔" value={refreshMs} onChange={event => setRefreshMs(Number(event.target.value))}><option value={500}>0.5 秒（2 次/秒）</option><option value={1000}>1 秒</option><option value={250}>0.25 秒</option></select></label><Button disabled={!hasWave(displayWave)} onClick={() => setPaused(value => !value)}>{paused ? "恢复实时显示" : "暂停显示"}</Button></div>
+              <FieldWaveOptions timeMode={timeMode} onTime={setTimeMode} unit={velocityUnit} onUnit={setVelocityUnit} scale={scale} onScale={setScale} fit={() => setScale(waveLimit(displayWave))} />
+              {status?.recording?.velocityRangeMps && <Button variant="ghost" onClick={() => setScale(status.recording!.velocityRangeMps!)}>按设备量程显示</Button>}
+              {paused && <p className="field-notice warning">仅暂停图表显示，采集与原始数据保存继续；指标和点数仍更新。结束采集请点“停止并保存”。</p>}
+              <FieldWaveChart waveform={displayWave} unit={velocityUnit} yLimit={scale} timeMode={timeMode} />
+              <div className="field-chart-foot"><span>当前窗口 {count(displayWave?.sourceSamples ?? displayWave?.values.length)} 个原始样本</span><span>实际跨度 {displayWave?.sampleRate && hasWave(displayWave) ? ((waveBounds(displayWave)[1] - waveBounds(displayWave)[0]) / displayWave.sampleRate * 1000).toFixed(3) + " ms" : "—"}</span><span>{displayWave?.representation === "envelope" ? "区间最小/最大值包络 · 保留峰值" : "逐点波形"}</span></div>
+              <p className="field-subtext">实际时间由本机 DAQ 起点与采样序号推算，非硬件同步时钟。纵轴只是显示范围；放大微小幅值也会放大量化台阶。未做平滑滤波。</p>
+            </section>
+            <section className="field-card field-wave-card"><div className="field-section-heading"><div><h2>RSSI · 激光回波强度</h2><p>用于判断回波信号质量，不代表第二路振动。</p></div><span className="field-legend green"><i />%</span></div><FieldWaveChart waveform={displayWave} kind="rssi" timeMode={timeMode} /></section>
+          </div><div className="field-right-column"><section className="field-card"><div className="field-section-heading"><h2>采集指标</h2><span className="field-subtext">真实接收值</span></div><div className="field-metric-grid"><div><span>采样率</span><strong>{waveform?.sampleRate ? count(waveform.sampleRate) : "—"}<small>Hz</small></strong></div><div><span>当前振动速度</span><strong>{velocityLabel}<small>{velocityUnit}</small></strong></div><div><span>当前 RSSI</span><strong>{typeof latestRssi === "number" && Number.isFinite(latestRssi) ? latestRssi.toFixed(1) : "—"}<small>%</small></strong></div><div className={overrange ? "field-metric-warning" : ""}><span>窗口超量程点数</span><strong>{hasWave(waveform) ? count(overrange) : "—"}<small>点</small></strong></div></div></section>
             <section className="field-card"><div className="field-section-heading"><h2>当前记录</h2><HardDrive size={16} /></div>{status?.recording ? <><h3 className="field-current-name">{status.recording.name}</h3><dl className="field-details"><div><dt>原始点数</dt><dd className="mono">{count(status.recording.samples)}</dd></div><div><dt>开始时间</dt><dd>{timeOf(status.recording.startedAt)}</dd></div><div><dt>保存状态</dt><dd>{status.recording.status === "complete" ? "已完成" : status.recording.status === "error" ? "异常" : "采集中 / 未完整结束"}</dd></div></dl>{status.recording.error && <p className="field-error">{status.recording.error}</p>}</> : <p className="field-subtext">暂无本次采集记录。点击开始采集后创建真实任务，不生成预置数据。</p>}</section>
             <FieldServicePanel status={status} busy={Boolean(busy)} onAction={(action) => void serviceAction(action)} />
           </div></div>}
           {screen === "recordings" && <><section className="field-card"><div className="field-section-heading"><div><h2>真实采集记录</h2><p>未完整结束的记录保留状态标记，请勿视为完整测量。</p></div><div className="field-form-actions"><Button disabled={Boolean(busy)} onClick={() => void serviceAction("openDataDirectory")}><FolderOpen size={14} />打开数据目录</Button><Button disabled={Boolean(busy)} onClick={() => void operate("recordings", refreshRecordings)}><RefreshCw size={14} />刷新列表</Button></div></div>{recordingsLoaded ? <FieldRecordingList recordings={recordings} busy={Boolean(busy)} selectedId={selected?.recording.id} onSelect={(id) => void operate("recording", async () => { const data = await fieldCall<FieldRecordingDetail>({ action: "recording", id }); setSelected(data); })} /> : <p className="field-notice">记录列表尚未读取成功，请确认采集服务可用后刷新。服务不可用不代表本机没有保存数据。</p>}</section>
-            {selected && <section className="field-card field-recording-preview"><div className="field-section-heading"><div><h2>{selected.recording.name} · 波形预览</h2><p>{timeOf(selected.recording.startedAt)} · 完整记录 {count(selected.recording.samples)} 点 · 这里只展示有限预览。</p></div><Button variant="ghost" onClick={() => setSelected(null)}>关闭预览</Button></div>{selected.recording.error && <p className="field-error">{selected.recording.error}</p>}<FieldWaveChart waveform={selected.waveform} /><p className="field-subtext">此处不是完整波形回放或算法分析。完整文件请从数据目录读取。</p></section>}
+            {selected && <section className="field-card field-recording-preview"><div className="field-section-heading"><div><h2>{selected.recording.name} · 波形预览</h2><p>{timeOf(selected.recording.startedAt)} · 全程浏览与区间放大</p></div><Button variant="ghost" onClick={() => setSelected(null)}>关闭预览</Button></div>{selected.recording.error && <p className="field-error">{selected.recording.error}</p>}<FieldRecordingViewer key={selected.recording.id} detail={selected} load={fieldCall} onError={handleError} /><details className="field-recorded-settings"><summary>查看本次采集的设备配置快照</summary><FieldDeviceSnapshot settings={selected.recording.deviceSettings} /></details></section>}
           </>}
-          {screen === "service" && <div className="field-settings-grid"><FieldServicePanel status={status} busy={Boolean(busy)} onAction={(action) => void serviceAction(action)} /><section className="field-card"><div className="field-section-heading"><h2>Windows 实机联调检查</h2></div><ol className="field-checklist"><li><strong>安装完整 Windows x64 工作台</strong><p>1.2.0 安装包内置 Python 运行环境、采集服务和设备 DLL，并检测 VC++ 运行库；无需另装 Python。若安装器提示重启，请先重启电脑。</p></li><li><strong>确认内置服务与 DLL 已就绪</strong><p>打开工作台会自动启动本机服务，但不会连接设备或开启激光。手动选择服务或 DLL 仅用于同事联调替换，不是首次使用的必需步骤。</p></li><li><strong>确认设备网络与安全</strong><p>填写设备 IP 与本机设备网卡 IP，检查网线、防火墙和激光作业安全。厂商要求的额外驱动按设备说明准备。</p></li><li><strong>采集、停止并核对保存结果</strong><p>检查采样率、原始点数、RSSI 与超量程状态，再从本机目录核对完整数据。页面高度不足时可纵向滚动；采集期间顶部保留停止并保存入口。</p></li></ol><div className="field-notice">本机账号独立于 Web 账号。集中管理和联网回传需要另外配置管理服务器；本页面不代表新采集记录已自动上传。</div></section></div>}
+          {screen === "service" && <div className="field-settings-grid"><FieldDevicePanel deviceIp={config.deviceIp} onIp={deviceIp => setConfig(previous => ({ ...previous, deviceIp }))} status={status} disabled={Boolean(busy)} onBusy={value => setBusy(value ? "device" : "")} onError={handleError} request={request => fieldCall<FieldDeviceSettings>({ action: "device", request })} /><FieldServicePanel status={status} busy={Boolean(busy)} onAction={(action) => void serviceAction(action)} /><section className="field-card"><div className="field-section-heading"><h2>Windows 实机联调检查</h2></div><ol className="field-checklist"><li><strong>安装完整 Windows x64 工作台</strong><p>1.3.0 安装包内置 Python 运行环境、采集服务和设备 DLL，并检测 VC++ 运行库；无需另装 Python。若安装器提示重启，请先重启电脑。</p></li><li><strong>确认内置服务与 DLL 已就绪</strong><p>打开工作台会自动启动本机服务，但不会连接设备或开启激光。手动选择服务或 DLL 仅用于同事联调替换，不是首次使用的必需步骤。</p></li><li><strong>确认设备网络与安全</strong><p>填写设备 IP 与本机设备网卡 IP，检查网线、防火墙和激光作业安全。厂商要求的额外驱动按设备说明准备。</p></li><li><strong>采集、停止并核对保存结果</strong><p>检查采样率、原始点数、RSSI 与超量程状态，再从本机目录核对完整数据。页面高度不足时可纵向滚动；采集期间顶部保留停止并保存入口。</p></li></ol><div className="field-notice">本机账号独立于 Web 账号。集中管理和联网回传需要另外配置管理服务器；本页面不代表新采集记录已自动上传。</div></section></div>}
         </main>
       </div><footer className="field-statusbar"><span><span className={`field-status-dot ${status?.service.state === "ready" ? "green" : ""}`} />{status ? serviceLabels[status.service.state] : "正在读取本机状态"}</span><span>CH1 速度 + RSSI · 原始数据本机保存</span><span>Windows x64 · 无模拟采集</span></footer>
     </>}

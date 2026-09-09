@@ -154,6 +154,84 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.client.get("/api/field/recordings/not-an-id").status_code, 404)
         self.assertEqual(self.client.get("/api/field/recordings/" + "f" * 32).status_code, 404)
 
+    def test_range_api_is_authenticated_bounded_and_preserves_old_records(self):
+        self.client.post("/api/field/start", json=START)
+        frame = self.wait_for_samples()
+        record_id = frame["recording"]["id"]
+        route = f"/api/field/recordings/{record_id}/waveform"
+        self.assertEqual(self.client.get(route, headers={"Authorization": ""}).status_code, 401)
+        for query in ("?start=-1", "?start=2&end=1", "?end=0", "?start=9007199254740992", "?start=nan", "?end=1.5"):
+            self.assertEqual(self.client.get(route + query).status_code, 422, query)
+        result = self.client.get(route + "?start=5&end=12").json()
+        self.assertEqual(result["waveform"]["sampleStart"], 5)
+        self.assertEqual(len(result["waveform"]["values"]), 7)
+        self.assertEqual(result["recording"]["status"], "incomplete")
+        self.assertEqual(self.client.get("/api/field/frame?window_ms=1001").status_code, 422)
+        wave = self.client.get("/api/field/frame?window_ms=20").json()["waveform"]
+        self.assertEqual(wave["sourceSamples"], 4375)
+        self.assertEqual(wave["representation"], "envelope")
+        self.assertEqual(wave["rangeEnd"], 5000)
+
+    def test_device_api_requires_confirmation_and_refuses_during_capture(self):
+        with patch("blade_acquisition.service.DevicePanel") as panel:
+            for body in ({"action": "read", "deviceIp": "127.0.0.1"},
+                         {"action": "set", "deviceIp": START["deviceIp"], "key": "bandwidth", "value": "5 kHz"},
+                         {"action": "autofocus", "deviceIp": START["deviceIp"]},
+                         {"action": "autofocus", "deviceIp": START["deviceIp"], "confirmLaser": "true"},
+                         {"action": "set", "deviceIp": START["deviceIp"], "key": "laser", "value": 1, "confirmChange": True}):
+                self.assertEqual(self.client.post("/api/field/device", json=body).status_code, 422)
+            self.assertFalse(panel.called)
+            self.client.post("/api/field/start", json=START)
+            self.wait_for_samples()
+            self.assertEqual(self.client.post("/api/field/device", json={"action": "read", "deviceIp": START["deviceIp"]}).status_code, 409)
+            self.assertFalse(panel.called)
+
+    def test_device_failure_clears_verified_snapshot_and_releases_busy_state(self):
+        with patch("blade_acquisition.service.DevicePanel") as panel:
+            panel.return_value.run_command.return_value = {"deviceIp": START["deviceIp"], "fields": {}}
+            request = {"action": "read", "deviceIp": START["deviceIp"]}
+            self.assertEqual(self.client.post("/api/field/device", json=request).status_code, 200)
+            self.assertIsNotNone(self.app.state.controller.device_snapshot)
+            panel.return_value.run_command.side_effect = RuntimeError("fixture uncertain")
+            self.assertEqual(self.client.post("/api/field/device", json=request).status_code, 503)
+            self.assertIsNone(self.app.state.controller.device_snapshot)
+            self.assertFalse(self.app.state.controller.device_busy)
+            self.assertTrue(self.app.state.controller.operation_lock.acquire(blocking=False))
+            self.app.state.controller.operation_lock.release()
+
+    def test_slow_waveform_io_never_holds_acquisition_control_lock(self):
+        self.client.post("/api/field/start", json=START)
+        record_id = self.wait_for_samples()["recording"]["id"]
+        reading, release = threading.Event(), threading.Event()
+        def slow(*_args):
+            reading.set()
+            release.wait(3)
+            return {"fixture": True}
+        with patch.object(self.app.state.controller.wave_reader, "read", side_effect=slow):
+            thread = threading.Thread(target=lambda: self.client.get(f"/api/field/recordings/{record_id}/waveform"))
+            thread.start()
+            try:
+                self.assertTrue(reading.wait(2))
+                response = self.client.post("/api/field/stop")
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()["recording"]["status"], "complete")
+                self.assertTrue(thread.is_alive(), "I/O fixture must still be blocked while stop completed")
+            finally:
+                release.set()
+                thread.join(3)
+
+    def test_uncertain_device_change_blocks_start_until_same_device_laser_off_readback(self):
+        with patch("blade_acquisition.service.DevicePanel") as panel:
+            panel.return_value.run_command.side_effect = RuntimeError("fixture uncertain write")
+            request = {"action": "set", "deviceIp": START["deviceIp"], "key": "bandwidth", "value": "5 kHz", "expected": "10 kHz", "confirmChange": True}
+            self.assertEqual(self.client.post("/api/field/device", json=request).status_code, 503)
+            self.assertEqual(self.client.post("/api/field/start", json=START).status_code, 409)
+            panel.return_value.run_command.side_effect = None
+            for address, value, blocked in [("192.168.104.51", 0, True), (START["deviceIp"], 1, True), (START["deviceIp"], 0, False)]:
+                panel.return_value.run_command.return_value = {"deviceIp": address, "fields": {"laser": {"supported": True, "value": value}}}
+                self.assertEqual(self.client.post("/api/field/device", json={"action": "read", "deviceIp": address}).status_code, 200)
+                self.assertEqual(bool(self.app.state.controller.device_warning), blocked)
+
 
 class StorageTests(unittest.TestCase):
     def setUp(self):

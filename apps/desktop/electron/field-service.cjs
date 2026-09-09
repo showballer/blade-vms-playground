@@ -87,7 +87,8 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     if (!port || !secret || !child) throw failure('本机采集服务尚未就绪');
     const requestGeneration = generation, requestChild = child;
     const response = await fetchImpl(`http://127.0.0.1:${port}/api/field/${route}`, {
-      method, redirect: 'error', signal: AbortSignal.timeout(route === 'stop' ? Math.max(30000, requestTimeoutMs) : requestTimeoutMs),
+      method, redirect: 'error', signal: AbortSignal.timeout(route.endsWith('/waveform') || route.includes('/waveform?') ? 120000 :
+        route === 'device' ? 90000 : route === 'stop' ? Math.max(30000, requestTimeoutMs) : requestTimeoutMs),
       headers: { Authorization: `Bearer ${secret}`, 'Content-Type': 'application/json' },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
@@ -231,8 +232,16 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
       error = cause.message; return envelope({ state: 'error', error: cause.message, recording: lastStatus.recording });
     }
   }
-  async function frame() {
+  async function frame(windowMs) {
+    if (windowMs !== undefined && ![20, 100, 500, 1000].includes(windowMs)) throw failure('无效显示时间窗', 400);
     if (state !== 'ready') return envelope({ ...lastStatus, waveform: { sampleRate: null, unit: 'm/s', values: [], rssi: [], overrange: [] } });
+    if (windowMs !== undefined) {
+      const epoch = snapshotEpoch;
+      const data = await http(`frame?window_ms=${windowMs}`);
+      if (epoch !== snapshotEpoch) return envelope();
+      validateWave(data.waveform);
+      return envelope(data);
+    }
     if (cachedFrame && Date.now() - receivedAt < 1500) return envelope(cachedFrame);
     if (frameRequest) return frameRequest;
     const current = generation, epoch = snapshotEpoch;
@@ -279,6 +288,33 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     if (id !== undefined && (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,100}$/.test(id))) throw failure('无效录制编号', 400);
     await ready(); return http(id === undefined ? 'recordings' : `recordings/${id}`);
   }
+  function validateWave(wave) {
+    if (!wave || !Array.isArray(wave.values) || wave.values.length > 4096 ||
+        (wave.envelope !== undefined && (!Array.isArray(wave.envelope) || wave.envelope.length > 1000))) throw failure('采集波形超过安全显示限制');
+  }
+  async function waveform(id, start, end) {
+    if (typeof id !== 'string' || !/^[0-9a-f]{32}$/.test(id)) throw failure('无效录制编号', 400);
+    for (const value of [start, end]) if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) throw failure('无效波形区间', 400);
+    if (end !== undefined && end <= (start || 0)) throw failure('结束样本必须大于起始样本', 400);
+    await ready();
+    const query = new URLSearchParams({ start: String(start || 0) });
+    if (end !== undefined) query.set('end', String(end));
+    const result = await http(`recordings/${id}/waveform?${query}`);
+    validateWave(result.waveform);
+    return result;
+  }
+  async function device(request) {
+    if (!request || net.isIP(request.deviceIp) !== 4 || !['read', 'set', 'autofocus'].includes(request.action)) throw failure('无效设备配置请求', 400);
+    if (request.action === 'set' && (request.confirmChange !== true || !['velocityRange', 'bandwidth', 'highPass', 'ase'].includes(request.key))) throw failure('请确认修改支持的配置项', 400);
+    if (request.action === 'autofocus' && request.confirmLaser !== true) throw failure('请确认自动聚焦激光安全', 400);
+    for (const value of [request.value, request.expected]) if (value !== undefined &&
+      !(typeof value === 'string' && value.length <= 120 && !value.includes('\0')) && !(Number.isInteger(value) && [0, 1].includes(value))) throw failure('无效设备配置值', 400);
+    await ready();
+    const current = await http('status');
+    if (current.deviceBusy || current.receiver?.running || ['starting', 'acquiring', 'stopping'].includes(current.state)) throw failure('设备正在使用，请先停止并保存', 409);
+    return http('device', 'POST', Object.fromEntries(['deviceIp', 'action', 'key', 'value', 'expected', 'confirmChange', 'confirmLaser']
+      .filter(key => request[key] !== undefined).map(key => [key, request[key]])));
+  }
   async function shutdown({ force = false } = {}) {
     if (opening) await opening;
     if (!child) {
@@ -289,11 +325,12 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     }
     if (!force) {
       await stop();
+      if (lastStatus.deviceWarning) throw failure(lastStatus.deviceWarning);
       if (lastStatus.recording && lastStatus.recording.status !== 'complete') throw failure('本次采集没有完整保存，请检查错误或明确保留未完成数据后退出');
     }
     await terminateChild(child);
     state = 'stopped'; port = null; secret = '';
   }
-  return { start, status, frame, begin, stop, recordings, shutdown, serviceInfo };
+  return { start, status, frame, begin, stop, recordings, waveform, device, shutdown, serviceInfo };
 }
 module.exports = { createFieldService, windowsServiceEnvironment, failure };

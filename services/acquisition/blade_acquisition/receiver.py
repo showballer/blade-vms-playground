@@ -144,6 +144,18 @@ class PolytecReceiver:
             scale = headroom.value * float(match.group(1)) * {"m/s": 1, "mm/s": 1e-3, "um/s": 1e-6}[match.group(2).lower().replace("µ", "u")]
             if not math.isfinite(scale) or scale <= 0:
                 raise RuntimeError("SDK 返回无效速度换算系数。")
+            self.velocity_range_mps = scale / headroom.value
+            # Record read-back settings for later comparison. This is read-only;
+            # optional unsupported commands never substitute invented defaults.
+            from .device import DevicePanel
+            try:
+                panel = DevicePanel(self.config)
+                panel.api, panel.communication = self.api, self.communication
+                panel.bind_api(self.api)
+                self.device_settings = panel.snapshot()
+            except (AttributeError, RuntimeError, ValueError) as exc:
+                self.device_settings = {"deviceIp": self.config.device_ip, "readAt": time.time(),
+                                        "source": "unavailable", "fields": {}, "error": str(exc)}
             if stop.is_set():
                 return
             # Treat a timed-out laser command as uncertain, not success; cleanup still turns it off.

@@ -4,6 +4,8 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { FieldLoginPanel, FieldPasswordPanel, FieldRecordingList, FieldServicePanel, FieldStartDialog, FieldWaveChart } from "./field-desktop";
 import { fieldCanStart, fieldDate, fieldIsActive, fieldSampleX, validateFieldConfig, type FieldStatus, type FieldWaveform } from "./field-types";
+import { clampWaveRange, formatWaveTime, waveBounds } from "./field-waveform";
+import { FieldDeviceSnapshot } from "./field-device";
 
 let checks = 0;
 function check(name: string, run: () => void) { run(); checks += 1; console.log("PASS " + name); }
@@ -117,5 +119,34 @@ check("低高度密码页保留三项输入、保存及退出登录入口", () =
   assert.equal((html.match(/minLength="12"/g) || []).length, 2);
   assert.ok(html.includes("保存新密码"));
   assert.ok(html.includes("退出登录"));
+});
+check("全程浏览平移和缩放限制在已采集区间", () => {
+  assert.deepEqual(clampWaveRange(-100, 100, 1000), [0, 200]);
+  assert.deepEqual(clampWaveRange(900, 1200, 1000), [700, 1000]);
+  assert.deepEqual(clampWaveRange(5, 5, 1000), [5, 6]);
+  assert.deepEqual(waveBounds({ ...waveform, rangeStart: 0, rangeEnd: 900 }), [0, 900]);
+});
+check("实际时间使用 sampleOrigin 而非任务创建时间，未知起点不伪造", () => {
+  const wave = { ...waveform, sampleOrigin: 1700000000 };
+  assert.ok(formatWaveTime(1000, wave, "clock").endsWith(".500"));
+  assert.equal(formatWaveTime(1000, { ...wave, sampleOrigin: null }, "clock"), "500");
+});
+check("固定纵轴不按微小噪声自动跳动，超显示范围明确提示", () => {
+  const small = renderToStaticMarkup(<FieldWaveChart waveform={{ ...waveform, values: [0, 0.000016785, 0] }} yLimit={0.5} unit="mm/s" />);
+  assert.ok(small.includes("500"));
+  const large = renderToStaticMarkup(<FieldWaveChart waveform={{ ...waveform, values: [1, 0, -1] }} yLimit={0.5} />);
+  assert.ok(large.includes("这不等于设备超量程"));
+});
+check("包络按实际区间定位，不伪造连续原始采样点", () => {
+  const html = renderToStaticMarkup(<FieldWaveChart waveform={{ ...waveform, values: [], rssi: [], rangeStart: 0, rangeEnd: 10000, representation: "envelope", envelope: [{ start: 0, end: 10000, min: -1, max: 9, rssiMin: 79, rssiMax: 83, missing: 1, overrange: 0 }] }} />);
+  assert.ok(html.includes('class="field-wave-svg'));
+  assert.ok(html.includes('d="M'));
+  assert.ok(!html.includes("NaN"));
+});
+check("设备操作进行中禁止启动，旧记录无配置不填默认值", () => {
+  assert.equal(fieldCanStart({ ...ready, deviceBusy: true }), false);
+  const html = renderToStaticMarkup(<FieldDeviceSnapshot />);
+  assert.ok(html.includes("不能用当前设备设置代替"));
+  assert.ok(!html.includes("10 kHz"));
 });
 console.log(`Field desktop presentation checks: ${checks} passed (static/pure only).`);

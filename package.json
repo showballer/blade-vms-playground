@@ -13,6 +13,7 @@
     "test:field": "node scripts/test-local-auth.cjs && node scripts/test-field-service.cjs && node scripts/test-field-window.cjs && tsx packages/ui/src/field-desktop.test.tsx",
     "test:field-desktop": "npm run build -w @blade/desktop && electron scripts/field-desktop-smoke.cjs",
     "test:field-responsive": "npm run build -w @blade/desktop && electron scripts/field-responsive-smoke.cjs",
+    "test:field-waveform": "npm run build -w @blade/desktop && electron scripts/field-waveform-smoke.cjs",
     "dev": "npm run dev -w @blade/web",
     "dev:desktop": "npm run dev -w @blade/desktop",
     "desktop": "npm run start -w @blade/desktop",
