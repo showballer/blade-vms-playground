@@ -94,6 +94,8 @@ function verifyPayload(desktopRoot = path.resolve(__dirname, '../apps/desktop'))
   invariant(pythonDlls.length === 1, 'exactly one bundled Python 3.x interpreter DLL is required');
   invariant(Number(pythonDlls[0].match(/^python3(\d+)\.dll$/i)[1]) >= 12, 'bundled Python must be 3.12 or newer');
   regularFile(path.join(internal, 'base_library.zip'), 1000);
+  regularFile(path.join(acquisition, 'third-party-licenses/Python-LICENSE.txt'), 1000);
+  regularFile(path.join(acquisition, 'third-party-licenses/inventory.json'), 100);
   const dependencies = regularFile(path.join(acquisition, 'build-dependencies.txt'), 10).toString('utf8');
   for (const dependency of ['fastapi', 'uvicorn', 'websockets', 'pydantic', 'pyinstaller']) {
     invariant(new RegExp(`^${dependency}==[^\\s]+`, 'im').test(dependencies), `resolved ${dependency} version is not recorded`);

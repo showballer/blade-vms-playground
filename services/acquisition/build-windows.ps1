@@ -52,6 +52,8 @@ try {
     & $buildPython -m PyInstaller --clean --noconfirm BladeAcquisition.spec
     if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed." }
     $bundle = Join-Path $serviceRoot "dist\BladeAcquisition"
+    & $buildPython collect_licenses.py (Join-Path $bundle "third-party-licenses")
+    if ($LASTEXITCODE -ne 0) { throw "Collecting bundled Python/dependency license notices failed." }
     $vendor = Join-Path $bundle "vendor"
     New-Item -ItemType Directory -Force $vendor | Out-Null
     # Only explicitly supplied SDK binaries; no DevicePanel/Qt example libraries or drivers.

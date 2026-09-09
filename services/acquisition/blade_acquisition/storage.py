@@ -9,6 +9,7 @@ import sqlite3
 import struct
 import time
 import uuid
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -47,7 +48,10 @@ class RecordingStore:
 
     def _initialize_index(self) -> None:
         try:
-            with sqlite3.connect(self.index_path) as database:
+            # Connection.__exit__ commits/rolls back but does not close SQLite.
+            # Close after the transaction, including errors, before recovery can
+            # rename the file on Windows. Each operation owns its own connection.
+            with closing(sqlite3.connect(self.index_path)) as database, database:
                 if database.execute("PRAGMA quick_check").fetchone() != ("ok",):
                     raise sqlite3.DatabaseError("SQLite index failed integrity check")
                 database.execute("CREATE TABLE IF NOT EXISTS recordings (id TEXT PRIMARY KEY, started_at REAL, manifest TEXT NOT NULL)")
@@ -57,12 +61,12 @@ class RecordingStore:
             # The index is disposable; preserve the corrupt original for diagnostics.
             if self.index_path.exists():
                 self.index_path.rename(self.root / f"recordings-corrupt-{time.time_ns()}.sqlite3")
-            with sqlite3.connect(self.index_path) as database:
+            with closing(sqlite3.connect(self.index_path)) as database, database:
                 database.execute("CREATE TABLE recordings (id TEXT PRIMARY KEY, started_at REAL, manifest TEXT NOT NULL)")
 
     def update_index(self, manifest: dict) -> None:
         try:
-            with sqlite3.connect(self.index_path, timeout=3) as database:
+            with closing(sqlite3.connect(self.index_path, timeout=3)) as database, database:
                 database.execute("INSERT OR REPLACE INTO recordings VALUES (?, ?, ?)",
                                  (manifest["id"], manifest["startedAt"], json.dumps(manifest, ensure_ascii=False)))
             self.index_error = None
@@ -123,7 +127,7 @@ class RecordingStore:
 
     def list(self) -> list[dict]:
         try:
-            with sqlite3.connect(self.index_path) as database:
+            with closing(sqlite3.connect(self.index_path)) as database, database:
                 rows = database.execute("SELECT manifest FROM recordings ORDER BY started_at DESC LIMIT 1000").fetchall()
             return [json.loads(row[0]) for row in rows]
         except (sqlite3.Error, ValueError):
