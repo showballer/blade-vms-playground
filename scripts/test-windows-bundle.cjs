@@ -166,7 +166,7 @@ async function validateService(resources, environment, caseDirectory) {
   const selfCheck = await execute(executable, ['--self-check'], {
     cwd: serviceDirectory, env: { ...environment, BLADE_POLYTEC_DLL: dll },
   });
-  assert.equal(selfCheck.code, 0, `Frozen self-check failed: ${selfCheck.stderr}`);
+  assert.equal(selfCheck.code, 0, `Frozen self-check failed: ${selfCheck.stdout} ${selfCheck.stderr}`);
   const diagnostic = JSON.parse(selfCheck.stdout);
   assert.equal(diagnostic.frozen, true, 'Must use bundled Python, not system Python');
   assert.equal(path.resolve(diagnostic.executable).toLowerCase(), executable.toLowerCase());
@@ -339,7 +339,8 @@ async function validateInstalledDesktop(directory, environment, temporary, outpu
     const text = await body();
     assert.ok(text.includes('等待真实振动数据'));
     assert.ok(!text.includes('离线演示工作区'));
-    assert.equal(await cdp.evaluate('[...document.querySelectorAll("button")].find(b=>b.textContent.includes("开始真实采集")).disabled'), false);
+    await waitFor(async () => await cdp.evaluate('[...document.querySelectorAll("button")].find(b=>b.textContent.includes("开始真实采集"))?.disabled') === false,
+      'renderer polling updates the ready start control');
     const screenshot = await cdp.send('Page.captureScreenshot', { format: 'png' });
     fs.writeFileSync(path.join(output, 'installed-windows-acquisition-idle.png'), Buffer.from(screenshot.data, 'base64'));
     assert.equal((await field({ action: 'logout' })).status, 200);
@@ -401,7 +402,9 @@ async function main() {
         const installedResult = await execute(options.installer, ['/S', '/currentuser', `/D=${installDirectory}`],
           { env: { ...process.env }, timeoutMs: 180000, windowsVerbatimArguments: true, argv0: `"${options.installer}"` });
         installed = fs.existsSync(path.join(installDirectory, 'BladeVMS.exe'));
-        assert.equal(installedResult.code, 0, `Installer exit code: ${installedResult.code}`);
+        assert.equal(installedResult.code, 0, installedResult.code === 3010
+          ? 'VC++ runtime requires a Windows reboot; post-reboot readiness cannot be certified in this run'
+          : `Installer exit code: ${installedResult.code}`);
         assert.ok(installed, 'Installer did not install to requested disposable directory');
         assert.ok(fs.existsSync(path.join(installDirectory, 'resources', 'acquisition', 'BladeAcquisition.exe')));
       });

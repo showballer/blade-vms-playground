@@ -72,7 +72,7 @@
       ${If} $bladeVcReady != "1"
         InitPluginsDir
         SetOutPath $PLUGINSDIR
-        File /oname=vc_redist.x64.exe "${PROJECT_DIR}/resources/prerequisites/vc_redist.x64.exe"
+        File /oname=vc_redist.x64.exe "${PROJECT_DIR}\resources\prerequisites\vc_redist.x64.exe"
         StrCpy $bladeVcArguments '/install /passive /norestart /log "$TEMP\BladeVMS-vc-redist.log"'
         ${If} ${Silent}
           StrCpy $bladeVcArguments '/install /quiet /norestart /log "$TEMP\BladeVMS-vc-redist.log"'
