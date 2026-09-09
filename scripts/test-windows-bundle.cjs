@@ -25,6 +25,15 @@ const report = { startedAt: new Date().toISOString(), platform: process.platform
     'An actual clean Windows OS, installed Conda distribution and 32-bit Python are not provisioned by this script.'], checks: [] };
 const liveChildren = new Set();
 
+async function deadline(promise, milliseconds, message) {
+  let timer;
+  try {
+    return await Promise.race([promise, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(Error(message)), milliseconds);
+    })]);
+  } finally { clearTimeout(timer); }
+}
+
 function optionsFrom(argv) {
   const options = {};
   for (let index = 0; index < argv.length; index += 2) {
@@ -119,7 +128,7 @@ function watchChild(file, args, options) {
 
 async function stopChild(processInfo) {
   if (processInfo.child.exitCode === null && processInfo.child.signalCode === null) processInfo.child.kill();
-  await Promise.race([processInfo.closed, pause(10000).then(() => { throw Error('Owned test process did not exit'); })]);
+  await deadline(processInfo.closed, 10000, 'Owned test process did not exit');
 }
 
 function assertIdle(status) {
@@ -313,7 +322,7 @@ async function validateInstalledDesktop(directory, environment, temporary, outpu
     assert.equal((await field({ action: 'changePassword', currentPassword: initial, newPassword: changed })).status, 200);
     const stored = JSON.parse(fs.readFileSync(credential, 'utf8'));
     assert.equal(stored.mustChangePassword, false, 'Electron must use the disposable --user-data-dir profile');
-    assert.equal(stored.hash, scryptSync(changed, stored.salt, 64).toString('hex'));
+    assert.equal(stored.hash, scryptSync(changed, stored.salt, 64).toString('hex'), 'Changed test password was not persisted');
     await reload();
     await waitFor(async () => (await body()).includes('开始真实采集'), 'authenticated acquisition UI');
     const status = await waitFor(async () => {
@@ -338,7 +347,7 @@ async function validateInstalledDesktop(directory, environment, temporary, outpu
     assert.equal((await field({ action: 'login', username: 'admin', password: changed })).status, 200);
     // The preload close path invokes the production stop/save/child-exit lifecycle.
     await cdp.evaluate('window.blade.windowControl("close"); true').catch(() => {});
-    await Promise.race([child.closed, pause(25000).then(() => { throw Error('Installed app did not close safely'); })]);
+    await deadline(child.closed, 25000, 'Installed app did not close safely');
     await waitFor(async () => (await executableProcesses(serviceExe)).length === 0, 'no acquisition service orphan after UI exit', 15000);
     safelyClosed = true;
     return { isolatedCredentials: true, login: true, requiredPasswordChange: true, passwordPersistence: true,
@@ -369,7 +378,7 @@ async function main() {
   fs.mkdirSync(external, { recursive: true });
   const marker = path.join(external, 'EXTERNAL_PYTHON_WAS_USED');
   const fakePython = path.join(external, 'python.cmd');
-  fs.writeFileSync(fakePython, `@echo off\r\necho forbidden>${JSON.stringify(marker)}\r\nexit /b 91\r\n`, { flag: 'wx' });
+  fs.writeFileSync(fakePython, `@echo off\r\necho forbidden>"${marker.replaceAll('%', '%%')}"\r\nexit /b 91\r\n`, { flag: 'wx' });
   const sitecustomize = path.join(external, 'sitecustomize.py');
   fs.writeFileSync(sitecustomize, 'raise RuntimeError("BladeVMS must not import external sitecustomize")\n', { flag: 'wx' });
   const sentinelBefore = [fakePython, sitecustomize].map(file => digest(fs.readFileSync(file)));
