@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { FieldLoginPanel, FieldRecordingList, FieldServicePanel, FieldWaveChart } from "./field-desktop";
+import { FieldLoginPanel, FieldPasswordPanel, FieldRecordingList, FieldServicePanel, FieldStartDialog, FieldWaveChart } from "./field-desktop";
 import { fieldCanStart, fieldDate, fieldIsActive, fieldSampleX, validateFieldConfig, type FieldStatus, type FieldWaveform } from "./field-types";
 
 let checks = 0;
@@ -93,5 +93,29 @@ check("记录契约使用 samples / endedAt / status，异常不能显示完成"
   assert.ok(html.includes("1,200"));
   assert.ok(html.includes("异常记录"));
   assert.ok(!html.includes("已完成"));
+});
+check("采集确认正文与操作区分离，三个安全条件仍须逐项确认", () => {
+  const html = renderToStaticMarkup(<FieldStartDialog config={{ name: "窗口适配测试", deviceIp: "192.168.1.2", hostIp: "192.168.1.3", object: "", turbine: "", point: "" }} busy={false} error="" onClose={() => {}} onStart={() => {}} />);
+  assert.ok(html.includes('class="field-confirm-body"'));
+  assert.equal((html.match(/type="checkbox"/g) || []).length, 3);
+  assert.ok(!html.includes('checked=""'));
+  assert.ok(html.includes('</label></div><div class="field-form-actions">'), "操作区必须位于可滚动的确认正文外");
+  assert.match(html, /<button[^>]*disabled=""[^>]*>[^]*?确认并开始采集<\/button>/);
+  assert.ok(html.includes('aria-label="关闭弹窗"'));
+});
+check("窄屏记录表保留所有列并提供键盘可聚焦的横向滚动区域", () => {
+  const html = renderToStaticMarkup(<FieldRecordingList recordings={[{ id: "long", name: "户外叶片采集任务".repeat(10), samples: 500000, sampleRate: 218750, status: "incomplete" }]} busy={false} onSelect={() => {}} />);
+  assert.ok(html.includes('role="region"'));
+  assert.ok(html.includes('tabindex="0"'));
+  assert.ok(html.includes("可横向滚动查看所有列"));
+  for (const column of ["任务 / 对象", "开始时间", "原始点数", "采样率", "保存状态", "操作"]) assert.ok(html.includes(column));
+  assert.ok(html.includes("查看预览"));
+});
+check("低高度密码页保留三项输入、保存及退出登录入口", () => {
+  const html = renderToStaticMarkup(<FieldPasswordPanel mandatory busy={false} error="" onSave={async () => {}} onCancel={() => {}} />);
+  assert.equal((html.match(/type="password"/g) || []).length, 3);
+  assert.equal((html.match(/minLength="12"/g) || []).length, 2);
+  assert.ok(html.includes("保存新密码"));
+  assert.ok(html.includes("退出登录"));
 });
 console.log(`Field desktop presentation checks: ${checks} passed (static/pure only).`);

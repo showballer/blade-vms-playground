@@ -12,7 +12,11 @@ on:
       - 'vendor/polytec/**'
       - 'scripts/*windows*'
       - 'scripts/test-field-service.cjs'
+      - 'scripts/test-field-window.cjs'
+      - 'scripts/test-local-auth.cjs'
+      - 'package.json'
       - 'package-lock.json'
+      - 'WINDOWS_TEST_GUIDE.md'
 
 permissions:
   contents: read

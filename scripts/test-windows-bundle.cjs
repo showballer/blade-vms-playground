@@ -343,6 +343,32 @@ async function validateInstalledDesktop(directory, environment, temporary, outpu
       'renderer polling updates the ready start control');
     const screenshot = await cdp.send('Page.captureScreenshot', { format: 'png' });
     fs.writeFileSync(path.join(output, 'installed-windows-acquisition-idle.png'), Buffer.from(screenshot.data, 'base64'));
+    const viewports = [[1366, 768, 1], [1280, 720, 1], [1024, 600, 1], [853, 480, 1.5]];
+    for (const [width, height, scale] of viewports) {
+      await cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: scale, mobile: false });
+      await pause(200);
+      for (const screenName of ['数据采集', '设备与服务', '本机记录']) {
+        await cdp.evaluate(`[...document.querySelectorAll('.field-sidebar button')].find(b=>b.textContent.includes(${JSON.stringify(screenName)})).click()`);
+        await pause(300);
+        const layout = await cdp.evaluate(`(() => {
+          const main = document.querySelector('.field-content');
+          const app = document.querySelector('.field-app');
+          main.scrollTop = main.scrollHeight;
+          return { width: innerWidth, height: innerHeight, documentWidth: document.documentElement.scrollWidth,
+            appHeight: app.getBoundingClientRect().height, mainHeight: main.clientHeight,
+            overflowY: getComputedStyle(main).overflowY, scrollHeight: main.scrollHeight, scrollTop: main.scrollTop };
+        })()`);
+        assert.ok(layout.documentWidth <= layout.width + 1, `Horizontal page clipping: ${screenName} at ${width}x${height}`);
+        assert.ok(layout.appHeight <= layout.height + 1 && layout.mainHeight > 60, `Unbounded application height: ${screenName}`);
+        assert.ok(['auto', 'scroll'].includes(layout.overflowY), 'Main content must own vertical scrolling');
+        if (layout.scrollHeight > layout.mainHeight + 1) assert.ok(layout.scrollTop > 0, 'Main content cannot scroll to lower controls');
+        if (screenName === '数据采集') {
+          const shot = await cdp.send('Page.captureScreenshot', { format: 'png' });
+          fs.writeFileSync(path.join(output, `installed-${width}x${height}-scroll-bottom.png`), Buffer.from(shot.data, 'base64'));
+        }
+      }
+    }
+    await cdp.send('Emulation.clearDeviceMetricsOverride');
     assert.equal((await field({ action: 'logout' })).status, 200);
     assert.equal((await field({ action: 'login', username: 'admin', password: initial })).status, 401);
     assert.equal((await field({ action: 'login', username: 'admin', password: changed })).status, 200);
@@ -353,7 +379,8 @@ async function validateInstalledDesktop(directory, environment, temporary, outpu
     safelyClosed = true;
     return { isolatedCredentials: true, login: true, requiredPasswordChange: true, passwordPersistence: true,
       serviceReady: true, dllAvailable: true, startControlEnabled: true, displayedSamples: 0,
-      hardwareTouched: false, safeAppClose: true, noServiceOrphan: true };
+      hardwareTouched: false, safeAppClose: true, noServiceOrphan: true,
+      responsiveViewports: viewports, responsiveScreens: 3 };
   } finally {
     cdp?.close();
     if (!safelyClosed) {

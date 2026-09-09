@@ -45,7 +45,7 @@ const blankConfig: FieldConfig = { deviceIp: "", hostIp: "", name: "", object: "
 
 function FieldTitlebar() {
   return <div className="field-titlebar">
-    <div><Activity size={14} /><span>BladeVMS</span><span className="field-title-divider" />旋转叶片测振与损伤检测系统</div>
+    <div><Activity size={14} /><span>BladeVMS</span><span className="field-title-divider" /><span className="field-title-description">旋转叶片测振与损伤检测系统</span></div>
     <div className="field-window-controls">
       <button aria-label="最小化" onClick={() => window.blade?.windowControl("minimize")}><Minus size={14} /></button>
       <button aria-label="最大化或还原" onClick={() => window.blade?.windowControl("maximize")}><Square size={11} /></button>
@@ -81,7 +81,7 @@ export function FieldLoginPanel({ busy, error, available, onLogin }: {
   </main>;
 }
 
-function FieldPasswordPanel({ mandatory, busy, error, onSave, onCancel }: {
+export function FieldPasswordPanel({ mandatory, busy, error, onSave, onCancel }: {
   mandatory: boolean; busy: boolean; error: string;
   onSave: (currentPassword: string, newPassword: string) => Promise<void>;
   onCancel: () => void;
@@ -170,17 +170,17 @@ export function FieldServicePanel({ status, busy, onAction }: {
   </section>;
 }
 
-function FieldStartDialog({ config, busy, error, onClose, onStart }: {
+export function FieldStartDialog({ config, busy, error, onClose, onStart }: {
   config: FieldConfig; busy: boolean; error: string; onClose: () => void; onStart: () => void;
 }) {
   const [laser, setLaser] = useState(false), [target, setTarget] = useState(false), [capture, setCapture] = useState(false);
   return <Dialog title="开始真实采集前确认" onClose={() => { if (!busy) onClose(); }}>
-    <div className="field-confirm"><p className="field-notice warning"><AlertTriangle size={17} />此操作会向真实设备发送控制指令。请先确认现场激光安全、设备状态和网卡配置。</p>
+    <div className="field-confirm"><div className="field-confirm-body"><p className="field-notice warning"><AlertTriangle size={17} />此操作会向真实设备发送控制指令。请先确认现场激光安全、设备状态和网卡配置。</p>
       <dl className="field-details"><div><dt>任务</dt><dd>{config.name}</dd></div><div><dt>设备 IP</dt><dd>{config.deviceIp}</dd></div><div><dt>本机设备网卡 IP</dt><dd>{config.hostIp}</dd></div></dl>
       <label><input type="checkbox" checked={target} disabled={busy} onChange={(event) => setTarget(event.target.checked)} /><span>允许将设备 DAQ 数据目标 IP 修改为 <b>{config.hostIp}</b>，并确认这不是其他电脑正在使用的采集连接。</span></label>
       <label><input type="checkbox" checked={laser} disabled={busy} onChange={(event) => setLaser(event.target.checked)} /><span>已确认现场人员与光路安全，允许开启设备激光。本次采集独占激光控制；停止时会尝试关闭激光，异常时须在现场确认设备状态。</span></label>
       <label><input type="checkbox" checked={capture} disabled={busy} onChange={(event) => setCapture(event.target.checked)} /><span>允许开始采集 CH1 振动速度及 RSSI，并将原始数据保存到本机。</span></label>
-      {error && <p className="field-error" role="alert">{error}</p>}
+      {error && <p className="field-error" role="alert">{error}</p>}</div>
       <div className="field-form-actions"><Button disabled={busy} onClick={onClose}>取消</Button><Button variant="primary" disabled={busy || !target || !laser || !capture} onClick={onStart}>{busy ? <LoaderCircle size={15} className="spin" /> : <Play size={15} />}确认并开始采集</Button></div>
     </div>
   </Dialog>;
@@ -190,7 +190,7 @@ export function FieldRecordingList({ recordings, selectedId, busy, onSelect }: {
   recordings: FieldRecording[]; selectedId?: string; busy: boolean; onSelect: (id: string) => void;
 }) {
   if (!recordings.length) return <div className="field-recordings-empty"><HardDrive size={28} /><h3>还没有真实采集记录</h3><p>完成一次采集后，记录将保存在本机。不会预置演示任务或模拟结果。</p></div>;
-  return <div className="field-table-scroll"><table className="field-table"><thead><tr><th>任务 / 对象</th><th>开始时间</th><th>原始点数</th><th>采样率</th><th>保存状态</th><th>操作</th></tr></thead><tbody>{recordings.map((recording) => <tr key={recording.id} className={selectedId === recording.id ? "selected" : ""}><td><strong>{recording.name}</strong><small>{[recording.object, recording.turbine, recording.point].filter(Boolean).join(" / ") || "未填写对象信息"}</small></td><td>{timeOf(recording.startedAt)}</td><td className="mono">{count(recording.samples)}</td><td className="mono">{recording.sampleRate ? `${count(recording.sampleRate)} Hz` : "未知"}</td><td><span className={`field-badge ${recording.status === "complete" ? "green" : recording.status === "error" ? "red" : "amber"}`}>{recording.status === "complete" ? "已完成" : recording.status === "error" ? "异常记录" : "采集中 / 未完整结束"}</span></td><td><Button disabled={busy} onClick={() => onSelect(recording.id)}>查看预览</Button></td></tr>)}</tbody></table></div>;
+  return <div className="field-table-scroll" role="region" aria-label="本机采集记录，可横向滚动查看所有列" tabIndex={0}><table className="field-table"><thead><tr><th>任务 / 对象</th><th>开始时间</th><th>原始点数</th><th>采样率</th><th>保存状态</th><th>操作</th></tr></thead><tbody>{recordings.map((recording) => <tr key={recording.id} className={selectedId === recording.id ? "selected" : ""}><td><strong>{recording.name}</strong><small>{[recording.object, recording.turbine, recording.point].filter(Boolean).join(" / ") || "未填写对象信息"}</small></td><td>{timeOf(recording.startedAt)}</td><td className="mono">{count(recording.samples)}</td><td className="mono">{recording.sampleRate ? `${count(recording.sampleRate)} Hz` : "未知"}</td><td><span className={`field-badge ${recording.status === "complete" ? "green" : recording.status === "error" ? "red" : "amber"}`}>{recording.status === "complete" ? "已完成" : recording.status === "error" ? "异常记录" : "采集中 / 未完整结束"}</span></td><td><Button disabled={busy} onClick={() => onSelect(recording.id)}>查看预览</Button></td></tr>)}</tbody></table></div>;
 }
 
 export function FieldDesktopApp() {
@@ -284,6 +284,15 @@ export function FieldDesktopApp() {
       if (action !== "openDataDirectory") setNotice(action === "restartService" ? "已请求重启采集服务，请查看最新服务状态。" : "配置已保存，请确认服务与 SDK 状态。配置不会自动开启激光或采集。");
     });
   }
+  async function stopAcquisition() {
+    await operate("stop", async () => {
+      await fieldCall({ action: "stop" });
+      const stopped = await fieldCall<FieldStatus>({ action: "status" });
+      setStatus(stopped); await refreshRecordings();
+      if (stopped.state === "error" || stopped.recording?.status === "error") throw new Error(`${stopped.error || stopped.recording?.error || "本次记录异常"}。请在现场确认激光已关闭，并检查本机数据，不能将异常记录视为完整采集。`);
+      setNotice("已执行停止采集并尝试关闭激光，请在现场核对设备状态、记录保存状态与原始点数。");
+    });
+  }
   const active = fieldIsActive(status);
   const ready = fieldCanStart(status);
   const waveform = status?.waveform;
@@ -296,6 +305,7 @@ export function FieldDesktopApp() {
       await operate("login", async () => { clearSession(); const next = await fieldCall<FieldSession>({ action: "login", username, password }); setSession(next); });
     }} /> : session.mustChangePassword || changingPassword ? <main className="field-password-shell"><FieldPasswordPanel mandatory={session.mustChangePassword} busy={Boolean(busy)} error={error} onSave={savePassword} onCancel={() => { if (session.mustChangePassword) void logout(); else { setChangingPassword(false); setError(""); } }} /></main> : <>
       <header className="field-header"><div className="field-brand"><div className="field-brand-icon"><Activity size={19} /></div><span>BladeVMS <small>现场采集工作台</small></span></div><div className="field-header-right"><span className="field-local-label"><HardDrive size={13} />本机运行 · 无需互联网</span><span className="field-header-user"><span className="field-avatar">A</span>{session.user.name || session.user.username}</span><Button variant="ghost" disabled={Boolean(busy) || active} onClick={() => setChangingPassword(true)} aria-label="修改本机密码"><LockKeyhole size={15} /></Button><Button variant="ghost" disabled={Boolean(busy) || active} onClick={() => void logout()} title={active ? "请先停止并保存采集" : "退出本机账号"}><LogOut size={15} />退出</Button></div></header>
+      {active && <div className="field-live-controls" aria-label="采集安全控制"><p><strong>{status ? stateLabels[status.state] : "采集服务运行中"}</strong> · 滚动页面或切换栏目后，仍可在此停止并保存。</p><Button type="button" variant="danger" disabled={Boolean(busy) || status?.state === "stopping"} onClick={() => void stopAcquisition()}>{busy === "stop" ? <LoaderCircle className="spin" size={15} /> : <Square size={13} />}停止并保存</Button></div>}
       <div className="field-workspace"><aside className="field-sidebar"><p>现场作业</p><button className={screen === "acquisition" ? "active" : ""} onClick={() => setScreen("acquisition")}><Activity size={17} />数据采集</button><button className={screen === "recordings" ? "active" : ""} onClick={() => { setScreen("recordings"); void operate("recordings", refreshRecordings); }}><HardDrive size={17} />本机记录</button><button className={screen === "service" ? "active" : ""} onClick={() => setScreen("service")}><Settings size={17} />设备与服务</button><p>算法扩展</p><button disabled title="等待 Python 算法接口，不提供演示结果"><Radio size={17} />旋转测振<span>待接入</span></button><button disabled title="等待 Python 算法接口，不提供演示结果"><AudioLines size={17} />信号处理<span>待接入</span></button><div className="field-sidebar-note"><CircleHelp size={17} /><strong>数据边界</strong><span>当前接入为 CH1 振动速度及 RSSI 回波强度，不是双路振动信号。</span></div></aside>
         <main className="field-content"><div className="field-page-heading"><div><span className="field-eyebrow">WINDOWS · FIELD WORKSTATION</span><h1>{screen === "acquisition" ? "数据采集" : screen === "recordings" ? "本机采集记录" : "设备与本机服务"}</h1><p>{screen === "acquisition" ? "从真实设备读取，原始数据由本机采集服务独立保存。" : screen === "recordings" ? "查看真实采集任务与有限波形预览，完整数据保存在本机目录。" : "准备好设备驱动和采集服务后，即可在无网环境中工作。"}</p></div><span className={`field-badge ${status?.state === "acquiring" ? "green" : status?.state === "error" ? "red" : ""}`}><span className="field-status-dot" />{status ? stateLabels[status.state] : "读取状态中"}</span></div>
           {(error || pollError) && <div className="field-error field-global-message" role="alert"><AlertTriangle size={17} /><span>{error || pollError}</span></div>}
@@ -306,9 +316,9 @@ export function FieldDesktopApp() {
               <form onSubmit={(event) => { event.preventDefault(); const invalid = validateFieldConfig(config); if (invalid) { setError(invalid); return; } setError(""); setConfirmStart(true); }}><fieldset disabled={Boolean(busy) || active} className="field-config-grid">{([
                 ["name", "任务名称", "填写本次采集任务名称", true], ["object", "测量对象", "如叶片或试件编号", false], ["turbine", "设备 / 机组", "填写设备或机组编号", false], ["point", "测点", "填写测点名称", false], ["deviceIp", "设备 IP", "设备 IPv4 地址", true], ["hostIp", "本机设备网卡 IP", "连接设备的本机 IPv4 地址", true],
               ] as const).map(([key, label, placeholder, required]) => <label key={key}>{label}{required && <span className="field-required"> *</span>}<input value={config[key]} placeholder={placeholder} required={required} maxLength={key.endsWith("Ip") ? 15 : 120} onChange={(event) => setConfig((previous) => ({ ...previous, [key]: event.target.value }))} /></label>)}</fieldset>
-                <div className="field-acquisition-actions"><p><ShieldCheck size={14} />开始前将确认目标 IP、激光与数据保存。</p><Button type="button" variant="danger" disabled={Boolean(busy) || !active || status?.state === "stopping"} onClick={() => void operate("stop", async () => { await fieldCall({ action: "stop" }); const stopped = await fieldCall<FieldStatus>({ action: "status" }); setStatus(stopped); await refreshRecordings(); if (stopped.state === "error" || stopped.recording?.status === "error") throw new Error(`${stopped.error || stopped.recording?.error || "本次记录异常"}。请在现场确认激光已关闭，并检查本机数据，不能将异常记录视为完整采集。`); setNotice("已执行停止采集并尝试关闭激光，请在现场核对设备状态、记录保存状态与原始点数。"); })}>{busy === "stop" ? <LoaderCircle className="spin" size={15} /> : <Square size={13} />}停止并保存</Button><Button type="submit" variant="primary" disabled={Boolean(busy) || !ready || Boolean(pollError)}><Play size={15} />开始真实采集</Button></div>
+                <div className="field-acquisition-actions"><p><ShieldCheck size={14} />开始前将确认目标 IP、激光与数据保存。</p><Button type="button" variant="danger" disabled={Boolean(busy) || !active || status?.state === "stopping"} onClick={() => void stopAcquisition()}>{busy === "stop" ? <LoaderCircle className="spin" size={15} /> : <Square size={13} />}停止并保存</Button><Button type="submit" variant="primary" disabled={Boolean(busy) || !ready || Boolean(pollError)}><Play size={15} />开始真实采集</Button></div>
                 {active && <p className="field-inline-help">本次采集独占激光控制。停止时会尝试关闭激光并保存数据；异常时须在现场确认激光状态。</p>}
-                {!ready && !active && <p className="field-inline-help">尚不能开始采集，请在右侧确认服务已就绪且设备 DLL 已配置。</p>}
+                {!ready && !active && <p className="field-inline-help">尚不能开始采集，请在“本机采集服务”中确认服务已就绪且设备 DLL 已配置。</p>}
               </form>
             </section>
             <section className="field-card field-wave-card"><div className="field-section-heading"><div><h2>CH1 · 振动速度</h2><p>实时显示抽样窗口；完整原始数据由 Python 服务保存。</p></div><span className="field-legend"><i />m/s</span></div><FieldWaveChart waveform={waveform} /><div className="field-chart-foot"><span>窗口点数 {count(waveform?.values.length)}</span><span>显示步长 {waveform?.sampleStride ? `${count(waveform.sampleStride)} 个样本` : waveform?.values.length ? "1 个样本" : "—"}</span><span>未接入转速 / 相位 / 第二路振动</span></div></section>
@@ -320,7 +330,7 @@ export function FieldDesktopApp() {
           {screen === "recordings" && <><section className="field-card"><div className="field-section-heading"><div><h2>真实采集记录</h2><p>未完整结束的记录保留状态标记，请勿视为完整测量。</p></div><div className="field-form-actions"><Button disabled={Boolean(busy)} onClick={() => void serviceAction("openDataDirectory")}><FolderOpen size={14} />打开数据目录</Button><Button disabled={Boolean(busy)} onClick={() => void operate("recordings", refreshRecordings)}><RefreshCw size={14} />刷新列表</Button></div></div>{recordingsLoaded ? <FieldRecordingList recordings={recordings} busy={Boolean(busy)} selectedId={selected?.recording.id} onSelect={(id) => void operate("recording", async () => { const data = await fieldCall<FieldRecordingDetail>({ action: "recording", id }); setSelected(data); })} /> : <p className="field-notice">记录列表尚未读取成功，请确认采集服务可用后刷新。服务不可用不代表本机没有保存数据。</p>}</section>
             {selected && <section className="field-card field-recording-preview"><div className="field-section-heading"><div><h2>{selected.recording.name} · 波形预览</h2><p>{timeOf(selected.recording.startedAt)} · 完整记录 {count(selected.recording.samples)} 点 · 这里只展示有限预览。</p></div><Button variant="ghost" onClick={() => setSelected(null)}>关闭预览</Button></div>{selected.recording.error && <p className="field-error">{selected.recording.error}</p>}<FieldWaveChart waveform={selected.waveform} /><p className="field-subtext">此处不是完整波形回放或算法分析。完整文件请从数据目录读取。</p></section>}
           </>}
-          {screen === "service" && <div className="field-settings-grid"><FieldServicePanel status={status} busy={Boolean(busy)} onAction={(action) => void serviceAction(action)} /><section className="field-card"><div className="field-section-heading"><h2>Windows 实机联调检查</h2></div><ol className="field-checklist"><li><strong>安装厂商驱动与运行库</strong><p>使用厂商提供的 Windows x64 安装包，确认设备能被厂商工具正常读取。</p></li><li><strong>配置本机采集程序和 DLL</strong><p>正式交付可随安装包内置。当前缺失时手动选择，不会切换为模拟设备。</p></li><li><strong>确认设备网络与安全</strong><p>填写设备 IP 与本机设备网卡 IP，检查网线、防火墙和激光作业安全。</p></li><li><strong>采集、停止并核对保存结果</strong><p>检查采样率、原始点数、RSSI 与超量程状态，再从本机目录核对完整数据。</p></li></ol><div className="field-notice">本机账号独立于 Web 账号。集中管理和联网回传需要另外配置管理服务器；本页面不代表新采集记录已自动上传。</div></section></div>}
+          {screen === "service" && <div className="field-settings-grid"><FieldServicePanel status={status} busy={Boolean(busy)} onAction={(action) => void serviceAction(action)} /><section className="field-card"><div className="field-section-heading"><h2>Windows 实机联调检查</h2></div><ol className="field-checklist"><li><strong>安装完整 Windows x64 工作台</strong><p>1.2.0 安装包内置 Python 运行环境、采集服务和设备 DLL，并检测 VC++ 运行库；无需另装 Python。若安装器提示重启，请先重启电脑。</p></li><li><strong>确认内置服务与 DLL 已就绪</strong><p>打开工作台会自动启动本机服务，但不会连接设备或开启激光。手动选择服务或 DLL 仅用于同事联调替换，不是首次使用的必需步骤。</p></li><li><strong>确认设备网络与安全</strong><p>填写设备 IP 与本机设备网卡 IP，检查网线、防火墙和激光作业安全。厂商要求的额外驱动按设备说明准备。</p></li><li><strong>采集、停止并核对保存结果</strong><p>检查采样率、原始点数、RSSI 与超量程状态，再从本机目录核对完整数据。页面高度不足时可纵向滚动；采集期间顶部保留停止并保存入口。</p></li></ol><div className="field-notice">本机账号独立于 Web 账号。集中管理和联网回传需要另外配置管理服务器；本页面不代表新采集记录已自动上传。</div></section></div>}
         </main>
       </div><footer className="field-statusbar"><span><span className={`field-status-dot ${status?.service.state === "ready" ? "green" : ""}`} />{status ? serviceLabels[status.service.state] : "正在读取本机状态"}</span><span>CH1 速度 + RSSI · 原始数据本机保存</span><span>Windows x64 · 无模拟采集</span></footer>
     </>}

@@ -1,9 +1,10 @@
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, screen } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { createLocalAuth } = require('./local-auth.cjs');
 const { createFieldService, failure } = require('./field-service.cjs');
+const { initialWindowBounds } = require('./field-window.cjs');
 
 let win, auth, service, config = {}, quitting = false, closing = false;
 let settingsFile, dataDir, entryUrl;
@@ -131,7 +132,8 @@ else {
       dialog.showErrorBox('无法打开现场工作台', '本机凭证、设置或数据目录不可用。未覆盖已有数据、未重置管理员密码。请检查用户目录权限和文件完整性。');
       quitting = true; app.quit(); return;
     }
-    win = new BrowserWindow({ width: 1520, height: 1000, minWidth: 1000, minHeight: 700,
+    const workArea = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
+    win = new BrowserWindow({ ...initialWindowBounds(workArea),
       title: 'BladeVMS 现场采集工作台', frame: false, backgroundColor: '#F5F7FA',
       webPreferences: { preload: path.join(__dirname, 'field-preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
     entryUrl = process.env.BLADE_DEV_URL === 'http://127.0.0.1:5210'
