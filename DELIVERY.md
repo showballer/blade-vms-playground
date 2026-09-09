@@ -6,6 +6,15 @@
 
 交付说明与现场步骤见 [WINDOWS_TEST_GUIDE.md](WINDOWS_TEST_GUIDE.md)。自动化结果以 Windows CI 及随包校验报告为准；没有真实硬件波形、UDP 丢包或长期吞吐通过的声明。以下 1.1.0/1.0 内容保留为历史记录。
 
+### 1.2.0 本次软件侧验证结果
+
+- 安装包源码提交：`892561083f81b0a37c2676df231d6007110227e9`；[Windows 构建与安装验收](https://github.com/showballer/blade-vms-playground/actions/runs/34319408322) 通过，使用 Windows Server 2022 x64 构建环境。不是已在全部 Windows 10/11 用户电脑验收的声明。
+- 本机账号、服务生命周期、窗口尺寸及页面契约共 47 项检查通过，Python 测试 29 项通过，TypeScript 检查和生产构建通过。
+- Windows 完整包通过 7 组集成检查：内置 Python/SDK 自检与鉴权、无系统 Python 搜索路径启动、模拟 Python/Conda/venv 环境污染、中文带空格路径安装、真实已安装客户端登录与首次改密、环境保留及卸载。实际已有 Python 3.12.10 的版本、依赖与环境/文件关联检查保持一致。
+- 安装后的客户端检查数据采集、设备与服务、本机记录 3 个页面，在 1366×768、1280×720、1024×600、853×480 视口均可纵向滚动且无整页横向挤出。另在 macOS 原生 Electron 中使用明确测试服务，通过 36 项窗口/150% 页面缩放检查；覆盖登录、改密、确认弹窗、采集期间常驻停止入口及切换栏目。
+- 实际 Windows 报告与截图保存在本地 `artifacts/windows-bundle-smoke-final/`；原生布局检查在 `artifacts/field-responsive-smoke/`，可用 `npm run test:field-responsive` 复现。布局测试不启动真实设备服务，也不调用真实采集。
+- 未覆盖：真实 IVS-500 硬件、干净 Windows 系统、实际安装的 Conda/32 位 Python、全部系统 DPI/多屏组合、长期采集/网络丢包与断电恢复。设备联调必须由现场同事按交付说明完成；软件测试没有自动开启激光或采集。
+
 ## 桌面 1.1.0 更新（2026-09-09）
 
 Windows EXE 已切换为真实现场工作台：本机 admin 与首次改密、无网登录、Python 进程托管、HTTP/WS 接入、原始分块与 SQLite 索引；移除 EXE 离线演示入口。缺失 Python 服务/厂商 DLL 时仅提示错误，不生成模拟数据。Windows 服务需在实机构建/选择后联调，当前 Mac 构建的壳包不包含 Windows Python 二进制或厂商驱动。具体边界和步骤见 [FIELD_INTEGRATION.md](FIELD_INTEGRATION.md)。下文是 1.0 业务交付与验证历史，不代表 1.1 已完成设备或算法验收。
