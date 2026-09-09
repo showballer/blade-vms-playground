@@ -23,6 +23,7 @@ def self_check() -> dict:
                 "pythonVersion": sys.version.split()[0], "runtimePrefix": sys.prefix,
                 "dllPath": str(dll), "dllLoaded": True,
                 "sdkSymbols": sum(name.startswith("Poly") for name in vars(api)),
+                "sdkSymbolNames": sorted(name for name in vars(api) if name.startswith("Poly")),
                 "hardwareTouched": False}
     finally:
         if receiver._dll_directory is not None:

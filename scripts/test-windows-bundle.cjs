@@ -1,6 +1,6 @@
 // Hardware-free Windows x64 release gate. This script NEVER calls /start or an SDK function.
 // Node 22+: node scripts/test-windows-bundle.cjs --resources <win-unpacked/resources>
-//          --installer <BladeVMS-Setup-1.2.0-x64.exe> [--output <report-directory>]
+//          --installer <BladeVMS-Setup-1.3.0-x64.exe> [--output <report-directory>]
 // The installer test changes only a disposable CI user's BladeVMS installation. Do not run
 // against a real user's existing installation. Outside CI, opt in with BLADE_ALLOW_INSTALL_SMOKE=1.
 'use strict';
@@ -171,7 +171,10 @@ async function validateService(resources, environment, caseDirectory) {
   assert.equal(diagnostic.frozen, true, 'Must use bundled Python, not system Python');
   assert.equal(path.resolve(diagnostic.executable).toLowerCase(), executable.toLowerCase());
   assert.equal(diagnostic.dllLoaded, true);
-  assert.equal(diagnostic.sdkSymbols, 18);
+  assert.equal(diagnostic.sdkSymbols, 23);
+  for (const symbol of ['PolyHasCommand', 'PolyItemListGetAvailableItems', 'PolyItemListSetCurrentItem', 'PolySendGetDevInfoRange', 'PolySendGetInt16']) {
+    assert.ok(diagnostic.sdkSymbolNames.includes(symbol), `Missing device configuration binding: ${symbol}`);
+  }
   assert.equal(diagnostic.hardwareTouched, false);
   assert.match(diagnostic.pythonVersion, /^3\./);
 
