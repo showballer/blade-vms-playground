@@ -61,12 +61,22 @@ app.on('browser-window-created', (_event, win) => {
   const wc = win.webContents;
   wc.setBackgroundThrottling(false);
   wc.once('did-finish-load', async () => {
-    const js = code => wc.executeJavaScript(code, true);
+    const js = async code => {
+      // Preserve the actual renderer error without logging expressions that can
+      // contain the test-only login password.
+      const result = await wc.executeJavaScript(`(async () => { try { return { value: await (${code}) }; } catch (error) { return { error: error.message }; } })()`, true);
+      if (result.error) throw Error('Renderer QA: ' + result.error);
+      return result.value;
+    };
     const body = () => js('document.body.innerText');
     async function waitFor(fn, label) { const end = Date.now() + 12000; while (Date.now() < end) { if (await fn()) return; await pause(70); } throw Error('Timeout: ' + label); }
     const field = options => js(`window.blade.field(${JSON.stringify(options)})`);
     const reload = () => new Promise(resolve => { wc.once('did-finish-load', resolve); wc.reload(); });
-    const click = (text, scope = 'document') => js(`(() => { const b = [...${scope}.querySelectorAll('button')].find(b => !b.disabled && b.textContent.trim() === ${JSON.stringify(text)}); if (!b) throw Error('Button unavailable: '+${JSON.stringify(text)}); b.click(); })()`);
+    const click = async (text, scope = 'document') => {
+      // Controls render before the initial status request completes. Windows CI
+      // must wait for the same enabled state a user needs, not just button text.
+      await waitFor(() => js(`(() => { const root = ${scope}; const b = root && [...root.querySelectorAll('button')].find(b => !b.disabled && b.textContent.trim() === ${JSON.stringify(text)}); if (!b) return false; b.click(); return true; })()`), 'enabled button: ' + text);
+    };
     const set = (selector, value) => js(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); const setter = Object.getOwnPropertyDescriptor(el.tagName === 'SELECT' ? HTMLSelectElement.prototype : HTMLInputElement.prototype, 'value').set; setter.call(el, ${JSON.stringify(value)}); el.dispatchEvent(new Event(el.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true })); })()`);
     async function check(label, fn) { await fn(); report.checks.push(label); console.log('PASS '+label); }
     const capture = async name => { fs.writeFileSync(path.join(output, name+'.png'), (await wc.capturePage()).toPNG()); };
