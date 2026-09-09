@@ -1,0 +1,16 @@
+# Direct dependency pins verified against project-owned PyPI release pages, 2026-09-09.
+fastapi==0.137.2
+uvicorn==0.52.4
+websockets==15.0.1
+# Resolved runtime dependencies verified by an isolated Python 3.12 install + tests.
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.15.1
+click==8.5.0
+h11==0.16.0
+idna==3.19
+pydantic==2.13.5
+pydantic-core==2.46.5
+starlette==1.6.0
+typing-extensions==4.16.0
+typing-inspection==0.4.4

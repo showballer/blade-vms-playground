@@ -2,7 +2,9 @@
 
 以 `../原型/旋转叶片测振系统-双通道原型.dc.html` 和 `../原型/原型-截图/` 的 18 张截图为依据。
 
-本项目包含 Next.js Web 管理端与业务 API、Electron Windows 现场工作台、共享 React UI。**Python 算法与采集设备未接入**；业务数据真实存入独立 MySQL 库，原始波形与截取保留已保存采样值，算法图表与算法结果明确标注为演示。不要将演示数值用于工程判断。
+本项目包含 Next.js Web 管理端与业务 API、Electron Windows 现场工作台、共享 React UI。**桌面 1.1.0 已切换为真实现场采集入口**：本机 admin、首次改密、Python 进程托管、SDK 接入适配、SQLite 索引及原始分块落盘；缺少 Windows 服务包或厂商 DLL 时明确提示，不回退演示数据。实机设备联调与算法仍待完成。
+
+**最新 Windows 使用、账号边界和统一打包步骤以 [FIELD_INTEGRATION.md](FIELD_INTEGRATION.md) 为准。** 下文保留的在线/离线业务工作区、算法演示及原型模块说明是 1.0 业务实现记录，并非 1.1 EXE 的现行入口；Web 不变，已有数据不删除。
 
 交付范围、需求覆盖与已知验证限制见 [DELIVERY.md](DELIVERY.md)。Windows 包已交叉构建；Windows 实机与最新宽报告的浏览器打印仍需目标环境验收。
 

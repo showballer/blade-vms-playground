@@ -1,9 +1,10 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
-import { BladeApp } from "@blade/ui";
+import { FieldDesktopApp } from "../../../packages/ui/src/field-desktop";
 import "@blade/ui/styles.css";
+import "../../../packages/ui/src/field-styles.css";
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <BladeApp platform="desktop" />
+    <FieldDesktopApp />
   </React.StrictMode>,
 );

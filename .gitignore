@@ -9,3 +9,11 @@ release/
 artifacts/
 test-results/
 .DS_Store
+apps/desktop/resources/acquisition/*
+!apps/desktop/resources/acquisition/README.txt
+services/acquisition/build/
+services/acquisition/dist/
+services/acquisition/.venv/
+services/acquisition/.venv-build/
+__pycache__/
+*.pyc

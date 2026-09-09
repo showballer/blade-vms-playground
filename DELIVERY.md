@@ -1,5 +1,9 @@
 # 开发交付说明
 
+## 桌面 1.1.0 更新（2026-09-09）
+
+Windows EXE 已切换为真实现场工作台：本机 admin 与首次改密、无网登录、Python 进程托管、HTTP/WS 接入、原始分块与 SQLite 索引；移除 EXE 离线演示入口。缺失 Python 服务/厂商 DLL 时仅提示错误，不生成模拟数据。Windows 服务需在实机构建/选择后联调，当前 Mac 构建的壳包不包含 Windows Python 二进制或厂商驱动。具体边界和步骤见 [FIELD_INTEGRATION.md](FIELD_INTEGRATION.md)。下文是 1.0 业务交付与验证历史，不代表 1.1 已完成设备或算法验收。
+
 ## 交付范围
 
 本版交付 Web 管理端、业务后端和 Windows 桌面工作台代码，按原型拆分两端。MySQL 只使用独立的 `blade_vms_playground`；不修改其他容器、数据库或业务服务。
