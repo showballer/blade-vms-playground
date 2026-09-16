@@ -1,4 +1,6 @@
 # Direct dependency pins verified against project-owned PyPI release pages, 2026-09-09.
+numpy==2.2.6
+scipy==1.15.3
 fastapi==0.137.2
 uvicorn==0.52.4
 websockets==15.0.1

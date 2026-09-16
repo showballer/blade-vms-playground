@@ -138,10 +138,33 @@ class AcquisitionController:
             status = self.status()
             rate = status["receiver"]["sampleRate"]
             size = min(250_000, max(1, math.ceil(rate * window_ms / 1000))) if rate and window_ms else DISPLAY_LIMIT
-            rows = list(self.rows)[-size:]
+            all_rows = list(self.rows)
+            rows = all_rows[-size:]
+            realtime_rows = all_rows[-4096:]
             origin = self.writer.manifest.get("sampleOrigin") if self.writer else None
         wave = make_wave(rows, rate, origin)
-        return {**status, "waveform": wave}
+        return {**status, "waveform": wave, "realtime": self._realtime_result(realtime_rows, rate)}
+
+    @staticmethod
+    def _realtime_result(rows, rate):
+        values = [row[1] for row in rows]
+        start = rows[0][0] if rows else 0
+        try:
+            from .analysis import realtime_snapshot
+            return realtime_snapshot(values, float(rate) if rate else float("nan"), start)
+        except ImportError:
+            return {"available": False, "sampleRate": rate, "sampleCount": len(values),
+                    "windowSamples": 0, "features": {}, "spectrum": {"frequencies": [], "amplitudes": []},
+                    "warnings": ["当前采集服务缺少 NumPy 实时分析依赖。"]}
+
+    def realtime(self) -> dict:
+        """Return bounded online metrics from a copied tail of the display buffer."""
+        with self.lock:
+            status = self.status()
+            rate = status["receiver"]["sampleRate"]
+            rows = list(self.rows)[-4096:]
+        result = self._realtime_result(rows, rate)
+        return {**status, "realtime": result}
 
     def configure_device(self, request: DeviceRequest):
         if request.action == "set" and (not request.confirmChange or request.key not in WRITABLE):
@@ -274,6 +297,7 @@ def create_app(settings: Settings, receiver_factory=PolytecReceiver) -> FastAPI:
     app = FastAPI(title="BladeVMS Field Acquisition", version="1.0.0", lifespan=lifespan,
                   docs_url=None, redoc_url=None, openapi_url=None)
     app.state.controller = controller
+    analysis_lock = threading.Lock()
     allowed_origins = {f"http://127.0.0.1:{settings.port}", f"http://localhost:{settings.port}"}
     allowed_hosts = {f"127.0.0.1:{settings.port}", f"localhost:{settings.port}"}
 
@@ -299,6 +323,10 @@ def create_app(settings: Settings, receiver_factory=PolytecReceiver) -> FastAPI:
     @app.get("/api/field/frame")
     def frame(window_ms: int | None = Query(default=None, ge=1, le=1000)):
         return controller.frame(window_ms)
+
+    @app.get("/api/field/realtime")
+    def realtime():
+        return controller.realtime()
 
     @app.post("/api/field/device")
     def device(request: DeviceRequest):
@@ -348,6 +376,29 @@ def create_app(settings: Settings, receiver_factory=PolytecReceiver) -> FastAPI:
             raise HTTPException(409, str(exc)) from exc
         except (OSError, ValueError) as exc:
             raise HTTPException(500, f"无法读取波形：{exc}") from exc
+
+    @app.post("/api/field/recordings/{recording_id}/analysis")
+    def recording_analysis(recording_id: str, parameters: dict):
+        # Run in FastAPI's worker pool, outside the acquisition lock. Single job
+        # bounds FFT memory and never blocks the stop-acquisition operation.
+        if not analysis_lock.acquire(blocking=False):
+            raise HTTPException(409, "已有分析运行，请等待完成。")
+        try:
+            try:
+                from .analysis import AnalysisRequest, read_raw, calculate
+            except ImportError as exc:
+                raise HTTPException(503, "当前采集服务缺少 NumPy/SciPy 分析依赖，请更新服务包。") from exc
+            config = AnalysisRequest.model_validate(parameters)
+            values, rate, provenance = read_raw(controller.store, recording_id, config.start, config.end)
+            return calculate(values, rate, config, provenance)
+        except (KeyError, FileNotFoundError) as exc:
+            raise HTTPException(404, "原始记录或分块不存在。") from exc
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(500, f"无法读取原始记录：{exc}") from exc
+        finally:
+            analysis_lock.release()
 
     @app.websocket("/ws/field")
     async def field_socket(socket: WebSocket):

@@ -28,6 +28,17 @@ export type FieldWaveform = {
   missingRssiCount?: number;
   latest?: { velocity: number; rssi: number | null };
 };
+export type FieldRealtime = {
+  available: boolean;
+  sampleRate: number | null;
+  sampleStart?: number;
+  sampleCount: number;
+  windowSamples: number;
+  frequencySpacingHz?: number;
+  features: { mean?: number | null; rms?: number | null; peak?: number | null; peakToPeak?: number | null; dominantHz?: number | null };
+  spectrum: { frequencies: number[]; amplitudes: number[] };
+  warnings: string[];
+};
 export type FieldDeviceSettings = {
   deviceIp: string; readAt: number; source: string; error?: string;
   fields: Record<string, { supported: boolean; writable?: boolean; value?: string | number; options?: (string | number)[]; percent?: number; error?: string }>;
@@ -73,6 +84,7 @@ export type FieldStatus = {
   receiver?: Record<string, unknown>;
   recording?: FieldRecording;
   waveform?: FieldWaveform;
+  realtime?: FieldRealtime;
 };
 export type FieldRequestOptions =
   | { action: "session" | "logout" | "status" | "stop" | "recordings" | "openDataDirectory" | "restartService" | "configureService" | "configureDll" }
@@ -82,6 +94,7 @@ export type FieldRequestOptions =
   | { action: "start"; config: FieldConfig & { confirmLaser: true } }
   | { action: "recording"; id: string }
   | { action: "waveform"; id: string; start?: number; end?: number }
+  | { action: "analysis"; id: string; parameters: Record<string, unknown> }
   | { action: "device"; request: FieldDeviceRequest };
 export type FieldRequest = (options: FieldRequestOptions) => Promise<{ status: number; data: unknown }>;
 

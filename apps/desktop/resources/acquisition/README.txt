@@ -1,13 +1,11 @@
-BladeVMS Windows x64 acquisition service goes in this folder.
+BladeVMS Windows x64 acquisition service is staged in this folder for the validation build.
 
 Expected layout:
   BladeAcquisition.exe
-  _internal/  (all PyInstaller onedir dependencies, if present)
+  _internal/  (all PyInstaller onedir dependencies)
+  vendor/     (DeviceCommunication.dll and accompanying license/source notices)
 
-Build services/acquisition on Windows and copy the COMPLETE onedir output here
-before running npm run package:windows. See FIELD_INTEGRATION.md.
-
-This checkout does not include a prebuilt Python service or vendor drivers.
-The client reports a missing service and never substitutes simulated data.
-For hardware integration, choose the tested BladeAcquisition.exe and vendor
-DeviceCommunication.dll through the desktop Settings page.
+The bundled service includes the Python runtime, NumPy/SciPy real-time preview
+analysis, and the tested vendor SDK payload. It does not install vendor drivers
+or substitute simulated data. For hardware integration, use the service and
+DeviceCommunication.dll shown in the desktop Settings page.

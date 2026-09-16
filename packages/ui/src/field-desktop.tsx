@@ -6,13 +6,16 @@ import {
   Play, Radio, RefreshCw, Settings, ShieldCheck, Square, X,
 } from "lucide-react";
 import { Button, Dialog } from "./common";
+import { Chart } from "./charts";
 import { FieldWaveChart, FieldWaveOptions, FieldRecordingViewer, hasWave, waveBounds, waveLimit, type TimeMode, type VelocityUnit } from "./field-waveform";
 import { FieldDevicePanel, FieldDeviceSnapshot } from "./field-device";
+import { FieldAnalysis } from "./field-analysis";
 import {
   fieldCanStart, fieldDate, fieldIsActive, fieldSampleX, validateFieldConfig,
   type FieldConfig, type FieldRecording, type FieldRecordingDetail,
   type FieldRequest, type FieldRequestOptions, type FieldSession,
   type FieldStatus, type FieldWaveform, type FieldDeviceSettings,
+  type FieldRealtime,
 } from "./field-types";
 
 function fieldBridge(): FieldRequest | undefined {
@@ -132,6 +135,23 @@ export function FieldServicePanel({ status, busy, onAction }: {
   </section>;
 }
 
+function realtimeNumber(value: number | null | undefined, digits = 5) {
+  return typeof value === "number" && Number.isFinite(value) ? Number(value.toPrecision(digits)).toString() : "—";
+}
+
+function FieldRealtimePanel({ realtime }: { realtime?: FieldRealtime }) {
+  const frequencies = realtime?.spectrum.frequencies || [];
+  const amplitudes = realtime?.spectrum.amplitudes || [];
+  const spectrum = frequencies.map((frequency, index) => [frequency, amplitudes[index] || 0]);
+  const features = realtime?.features || {};
+  return <section className="field-card field-realtime-card">
+    <div className="field-section-heading"><div><h2>实时信号处理</h2><p>最近窗口在线计算，仅用于观察；停止后请用完整记录复核。</p></div><span className={`field-badge ${realtime?.available ? "green" : ""}`}>{realtime?.available ? "在线" : "等待数据"}</span></div>
+    <div className="field-realtime-metrics"><div><span>RMS</span><strong>{realtimeNumber(features.rms)}<small>m/s</small></strong></div><div><span>峰值</span><strong>{realtimeNumber(features.peak)}<small>m/s</small></strong></div><div><span>峰峰值</span><strong>{realtimeNumber(features.peakToPeak)}<small>m/s</small></strong></div><div><span>主频</span><strong>{realtimeNumber(features.dominantHz)}<small>Hz</small></strong></div></div>
+    {spectrum.length ? <Chart height={190} label="实时 FFT 频谱" option={{ animation: false, grid: { left: 54, right: 14, top: 16, bottom: 35 }, tooltip: { trigger: "axis" }, xAxis: { type: "value", name: "Hz", axisLabel: { fontSize: 9 } }, yAxis: { type: "value", name: "m/s", axisLabel: { fontSize: 9 } }, series: [{ type: "line", data: spectrum, showSymbol: false, lineStyle: { width: 1.4, color: "#2D6CC0" } }] }} /> : <p className="field-chart-empty compact"><strong>采集至少 64 点后显示实时频谱</strong></p>}
+    <p className="field-chart-foot"><span>窗口 {realtime?.windowSamples || 0} 点</span><span>频率栅格 {realtime?.frequencySpacingHz ? `${realtimeNumber(realtime.frequencySpacingHz)} Hz` : "—"}</span><span>仅 CH1 速度，不含 RSSI</span></p>
+  </section>;
+}
+
 export function FieldStartDialog({ config, busy, error, onClose, onStart }: {
   config: FieldConfig; busy: boolean; error: string; onClose: () => void; onStart: () => void;
 }) {
@@ -162,7 +182,7 @@ export function FieldDesktopApp() {
   const [recordings, setRecordings] = useState<FieldRecording[]>([]);
   const [recordingsLoaded, setRecordingsLoaded] = useState(false);
   const [selected, setSelected] = useState<FieldRecordingDetail | null>(null);
-  const [screen, setScreen] = useState<"acquisition" | "recordings" | "service">("acquisition");
+  const [screen, setScreen] = useState<"acquisition" | "recordings" | "service" | "analysis">("acquisition");
   const [config, setConfig] = useState<FieldConfig>(blankConfig);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
@@ -277,13 +297,14 @@ export function FieldDesktopApp() {
     }} /> : session.mustChangePassword || changingPassword ? <main className="field-password-shell"><FieldPasswordPanel mandatory={session.mustChangePassword} busy={Boolean(busy)} error={error} onSave={savePassword} onCancel={() => { if (session.mustChangePassword) void logout(); else { setChangingPassword(false); setError(""); } }} /></main> : <>
       <header className="field-header"><div className="field-brand"><div className="field-brand-icon"><Activity size={19} /></div><span>BladeVMS <small>现场采集工作台</small></span></div><div className="field-header-right"><span className="field-local-label"><HardDrive size={13} />本机运行 · 无需互联网</span><span className="field-header-user"><span className="field-avatar">A</span>{session.user.name || session.user.username}</span><Button variant="ghost" disabled={Boolean(busy) || active} onClick={() => setChangingPassword(true)} aria-label="修改本机密码"><LockKeyhole size={15} /></Button><Button variant="ghost" disabled={Boolean(busy) || active} onClick={() => void logout()} title={active ? "请先停止并保存采集" : "退出本机账号"}><LogOut size={15} />退出</Button></div></header>
       {active && <div className="field-live-controls" aria-label="采集安全控制"><p><strong>{status ? stateLabels[status.state] : "采集服务运行中"}</strong> · 滚动页面或切换栏目后，仍可在此停止并保存。</p><Button type="button" variant="danger" disabled={Boolean(busy) || status?.state === "stopping"} onClick={() => void stopAcquisition()}>{busy === "stop" ? <LoaderCircle className="spin" size={15} /> : <Square size={13} />}停止并保存</Button></div>}
-      <div className="field-workspace"><aside className="field-sidebar"><p>现场作业</p><button className={screen === "acquisition" ? "active" : ""} onClick={() => setScreen("acquisition")}><Activity size={17} />数据采集</button><button className={screen === "recordings" ? "active" : ""} onClick={() => { setScreen("recordings"); void operate("recordings", refreshRecordings); }}><HardDrive size={17} />本机记录</button><button className={screen === "service" ? "active" : ""} onClick={() => setScreen("service")}><Settings size={17} />设备与服务</button><p>算法扩展</p><button disabled title="等待 Python 算法接口，不提供演示结果"><Radio size={17} />旋转测振<span>待接入</span></button><button disabled title="等待 Python 算法接口，不提供演示结果"><AudioLines size={17} />信号处理<span>待接入</span></button><div className="field-sidebar-note"><CircleHelp size={17} /><strong>数据边界</strong><span>当前接入为 CH1 振动速度及 RSSI 回波强度，不是双路振动信号。</span></div></aside>
-        <main className="field-content"><div className="field-page-heading"><div><span className="field-eyebrow">WINDOWS · FIELD WORKSTATION</span><h1>{screen === "acquisition" ? "数据采集" : screen === "recordings" ? "本机采集记录" : "设备与本机服务"}</h1><p>{screen === "acquisition" ? "从真实设备读取，原始数据由本机采集服务独立保存。" : screen === "recordings" ? "浏览全程波形，通过概览拖动、缩放和时间区间定位。" : "准备好设备驱动和采集服务后，即可在无网环境中工作。"}</p></div><span className={`field-badge ${status?.state === "acquiring" ? "green" : status?.state === "error" ? "red" : ""}`}><span className="field-status-dot" />{status ? stateLabels[status.state] : "读取状态中"}</span></div>
+      <div className="field-workspace"><aside className="field-sidebar"><p>现场作业</p><button className={screen === "acquisition" ? "active" : ""} onClick={() => setScreen("acquisition")}><Activity size={17} />数据采集</button><button className={screen === "recordings" ? "active" : ""} onClick={() => { setScreen("recordings"); void operate("recordings", refreshRecordings); }}><HardDrive size={17} />本机记录</button><button className={screen === "service" ? "active" : ""} onClick={() => setScreen("service")}><Settings size={17} />设备与服务</button><p>算法扩展</p><button disabled title="等待转速/键相与旋转算法接口"><Radio size={17} />旋转测振<span>待接入</span></button><button className={screen === "analysis" ? "active" : ""} onClick={() => setScreen("analysis")}><AudioLines size={17} />信号处理</button><div className="field-sidebar-note"><CircleHelp size={17} /><strong>数据边界</strong><span>当前接入为 CH1 振动速度及 RSSI 回波强度，不是双路振动信号。</span></div></aside>
+        <main className="field-content"><div className="field-page-heading"><div><span className="field-eyebrow">WINDOWS · FIELD WORKSTATION</span><h1>{screen === "acquisition" ? "数据采集" : screen === "recordings" ? "本机采集记录" : screen === "analysis" ? "信号处理" : "设备与本机服务"}</h1><p>{screen === "acquisition" ? "从真实设备读取，原始数据由本机采集服务独立保存。" : screen === "recordings" ? "浏览全程波形，通过概览拖动、缩放和时间区间定位。" : screen === "analysis" ? "基于已保存的连续原始速度计算，分析结果可追溯至记录和采样区间。" : "准备好设备驱动和采集服务后，即可在无网环境中工作。"}</p></div><span className={`field-badge ${status?.state === "acquiring" ? "green" : status?.state === "error" ? "red" : ""}`}><span className="field-status-dot" />{status ? stateLabels[status.state] : "读取状态中"}</span></div>
           {(error || pollError) && <div className="field-error field-global-message" role="alert"><AlertTriangle size={17} /><span>{error || pollError}</span></div>}
           {notice && <div className="field-success field-global-message" role="status"><Check size={17} /><span>{notice}</span></div>}
           {status?.deviceWarning && <p className="field-notice warning" role="alert">{status.deviceWarning}</p>}
           {busy === "device" && <p className="field-notice warning">设备配置操作进行中，请等待结果。自动聚焦涉及激光，请留意现场状态。</p>}
           {status?.indexWarning && <div className="field-notice warning field-global-message" role="status"><AlertTriangle size={17} /><span>本机索引提示：{status.indexWarning}</span></div>}
+          {screen === "analysis" && <FieldAnalysis request={fieldCall} onError={handleError} />}
           {screen === "acquisition" && <div className="field-acquisition-grid"><div className="field-main-column">
             <section className="field-card"><div className="field-section-heading"><div><h2>采集任务</h2><p>选择本机连接设备的网卡 IP；不会自动修改电脑的网络配置。</p></div><span className="field-badge">真实设备模式</span></div>
               <form onSubmit={(event) => { event.preventDefault(); const invalid = validateFieldConfig(config); if (invalid) { setError(invalid); return; } setError(""); setConfirmStart(true); }}><fieldset disabled={Boolean(busy) || active} className="field-config-grid">{([
@@ -304,7 +325,7 @@ export function FieldDesktopApp() {
               <p className="field-subtext">实际时间由本机 DAQ 起点与采样序号推算，非硬件同步时钟。纵轴只是显示范围；放大微小幅值也会放大量化台阶。未做平滑滤波。</p>
             </section>
             <section className="field-card field-wave-card"><div className="field-section-heading"><div><h2>RSSI · 激光回波强度</h2><p>用于判断回波信号质量，不代表第二路振动。</p></div><span className="field-legend green"><i />%</span></div><FieldWaveChart waveform={displayWave} kind="rssi" timeMode={timeMode} /></section>
-          </div><div className="field-right-column"><section className="field-card"><div className="field-section-heading"><h2>采集指标</h2><span className="field-subtext">真实接收值</span></div><div className="field-metric-grid"><div><span>采样率</span><strong>{waveform?.sampleRate ? count(waveform.sampleRate) : "—"}<small>Hz</small></strong></div><div><span>当前振动速度</span><strong>{velocityLabel}<small>{velocityUnit}</small></strong></div><div><span>当前 RSSI</span><strong>{typeof latestRssi === "number" && Number.isFinite(latestRssi) ? latestRssi.toFixed(1) : "—"}<small>%</small></strong></div><div className={overrange ? "field-metric-warning" : ""}><span>窗口超量程点数</span><strong>{hasWave(waveform) ? count(overrange) : "—"}<small>点</small></strong></div></div></section>
+          </div><div className="field-right-column"><FieldRealtimePanel realtime={status?.realtime} /><section className="field-card"><div className="field-section-heading"><h2>采集指标</h2><span className="field-subtext">真实接收值</span></div><div className="field-metric-grid"><div><span>采样率</span><strong>{waveform?.sampleRate ? count(waveform.sampleRate) : "—"}<small>Hz</small></strong></div><div><span>当前振动速度</span><strong>{velocityLabel}<small>{velocityUnit}</small></strong></div><div><span>当前 RSSI</span><strong>{typeof latestRssi === "number" && Number.isFinite(latestRssi) ? latestRssi.toFixed(1) : "—"}<small>%</small></strong></div><div className={overrange ? "field-metric-warning" : ""}><span>窗口超量程点数</span><strong>{hasWave(waveform) ? count(overrange) : "—"}<small>点</small></strong></div></div></section>
             <section className="field-card"><div className="field-section-heading"><h2>当前记录</h2><HardDrive size={16} /></div>{status?.recording ? <><h3 className="field-current-name">{status.recording.name}</h3><dl className="field-details"><div><dt>原始点数</dt><dd className="mono">{count(status.recording.samples)}</dd></div><div><dt>开始时间</dt><dd>{timeOf(status.recording.startedAt)}</dd></div><div><dt>保存状态</dt><dd>{status.recording.status === "complete" ? "已完成" : status.recording.status === "error" ? "异常" : "采集中 / 未完整结束"}</dd></div></dl>{status.recording.error && <p className="field-error">{status.recording.error}</p>}</> : <p className="field-subtext">暂无本次采集记录。点击开始采集后创建真实任务，不生成预置数据。</p>}</section>
             <FieldServicePanel status={status} busy={Boolean(busy)} onAction={(action) => void serviceAction(action)} />
           </div></div>}

@@ -33,7 +33,8 @@ SDK 适配器源自同事项目 `damage_detection/backend/app/polytec_receiver.p
 | 接口 | 请求与结果 |
 |---|---|
 | `GET /api/field/status` | 当前状态，不会启动设备 |
-| `GET /api/field/frame` | 状态 + 最新最多 2048 点的连续速度显示窗口 |
+| `GET /api/field/frame` | 状态 + 最新最多 2048 点的连续速度显示窗口 + `realtime` 在线分析 |
+| `GET /api/field/realtime` | 状态 + 最近最多 4096 点 CH1 的在线 FFT、RMS、峰值、峰峰值和主频预览 |
 | `POST /api/field/start` | JSON：`deviceIp`、`hostIp`、`name`、`object`、`turbine`、`point`、`confirmLaser: true`；返回状态；真正启动在后台进行 |
 | `POST /api/field/stop` | 无必需请求体；等待停止、关激光和本地数据收尾，最长约 20 秒；返回最终状态 |
 | `GET /api/field/recordings` | `{ recordings: [...] }`，最新最多 1000 条本机记录，离线可读 |
@@ -69,13 +70,20 @@ SDK 适配器源自同事项目 `damage_detection/backend/app/polytec_receiver.p
     sampleRate: number | null, unit: 'm/s', rssiUnit: '%',
     sampleStart: number, sampleStride: 1,
     values: number[], rssi: (number | null)[], overrange: boolean[]
+  },
+  realtime: {
+    available: boolean, sampleRate: number | null, sampleStart: number,
+    sampleCount: number, windowSamples: number, frequencySpacingHz: number | null,
+    features: { mean: number | null, rms: number | null, peak: number | null,
+      peakToPeak: number | null, dominantHz: number | null },
+    spectrum: { frequencies: number[], amplitudes: number[] }, warnings: string[]
   }
 }
 ```
 
 时间字段 `startedAt` / `endedAt` / `sampleOrigin` 都是 **Unix 秒**，不是 JS 毫秒。样本相对时间为 `sample_index / sampleRate`；绝对估计时间为 `sampleOrigin + sample_index / sampleRate`。起点取主机启动 DAQ 的时间，只取一次，不按每批到达时间重置。它不是硬件同步时间戳；采样序号是接收侧顺序计数，不能证明 SDK/UDP 没有丢样。
 
-CH1 是振动速度 `m/s`；RSSI1 是激光回波质量 `%`，不是 CH2。缺失 RSSI 为 `null`，不补零假装有信号；超量程单独传递。RPM、相位、双振动通道同步、频谱和损伤算法不在此服务的本次实现范围。显示窗口仅是局部片段，不用于完整录制导出或替代高频原始分析。
+CH1 是振动速度 `m/s`；RSSI1 是激光回波质量 `%`，不是 CH2。缺失 RSSI 为 `null`，不补零假装有信号；超量程单独传递。RPM、相位、双振动通道同步、阶次和损伤算法不在此服务的本次实现范围。显示窗口和 `realtime` 都是局部在线预览，不用于完整录制导出或替代停止后的高频原始分析。
 
 ## 本地文件与恢复
 

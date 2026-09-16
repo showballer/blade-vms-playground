@@ -69,6 +69,7 @@ async function dispatch(options) {
     case 'recordings': return service.recordings();
     case 'recording': return service.recordings(options.id);
     case 'waveform': return service.waveform(options.id, options.start, options.end);
+    case 'analysis': return service.analysis(options.id, options.parameters);
     case 'device': return service.device(options.request);
     case 'configureService': return chooseProgram('executable');
     case 'configureDll': return chooseProgram('dll');
@@ -156,7 +157,7 @@ else {
       try {
         trusted(event);
         const execute = () => dispatch(options);
-        const result = ['session', 'status', 'frame', 'recordings', 'recording', 'waveform'].includes(options?.action)
+        const result = ['session', 'status', 'frame', 'recordings', 'recording', 'waveform', 'analysis'].includes(options?.action)
           ? await execute() : await serial(execute);
         return { status: 200, data: result };
       } catch (error) { return { status: error.status || 500, data: { error: error.message || '本机操作失败' } }; }

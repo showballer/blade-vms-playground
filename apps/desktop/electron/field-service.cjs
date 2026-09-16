@@ -87,7 +87,7 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     if (!port || !secret || !child) throw failure('本机采集服务尚未就绪');
     const requestGeneration = generation, requestChild = child;
     const response = await fetchImpl(`http://127.0.0.1:${port}/api/field/${route}`, {
-      method, redirect: 'error', signal: AbortSignal.timeout(route.endsWith('/waveform') || route.includes('/waveform?') ? 120000 :
+      method, redirect: 'error', signal: AbortSignal.timeout(route.endsWith('/analysis') || route.endsWith('/waveform') || route.includes('/waveform?') ? 120000 :
         route === 'device' ? 90000 : route === 'stop' ? Math.max(30000, requestTimeoutMs) : requestTimeoutMs),
       headers: { Authorization: `Bearer ${secret}`, 'Content-Type': 'application/json' },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -331,6 +331,12 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     await terminateChild(child);
     state = 'stopped'; port = null; secret = '';
   }
-  return { start, status, frame, begin, stop, recordings, waveform, device, shutdown, serviceInfo };
+  async function analysis(id, parameters) {
+    if (typeof id !== 'string' || !/^[0-9a-f]{32}$/.test(id) || !parameters || typeof parameters !== 'object' ||
+        Array.isArray(parameters) || JSON.stringify(parameters).length > 10000) throw failure('无效分析请求', 400);
+    await ready();
+    return http(`recordings/${id}/analysis`, 'POST', parameters);
+  }
+  return { start, status, frame, begin, stop, recordings, waveform, analysis, device, shutdown, serviceInfo };
 }
 module.exports = { createFieldService, windowsServiceEnvironment, failure };
