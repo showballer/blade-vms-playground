@@ -2,6 +2,7 @@ node_modules/
 .next/
 dist/
 release/
+apps/desktop/release-*/
 *.tsbuildinfo
 .env*
 !.env.example

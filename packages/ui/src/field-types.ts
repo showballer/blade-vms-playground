@@ -95,6 +95,7 @@ export type FieldRequestOptions =
   | { action: "recording"; id: string }
   | { action: "waveform"; id: string; start?: number; end?: number }
   | { action: "analysis"; id: string; parameters: Record<string, unknown> }
+  | { action: "rotation"; parameters: Record<string, unknown> }
   | { action: "device"; request: FieldDeviceRequest };
 export type FieldRequest = (options: FieldRequestOptions) => Promise<{ status: number; data: unknown }>;
 

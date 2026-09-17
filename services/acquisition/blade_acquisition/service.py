@@ -400,6 +400,28 @@ def create_app(settings: Settings, receiver_factory=PolytecReceiver) -> FastAPI:
         finally:
             analysis_lock.release()
 
+    @app.post("/api/field/rotation")
+    def rotation_analysis(parameters: dict):
+        # The same lock bounds all NumPy/SciPy jobs and keeps acquisition stop
+        # independent from potentially expensive multi-record file reads.
+        if not analysis_lock.acquire(blocking=False):
+            raise HTTPException(409, "已有分析运行，请等待完成。")
+        try:
+            try:
+                from .rotation import RotationRequest, calculate_rotation
+            except ImportError as exc:
+                raise HTTPException(503, "当前采集服务缺少 NumPy/SciPy 旋转分析依赖，请更新服务包。") from exc
+            config = RotationRequest.model_validate(parameters)
+            return calculate_rotation(controller.store, config)
+        except (KeyError, FileNotFoundError) as exc:
+            raise HTTPException(404, "旋转分析所选记录或原始分块不存在。") from exc
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(500, f"无法读取旋转分析原始记录：{exc}") from exc
+        finally:
+            analysis_lock.release()
+
     @app.websocket("/ws/field")
     async def field_socket(socket: WebSocket):
         protocols = [item.strip() for item in socket.headers.get("sec-websocket-protocol", "").split(",")]
