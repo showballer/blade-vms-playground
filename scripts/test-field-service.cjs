@@ -353,7 +353,8 @@ test("recording export streams original CSV into gzip or CSV without buffering v
     assert.deepEqual(await f.service.exportRecording("a".repeat(32), file), { saved: true, fileName: `original.${suffix}` });
     const stored = fs.readFileSync(file);
     assert.equal((suffix.endsWith("gz") ? gunzipSync(stored) : stored).toString("utf8"), chunks.join(""));
-    assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+    // Windows access is governed by ACLs; POSIX permission bits are not preserved.
+    if (process.platform !== 'win32') assert.equal(fs.statSync(file).mode & 0o777, 0o600);
   }
   assert.equal(fs.readdirSync(f.directory).some(file => file.endsWith(".tmp")), false);
   const request = f.requests.find(request => request.route.endsWith("/export"));
