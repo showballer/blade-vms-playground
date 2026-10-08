@@ -339,11 +339,43 @@ async function validateInstalledDesktop(directory, environment, temporary, outpu
     const frame = await field({ action: 'frame' });
     assert.equal(frame.status, 200); assert.deepEqual(frame.data.waveform.values, []);
     assert.deepEqual((await field({ action: 'recordings' })).data.recordings, []);
+    await waitFor(async () => (await body()).includes('等待振动数据'), 'empty live waveform UI');
     const text = await body();
-    assert.ok(text.includes('等待真实振动数据'));
+    assert.ok(text.includes('等待振动数据'));
+    assert.ok(text.includes('等待 RSSI 数据'));
     assert.ok(!text.includes('离线演示工作区'));
-    await waitFor(async () => await cdp.evaluate('[...document.querySelectorAll("button")].find(b=>b.textContent.includes("开始采集"))?.disabled') === false,
-      'renderer polling updates the ready start control');
+    // The current form uses native required validation, rather than disabling
+    // its button for missing task/IP fields. Prove both validation states
+    // without submitting the form or invoking start against any device.
+    const captureForm = () => cdp.evaluate(`(() => {
+      const form = document.querySelector('.field-capture-setup form');
+      const inputs = [...form.querySelectorAll('input[required]')];
+      const button = form.querySelector('button[type="submit"]');
+      return { valid: form.checkValidity(), missingRequired: inputs.filter(input => input.validity.valueMissing).length,
+        requiredValues: inputs.map(input => input.value), startDisabled: button.disabled };
+    })()`);
+    const emptyForm = await captureForm();
+    assert.equal(emptyForm.valid, false, 'Empty acquisition configuration must not pass form validation');
+    assert.equal(emptyForm.missingRequired, 3, 'Task name, device IP and host IP must all be required');
+    assert.deepEqual(emptyForm.requiredValues, ['', '', '']);
+    for (const [selector, value] of [
+      ['input[aria-label="任务名称"]', 'TEST ONLY · ready control without acquisition'],
+      ['input[placeholder="设备 IPv4 地址"]', '192.0.2.10'],
+      ['input[placeholder="连接设备的网卡 IPv4 地址"]', '192.0.2.20'],
+    ]) {
+      await cdp.evaluate(`(() => {
+        const input = document.querySelector(${JSON.stringify(selector)});
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(value)});
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      })()`);
+      await waitFor(async () => await cdp.evaluate(`document.querySelector(${JSON.stringify(selector)}).value`) === value,
+        'test-only acquisition field is displayed');
+    }
+    await waitFor(async () => { const form = await captureForm(); return form.valid && !form.startDisabled; },
+      'valid test-only configuration enables the ready start control');
+    assertIdle((await field({ action: 'status' })).data);
+    assert.deepEqual((await field({ action: 'frame' })).data.waveform.values, []);
+    assert.deepEqual((await field({ action: 'recordings' })).data.recordings, []);
     const screenshot = await cdp.send('Page.captureScreenshot', { format: 'png' });
     fs.writeFileSync(path.join(output, 'installed-windows-acquisition-idle.png'), Buffer.from(screenshot.data, 'base64'));
     const viewports = [[1366, 768, 1], [1280, 720, 1], [1024, 600, 1], [853, 480, 1.5]];
@@ -351,7 +383,7 @@ async function validateInstalledDesktop(directory, environment, temporary, outpu
       await cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: scale, mobile: false });
       await pause(200);
       for (const screenName of ['数据采集', '设备与服务', '本机记录']) {
-        await cdp.evaluate(`[...document.querySelectorAll('.field-sidebar button')].find(b=>b.textContent.includes(${JSON.stringify(screenName)})).click()`);
+        await cdp.evaluate(`[...document.querySelectorAll('.field-sidebar button')].find(b=>b.textContent.trim() === ${JSON.stringify(screenName)}).click()`);
         await pause(300);
         const layout = await cdp.evaluate(`(() => {
           const main = document.querySelector('.field-content');
@@ -381,7 +413,8 @@ async function validateInstalledDesktop(directory, environment, temporary, outpu
     await waitFor(async () => (await executableProcesses(serviceExe)).length === 0, 'no acquisition service orphan after UI exit', 15000);
     safelyClosed = true;
     return { isolatedCredentials: true, login: true, requiredPasswordChange: true, passwordPersistence: true,
-      serviceReady: true, dllAvailable: true, startControlEnabled: true, displayedSamples: 0,
+      serviceReady: true, dllAvailable: true, emptyConfigurationBlockedByFormValidation: true,
+      startControlEnabledAfterValidConfiguration: true, displayedSamples: 0,
       hardwareTouched: false, safeAppClose: true, noServiceOrphan: true,
       responsiveViewports: viewports, responsiveScreens: 3 };
   } finally {
