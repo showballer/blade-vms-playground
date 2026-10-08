@@ -1,13 +1,13 @@
 # BladeVMS 本机采集服务
 
-面向 Windows x64 实机联调的真实 IVS-500 采集服务。桌面 Electron 主进程负责启动/关闭它；不注册 Windows 常驻服务，不要求最终用户安装 Python。这里没有离线演示、模拟数据、第二路振动通道或替代算法。
+面向 Windows x64 的真实 IVS-500 采集与 macOS/Windows 显式模拟调试服务。桌面 Electron 主进程负责启动/关闭它；不注册 Windows 常驻服务，不要求最终用户安装 Python。真实与模拟使用同一保存/波形/分析链路，来源始终明确标记，不存在缺设备时的自动模拟回退。
 
 SDK 适配器源自同事项目 `damage_detection/backend/app/polytec_receiver.py`，保留已有 C API 调用约定、通道标识、量程换算与 UDP 解码方式；原项目未修改。厂商 DLL、驱动和安装包未复制进代码仓库，分发许可和所需系统组件仍需 Windows 联调确认。
 
 ## 安全与职责
 
 - 启动即 `idle`，不会加载 SDK、连接设备、修改 DAQ 目标、点亮激光或开始采集。
-- 只有显式 `POST /api/field/start` 且 `confirmLaser: true` 才开始。该确认表示操作者已经完成激光安全检查，允许将设备 DAQ 目标改为指定本机网卡 IP，并开启激光。
+- 真实设备仅在显式 `POST /api/field/start` 且 `confirmLaser: true` 后开始。该确认表示操作者已经完成激光安全检查，允许将设备 DAQ 目标改为指定本机网卡 IP，并开启激光。省略 `source` 仍为真实设备路径；显式 `source: "simulation"` 才启用模拟，模拟无需激光确认且不实例化设备适配器。
 - 一次采集会话独占控制激光；停止/错误收尾时尝试停止 DAQ 并关闭激光，不恢复此前可能已经开启的激光状态。开启激光命令超时也视作不确定失败，并尝试关闭。
 - 如果设备断连或 SDK 拒绝关闭激光，状态为 `error`，必须现场确认激光状态，不承诺已经关闭。
 - 连续 10 秒无有效振动样本会报错并收尾；磁盘写入失败也会停止采集。没有自动重连、自动重启采集或隐藏的模拟回退。
@@ -22,7 +22,7 @@ SDK 适配器源自同事项目 `damage_detection/backend/app/polytec_receiver.p
 | `BLADE_SERVICE_TOKEN` | 必填，至少 32 字符的随机令牌；不得写入日志、URL或渲染进程。不是用户登录密码 |
 | `BLADE_SERVICE_PORT` | 本机端口，1024–65535，默认 8765；由主进程选择可用端口 |
 | `BLADE_DATA_DIR` | 必填，应用专用、可写的绝对目录；原始数据位于其 `recordings` 子目录 |
-| `BLADE_POLYTEC_DLL` | 厂商 x64 `DeviceCommunication.dll` 的绝对路径；可不传，但此时开始采集会明确报错 |
+| `BLADE_POLYTEC_DLL` | 厂商 x64 `DeviceCommunication.dll` 的绝对路径；可不传，但此时开始真实设备采集会明确报错，不影响显式模拟采集 |
 
 仅绑定 `127.0.0.1`，无热重载、单 worker、无公开文档端点、无自动运行设备。禁止启用多个服务进程共同写同一数据目录。进程退出时走 FastAPI lifespan 收尾；Windows 正常退出必须先调用 stop、确认没有 `error` 且记录已完成，再终止服务。强制杀进程不等于安全关闭设备。
 
@@ -33,12 +33,14 @@ SDK 适配器源自同事项目 `damage_detection/backend/app/polytec_receiver.p
 | 接口 | 请求与结果 |
 |---|---|
 | `GET /api/field/status` | 当前状态，不会启动设备 |
-| `GET /api/field/frame` | 状态 + 最新最多 2048 点的连续速度显示窗口 + `realtime` 在线分析 |
-| `GET /api/field/realtime` | 状态 + 最近最多 4096 点 CH1 的在线 FFT、RMS、峰值、峰峰值和主频预览 |
+| `GET /api/field/frame` | 状态 + 速度/RSSI 显示窗口 + `realtime`；默认取最近 2048 点，指定 `window_ms=1..1000` 时显示对应窗口：不超过 4096 点返回全部原始点，更长窗口返回最多 1000 个保留峰值的包络桶 |
+| `GET /api/field/realtime` | 状态 + 最近最多 4096 个连续原始点的时域、FFT、STFT 与指标；最多每 250 ms 计算一次 |
+| `GET /api/field/simulation` | 3 个源工作簿测点、4 个回放场景及文件/脚本 SHA-256 来源信息；不启动采集 |
 | `POST /api/field/start` | JSON：`deviceIp`、`hostIp`、`name`、`object`、`turbine`、`point`、`confirmLaser: true`；返回状态；真正启动在后台进行 |
 | `POST /api/field/stop` | 无必需请求体；等待停止、关激光和本地数据收尾，最长约 20 秒；返回最终状态 |
 | `GET /api/field/recordings` | `{ recordings: [...] }`，最新最多 1000 条本机记录，离线可读 |
 | `GET /api/field/recordings/{id}` | `{ recording, waveform }`，仅允许服务生成的 UUID ID，读取有限预览，不接受文件路径 |
+| `GET /api/field/recordings/{id}/export` | 完整已保存原始样本的流式 CSV，首行来源 JSON；不降采样；未完成记录返回 409 |
 | `WS /ws/field` | `Sec-WebSocket-Protocol: blade,<token>`，服务选择 `blade`；每 250 ms 发送与 frame 相同结构 |
 
 错误：未授权 401，外部 Origin/Host 403，参数/未确认安全 422，已有采集 409，缺失 SDK/不支持的平台 503，创建录制时磁盘异常 507。**HTTP 200 只表示命令处理完成；客户端仍需检查 `state`、`error` 和 `recording.status`，尤其不能把 stop 返回 200 当作保存成功。**
@@ -50,10 +52,10 @@ SDK 适配器源自同事项目 `damage_detection/backend/app/polytec_receiver.p
   state: 'idle' | 'starting' | 'acquiring' | 'stopping' | 'error',
   error: string | null,
   receiver: {
-    source: 'polytec_ivs500', running: boolean,
-    deviceIp: string, hostIp: string, dataPort: 60113,
+    source: 'polytec_ivs500' | 'simulation', simulation: object | null, running: boolean,
+    deviceIp: string, hostIp: string, dataPort: 60113 | null,
     sampleRate: number | null, channels: ['CH1', 'RSSI1'],
-    dllAvailable: boolean, dataLossAssessment: 'unverified'
+    dllAvailable: boolean, dataLossAssessment: 'unverified' | 'not_applicable_simulation'
   },
   recording: null | {
     id: string, name: string, object: string, turbine: string, point: string,
@@ -76,14 +78,52 @@ SDK 适配器源自同事项目 `damage_detection/backend/app/polytec_receiver.p
     sampleCount: number, windowSamples: number, frequencySpacingHz: number | null,
     features: { mean: number | null, rms: number | null, peak: number | null,
       peakToPeak: number | null, dominantHz: number | null },
-    spectrum: { frequencies: number[], amplitudes: number[] }, warnings: string[]
+    spectrum: { frequencies: number[], amplitudes: number[] },
+    timeDomain: { times: number[], values: number[], unit: 'm/s', representation: string },
+    spectrogram: { times: number[], frequencies: number[], db: number[][],
+      unit: 'dB re 1 m/s', windowSamples: number, hopSamples: number },
+    source: 'polytec_ivs500' | 'simulation', recordingId: string | null,
+    computedAt: number, sampleRange: { start: number, end: number },
+    quality: { overrangeSamples: number, missingRssiSamples: number, lowReturnSamples: number,
+      lowReturnThresholdPercent: 20 }, warnings: string[]
   }
 }
 ```
 
 时间字段 `startedAt` / `endedAt` / `sampleOrigin` 都是 **Unix 秒**，不是 JS 毫秒。样本相对时间为 `sample_index / sampleRate`；绝对估计时间为 `sampleOrigin + sample_index / sampleRate`。起点取主机启动 DAQ 的时间，只取一次，不按每批到达时间重置。它不是硬件同步时间戳；采样序号是接收侧顺序计数，不能证明 SDK/UDP 没有丢样。
 
-CH1 是振动速度 `m/s`；RSSI1 是激光回波质量 `%`，不是 CH2。缺失 RSSI 为 `null`，不补零假装有信号；超量程单独传递。RPM、相位、双振动通道同步、阶次和损伤算法不在此服务的本次实现范围。显示窗口和 `realtime` 都是局部在线预览，不用于完整录制导出或替代停止后的高频原始分析。
+CH1 是振动速度 `m/s`；RSSI1 是激光回波质量 `%`，不是 CH2。缺失 RSSI 为 `null`，不补零假装有信号；超量程单独传递。设备接口当前不提供 RPM、键相或双振动通道同步；离线恒转速阶次与振型分析使用手动条件，见 [Web 旋转测振说明](../../apps/web/ROTATION_ANALYSIS.md)，不作为自动损伤诊断。显示窗口和 `realtime` 都是局部在线预览，不用于完整录制导出或替代停止后的高频原始分析。
+
+`realtime.timeDomain.times` 和 `spectrogram.times` 都是采集起点后的秒数；`sampleRange.end` 不包含末端。`computedAt` 为计算完成的 Unix 秒，允许图形比接收显示窗口最多晚约 250 ms。FFT 对连续原始样本去局部均值并用 Hann 窗，幅值为单边 `m/s`；STFT 窗长最多 256、重叠 75%，`db[频率索引][时间索引]` 固定参考 `1 m/s`，不按每帧最大值归一化。只有时域显示用 min/max 压缩，FFT 和 STFT 不使用显示包络。低回波计数定义为 RSSI < 20%，不作为结构损伤结论。
+
+## macOS 与 Windows 模拟调试
+
+开始示例：
+
+```json
+{"source":"simulation","name":"叶片模拟采集","simulation":{"point":"P1","scenario":"baseline"}}
+```
+
+`point` 为 P1/P2/P3，源采样率分别约 1000、833.333333、1250 Hz。每约 50 ms 推进一批，使用连续样本序号和 monotonic 时钟定速，10 秒数据循环回放；停止事件立即打断等待，正常保存后可以重新开始一个独立记录。循环边界两侧共 16 ms 用余弦桥接避免人为拼接冲击，此处理记录在来源中，原始压缩 fixture 不变。
+
+| 场景 | 含义 |
+|---|---|
+| `baseline` | 源工作簿回放，保留原有速度/回波特征；不声称正常实测 |
+| `imbalance` | 人工放大振动并增加 20 Hz 转频分量 |
+| `impact` | 人工增加每 1.3 秒一次的衰减冲击 |
+| `low_return` | 人工降低 RSSI；速度保持源回放信号 |
+
+源文件为用户提供的 `rotation_from_static.xlsx`，SHA-256 `80ec5277f3ae28bf8ec76175c5d172e1ed586d97a0750610d7aca856a571cc50`。参考脚本 `generate-rotation-from-static.mjs` 由 18 Hz 静态波形合成 1200 rpm、3 叶片转动及回波门控，未提供真实损伤标签。`LOW_RETURN` 只是低回波状态。附加场景属于可重复的软件测试注入；记录、帧和 CSV 都保留 `source: simulation` 及完整 `simulation` 来源对象。
+
+精简压缩资源位于 `blade_acquisition/resources/rotation_from_static.json.gz`，PyInstaller 配置会将它打包到服务资源中。可用标准库转换器从原 XLSX 再生成（输出须不存在）：
+
+```bash
+python tools/convert_simulation_fixture.py /path/rotation_from_static.xlsx /path/generate-rotation-from-static.mjs /tmp/rotation_from_static.json.gz
+```
+
+转换器只读取文件，不执行外部脚本，不修改工作簿；记录原文件与脚本 SHA-256。模拟 binary 的 `raw` 字段使用速度 × 1000000、RSSI × 1000 的整数编码，来源明确标明它不是设备 ADC 原始计数；速度 `float64 m/s` 完整保存。
+
+Web 分析用 CSV 第一行为 `# BladeVMS ` 加单行 JSON（含 `format: blade-vms-csv-1`、source、simulation、sampleRate、unit、samples、recordingId、name、point、position、rpm），第二行为 `time_s,velocity_m_s,RSSI_percent,overrange`。后续每行对应一个原始样本；缺 RSSI 留空。下载器应先写临时文件，仅完整成功后发布，导入器应核对 `samples`，并始终保留模拟标记。
 
 ## 本地文件与恢复
 

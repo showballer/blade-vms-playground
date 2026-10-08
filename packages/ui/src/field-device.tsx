@@ -1,4 +1,5 @@
 "use client";
+import { CustomSelect } from "./custom-select";
 import React, { useEffect, useState } from "react";
 import { AlertTriangle, LoaderCircle, RefreshCw } from "lucide-react";
 import { Button, Dialog } from "./common";
@@ -46,7 +47,7 @@ export function FieldDevicePanel({ deviceIp, onIp, status, disabled, onBusy, onE
       <div className="field-device-fields">{Object.entries(deviceLabels).map(([key, label]) => {
         const field = snapshot.fields[key];
         return <div className="field-device-row" key={key}><div><strong>{label}</strong><small>{field?.supported ? `读回：${key === "signalLevel" && field.percent !== undefined ? `${field.percent.toFixed(1)} %` : valueLabel(key, field.value)}` : field?.error || "设备不支持 / 未读取"}</small></div>
-          {field?.supported && field.writable && <><select aria-label={label} value={String(drafts[key] ?? "")} disabled={blocked} onChange={event => setDrafts(previous => ({ ...previous, [key]: key === "ase" ? Number(event.target.value) : event.target.value }))}>{field.options?.map(value => <option key={value} value={String(value)}>{valueLabel(key, value)}</option>)}</select>
+          {field?.supported && field.writable && <><CustomSelect aria-label={label} value={String(drafts[key] ?? "")} disabled={blocked} onChange={event => setDrafts(previous => ({ ...previous, [key]: key === "ase" ? Number(event.target.value) : event.target.value }))}>{field.options?.map(value => <option key={value} value={String(value)}>{valueLabel(key, value)}</option>)}</CustomSelect>
             <Button disabled={blocked || drafts[key] === field.value} onClick={() => { setConsent(false); setConfirm({ deviceIp, action: "set", key, value: drafts[key], expected: field.value, confirmChange: true }); }}>应用此项</Button></>}
         </div>;
       })}</div>

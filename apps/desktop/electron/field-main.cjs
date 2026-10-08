@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { createLocalAuth } = require('./local-auth.cjs');
+const { createUnifiedAuth } = require('./unified-auth.cjs');
 const { createFieldService, failure } = require('./field-service.cjs');
 const { initialWindowBounds } = require('./field-window.cjs');
 
@@ -31,6 +32,7 @@ async function idleRequired() {
 }
 async function chooseProgram(kind) {
   await idleRequired();
+  if (process.platform !== 'win32') throw failure('设备程序选择仅用于 Windows 实机；当前系统使用项目内 Python 采集服务。', 400);
   const isDll = kind === 'dll';
   const selected = await dialog.showOpenDialog(win, {
     title: isDll ? '选择厂商 Windows x64 DeviceCommunication.dll' : '选择已联调的 Windows x64 BladeAcquisition.exe（保留其完整依赖目录）',
@@ -52,10 +54,20 @@ async function chooseProgram(kind) {
 async function dispatch(options) {
   if (!options || typeof options !== 'object' || Array.isArray(options) || typeof options.action !== 'string') throw failure('无效操作', 400);
   const action = options.action;
-  if (closing && !['session', 'status', 'frame'].includes(action)) throw failure('正在安全退出，请等待或取消退出后重试', 409);
+  if (closing && !['session', 'accountInfo', 'status', 'frame'].includes(action)) throw failure('正在安全退出，请等待或取消退出后重试', 409);
+  if (action === 'accountInfo') return auth.info();
   if (action === 'session') return auth.session();
   if (action === 'login') return auth.login(options.username, options.password);
-  if (action === 'changePassword') return auth.changePassword(options.currentPassword, options.newPassword);
+  if (action === 'changePassword') {
+    auth.requireSession({ allowInitial: true });
+    await idleRequired();
+    return auth.changePassword(options.currentPassword, options.newPassword);
+  }
+  if (action === 'bindAccount') {
+    auth.requireSession();
+    await idleRequired();
+    return auth.bindAccount({ serverUrl: options.serverUrl, username: options.username, password: options.password, currentPassword: options.currentPassword });
+  }
   if (action === 'logout') {
     auth.requireSession({ allowInitial: true });
     await idleRequired(); return auth.logout();
@@ -67,7 +79,17 @@ async function dispatch(options) {
     case 'start': return service.begin(options.config);
     case 'stop': return service.stop();
     case 'recordings': return service.recordings();
+    case 'simulation': return service.simulation();
     case 'recording': return service.recordings(options.id);
+    case 'exportRecording': {
+      await idleRequired();
+      const detail = await service.recordings(options.id);
+      if (detail.recording?.status !== 'complete') throw failure('请先停止并完整保存记录，再导出原始数据', 409);
+      const name = String(detail.recording.name || options.id).replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').slice(0, 100);
+      const result = await dialog.showSaveDialog(win, { title: '导出完整原始波形，可导入 Web 旋转测振', defaultPath: `${name}.csv.gz`, filters: [{ name: '压缩 CSV 原始波形', extensions: ['csv.gz'] }, { name: 'CSV 原始波形', extensions: ['csv'] }] });
+      if (result.canceled || !result.filePath) return { canceled: true };
+      return service.exportRecording(options.id, result.filePath);
+    }
     case 'waveform': return service.waveform(options.id, options.start, options.end);
     case 'analysis': return service.analysis(options.id, options.parameters);
     case 'rotation': return service.rotation(options.parameters);
@@ -136,7 +158,8 @@ else {
         if (!config || typeof config !== 'object' || Array.isArray(config) ||
             ['executable', 'dll'].some(key => config[key] !== undefined && (typeof config[key] !== 'string' || !path.isAbsolute(config[key])))) throw Error('配置格式无效');
       } catch (error) { if (error.code !== 'ENOENT') throw error; }
-      auth = createLocalAuth({ file: path.join(userData, 'blade-local-auth.json'), bootstrap: require('./bootstrap-admin.json') });
+      const localAuth = createLocalAuth({ file: path.join(userData, 'blade-local-auth.json'), bootstrap: require('./bootstrap-admin.json') });
+      auth = createUnifiedAuth({ file: path.join(userData, 'blade-unified-account.json'), localAuth });
       service = createFieldService({ getConfig: () => config, dataDir,
         resourcesDir: app.isPackaged ? process.resourcesPath : path.join(__dirname, '../resources') });
     } catch {
@@ -158,7 +181,7 @@ else {
       try {
         trusted(event);
         const execute = () => dispatch(options);
-        const result = ['session', 'status', 'frame', 'recordings', 'recording', 'waveform', 'analysis', 'rotation'].includes(options?.action)
+        const result = ['session', 'accountInfo', 'status', 'frame', 'recordings', 'simulation', 'recording', 'waveform', 'analysis', 'rotation'].includes(options?.action)
           ? await execute() : await serial(execute);
         return { status: 200, data: result };
       } catch (error) { return { status: error.status || 500, data: { error: error.message || '本机操作失败' } }; }

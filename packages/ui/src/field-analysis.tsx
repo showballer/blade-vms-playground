@@ -1,4 +1,5 @@
 "use client";
+import { CustomSelect } from "./custom-select";
 import React, { useEffect, useRef, useState } from "react";
 import { Chart } from "./charts";
 import { Button } from "./common";
@@ -42,7 +43,7 @@ function Features({ result }: { result: AnalysisResult }) {
   return <dl className="field-details analysis-features">{Object.entries(names).map(([key, name]) => <div key={key}><dt>{name}</dt><dd>{format(result.features[key])} {result.features[key] == null ? "" : key === "dominantHz" ? "Hz" : key === "kurtosis" ? "" : key === "snrDb" ? "dB" : key === "totalPower" ? `(${result.unit})²` : result.unit}</dd></div>)}</dl>;
 }
 
-export function FieldAnalysis({ request, onError }: { request: <T>(options: FieldRequestOptions) => Promise<T>; onError: (e: unknown) => void }) {
+export const FieldAnalysis = React.memo(function FieldAnalysis({ request, onError }: { request: <T>(options: FieldRequestOptions) => Promise<T>; onError: (e: unknown) => void }) {
   const [records, setRecords] = useState<FieldRecording[]>([]), [id, setId] = useState("");
   const [start, setStart] = useState(0), [end, setEnd] = useState(0);
   const [quantity, setQuantity] = useState("velocity"), [detrend, setDetrend] = useState("constant");
@@ -68,16 +69,16 @@ export function FieldAnalysis({ request, onError }: { request: <T>(options: Fiel
   }
   return <div className="analysis-layout"><section className="field-card"><div className="field-section-heading"><div><h2>原始记录分析</h2><p>从已完成记录读取连续原始速度。修改参数后请重新计算。</p></div><Button disabled={busy} onClick={() => void refresh()}>刷新记录</Button></div>
     <form onSubmit={run} onChange={() => setResult(null)}><fieldset disabled={busy} className="field-config-grid">
-      <label>数据记录<select value={id} required onChange={e => { setId(e.target.value); const r = records.find(r => r.id === e.target.value); const size = Math.min(r?.samples || 0, 8000000); setStart(0); setEnd(size); if (size >= 64) { setNfft(2 ** Math.floor(Math.log2(Math.min(size, 262144)))); setStftSize(Math.min(1024, 2 ** Math.floor(Math.log2(size)))); } }}>{<option value="">选择已完成记录</option>}{records.map(r => <option value={r.id} key={r.id}>{r.name} · {r.samples}点</option>)}</select></label>
-      <label>分析物理量<select value={quantity} onChange={e => setQuantity(e.target.value)}><option value="velocity">速度 m/s</option><option value="displacement">计算位移 m</option><option value="acceleration">计算加速度 m/s²</option></select></label>
+      <label>数据记录<CustomSelect value={id} required onChange={e => { setId(e.target.value); const r = records.find(r => r.id === e.target.value); const size = Math.min(r?.samples || 0, 8000000); setStart(0); setEnd(size); if (size >= 64) { setNfft(2 ** Math.floor(Math.log2(Math.min(size, 262144)))); setStftSize(Math.min(1024, 2 ** Math.floor(Math.log2(size)))); } }}>{<option value="">选择已完成记录</option>}{records.map(r => <option value={r.id} key={r.id}>{r.name} · {r.samples}点</option>)}</CustomSelect></label>
+      <label>分析物理量<CustomSelect value={quantity} onChange={e => setQuantity(e.target.value)}><option value="velocity">速度 m/s</option><option value="displacement">计算位移 m</option><option value="acceleration">计算加速度 m/s²</option></CustomSelect></label>
       <label>起始样本（含）<input type="number" required min={0} step={1} value={start} onChange={e => setStart(Number(e.target.value))} /></label>
       <label>结束样本（不含）<input type="number" required min={start + 64} max={Math.min(record?.samples || 0, start + 8000000)} step={1} value={end} onChange={e => setEnd(Number(e.target.value))} /></label>
-      <label>去趋势<select value={detrend} onChange={e => setDetrend(e.target.value)}><option value="constant">去均值</option><option value="linear">去线性趋势</option><option value="none">不去趋势</option></select></label>
-      <label>Butterworth 离线零相位滤波<select value={filterType} onChange={e => setFilter(e.target.value)}><option value="none">不滤波</option><option value="lowpass">低通</option><option value="highpass">高通</option><option value="bandpass">带通</option></select></label>
+      <label>去趋势<CustomSelect value={detrend} onChange={e => setDetrend(e.target.value)}><option value="constant">去均值</option><option value="linear">去线性趋势</option><option value="none">不去趋势</option></CustomSelect></label>
+      <label>Butterworth 离线零相位滤波<CustomSelect value={filterType} onChange={e => setFilter(e.target.value)}><option value="none">不滤波</option><option value="lowpass">低通</option><option value="highpass">高通</option><option value="bandpass">带通</option></CustomSelect></label>
       <label>高通/带通下限 Hz<input type="number" min={0.000001} step="any" required value={low} onChange={e => setLow(Number(e.target.value))} /></label>
       <label>低通/带通上限 Hz<input type="number" min={0.000001} step="any" required value={high} onChange={e => setHigh(Number(e.target.value))} /></label>
       <label>单向滤波阶数<input type="number" min={1} max={10} required value={order} onChange={e => setOrder(Number(e.target.value))} /></label>
-      <label>窗函数<select value={window} onChange={e => setWindow(e.target.value)}><option value="hann">Hann 汉宁</option><option value="hamming">Hamming 海明</option><option value="boxcar">矩形</option></select></label>
+      <label>窗函数<CustomSelect value={window} onChange={e => setWindow(e.target.value)}><option value="hann">Hann 汉宁</option><option value="hamming">Hamming 海明</option><option value="boxcar">矩形</option></CustomSelect></label>
       <label>FFT 点数<input type="number" min={64} max={262144} required step={1} value={nfft} onChange={e => setNfft(Number(e.target.value))} /></label>
       <label>STFT 窗长<input type="number" min={64} max={4096} required step={1} value={stftSize} onChange={e => setStftSize(Number(e.target.value))} /></label>
       <label>频带 Hz（英文逗号分隔）<input value={bands} required onChange={e => setBands(e.target.value)} /></label>
@@ -91,4 +92,4 @@ export function FieldAnalysis({ request, onError }: { request: <T>(options: Fiel
     <details><summary>计算条件、质量说明与追溯</summary><ul>{result.warnings.map((w, i) => <li key={i}>{w}</li>)}</ul><p style={{ overflowWrap: "anywhere" }}>原始区间 SHA-256：{result.provenance.rawSha256}</p></details>
   </section>}
   </div>;
-}
+});

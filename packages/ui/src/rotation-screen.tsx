@@ -1,4 +1,5 @@
 "use client";
+import { CustomSelect } from "./custom-select";
 import { useEffect, useMemo, useState } from "react";
 import { type Item } from "./api";
 import { Button, Card, Empty, Select, Table, Tag, saveRecord, type ContextProps } from "./common";
@@ -83,8 +84,8 @@ export function Blade({ data, refresh, notify, canWrite, onTaskChange, initialTa
             <div className="rotation-segments"><Table headers={["保留", "区间 s / 段详情", "质量"]}>{plan.segments.map((segment, i) => <tr key={segment.id}>
               <td><input type="checkbox" aria-label={"保留分段 " + (i + 1)} checked={segment.keep} disabled={dirty || busy} onChange={e => updateSegment(segment.id, { keep: e.target.checked })} /></td>
               <td><span className="mono">{Number(segment.start.toPrecision(6))}–{Number(segment.end.toPrecision(6))}</span><small>{segment.endIndex - segment.startIndex} 点{segment.partial ? " · 不足完整周期" : ""}</small>
-                <details><summary>{segment.label} · 标注</summary><select aria-label={"分段类型 " + (i + 1)} disabled={dirty || busy} value={segment.label} onChange={e => updateSegment(segment.id, { label: e.target.value })}>{segmentLabels.map(label => <option key={label}>{label}</option>)}</select><input aria-label={"分段备注 " + (i + 1)} maxLength={300} disabled={dirty || busy} placeholder="人工判断依据" value={segment.note} onChange={e => updateSegment(segment.id, { note: e.target.value })} /></details>
-              </td><td><select aria-label={"分段质量 " + (i + 1)} disabled={dirty || busy} value={segment.quality} onChange={e => updateSegment(segment.id, { quality: e.target.value })}>{segmentQualities.map(quality => <option key={quality}>{quality}</option>)}</select></td>
+                <details><summary>{segment.label} · 标注</summary><CustomSelect aria-label={"分段类型 " + (i + 1)} disabled={dirty || busy} value={segment.label} onChange={e => updateSegment(segment.id, { label: e.target.value })}>{segmentLabels.map(label => <option key={label}>{label}</option>)}</CustomSelect><input aria-label={"分段备注 " + (i + 1)} maxLength={300} disabled={dirty || busy} placeholder="人工判断依据" value={segment.note} onChange={e => updateSegment(segment.id, { note: e.target.value })} /></details>
+              </td><td><CustomSelect aria-label={"分段质量 " + (i + 1)} disabled={dirty || busy} value={segment.quality} onChange={e => updateSegment(segment.id, { quality: e.target.value })}>{segmentQualities.map(quality => <option key={quality}>{quality}</option>)}</CustomSelect></td>
             </tr>)}</Table></div>
             <Button className="full space-top" disabled={dirty || busy || !plan.segments.some(s => s.quality === "异常" && s.keep)} onClick={() => { setPlan({ ...plan, segments: plan.segments.map(s => s.quality === "异常" ? { ...s, keep: false } : s) }); notify("已排除人工标记的异常段，索引和原因随结果保留"); }}>剔除异常段</Button>
             <p className="muted" data-testid="rotation-selection">保留 {selected.length} / {plan.segments.length} 段 · {result.dataset?.rows.length || 0} 点</p>

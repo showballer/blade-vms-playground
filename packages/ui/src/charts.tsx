@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef } from "react";
+import { memo, useEffect, useRef } from "react";
 import * as echarts from "echarts/core";
 import { LineChart, BarChart, HeatmapChart, GaugeChart } from "echarts/charts";
 import {
@@ -29,38 +29,87 @@ echarts.use([
   CanvasRenderer,
   SVGRenderer,
 ]);
-export function Chart({
+export const Chart = memo(function Chart({
   option,
   height = 260,
   label = "数据图表",
   renderer = "canvas",
+  updateMode = "replace",
+  active = true,
 }: {
   option: Record<string, any>;
   height?: number;
   label?: string;
   renderer?: "canvas" | "svg";
+  /** Live charts retain their legend selection and zoom while replacing series data. */
+  updateMode?: "replace" | "merge";
+  /** Hidden panels retain their instance and zoom without doing chart work. */
+  active?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null),
-    chart = useRef<echarts.EChartsType | undefined>(undefined);
+    chart = useRef<echarts.EChartsType | undefined>(undefined),
+    schedule = useRef<(() => void) | undefined>(undefined),
+    latest = useRef({ option, updateMode, active });
+  latest.current = { option, updateMode, active };
   useEffect(() => {
     if (!ref.current) return;
-    const c = echarts.init(ref.current, undefined, { renderer });
-    chart.current = c;
-    const observer = new ResizeObserver(() => {
-      c.resize();
-      if (renderer === "svg") ref.current?.querySelector("svg")?.setAttribute("viewBox", `0 0 ${c.getWidth()} ${c.getHeight()}`);
-    });
-    observer.observe(ref.current);
+    const element = ref.current;
+    let c: echarts.EChartsType | undefined;
+    let frame = 0, resized = true, previouslyActive = false;
+    let applied: typeof latest.current | undefined;
+    const canDraw = () => latest.current.active && element.clientWidth > 0 && element.clientHeight > 0;
+    const flush = () => {
+      frame = 0;
+      // Do not initialize or resize a display:none panel to zero. Its existing
+      // canvas, zoom and unapplied latest option survive until it is visible.
+      if (!canDraw()) { resized = true; return; }
+      if (!c) {
+        c = echarts.init(element, undefined, { renderer });
+        chart.current = c;
+        resized = false;
+      } else if (resized) { c.resize(); resized = false; }
+      const current = latest.current;
+      if (!applied || applied.option !== current.option || applied.updateMode !== current.updateMode) {
+        c.setOption(current.option, { notMerge: current.updateMode === "replace", lazyUpdate: false,
+          ...(current.updateMode === "merge" ? { replaceMerge: ["series"] } : {}) });
+        applied = current;
+      }
+      if (renderer === "svg") element.querySelector("svg")?.setAttribute("viewBox", `0 0 ${c.getWidth()} ${c.getHeight()}`);
+    };
+    const queue = () => {
+      if (!canDraw()) { resized = true; return; }
+      if (!frame) frame = requestAnimationFrame(flush);
+    };
+    // Report SVGs must be current even when the print dialog opens before the next frame.
+    const update = () => {
+      const activating = latest.current.active && !previouslyActive;
+      previouslyActive = latest.current.active;
+      if (!latest.current.active) {
+        cancelAnimationFrame(frame); frame = 0; resized = true;
+        return;
+      }
+      if (activating) resized = true;
+      if (renderer === "svg" || activating) { cancelAnimationFrame(frame); flush(); }
+      else queue();
+    };
+    schedule.current = update;
+    const observer = new ResizeObserver(() => { resized = true; queue(); });
+    observer.observe(element);
+    const beforePrint = () => { cancelAnimationFrame(frame); resized = true; flush(); };
+    window.addEventListener("beforeprint", beforePrint);
+    update();
     return () => {
       observer.disconnect();
-      c.dispose();
+      window.removeEventListener("beforeprint", beforePrint);
+      cancelAnimationFrame(frame);
+      schedule.current = undefined;
+      c?.dispose();
       chart.current = undefined;
     };
   }, [renderer]);
   useEffect(() => {
-    chart.current?.setOption(option, true);
-    if (renderer === "svg" && chart.current) ref.current?.querySelector("svg")?.setAttribute("viewBox", `0 0 ${chart.current.getWidth()} ${chart.current.getHeight()}`);
-  }, [option, renderer]);
+    schedule.current?.();
+  }, [option, updateMode, renderer, active]);
   return (
     <div
       role="img"
@@ -69,7 +118,7 @@ export function Chart({
       style={{ height, width: "100%" }}
     />
   );
-}
+});
 const palette = ["#2D6CC0", "#1FA971", "#F5A623", "#7A4DD4", "#E5484D"];
 export function waveSamples(phase = 0, n = 400, kind = 0) {
   return Array.from({ length: n }, (_, i) => {

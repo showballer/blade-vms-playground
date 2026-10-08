@@ -1,8 +1,9 @@
 "use client";
-import React, { useEffect, useId, useMemo, useRef, useState } from "react";
+import { CustomSelect } from "./custom-select";
+import React, { memo, useEffect, useId, useMemo, useReducer, useRef, useState } from "react";
 import { AudioLines, LoaderCircle } from "lucide-react";
 import { Button } from "./common";
-import { fieldSampleX, type FieldRecordingDetail, type FieldRequestOptions, type FieldWaveform } from "./field-types";
+import type { FieldRecordingDetail, FieldRequestOptions, FieldWaveform } from "./field-types";
 
 export type TimeMode = "relative" | "clock";
 export type VelocityUnit = "m/s" | "mm/s";
@@ -25,23 +26,48 @@ export function formatWaveTime(sample: number, wave: FieldWaveform, mode: TimeMo
   return (seconds * 1000).toLocaleString("zh-CN", { maximumFractionDigits: 3 });
 }
 
-export function FieldWaveChart({ waveform, kind = "velocity", timeMode = "relative", unit = "m/s", yLimit, compact = false, onPan }: {
+export const FieldWaveChart = memo(function FieldWaveChart({ waveform, kind = "velocity", timeMode = "relative", unit = "m/s", yLimit, compact = false, onPan }: {
   waveform?: FieldWaveform; kind?: "velocity" | "rssi"; timeMode?: TimeMode; unit?: VelocityUnit;
   yLimit?: number; compact?: boolean; onPan?: (fraction: number) => void;
 }) {
   const clip = useId();
   const pointer = useRef<number | null>(null);
+  const [element, setElement] = useState<HTMLDivElement | null>(null);
+  const [plotWidth, setPlotWidth] = useState(850);
+  useEffect(() => {
+    if (!element) return;
+    let frame = 0;
+    const measure = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const width = Math.round(element.clientWidth);
+        if (width > 0) setPlotWidth(previous => previous === width ? previous : width);
+      });
+    };
+    const observer = new ResizeObserver(measure);
+    observer.observe(element); measure();
+    return () => { cancelAnimationFrame(frame); observer.disconnect(); };
+  }, [element]);
   const chart = useMemo(() => {
     if (!waveform || !hasWave(waveform)) return null;
     const factor = kind === "velocity" && unit === "mm/s" ? 1000 : 1;
     const data = kind === "rssi" ? waveform.rssi : waveform.values;
     const envelope = waveform.envelope || [];
-    const extrema = envelope.flatMap(bucket => kind === "rssi" ? [bucket.rssiMin, bucket.rssiMax] : [bucket.min, bucket.max]);
-    const finite = [...data, ...extrema].filter((value): value is number => typeof value === "number" && Number.isFinite(value));
-    if (!finite.length) return null;
-    const width = 850, height = compact ? 115 : kind === "rssi" ? 160 : 275;
-    const left = 76, right = 48, top = 20, bottom = 35;
-    const limit = yLimit && yLimit > 0 ? yLimit : Math.max(0.000001, ...finite.map(value => Math.abs(value))) * 1.12;
+    let largest = 0, finiteCount = 0;
+    const include = (value: number | null) => {
+      if (typeof value === "number" && Number.isFinite(value)) { largest = Math.max(largest, Math.abs(value)); finiteCount++; }
+    };
+    for (const value of data) include(value);
+    for (const bucket of envelope) {
+      include(kind === "rssi" ? bucket.rssiMin : bucket.min);
+      include(kind === "rssi" ? bucket.rssiMax : bucket.max);
+    }
+    if (!finiteCount) return null;
+    // Reserve separate rows for time ticks and the axis title, while keeping
+    // the original plotting height in both the normal and compact charts.
+    const width = Math.max(260, plotWidth), height = compact ? 140 : kind === "rssi" ? 185 : 300;
+    const left = 76, right = 48, top = 20, bottom = 60;
+    const limit = yLimit && yLimit > 0 ? yLimit : Math.max(0.000001, largest) * 1.12;
     const minimum = kind === "rssi" ? 0 : -limit * factor;
     const maximum = kind === "rssi" ? 100 : limit * factor;
     const [start, end] = waveBounds(waveform);
@@ -50,7 +76,7 @@ export function FieldWaveChart({ waveform, kind = "velocity", timeMode = "relati
     let lastValid = false;
     const path = envelope.length ? envelope.map(bucket => {
       const lo = kind === "rssi" ? bucket.rssiMin : bucket.min, hi = kind === "rssi" ? bucket.rssiMax : bucket.max;
-      if (lo === null || hi === null) return "";
+      if (lo === null || hi === null || !Number.isFinite(lo) || !Number.isFinite(hi)) return "";
       const x = pointX((bucket.start + bucket.end) / 2);
       return `M${x.toFixed(2)},${pointY(lo).toFixed(2)} L${(x + 0.15).toFixed(2)},${pointY(hi).toFixed(2)}`;
     }).join(" ") : data.map((value, index) => {
@@ -61,13 +87,16 @@ export function FieldWaveChart({ waveform, kind = "velocity", timeMode = "relati
       return `${command}${pointX(sample).toFixed(2)},${pointY(value).toFixed(2)}`;
     }).join(" ");
     return { width, height, left, right, top, bottom, minimum, maximum, pointX, pointY, path, start, end,
-      clipped: kind === "velocity" && finite.some(value => Math.abs(value) > limit) };
-  }, [waveform, kind, yLimit, unit, compact]);
-  if (!chart || !waveform) return <div className={`field-chart-empty ${kind === "rssi" || compact ? "compact" : ""}`}><AudioLines size={28} /><strong>{kind === "rssi" ? "等待真实 RSSI 数据" : "等待真实振动数据"}</strong><span>连接设备并开始采集后显示，不生成模拟波形。</span></div>;
+      clipped: kind === "velocity" && largest > limit };
+  }, [waveform, kind, yLimit, unit, compact, plotWidth]);
+  if (!chart || !waveform) return <div className={`field-chart-empty ${kind === "rssi" || compact ? "compact" : ""}`}><AudioLines size={28} /><strong>{kind === "rssi" ? "等待 RSSI 数据" : "等待振动数据"}</strong><span>开始设备采集或模拟采集后显示输入波形。</span></div>;
   const { width, height, left, right, top, bottom, minimum, maximum, pointY, pointX, path, start, end } = chart;
   const format = (value: number) => Math.abs(value) > 0 && Math.abs(value) < 0.001 ? value.toExponential(1) : Number(value.toPrecision(5)).toLocaleString("zh-CN");
-  return <div className="field-plot"><svg className={`field-wave-svg ${onPan ? "pannable" : ""}`} viewBox={`0 0 ${width} ${height}`} role="img"
-    aria-label={kind === "rssi" ? "真实 RSSI 回波强度曲线，单位百分比" : unit === "m/s" ? "真实 CH1 振动速度曲线，单位米每秒" : "真实 CH1 振动速度曲线，单位毫米每秒"}
+  const endpointLabels = [start, end].map(sample => formatWaveTime(sample, waveform, timeMode));
+  const labelWidth = Math.max(...endpointLabels.map(label => label.length * 7.2));
+  const timeTicks = Math.max(2, Math.min(5, Math.floor((width - left - right) / Math.max(86, labelWidth + 24)) + 1));
+  return <div className="field-plot" ref={setElement}><svg className={`field-wave-svg ${onPan ? "pannable" : ""}`} viewBox={`0 0 ${width} ${height}`} role="img"
+    aria-label={kind === "rssi" ? "RSSI 回波强度曲线，单位百分比" : unit === "m/s" ? "CH1 振动速度曲线，单位米每秒" : "CH1 振动速度曲线，单位毫米每秒"}
     onPointerDown={event => { if (onPan) { pointer.current = event.clientX; event.currentTarget.setPointerCapture(event.pointerId); } }}
     onPointerUp={event => { if (onPan && pointer.current !== null) { const delta = (pointer.current - event.clientX) / (event.currentTarget.getBoundingClientRect().width * (width - left - right) / width); pointer.current = null; if (Math.abs(delta) > 0.003) onPan(delta); } }}
     onPointerCancel={() => { pointer.current = null; }}>
@@ -75,36 +104,52 @@ export function FieldWaveChart({ waveform, kind = "velocity", timeMode = "relati
     {Array.from({ length: kind === "rssi" || compact ? 3 : 5 }, (_, index) => {
       const value = minimum + (maximum - minimum) * index / (kind === "rssi" || compact ? 2 : 4);
       const y = top + (maximum - value) / (maximum - minimum) * (height - top - bottom);
-      return <g key={index}><line x1={left} y1={y} x2={width - right} y2={y} stroke="#e9eef5" /><text x={left - 9} y={y + 4} textAnchor="end">{format(value)}</text></g>;
+      return <g key={index}><line x1={left} y1={y} x2={width - right} y2={y} stroke="#e9eef5" strokeDasharray="3 3" /><text style={{ fontSize: 12 }} x={left - 9} y={y + 4} textAnchor="end">{format(value)}</text></g>;
     })}
-    {Array.from({ length: 5 }, (_, index) => {
-      const sample = start + (end - start) * index / 4;
-      return <text key={index} x={pointX(sample)} y={height - 12} textAnchor="middle">{formatWaveTime(sample, waveform, timeMode)}</text>;
+    {Array.from({ length: timeTicks }, (_, index) => {
+      const sample = start + (end - start) * index / (timeTicks - 1);
+      const label = formatWaveTime(sample, waveform, timeMode), halfWidth = label.length * 3.6;
+      const labelX = Math.max(halfWidth + 4, Math.min(pointX(sample), width - halfWidth - 4));
+      return <g key={index}><line x1={pointX(sample)} y1={height - bottom} x2={pointX(sample)} y2={height - bottom + 4} stroke="#d9e3ef" /><text style={{ fontSize: 12 }} x={labelX} y={height - bottom + 20} textAnchor="middle">{label}</text></g>;
     })}
     <g clipPath={`url(#${clip})`}><path d={path} fill="none" stroke={kind === "rssi" ? "#17976d" : "#2d6cc0"} strokeWidth="1.2" vectorEffect="non-scaling-stroke" />
       {waveform.values.length === 1 && <circle cx={pointX(waveform.sampleStart)} cy={pointY((kind === "rssi" ? waveform.rssi[0] : waveform.values[0]) || 0)} r="2.5" fill="#2d6cc0" />}</g>
-    <text x={left} y={top - 7}>{kind === "rssi" ? "%" : unit}</text>
-    <text x={width - right} y={height - bottom - 5} textAnchor="end">{waveform.sampleRate ? timeMode === "clock" && waveform.sampleOrigin != null ? "本机时间" : "相对时间 / ms" : "样本序号"}</text>
+    <text style={{ fontSize: 12 }} x={left} y={top - 7}>{kind === "rssi" ? "%" : unit}</text>
+    <text className="field-wave-axis-label" style={{ fontSize: 12 }} x={(left + width - right) / 2} y={height - 8} textAnchor="middle">{waveform.sampleRate ? timeMode === "clock" && waveform.sampleOrigin != null ? "本机时间" : "相对时间 / ms" : "样本序号"}</text>
   </svg>{chart.clipped && <small className="field-plot-warning">部分信号超出当前显示纵轴，请调大范围；这不等于设备超量程。</small>}</div>;
+});
+
+export type WaveScaleDraft = { draft: string; unit: VelocityUnit; editing: boolean; invalid: boolean };
+export function waveScaleDraft(state: WaveScaleDraft, action:
+  | { type: "sync"; scale: number; unit: VelocityUnit }
+  | { type: "focus" } | { type: "edit"; draft: string } | { type: "commit"; valid: boolean }): WaveScaleDraft {
+  if (action.type === "focus") return { ...state, editing: true };
+  if (action.type === "edit") return { ...state, draft: action.draft, editing: true, invalid: false };
+  if (action.type === "commit") return { ...state, editing: !action.valid, invalid: !action.valid };
+  // Live auto-range updates must never erase an in-progress or invalid user entry.
+  if (state.editing && state.unit === action.unit) return state;
+  return { draft: String(Number((action.scale * (action.unit === "mm/s" ? 1000 : 1)).toPrecision(8))), unit: action.unit, editing: false, invalid: false };
 }
 
 export function FieldWaveOptions({ timeMode, onTime, unit, onUnit, scale, onScale, fit }: {
   timeMode: TimeMode; onTime: (value: TimeMode) => void; unit: VelocityUnit; onUnit: (value: VelocityUnit) => void;
   scale: number; onScale: (value: number) => void; fit?: () => void;
 }) {
-  const [draft, setDraft] = useState("");
-  const [invalid, setInvalid] = useState(false);
-  useEffect(() => { setDraft(String(Number((scale * (unit === "mm/s" ? 1000 : 1)).toPrecision(8)))); setInvalid(false); }, [scale, unit]);
-  function commit() { const value = Number(draft) / (unit === "mm/s" ? 1000 : 1); const valid = draft.trim() !== "" && Number.isFinite(value) && value > 0 && value <= 1e6; setInvalid(!valid); if (valid) onScale(value); }
-  return <div className="field-wave-options"><label>横坐标<select aria-label="横坐标" value={timeMode} onChange={event => onTime(event.target.value as TimeMode)}><option value="relative">相对采集时间</option><option value="clock">实际时间（本机推算）</option></select></label>
-    <label>速度单位<select aria-label="速度单位" value={unit} onChange={event => onUnit(event.target.value as VelocityUnit)}><option value="mm/s">mm/s</option><option value="m/s">m/s</option></select></label>
-    <label>固定纵轴 ±（{unit}）<input aria-label="固定纵轴范围" aria-invalid={invalid} title="回车或离开输入框生效" type="number" min={unit === "mm/s" ? 0.000001 : 0.000000001} step="any" value={draft} onChange={event => setDraft(event.target.value)} onBlur={commit} onKeyDown={event => { if (event.key === "Enter") commit(); }} />{invalid && <small>请输入有效正数</small>}</label>
+  const [{ draft, invalid }, dispatch] = useReducer(waveScaleDraft, { draft: "", unit, editing: false, invalid: false });
+  useEffect(() => { dispatch({ type: "sync", scale, unit }); }, [scale, unit]);
+  function commit() { const value = Number(draft) / (unit === "mm/s" ? 1000 : 1); const valid = draft.trim() !== "" && Number.isFinite(value) && value > 0 && value <= 1e6; dispatch({ type: "commit", valid }); if (valid) onScale(value); }
+  return <div className="field-wave-options"><label>横坐标<CustomSelect aria-label="横坐标" value={timeMode} onChange={event => onTime(event.target.value as TimeMode)}><option value="relative">相对采集时间</option><option value="clock">实际时间（本机推算）</option></CustomSelect></label>
+    <label>速度单位<CustomSelect aria-label="速度单位" value={unit} onChange={event => onUnit(event.target.value as VelocityUnit)}><option value="mm/s">mm/s</option><option value="m/s">m/s</option></CustomSelect></label>
+    <label>固定纵轴 ±（{unit}）<input aria-label="固定纵轴范围" aria-invalid={invalid} title="回车或离开输入框生效" type="number" min={unit === "mm/s" ? 0.000001 : 0.000000001} step="any" value={draft} onFocus={() => dispatch({ type: "focus" })} onChange={event => dispatch({ type: "edit", draft: event.target.value })} onBlur={commit} onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); commit(); } }} />{invalid && <small>请输入有效正数</small>}</label>
     {fit && <Button onClick={fit}>适配当前幅值</Button>}
   </div>;
 }
 export function waveLimit(wave?: FieldWaveform): number {
   if (!wave) return 0.5;
-  return Math.max(0.000001, ...wave.values.map(Math.abs), ...(wave.envelope || []).flatMap(item => [Math.abs(item.min), Math.abs(item.max)])) * 1.2;
+  let largest = 0.000001;
+  for (const value of wave.values) if (Number.isFinite(value)) largest = Math.max(largest, Math.abs(value));
+  for (const item of wave.envelope || []) for (const value of [item.min, item.max]) if (Number.isFinite(value)) largest = Math.max(largest, Math.abs(value));
+  return largest * 1.2;
 }
 
 export function FieldRecordingViewer({ detail, load, onError }: {
@@ -148,7 +193,7 @@ export function FieldRecordingViewer({ detail, load, onError }: {
   const wave = view?.waveform;
   return <div className="field-full-waveform"><p className="field-subtext">完整记录 {total.toLocaleString("zh-CN")} 点 · {rate ? `${(total / rate).toFixed(3)} 秒` : "采样率未知"}。拖动概览选区或下方波形平移；缩小选区查看逐点数据。</p>
     {overview?.waveform && hasWave(overview.waveform) && <div className="field-wave-overview"><strong>全程概览 · 拖动选区两侧改变范围</strong><FieldWaveChart waveform={overview.waveform} unit={unit} compact timeMode={timeMode} />
-      <div className="field-overview-track" onPointerMove={event => {
+      <div className="field-overview-track" style={{ left: 76, right: 48 }} onPointerMove={event => {
         if (!drag.current) return;
         const delta = (event.clientX - drag.current.x) / event.currentTarget.getBoundingClientRect().width * total;
         const [lo, hi] = drag.current.range;

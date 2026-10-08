@@ -1,4 +1,5 @@
 "use client";
+import { CustomSelect } from "./custom-select";
 import { useEffect, useRef, useState } from "react";
 import { api, download, type Item } from "./api";
 import { Button, Card, Empty, Select, Table, Tag } from "./common";
@@ -31,7 +32,7 @@ export function AuditLogScreen({ notify }: { notify: (message: string) => void }
   useEffect(() => { void load(emptyFilters); return () => { requestId.current++; }; }, []);
   const textField = (key: "actor" | "target" | "from" | "to", label: string, type = "text") => <label className="field"><span>{label}</span><input type={type} aria-label={label} value={draft[key]} maxLength={200} onChange={e => setDraft({ ...draft, [key]: e.target.value })} /></label>;
   return <Card className="audit-log-screen" title="操作日志" tools={<div className="joined">
-    <select aria-label="日志导出格式" value={format} disabled={exporting} onChange={e => setFormat(e.target.value)}>{["csv", "txt", "xlsx", "json"].map(value => <option key={value} value={value}>{value.toUpperCase()}</option>)}</select>
+    <CustomSelect aria-label="日志导出格式" value={format} disabled={exporting} onChange={e => setFormat(e.target.value)}>{["csv", "txt", "xlsx", "json"].map(value => <option key={value} value={value}>{value.toUpperCase()}</option>)}</CustomSelect>
     <Button disabled={loading || exporting || dirty || !!error || !page.total} onClick={async () => {
       setExporting(true);
       try { const params = filterParams(applied); params.set("format", format); const saved = await download("export/logs?" + params); notify(saved ? "已导出全部匹配日志" : "已取消导出"); }

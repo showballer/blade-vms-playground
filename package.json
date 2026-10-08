@@ -11,6 +11,9 @@
   ],
   "scripts": {
     "test:field": "node scripts/test-local-auth.cjs && node scripts/test-field-service.cjs && node scripts/test-field-window.cjs && tsx packages/ui/src/field-desktop.test.tsx && tsx --tsconfig apps/desktop/tsconfig.json packages/ui/src/field-bending.test.tsx",
+    "test:unified-auth": "node scripts/test-unified-auth.cjs && node scripts/test-field-account-bridge.cjs",
+    "test:unified-account-e2e": "node --env-file=apps/web/.env.local scripts/test-unified-account-e2e.mjs",
+    "test:web-account": "node --env-file=apps/web/.env.local --import tsx scripts/test-web-account.ts",
     "test:bending-desktop": "electron scripts/bending-desktop-validation.cjs",
     "test:field-desktop": "npm run build -w @blade/desktop && electron scripts/field-desktop-smoke.cjs",
     "test:field-responsive": "npm run build -w @blade/desktop && electron scripts/field-responsive-smoke.cjs",

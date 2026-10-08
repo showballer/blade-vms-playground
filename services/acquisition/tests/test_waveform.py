@@ -10,6 +10,33 @@ from blade_acquisition.waveform import WaveformReader, make_wave
 
 
 class WaveformTests(unittest.TestCase):
+    def test_high_rate_live_envelope_retains_boundary_spikes_and_missing_rssi(self):
+        rows = [(index + 123, float(index % 127 - 63),
+                 None if 1000 <= index + 123 < 2000 else float(index % 101), False)
+                for index in range(218750)]
+        rows[0] = (123, -987.25, None, True)
+        rows[-1] = (218872, 1234.5, None, True)
+        rows[100001] = (100124, 4321.5, 80.0, True)
+        before = list(rows)
+        wave = make_wave(rows, 218750, 1700000000)
+        self.assertEqual(rows, before)
+        self.assertEqual(wave["sourceSamples"], 218750)
+        self.assertEqual(wave["overrangeCount"], 3)
+        self.assertEqual(wave["missingRssiCount"], 1002)
+        self.assertEqual(wave["latest"], {"velocity": 1234.5, "rssi": None})
+        envelope = wave["envelope"]
+        self.assertLessEqual(len(envelope), 1000)
+        self.assertEqual((envelope[0]["start"], envelope[-1]["end"]), (123, 218873))
+        self.assertEqual(min(bucket["min"] for bucket in envelope), -987.25)
+        self.assertEqual(max(bucket["max"] for bucket in envelope), 4321.5)
+        self.assertEqual(sum(bucket["end"] - bucket["start"] for bucket in envelope), 218750)
+        unknown = [bucket for bucket in envelope if 1000 <= bucket["start"] < bucket["end"] <= 2000]
+        self.assertGreater(len(unknown), 0)
+        for bucket in unknown:
+            self.assertEqual(bucket["missing"], bucket["end"] - bucket["start"])
+            self.assertIsNone(bucket["rssiMin"])
+            self.assertIsNone(bucket["rssiMax"])
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.store = RecordingStore(Path(self.temp.name))

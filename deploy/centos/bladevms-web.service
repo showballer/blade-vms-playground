@@ -1,0 +1,50 @@
+[Unit]
+Description=BladeVMS Web and API
+Wants=network-online.target
+After=network-online.target docker.service
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=bladevms
+Group=bladevms
+WorkingDirectory=/opt/bladevms/current/apps/web
+Environment=NODE_ENV=production
+Environment=NEXT_TELEMETRY_DISABLED=1
+Environment=TZ=Asia/Shanghai
+Environment=NODE_OPTIONS=--max-old-space-size=1536
+Environment=PYTHONDONTWRITEBYTECODE=1
+EnvironmentFile=/etc/bladevms/web.env
+# Keep a single Node process: the analysis concurrency guard is process-local.
+ExecStart=/usr/bin/node /opt/bladevms/current/node_modules/next/dist/bin/next start --hostname 127.0.0.1 --port 3210
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=90
+TimeoutStopSec=200
+KillMode=control-group
+UMask=0077
+LimitNOFILE=65536
+TasksMax=256
+MemoryAccounting=true
+# Includes Node, native buffers, and all short-lived Python analysis children.
+MemoryMax=2500M
+OOMPolicy=stop
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+ReadWritePaths=/var/lib/bladevms/web-rotation /opt/bladevms/current/apps/web/.next/cache
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bladevms-web
+
+[Install]
+WantedBy=multi-user.target

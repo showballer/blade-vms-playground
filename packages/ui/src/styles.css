@@ -1,3 +1,5 @@
+@import "./custom-select.css";
+
 :root {
   --accent: #2d6cc0;
   --accent-soft: #eaf2fd;
@@ -297,6 +299,61 @@ small {
 }
 .header-actions .btn {
   position: relative;
+}
+.header-actions .client-download-trigger {
+  flex: none;
+  gap: 7px;
+  margin-right: 9px;
+  padding-inline: 12px;
+  border-color: #d9e6f7;
+  border-radius: 7px;
+  background: #f3f7fe;
+  color: var(--accent);
+  font-weight: 550;
+  white-space: nowrap;
+}
+.header-actions .client-download-trigger:hover {
+  border-color: #b5cfee;
+  background: #eaf2fd;
+}
+.client-download-intro {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-block: 4px 24px;
+}
+.client-download-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.client-download-intro h3 { margin: 0 0 5px; font-size: 16px; }
+.client-download-intro p,
+.client-download-package-info p { color: #718096; font-size: 12px; line-height: 1.6; }
+.client-download-package {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #f8fafc;
+}
+.client-download-package-info strong { display: block; margin-bottom: 6px; font-size: 14px; }
+.client-download-package-info strong span { margin-left: 5px; font-size: 12px; font-weight: 400; color: #718096; }
+.client-download-link { text-decoration: none; white-space: nowrap; }
+.client-download-note { margin: 14px 0 0; font-size: 12px; color: #718096; }
+.client-download-feedback { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 12px; min-height: 104px; color: #718096; }
+@media (max-width: 760px) {
+  .app-shell.web .header-actions .client-download-trigger { display: inline-flex; min-width: 35px; padding-inline: 9px; margin-right: 5px; }
+  .client-download-trigger > span { display: none; }
 }
 .avatar {
   display: flex;
@@ -1875,3 +1932,23 @@ pre {
   .report-figure [role="img"] > div { width: 100% !important; height: 100% !important; }
   .report-figure svg { display: block; width: 100%; height: 100%; }
 }
+
+/* Consistent Web workbench spacing; keep report/print geometry unchanged. */
+@media screen {
+  .app-shell.web { background: #f3f6fa; }
+  .app-shell.web .app-header { min-height: 68px; padding-inline: 24px; }
+  .app-shell.web .sidebar { width: 184px; background: #fff; padding: 20px 12px; }
+  .app-shell.web .sidebar > button { font-size: 14px; min-height: 46px; border-radius: 8px; margin: 3px 0; }
+  .app-shell.web .nav-caption { font-size: 12px; color: #7d8b9f; padding: 8px 12px 16px; }
+  .app-shell.web .workspace { padding: 24px 28px; gap: 20px; }
+  .app-shell.web .card { border-radius: 10px; padding: 20px; border-color: #dfe6ef; box-shadow: 0 2px 8px #263f6405; }
+  .app-shell.web .card.no-pad { padding: 0; }
+  .app-shell.web .card h2 { font-size: 16px; }
+  .app-shell.web .btn { min-height: 35px; font-size: 13px; }
+  .app-shell.web .sidebar-footer { font-size: 12px; }
+  .app-shell.web .sidebar-footer small { font-size: 12px; }
+}
+@media screen and (max-width: 1000px) { .app-shell.web .workspace { padding: 18px; } .app-shell.web .sidebar { width: 158px; } }
+@media screen and (max-width: 760px) { .app-shell.web .workspace { padding: 14px 12px; } .app-shell.web .sidebar { width: 100%; padding: 8px; } .app-shell.web .app-header { padding: 12px 16px; } .app-shell.web .card { padding: 16px; } }
+@media screen and (max-width: 880px) { .app-shell.web .sidebar { width: 64px; padding: 10px 7px; } .app-shell.web .sidebar > button { width: 100%; justify-content: center; padding-inline: 0; } }
+@media screen and (max-width: 600px) { .app-shell.web .sidebar { width: 52px; padding-inline: 4px; } }

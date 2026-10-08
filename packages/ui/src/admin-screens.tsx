@@ -12,6 +12,7 @@ import {
 import { api, download, saveBlob, roleNames, type Item } from "./api";
 import { apiExamples, apiExample, apiRequestSample, apiReferenceMarkdown, readApiExample, type ApiExample } from "./developer-api";
 import { AuditLogScreen } from "./audit-log-screen";
+import { AccountPasswordDialog } from "./account-password-dialog";
 import {
   Button,
   Card,
@@ -51,8 +52,9 @@ const userFields: Field[] = [
   { key: "tenant", label: "课题组", required: true },
   {
     key: "password",
-    label: "密码（至少 8 位；编辑时留空不修改）",
+    label: "统一密码（12–128 位）",
     type: "password",
+    required: true,
   },
   { key: "active", label: "启用用户", type: "checkbox" },
 ];
@@ -62,12 +64,14 @@ export function Administration({
   notify,
   canWrite,
   initialTab = "users",
-}: ContextProps & { initialTab?: string }) {
+  onReauthenticate,
+}: ContextProps & { initialTab?: string; onReauthenticate?: () => void }) {
   const [tab, setTab] = useState(initialTab),
     [users, setUsers] = useState<Item[]>([]),
     [backups, setBackups] = useState<Item[]>([]),
     [query, setQuery] = useState(""),
     [editing, setEditing] = useState<Item | Record<string, any> | null>(null),
+    [resettingPassword, setResettingPassword] = useState<Item | null>(null),
     [review, setReview] = useState<Item | null>(null),
     [restore, setRestore] = useState<Item | null>(null),
     [schedule, setSchedule] = useState(false),
@@ -183,6 +187,7 @@ export function Administration({
                         >
                           编辑权限
                         </Button>
+                        <Button variant="ghost" onClick={() => setResettingPassword(u)}><KeyRound size={14} />重置密码</Button>
                         <Button
                           variant="ghost"
                           disabled={u.id === data.user.id}
@@ -357,22 +362,30 @@ export function Administration({
           title={editing.id ? "编辑用户与权限" : "新增用户"}
           fields={
             editing.id
-              ? userFields.filter((f) => f.key !== "username")
+              ? userFields.filter((f) => f.key !== "username" && f.key !== "password")
               : userFields
           }
           initial={editing}
           onClose={() => setEditing(null)}
           onSave={async (v) => {
-            await api(
+            const result = await api<{ reauthenticate?: boolean }>(
               "users" + (editing.id ? "/" + editing.id : ""),
               editing.id ? "PUT" : "POST",
               v,
             );
+            if (result.reauthenticate) { onReauthenticate?.(); return; }
             await load();
             notify("用户已保存");
           }}
         />
       )}
+      {resettingPassword && <AccountPasswordDialog mode="reset" username={resettingPassword.username} onClose={() => setResettingPassword(null)} onSave={async ({ newPassword }) => {
+        const result = await api<{ reauthenticate: boolean }>("users/" + resettingPassword.id + "/password", "POST", { newPassword });
+        setResettingPassword(null);
+        if (result.reauthenticate) { onReauthenticate?.(); return; }
+        notify("统一密码已重置；已绑定桌面下次联网登录请使用新密码。");
+        await load();
+      }} />}
       {review && (
         <EditDialog
           title="告警处理"

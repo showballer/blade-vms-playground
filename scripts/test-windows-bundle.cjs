@@ -1,6 +1,6 @@
 // Hardware-free Windows x64 release gate. This script NEVER calls /start or an SDK function.
 // Node 22+: node scripts/test-windows-bundle.cjs --resources <win-unpacked/resources>
-//          --installer <BladeVMS-Setup-1.3.0-x64.exe> [--output <report-directory>]
+//          --installer <BladeVMS-Setup-VERSION-x64.exe> [--output <report-directory>]
 // The installer test changes only a disposable CI user's BladeVMS installation. Do not run
 // against a real user's existing installation. Outside CI, opt in with BLADE_ALLOW_INSTALL_SMOKE=1.
 'use strict';
@@ -327,7 +327,7 @@ async function validateInstalledDesktop(directory, environment, temporary, outpu
     assert.equal(stored.mustChangePassword, false, 'Electron must use the disposable --user-data-dir profile');
     assert.equal(stored.hash, scryptSync(changed, stored.salt, 64).toString('hex'), 'Changed test password was not persisted');
     await reload();
-    await waitFor(async () => (await body()).includes('开始真实采集'), 'authenticated acquisition UI');
+    await waitFor(async () => (await body()).includes('开始采集'), 'authenticated acquisition UI');
     const status = await waitFor(async () => {
       const response = await field({ action: 'status' });
       return response.status === 200 && response.data.service.state === 'ready' && response.data;
@@ -342,7 +342,7 @@ async function validateInstalledDesktop(directory, environment, temporary, outpu
     const text = await body();
     assert.ok(text.includes('等待真实振动数据'));
     assert.ok(!text.includes('离线演示工作区'));
-    await waitFor(async () => await cdp.evaluate('[...document.querySelectorAll("button")].find(b=>b.textContent.includes("开始真实采集"))?.disabled') === false,
+    await waitFor(async () => await cdp.evaluate('[...document.querySelectorAll("button")].find(b=>b.textContent.includes("开始采集"))?.disabled') === false,
       'renderer polling updates the ready start control');
     const screenshot = await cdp.send('Page.captureScreenshot', { format: 'png' });
     fs.writeFileSync(path.join(output, 'installed-windows-acquisition-idle.png'), Buffer.from(screenshot.data, 'base64'));

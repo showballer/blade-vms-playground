@@ -1,4 +1,5 @@
 "use client";
+import { CustomSelect } from "./custom-select";
 import { useEffect, useMemo, useState } from "react";
 import {
   Camera,
@@ -474,7 +475,7 @@ export function Acquisition({
                 <label className="form-row" key={f.key}>
                   <span>{f.label}</span>
                   {f.options ? (
-                    <select
+                    <CustomSelect
                       value={form[f.key] || ""}
                       disabled={!canWrite}
                       onChange={(e) =>
@@ -485,7 +486,7 @@ export function Acquisition({
                       {(f.options as string[]).map((o) => (
                         <option key={o}>{o}</option>
                       ))}
-                    </select>
+                    </CustomSelect>
                   ) : (
                     <input
                       disabled={!canWrite}

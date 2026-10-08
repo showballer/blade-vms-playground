@@ -1,0 +1,11 @@
+[Unit]
+Description=Check BladeVMS business snapshot schedules every minute
+
+[Timer]
+OnCalendar=*-*-* *:*:00
+AccuracySec=1s
+Persistent=true
+Unit=bladevms-backup.service
+
+[Install]
+WantedBy=timers.target
