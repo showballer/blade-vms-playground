@@ -8,6 +8,9 @@ export type User = {
   role: "admin" | "analyst" | "operator" | "viewer";
   tenant: string;
 };
+export class ApiError extends Error {
+  constructor(message: string, public status: number) { super(message); this.name = "ApiError"; }
+}
 export type Bootstrap = {
   user: User;
   tasks: Item[];
@@ -73,7 +76,7 @@ export async function api<T = any>(
       method,
       body,
     });
-    if (res.status >= 400) throw new Error(res.data.error || "请求失败");
+    if (res.status >= 400) throw new ApiError(res.data.error || "请求失败", res.status);
     return res.data;
   }
   const res = await fetch("/api/v1/" + path, {
@@ -83,7 +86,7 @@ export async function api<T = any>(
     body: body ? JSON.stringify(body) : undefined,
   });
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error || "请求失败");
+  if (!res.ok) throw new ApiError(data.error || "请求失败", res.status);
   return data;
 }
 export async function download(path: string): Promise<boolean> {

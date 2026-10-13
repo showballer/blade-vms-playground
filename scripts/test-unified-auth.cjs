@@ -16,7 +16,7 @@ const json = (data, code = 200, headers) => new Response(JSON.stringify(data), {
 const network = (code = "ECONNREFUSED") => Object.assign(new TypeError("fetch failed"), { cause: Object.assign(new Error("network unavailable"), { code }) });
 function deferred() { let resolve; const promise = new Promise(yes => { resolve = yes; }); return { resolve, promise }; }
 
-function fixture(t) {
+function fixture(t, authOptions = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "blade-unified-auth-test-"));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const file = path.join(directory, "unified.json");
@@ -52,7 +52,7 @@ function fixture(t) {
     server.requests.push({ url, options });
     return server.handler ? server.handler(url, options, respond) : respond(url, options);
   };
-  const options = { file, localAuth, now: () => time, fetchImpl };
+  const options = { file, localAuth, now: () => time, fetchImpl, ...authOptions };
   const auth = createUnifiedAuth(options);
   return { directory, file, localFile, localAuth, localPassword, localContents, server, auth, options,
     get time() { return time; }, advance(ms) { time += ms; }, setTime(value) { time = value; },
@@ -452,4 +452,57 @@ test("initial binding refuses to replace another binding created while Web authe
   assert.equal(fs.readFileSync(f.file, "utf8"), contents);
   assert.throws(() => f.auth.session(), status(500));
   await assert.rejects(f.auth.login("admin", f.localPassword), status(500));
+});
+
+
+test("capture sync retains a Web token only in main-process memory and logout clears it", async t => {
+  const f = fixture(t, { retainSessionToken: true });
+  const session = await f.bind();
+  const capability = f.auth.cloudSession();
+  assert.equal(capability.token, f.server.tokens[0]);
+  assert.equal(f.server.cleanupCalls, 0);
+  assert.equal(capability.serverUrl, ORIGIN);
+  assert.equal(f.auth.info().syncPolicy, "capture-sync");
+  for (const response of [session, f.auth.info(), f.auth.session(), f.auth.requireSession(), f.auth.cloudBinding()]) {
+    assert.equal(JSON.stringify(response).includes(capability.token), false);
+    assert.equal(JSON.stringify(response).includes(f.server.password), false);
+  }
+  assert.equal(fs.readFileSync(f.file, "utf8").includes(capability.token), false);
+  const restarted = createUnifiedAuth(f.options);
+  assert.equal(restarted.cloudSession(), null);
+  f.auth.logout();
+  assert.equal(f.auth.cloudSession(), null);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.server.cleanupCalls, 1);
+  f.offline();
+  await restarted.login(f.server.user.username, f.server.password);
+  assert.equal(restarted.cloudSession(), null);
+  assert.equal(restarted.session().account.offline, true);
+});
+
+test("clearing a rejected sync session does not end acquisition login and online reauthentication replaces it", async t => {
+  const f = fixture(t, { retainSessionToken: true }); await f.bind();
+  const first = f.auth.cloudSession().token;
+  f.auth.clearCloudSession();
+  assert.equal(f.auth.cloudSession(), null);
+  assert.equal(f.auth.requireSession().username, f.server.user.username);
+  await f.auth.login(f.server.user.username, f.server.password);
+  assert.notEqual(f.auth.cloudSession().token, first);
+  await f.auth.changePassword(f.server.password, "changed-sync-password-fixture");
+  assert.equal(f.auth.cloudSession().token, f.server.tokens.at(-1));
+  assert.equal(fs.readFileSync(f.file, "utf8").includes(f.auth.cloudSession().token), false);
+});
+
+test("canceling an in-flight sync-enabled bind discards the unadopted token", async t => {
+  const f = fixture(t, { retainSessionToken: true });
+  const gate = deferred();
+  f.server.handler = async (url, options, respond) => {
+    if (options.method === "POST") await gate.promise;
+    return respond(url, options);
+  };
+  const binding = f.bind(); f.auth.logout(); gate.resolve();
+  await assert.rejects(binding, status(409));
+  assert.equal(f.auth.cloudSession(), null);
+  assert.equal(f.server.cleanupCalls, 1);
+  assert.equal(fs.existsSync(f.file), false);
 });

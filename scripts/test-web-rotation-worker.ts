@@ -5,6 +5,7 @@ import path from "node:path";
 import { gzipSync } from "node:zlib";
 import assert from "node:assert/strict";
 import { rotationUpload, rotationWorker } from "../apps/web/lib/rotation";
+import { HttpError } from "../apps/web/lib/db";
 async function main() {
   const root = await mkdtemp(path.join(os.tmpdir(), "blade-web-worker-check-"));
   const previous = process.env.BLADE_ANALYSIS_DATA_DIR;
@@ -23,6 +24,9 @@ async function main() {
     assert.equal(record.source, "simulation");
     assert.equal(isolated.recordings.length, 0);
     assert.ok(Math.abs(result.modeShape.points[0].amplitude - 0.02) < 0.0001);
+    const running = rotationWorker(user, { action: "recordings" });
+    await assert.rejects(rotationWorker(user, { action: "recordings" }), error => error instanceof HttpError && error.status === 429);
+    await running;
     await assert.rejects(rotationWorker({ ...user, id: "other-user" }, { action: "rotation", parameters: { recordingIds: [record.id], rpm: 1200 } }), /记录|文件|No such file/);
     // Exercise worker termination and cleanup without waiting for the timeout.
     if (process.platform !== "win32") {

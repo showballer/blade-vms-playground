@@ -1,0 +1,71 @@
+.health-trends {
+  container-type: inline-size;
+  container-name: health-trends;
+}
+.health-trends .trend-heading-tools,
+.health-trends .trend-chart-toolbar,
+.health-trends .trend-data-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  min-width: 0;
+}
+.health-trends .trend-heading-tools { margin-left: auto; }
+.health-trends .trend-heading-tools .tag { white-space: nowrap; }
+.health-trends .trend-archive-toggle { color: var(--accent, #2d6cc0); }
+.health-trends .trend-archive-toggle .is-open { transform: rotate(180deg); }
+.health-trends .trend-chart-toolbar {
+  justify-content: space-between;
+  padding: 10px 0 12px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--line, #e1e8f1);
+}
+.health-trends .trend-view-controls { min-width: 0; }
+.health-trends .trend-view-controls > .inline-field { gap: 10px; }
+.health-trends .trend-view-controls .custom-select { width: 160px; }
+.health-trends .trend-view-label { color: var(--muted, #74849b); font-size: 12px; }
+.health-trends .trend-data-actions { margin-left: auto; gap: 8px; }
+.health-trends .trend-mark-action { display: inline-flex; }
+.health-trends .trend-data-actions .result-export { padding-left: 12px; border-left: 1px solid var(--line, #e1e8f1); }
+.health-trends .trend-data-actions .result-export > .custom-select { width: 84px; }
+.health-trends .trend-archive-controls:not([hidden]) {
+  gap: 12px;
+  margin: 0 0 16px;
+  padding: 14px;
+  border: 1px solid #e1e8f1;
+  border-radius: 8px;
+  background: #f7f9fc;
+}
+.health-trends .trend-source-row > .inline-field:first-child { flex: 1 1 310px; min-width: 0; }
+.health-trends .trend-source-row > .inline-field:first-child .custom-select { flex: 1; width: 100%; max-width: 480px; }
+.health-trends .trend-source-row > .inline-field:first-child > span { flex: none; }
+.health-trends .trend-source-row > .inline-field:nth-child(2) { white-space: nowrap; }
+.health-trends .trend-source-row + .hint { margin: 0; line-height: 1.6; overflow-wrap: anywhere; }
+.health-trends .trend-preview-row,
+.health-trends .trend-snapshot-controls { padding-top: 12px; border-top: 1px solid #e1e8f1; }
+.health-trends .trend-snapshot-controls .custom-select { width: 180px; }
+.health-trends .trend-playback-controls { margin-bottom: 14px; padding: 10px 12px; border-radius: 6px; background: #f7f9fc; }
+.health-trends .trend-playback-controls .mono { white-space: nowrap; color: var(--muted, #74849b); font-size: 11px; }
+.health-trends .trend-chart-surface { min-width: 0; }
+.health-trends > .health-explanation { padding-top: 8px; margin-top: 6px; border-top: 1px solid #edf1f6; }
+@container health-trends (max-width: 750px) {
+  .health-trends .trend-data-actions { gap: 6px; }
+  .health-trends .trend-data-actions .result-export { padding-left: 8px; }
+  .health-trends .trend-view-controls .custom-select { width: 142px; }
+  .health-trends .trend-playback-controls input[type="range"] { flex-basis: 100%; order: 1; }
+}
+@container health-trends (max-width: 600px) {
+  .health-trends .trend-chart-toolbar { align-items: stretch; gap: 10px; }
+  .health-trends .trend-view-controls { flex-basis: 100%; }
+  .health-trends .trend-view-controls .inline-field { display: flex; }
+  .health-trends .trend-view-controls .custom-select { flex: 1; width: auto; max-width: none; }
+  .health-trends .trend-data-actions { width: 100%; margin-left: 0; justify-content: space-between; }
+  .health-trends .trend-data-actions .result-export { padding-left: 0; border-left: 0; }
+  .health-trends .trend-source-row > .inline-field:first-child { flex-basis: 100%; }
+  .health-trends .trend-archive-controls:not([hidden]) { padding: 12px; }
+}
+@container health-trends (max-width: 380px) {
+  .health-trends .trend-heading-tools { margin-left: 0; gap: 6px; }
+  .health-trends .trend-data-actions { align-items: flex-start; flex-direction: column; }
+}

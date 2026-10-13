@@ -18,6 +18,7 @@
 | 服务身份 | Unix 用户及组 `bladevms`，禁止交互登录 |
 | 运行环境 | `/etc/bladevms/web.env`，`root:bladevms`，权限 `0640` |
 | 分析 Python | Python 3.12 venv：`/opt/bladevms/venv/bin/python` |
+| 桌面采集与上传暂存 | `/var/lib/bladevms/web-captures`，`bladevms:bladevms`，目录权限 `0700` |
 | 旋转原始数据 | `/var/lib/bladevms/web-rotation`，`bladevms:bladevms`，目录权限 `0700` |
 | 数据库 | 复用现有 MySQL 容器；仅 `blade_vms_playground` 库及 `blade_vms_app` 账号 |
 | Windows 下载（可选） | `/var/lib/bladevms/downloads/BladeVMS-Setup-1.3.0-x64.exe` |
@@ -72,7 +73,7 @@ id bladevms || useradd --system --gid bladevms --home-dir /var/lib/bladevms --sh
 install -d -o root -g root -m 0755 /opt/bladevms /opt/bladevms/releases
 install -d -o root -g root -m 0700 /opt/bladevms/rollback
 install -d -o root -g bladevms -m 0750 /etc/bladevms /var/lib/bladevms
-install -d -o bladevms -g bladevms -m 0700 /var/lib/bladevms/web-rotation
+install -d -o bladevms -g bladevms -m 0700 /var/lib/bladevms/web-rotation /var/lib/bladevms/web-captures
 install -d -o root -g bladevms -m 0750 /var/lib/bladevms/downloads
 ```
 
@@ -113,7 +114,7 @@ runuser -u bladevms -- env -i PATH=/usr/bin:/bin /usr/bin/node --env-file=/etc/b
 
 ## 4. 安装服务与反向代理
 
-先创建 Next 的可写缓存路径。systemd 的 `ProtectSystem=strict` 只允许分析目录和该缓存目录持久写入；缺少目录会使服务启动失败。
+先创建 Next 的可写缓存路径。systemd 的 `ProtectSystem=strict` 只允许分析目录、采集目录和该缓存目录持久写入；缺少目录会使服务启动失败。
 
 ```sh
 install -d -o bladevms -g bladevms -m 0700 /opt/bladevms/current/apps/web/.next/cache
@@ -192,3 +193,17 @@ ss -ltnp
 ```
 
 上述完整回退适用于本次由 BladeVMS 启用的 Nginx；如果上线后 Nginx 增加了其他业务站点，先移除 BladeVMS server 配置并验证/重载，使 3000 释放，避免停掉其他站点。参考 `/opt/bladevms/rollback/soniva-admin-before.json` 核对旧容器端口和状态，按旧应用自身的健康检查验收。保留新库、新原始数据、发布目录和日志供排查，不删除 MySQL 数据，不把旧应用回退当作撤销 BladeVMS 数据迁移。
+
+## 2026-10-13 联动功能的增量升级
+
+此节是当前源码的部署要求，不代表线上已升级。保留现有数据库和数据目录；不运行 `db:setup`，不重新导入本地数据库。
+
+- 发布前备份现有 SQL、旋转数据，并在后续备份中纳入完整 `web-captures`（包括 incoming、complete、latest.json）。业务快照不等于原始二进制文件备份。
+- `users` 新增可空 `deleted_at`；可单独调用 `scripts/migrations/user-soft-delete.mjs` 的 `migrateUserSoftDelete(connection)`，或在确认现有用户不为空后使用上述 `migrate.mjs`。它保留账号和历史业务记录。
+- 以现有服务身份执行 `node --env-file=/etc/bladevms/web.env /opt/bladevms/current/scripts/migrate-captures.mjs`，只创建 `captures` 表，不初始化账号。
+- 环境新增 `BLADE_CAPTURE_DATA_DIR=/var/lib/bladevms/web-captures`，创建目录并给服务用户 0700 权限。更新 systemd `ReadWritePaths` 后执行 daemon-reload，再切换已构建发布目录并重启。只有环境变量而未放开目录写权限会导致上传失败。
+- 现有 Nginx 的 144 MiB / 200 秒限制足够容纳 4 MiB 原始分段与最长 180 秒完整性校验；保留认证转发和禁用代理缓存。每条原始记录总量上限 64 GiB，不代表可用磁盘配额；上传失败时保留本机源数据。
+- Web 与新版客户端需配套发布。仅更新 Web，不会让旧 1.4.0 客户端产生推送；仅更新客户端而未迁移 Web，会显示同步失败，但本机采集和保存应继续。
+- 回退代码时保留新增表、字段和原始目录，不删除已上传数据；旧代码不使用新增字段即可继续原有功能。
+
+操作流程和权限见 [桌面与 Web 联动](../../CLOUD_CAPTURE_FLOW.md)。

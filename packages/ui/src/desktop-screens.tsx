@@ -11,6 +11,9 @@ import {
   Save,
   Trash2,
   RefreshCw,
+  ScanLine,
+  ChartNoAxesCombined,
+  ShieldCheck,
 } from "lucide-react";
 import { api, type Item } from "./api";
 import { ImportDialog } from "./import-dialog";
@@ -713,6 +716,27 @@ export function Signal({
         ]);
     }
   }, [tab, input, zoom, channel]);
+  // Keep chart navigation inside its canvas; the toolbar has its own layout row.
+  const chartOption = useMemo(() => {
+    const chart = option as Record<string, any>;
+    if (!Object.keys(chart).length) return chart;
+    const showZoom = zoom && tab !== "feat";
+    const sliderBottom = tab === "tf" ? 38 : 12;
+    return {
+      ...chart,
+      tooltip: { ...chart.tooltip, confine: true },
+      ...(chart.legend ? { legend: { ...chart.legend, type: "scroll", top: 6, left: 8, right: 12 } } : {}),
+      grid: {
+        ...chart.grid,
+        // The original-time axis also needs room for its unit below tick labels.
+        bottom: showZoom ? (tab === "tf" ? 94 : tab === "time" ? 90 : 72) : chart.grid?.bottom,
+      },
+      dataZoom: showZoom ? [
+        { type: "inside", filterMode: "none" },
+        { type: "slider", filterMode: "none", height: 20, bottom: sliderBottom, brushSelect: false, showDetail: false },
+      ] : [],
+    };
+  }, [option, tab, zoom]);
   const parameters = { channel, filterStructure, filterOrder, windowLength, ...(tab === "tf" ? { overlapPercent } : {}), window: windowFn, nfft: Number(nfft), filter, low, high, detrend, denoise, quality, average: Number(average) };
   const currentDataset = () => {
     if (!input) throw Error(inputError);
@@ -766,9 +790,9 @@ export function Signal({
     }
   }
   return (
-    <div className="signal-layout">
+    <div className="signal-layout signal-analysis-workbench">
       <Card className="signal-source">
-        <div className="toolbar">
+        <div className="signal-source-fields">
           <Select
             label="数据源"
             value={taskId}
@@ -788,9 +812,8 @@ export function Signal({
             options={["速度", "位移", "加速度"]}
             onChange={setChannel}
           />
-          <Tag tone="amber">{tab === "time" ? "原始幅值 · 不转换通道" : "演示结果 · 算法未接入"}</Tag>
           <Button
-            className="push"
+            className="signal-compare-button"
             onClick={() => {
               setCompare(true);
             }}
@@ -798,12 +821,27 @@ export function Signal({
             多测点对比
           </Button>
         </div>
+        <div className="signal-source-context"><Tag tone="amber">{tab === "time" ? "原始幅值 · 不转换通道" : "演示结果 · 算法未接入"}</Tag>
         {input ? <p className="hint" data-testid="signal-input-summary">{input.name} · {input.task.point} · {input.task.sampleRate} Hz · {input.rows.length} 点 · {input.unit} · {input.source === "demo" ? "演示源" : input.source}。{input.segment ? "读取已保存段的历史快照，保留原任务时间。" : "读取所选任务已保存的单列波形。"}通道选择仅配置演示标签，不执行物理量转换。</p> : <p className="error" role="alert">{inputError}</p>}
+        </div>
       </Card>
       <div className="stack">
-        <Card className="no-pad">
+        <Card className="no-pad signal-chart-card">
           <Tabs items={signalTabs} value={tab} onChange={setTab} />
-          <div className="pad">
+          <div className="signal-chart-toolbar" aria-label="图表查看与导出">
+            <div className="signal-view-actions" role="group" aria-label="图表查看">
+              <Button variant="ghost" onClick={() => {
+                setTab("time");
+                notify("已切换至当前所选输入的时域波形");
+              }}><ChartNoAxesCombined size={14} />查看原始波形</Button>
+              <Button variant="ghost" onClick={() => setQualityDialog(true)}><ShieldCheck size={14} />数据质量评价</Button>
+              <Button variant="ghost" className={zoom && tab !== "feat" ? "is-active" : ""} aria-pressed={zoom && tab !== "feat"} disabled={tab === "feat"} onClick={() => setZoom(!zoom)}>
+                <ScanLine size={14} />{zoom && tab !== "feat" ? "关闭缩放" : "开启缩放"}
+              </Button>
+            </div>
+            <ResultExport getData={currentDataset} disabled={!input} label="导出当前标签" notify={notify} />
+          </div>
+          <div className="pad signal-chart-content">
             {tab === "time" && !input ? <Empty text={inputError} /> : tab === "feat" ? (
               <>
                 <div className="feature-grid">
@@ -830,48 +868,13 @@ export function Signal({
               </>
             ) : (
               <Chart
-                option={option}
-                height={285}
+                option={chartOption}
+                height={310}
                 label={signalTabs.find((t) => t.id === tab)?.name}
               />
             )}
-            <div className="toolbar">
-              <Button
-                onClick={() => {
-                  setDetrend(detrend === "不处理" ? "去均值" : "不处理");
-                  notify(
-                    "趋势去除配置已切换，请运行演示并保存；尚未执行真实计算",
-                  );
-                }}
-              >
-                去趋势：{detrend}
-              </Button>
-              <Button
-                onClick={() => {
-                  setDenoise(denoise === "Hampel" ? "中值" : "Hampel");
-                  notify("异常点处理配置已切换；尚未执行真实计算");
-                }}
-              >
-                去毛刺 / 丢点
-              </Button>
-              <Button onClick={() => setQualityDialog(true)}>
-                数据质量评价
-              </Button>
-              <Button onClick={() => setZoom(!zoom)}>
-                {zoom ? "关闭缩放" : "开启缩放"}
-              </Button>
-              <Button
-                onClick={() => {
-                  setTab("time");
-                  notify("已切换至当前所选输入的时域波形");
-                }}
-              >
-                查看原始波形
-              </Button>
-              <ResultExport getData={currentDataset} disabled={!input} label="导出当前标签" notify={notify} />
-              <span className="muted push">{note}</span>
-            </div>
           </div>
+          <div className="signal-chart-status" role="status">{note}</div>
         </Card>
         {tab !== "feat" && (
           <Card title="特征值" tools={<Tag tone="amber">原型演示值</Tag>}>
@@ -921,7 +924,17 @@ export function Signal({
       </div>
       {savedResult && <SavedResultDialog result={savedResult} notify={notify} onClose={() => setSavedResult(null)} />}
       <aside className="stack">
-        <Card title="预处理与参数">
+        <Card title="预处理与参数" className="signal-parameters-card">
+          <div className="signal-preprocess-shortcuts" role="group" aria-label="快捷预处理配置">
+            <Button variant="ghost" onClick={() => {
+              setDetrend(detrend === "不处理" ? "去均值" : "不处理");
+              notify("趋势去除配置已切换，请运行演示并保存；尚未执行真实计算");
+            }}>去趋势：{detrend}</Button>
+            <Button variant="ghost" onClick={() => {
+              setDenoise(denoise === "Hampel" ? "中值" : "Hampel");
+              notify("异常点处理配置已切换；尚未执行真实计算");
+            }}>去毛刺 / 丢点</Button>
+          </div>
           <div className="form-stack signal-parameter-fields">
             <Select
               label="滤波结构"

@@ -6,8 +6,9 @@ const { createLocalAuth } = require('./local-auth.cjs');
 const { createUnifiedAuth } = require('./unified-auth.cjs');
 const { createFieldService, failure } = require('./field-service.cjs');
 const { initialWindowBounds } = require('./field-window.cjs');
+const { createFieldCloudSync } = require('./field-cloud-sync.cjs');
 
-let win, auth, service, config = {}, quitting = false, closing = false;
+let win, auth, service, cloudSync, config = {}, quitting = false, closing = false;
 let settingsFile, dataDir, entryUrl;
 let mutation = Promise.resolve();
 const serial = fn => {
@@ -57,27 +58,39 @@ async function dispatch(options) {
   if (closing && !['session', 'accountInfo', 'status', 'frame'].includes(action)) throw failure('正在安全退出，请等待或取消退出后重试', 409);
   if (action === 'accountInfo') return auth.info();
   if (action === 'session') return auth.session();
-  if (action === 'login') return auth.login(options.username, options.password);
+  if (action === 'login') { const result = await auth.login(options.username, options.password); cloudSync.resume(); return result; }
   if (action === 'changePassword') {
     auth.requireSession({ allowInitial: true });
     await idleRequired();
-    return auth.changePassword(options.currentPassword, options.newPassword);
+    const result = await auth.changePassword(options.currentPassword, options.newPassword); cloudSync.resume(); return result;
   }
   if (action === 'bindAccount') {
     auth.requireSession();
     await idleRequired();
-    return auth.bindAccount({ serverUrl: options.serverUrl, username: options.username, password: options.password, currentPassword: options.currentPassword });
+    const result = await auth.bindAccount({ serverUrl: options.serverUrl, username: options.username, password: options.password, currentPassword: options.currentPassword }); cloudSync.resume(); return result;
   }
   if (action === 'logout') {
     auth.requireSession({ allowInitial: true });
-    await idleRequired(); return auth.logout();
+    await idleRequired(); cloudSync.pause(); return auth.logout();
   }
   auth.requireSession();
   switch (action) {
     case 'status': return service.status();
     case 'frame': return service.frame(options.windowMs);
-    case 'start': return service.begin(options.config);
-    case 'stop': return service.stop();
+    case 'syncStatus': return cloudSync.status();
+    case 'setAutoSync': return cloudSync.setEnabled(options.enabled);
+    case 'syncRecording': return cloudSync.uploadRecording(options.id);
+    case 'retrySync': return cloudSync.retry();
+    case 'start': {
+      const result = await service.begin(options.config);
+      try { cloudSync.started(result.recording); } catch { /* Cloud failures never interrupt acquisition. */ }
+      return result;
+    }
+    case 'stop': {
+      const result = await service.stop();
+      try { cloudSync.finished(result.recording); } catch { /* The durable local recording remains authoritative. */ }
+      return result;
+    }
     case 'recordings': return service.recordings();
     case 'simulation': return service.simulation();
     case 'recording': return service.recordings(options.id);
@@ -135,7 +148,8 @@ async function closeSafely() {
         if (answer.response !== 1) return;
         await service.shutdown({ force: true });
       }
-      auth?.logout(); quitting = true; app.quit();
+      try { cloudSync?.finished((await service.status()).recording); } catch { /* Preserve shutdown even if queue persistence failed. */ }
+      cloudSync?.dispose(); auth?.logout(); quitting = true; app.quit();
     });
   } catch {
     await dialog.showMessageBox(win, { type: 'error', buttons: ['返回检查'],
@@ -159,9 +173,10 @@ else {
             ['executable', 'dll'].some(key => config[key] !== undefined && (typeof config[key] !== 'string' || !path.isAbsolute(config[key])))) throw Error('配置格式无效');
       } catch (error) { if (error.code !== 'ENOENT') throw error; }
       const localAuth = createLocalAuth({ file: path.join(userData, 'blade-local-auth.json'), bootstrap: require('./bootstrap-admin.json') });
-      auth = createUnifiedAuth({ file: path.join(userData, 'blade-unified-account.json'), localAuth });
+      auth = createUnifiedAuth({ file: path.join(userData, 'blade-unified-account.json'), localAuth, retainSessionToken: true });
       service = createFieldService({ getConfig: () => config, dataDir,
         resourcesDir: app.isPackaged ? process.resourcesPath : path.join(__dirname, '../resources') });
+      cloudSync = createFieldCloudSync({ file: path.join(userData, 'blade-cloud-sync.json'), dataDir: path.join(dataDir, 'recordings'), auth, getLive: () => service.frame() });
     } catch {
       dialog.showErrorBox('无法打开现场工作台', '本机凭证、设置或数据目录不可用。未覆盖已有数据、未重置管理员密码。请检查用户目录权限和文件完整性。');
       quitting = true; app.quit(); return;
@@ -181,7 +196,7 @@ else {
       try {
         trusted(event);
         const execute = () => dispatch(options);
-        const result = ['session', 'accountInfo', 'status', 'frame', 'recordings', 'simulation', 'recording', 'waveform', 'analysis', 'rotation'].includes(options?.action)
+        const result = ['session', 'accountInfo', 'status', 'frame', 'recordings', 'simulation', 'recording', 'waveform', 'analysis', 'rotation', 'syncStatus'].includes(options?.action)
           ? await execute() : await serial(execute);
         return { status: 200, data: result };
       } catch (error) { return { status: error.status || 500, data: { error: error.message || '本机操作失败' } }; }

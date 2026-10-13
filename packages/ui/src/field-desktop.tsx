@@ -10,13 +10,13 @@ import { FieldRecordingViewer } from "./field-waveform";
 import { FieldDevicePanel, FieldDeviceSnapshot } from "./field-device";
 import { FieldAnalysis } from "./field-analysis";
 import { FieldAcquisition } from "./field-acquisition";
-import { FieldAccountPanel, FieldBindAccountDialog, fieldAccountServerDefault, fieldAccountTime, type FieldBindValues } from "./field-account";
+import { FieldAccountPanel, FieldCloudSyncPanel, FieldBindAccountDialog, fieldAccountServerDefault, fieldAccountTime, type FieldBindValues } from "./field-account";
 import {
   fieldDate, fieldIsActive, validateFieldConfig,
   type FieldConfig, type FieldRecording, type FieldRecordingDetail,
   type FieldRequest, type FieldRequestOptions, type FieldSession, type FieldAccountInfo,
   type FieldStatus, type FieldDeviceSettings,
-  type FieldSimulation, type FieldSource,
+  type FieldSimulation, type FieldSource, type FieldSyncStatus,
 } from "./field-types";
 
 function fieldBridge(): FieldRequest | undefined {
@@ -161,15 +161,16 @@ export function FieldStartDialog({ config, busy, error, onClose, onStart }: {
   </Dialog>;
 }
 
-export function FieldRecordingList({ recordings, selectedId, busy, onSelect, onExport }: {
-  recordings: FieldRecording[]; selectedId?: string; busy: boolean; onSelect: (id: string) => void; onExport?: (id: string) => void;
+export function FieldRecordingList({ recordings, selectedId, busy, onSelect, onExport, onUpload, syncedIds = [] }: {
+  recordings: FieldRecording[]; selectedId?: string; busy: boolean; onSelect: (id: string) => void; onExport?: (id: string) => void; onUpload?: (id: string) => void; syncedIds?: string[];
 }) {
   if (!recordings.length) return <div className="field-recordings-empty"><HardDrive size={28} /><h3>还没有采集记录</h3><p>完成设备或模拟采集后，可在此查看记录。</p></div>;
-  return <div className="field-table-scroll" role="region" aria-label="本机采集记录，可横向滚动查看所有列" tabIndex={0}><table className="field-table"><thead><tr><th>任务 / 对象</th><th>开始时间</th><th>原始点数</th><th>采样率</th><th>保存状态</th><th>操作</th></tr></thead><tbody>{recordings.map((recording) => <tr key={recording.id} className={selectedId === recording.id ? "selected" : ""}><td><strong>{recording.name}</strong><span className={`field-badge ${recording.source === "simulation" ? "amber" : ""}`}>{recording.source === "simulation" ? "模拟" : "设备"}</span><small>{[recording.object, recording.turbine, recording.point].filter(Boolean).join(" / ") || "未填写对象信息"}</small></td><td>{timeOf(recording.startedAt)}</td><td className="mono">{count(recording.samples)}</td><td className="mono">{recording.sampleRate ? `${count(recording.sampleRate)} Hz` : "未知"}</td><td><span className={`field-badge ${recording.status === "complete" ? "green" : recording.status === "error" ? "red" : "amber"}`}>{recording.status === "complete" ? "已完成" : recording.status === "error" ? "异常记录" : "采集中 / 未完整结束"}</span></td><td><div className="field-record-actions"><Button disabled={busy} onClick={() => onSelect(recording.id)}>查看波形</Button>{onExport && <Button disabled={busy || recording.status !== "complete"} onClick={() => onExport(recording.id)}>导出原始数据</Button>}</div></td></tr>)}</tbody></table></div>;
+  return <div className="field-table-scroll" role="region" aria-label="本机采集记录，可横向滚动查看所有列" tabIndex={0}><table className="field-table"><thead><tr><th>任务 / 对象</th><th>开始时间</th><th>原始点数</th><th>采样率</th><th>保存状态</th><th>操作</th></tr></thead><tbody>{recordings.map((recording) => <tr key={recording.id} className={selectedId === recording.id ? "selected" : ""}><td><strong>{recording.name}</strong><span className={`field-badge ${recording.source === "simulation" ? "amber" : ""}`}>{recording.source === "simulation" ? "模拟" : "设备"}</span><small>{[recording.object, recording.turbine, recording.point].filter(Boolean).join(" / ") || "未填写对象信息"}</small></td><td>{timeOf(recording.startedAt)}</td><td className="mono">{count(recording.samples)}</td><td className="mono">{recording.sampleRate ? `${count(recording.sampleRate)} Hz` : "未知"}</td><td><span className={`field-badge ${recording.status === "complete" ? "green" : recording.status === "error" ? "red" : "amber"}`}>{recording.status === "complete" ? "已完成" : recording.status === "error" ? "异常记录" : "采集中 / 未完整结束"}</span></td><td><div className="field-record-actions"><Button disabled={busy} onClick={() => onSelect(recording.id)}>查看波形</Button>{onExport && <Button disabled={busy || recording.status !== "complete"} onClick={() => onExport(recording.id)}>导出原始数据</Button>}{onUpload && <Button disabled={busy || recording.status !== "complete" || syncedIds.includes(recording.id)} onClick={() => onUpload(recording.id)}>{syncedIds.includes(recording.id) ? "已上传 Web" : "上传至 Web"}</Button>}</div></td></tr>)}</tbody></table></div>;
 }
 
 export function FieldDesktopApp() {
   const [session, setSession] = useState<FieldSession | null>(null);
+  const [syncStatus, setSyncStatus] = useState<FieldSyncStatus | null>(null);
   const [account, setAccount] = useState<FieldAccountInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState<FieldStatus | null>(null);
@@ -194,7 +195,7 @@ export function FieldDesktopApp() {
   const mounted = useRef(true);
 
   const clearSession = useCallback(() => {
-    generation.current += 1; setSession(null); setStatus(null); setRecordings([]); setRecordingsLoaded(false); setSelected(null);
+    generation.current += 1; setSyncStatus(null); setSession(null); setStatus(null); setRecordings([]); setRecordingsLoaded(false); setSelected(null);
     setConfirmStart(false); setChangingPassword(false); setBindingAccount(false); setPollError(""); setNotice(""); setSource("device");
   }, []);
   const handleError = useCallback((cause: unknown) => {
@@ -258,6 +259,17 @@ export function FieldDesktopApp() {
     void poll();
     return () => { canceled = true; clearTimeout(timer); };
   }, [session, refreshRecordings, clearSession, windowMs, refreshMs, screen]);
+
+  useEffect(() => {
+    if (!session || session.mustChangePassword) return;
+    let canceled = false, timer: ReturnType<typeof setTimeout>;
+    async function pollSync() {
+      try { const next = await fieldCall<FieldSyncStatus>({ action: "syncStatus" }); if (!canceled) setSyncStatus(next); }
+      catch { if (!canceled) setSyncStatus(previous => previous ? { ...previous, connected: false, state: "error", error: "无法读取同步状态，请稍后重试。" } : null); }
+      finally { if (!canceled) timer = setTimeout(pollSync, 2000); }
+    }
+    void pollSync(); return () => { canceled = true; clearTimeout(timer); };
+  }, [session]);
 
   async function operate(action: string, fn: () => Promise<void>) {
     if (busy) return;
@@ -333,15 +345,16 @@ export function FieldDesktopApp() {
           {busy === "device" && <p className="field-notice warning">设备配置操作进行中，请等待结果。自动聚焦涉及激光，请留意现场状态。</p>}
           {status?.indexWarning && <div className="field-notice warning field-global-message" role="status"><AlertTriangle size={17} /><span>本机索引提示：{status.indexWarning}</span></div>}
           {screen === "analysis" && <FieldAnalysis request={fieldCall} onError={handleError} />}
+          {screen === "acquisition" && unifiedAccount && syncStatus && <div className="field-cloud-sync-inline" role="status"><strong>Web 同步 · {syncStatus.state === "syncing" ? "正在同步" : syncStatus.state === "ready" ? "已连接" : syncStatus.state === "offline" ? "等待联网登录" : syncStatus.state === "error" ? "同步异常" : "等待联网登录"}</strong><span>{syncStatus.enabled ? "自动同步已开启" : "自动同步已关闭"}</span><span>{syncStatus.items.filter(item => item.state === "synced").length} 条近期已上传 / {syncStatus.items.filter(item => item.state !== "synced").length} 条待完成</span><Button variant="ghost" onClick={() => setScreen("service")}>同步设置</Button></div>}
           {screen === "acquisition" && <FieldAcquisition source={source} config={config} onConfig={setConfig} status={status} busy={busy} pollError={pollError}
             windowMs={windowMs} onWindow={setWindowMs} refreshMs={refreshMs} onRefresh={setRefreshMs} request={fieldCall}
             onDeviceStart={() => { const invalid = validateFieldConfig(config); if (invalid) { setError(invalid); return; } setError(""); setConfirmStart(true); }}
             onSimulationStart={simulation => void startSimulation(simulation)} onStop={() => void stopAcquisition()}
             onService={() => setScreen("service")} onRecords={() => { setScreen("recordings"); void operate("recordings", refreshRecordings); }} />}
-          {screen === "recordings" && <><section className="field-card"><div className="field-section-heading"><div><h2>本机采集记录</h2></div><div className="field-form-actions"><Button disabled={Boolean(busy)} onClick={() => void serviceAction("openDataDirectory")}><FolderOpen size={14} />打开数据目录</Button><Button disabled={Boolean(busy)} onClick={() => void operate("recordings", refreshRecordings)}><RefreshCw size={14} />刷新列表</Button></div></div>{recordingsLoaded ? <FieldRecordingList recordings={recordings} busy={Boolean(busy)} selectedId={selected?.recording.id} onExport={id => void operate("export", async () => { const result = await fieldCall<{ saved?: boolean; fileName?: string }>({ action: "exportRecording", id }); if (result.saved) setNotice(`已导出完整原始波形 ${result.fileName}`); })} onSelect={(id) => void operate("recording", async () => { const data = await fieldCall<FieldRecordingDetail>({ action: "recording", id }); setSelected(data); })} /> : <p className="field-notice">记录列表尚未读取成功，请确认采集服务可用后刷新。服务不可用不代表本机没有保存数据。</p>}</section>
+          {screen === "recordings" && <><section className="field-card"><div className="field-section-heading"><div><h2>本机采集记录</h2></div><div className="field-form-actions"><Button disabled={Boolean(busy)} onClick={() => void serviceAction("openDataDirectory")}><FolderOpen size={14} />打开数据目录</Button><Button disabled={Boolean(busy)} onClick={() => void operate("recordings", refreshRecordings)}><RefreshCw size={14} />刷新列表</Button></div></div>{recordingsLoaded ? <FieldRecordingList recordings={recordings} syncedIds={syncStatus?.items.filter(item => item.state === "synced").map(item => item.recordingId)} onUpload={unifiedAccount ? id => void operate("sync", async () => { await fieldCall({ action: "syncRecording", id }); setSyncStatus(await fieldCall<FieldSyncStatus>({ action: "syncStatus" })); setNotice("已加入 Web 上传队列，可在设备与服务查看进度。"); }) : undefined} busy={Boolean(busy)} selectedId={selected?.recording.id} onExport={id => void operate("export", async () => { const result = await fieldCall<{ saved?: boolean; fileName?: string }>({ action: "exportRecording", id }); if (result.saved) setNotice(`已导出完整原始波形 ${result.fileName}`); })} onSelect={(id) => void operate("recording", async () => { const data = await fieldCall<FieldRecordingDetail>({ action: "recording", id }); setSelected(data); })} /> : <p className="field-notice">记录列表尚未读取成功，请确认采集服务可用后刷新。服务不可用不代表本机没有保存数据。</p>}</section>
             {selected && <section className="field-card field-recording-preview"><div className="field-section-heading"><div><h2>{selected.recording.name} · 波形预览</h2><p>{timeOf(selected.recording.startedAt)} · 全程浏览与区间放大</p></div><Button variant="ghost" onClick={() => setSelected(null)}>关闭预览</Button></div>{selected.recording.error && <p className="field-error">{selected.recording.error}</p>}<FieldRecordingViewer key={selected.recording.id} detail={selected} load={fieldCall} onError={handleError} /><details className="field-recorded-settings"><summary>查看本次采集的设备配置快照</summary><FieldDeviceSnapshot settings={selected.recording.deviceSettings} /></details></section>}
           </>}
-          {screen === "service" && <div className="field-settings-grid"><FieldAccountPanel account={account} busy={Boolean(busy)} active={accountLocked} onBind={() => { if (!busy && !accountLocked && account?.mode === "local") { setError(""); setBindingAccount(true); } }} onPassword={openPassword} /><FieldDevicePanel deviceIp={config.deviceIp} onIp={deviceIp => setConfig(previous => ({ ...previous, deviceIp }))} status={status} disabled={Boolean(busy)} onBusy={value => setBusy(value ? "device" : "")} onError={handleError} request={request => fieldCall<FieldDeviceSettings>({ action: "device", request })} /><FieldServicePanel status={status} busy={Boolean(busy)} onAction={(action) => void serviceAction(action)} /><section className="field-card"><div className="field-section-heading"><h2>设备连接检查</h2></div><ol className="field-checklist"><li><strong>检查运行状态</strong><p>确认采集服务和设备驱动已就绪。</p></li><li><strong>确认设备网络与安全</strong><p>确认设备 IP、本机网卡、网络连接和激光作业安全。</p></li><li><strong>采集、停止并核对保存结果</strong><p>停止后核对原始点数、RSSI、超量程和保存状态。</p></li></ol></section></div>}
+          {screen === "service" && <div className="field-settings-grid"><FieldAccountPanel account={account} busy={Boolean(busy)} active={accountLocked} onBind={() => { if (!busy && !accountLocked && account?.mode === "local") { setError(""); setBindingAccount(true); } }} onPassword={openPassword} /><FieldCloudSyncPanel account={account} status={syncStatus} busy={Boolean(busy)} onAuto={enabled => void operate("sync", async () => { await fieldCall({ action: "setAutoSync", enabled }); setSyncStatus(await fieldCall<FieldSyncStatus>({ action: "syncStatus" })); })} onRetry={() => void operate("sync", async () => { await fieldCall({ action: "retrySync" }); setSyncStatus(await fieldCall<FieldSyncStatus>({ action: "syncStatus" })); })} /><FieldDevicePanel deviceIp={config.deviceIp} onIp={deviceIp => setConfig(previous => ({ ...previous, deviceIp }))} status={status} disabled={Boolean(busy)} onBusy={value => setBusy(value ? "device" : "")} onError={handleError} request={request => fieldCall<FieldDeviceSettings>({ action: "device", request })} /><FieldServicePanel status={status} busy={Boolean(busy)} onAction={(action) => void serviceAction(action)} /><section className="field-card"><div className="field-section-heading"><h2>设备连接检查</h2></div><ol className="field-checklist"><li><strong>检查运行状态</strong><p>确认采集服务和设备驱动已就绪。</p></li><li><strong>确认设备网络与安全</strong><p>确认设备 IP、本机网卡、网络连接和激光作业安全。</p></li><li><strong>采集、停止并核对保存结果</strong><p>停止后核对原始点数、RSSI、超量程和保存状态。</p></li></ol></section></div>}
         </main>
       </div><footer className="field-statusbar"><span><span className={`field-status-dot ${status?.service.state === "ready" ? "green" : ""}`} />{status ? serviceLabels[status.service.state] : "正在读取本机状态"}</span><span>原始数据保存在本机</span></footer>
     </>}

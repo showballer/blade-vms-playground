@@ -9,8 +9,8 @@ const vm = require('node:vm');
 const mainPath = path.resolve(__dirname, '../apps/desktop/electron/field-main.cjs');
 async function harness() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'blade-account-ipc-'));
-  const calls = [], handlers = new Map();
-  let window, signedIn = false;
+  const calls = [], cloudCalls = [], handlers = new Map();
+  let window, syncOptions, serviceOptions, signedIn = false;
   let snapshot = { service: { state: 'ready' }, state: 'idle', receiver: { running: false } };
   const fail = (message, status = 500) => Object.assign(new Error(message), { status });
   const session = () => { if (!signedIn) throw fail('请先登录', 401); return { user: { username: 'admin', name: 'test', role: 'admin' }, mustChangePassword: false }; };
@@ -41,7 +41,13 @@ async function harness() {
     if (name === 'electron') return electron;
     if (name === './local-auth.cjs') return { createLocalAuth: () => auth };
     if (name === './unified-auth.cjs') return { createUnifiedAuth: () => auth };
-    if (name === './field-service.cjs') return { createFieldService: () => service, failure: fail };
+    if (name === './field-service.cjs') return { createFieldService: options => { serviceOptions = options; return service; }, failure: fail };
+    if (name === './field-cloud-sync.cjs') return { createFieldCloudSync: options => { syncOptions = options; return ({
+      status: () => ({ enabled: true, connected: true, state: 'ready', items: [] }),
+      resume() {}, pause() {}, dispose() {}, started(recording) { cloudCalls.push(['started', recording]); throw Error('sync disk failure'); }, finished(recording) { cloudCalls.push(['finished', recording]); throw Error('sync disk failure'); },
+      setEnabled: enabled => { cloudCalls.push(['enabled', enabled]); return { enabled }; },
+      uploadRecording: id => { cloudCalls.push(['upload', id]); return { items: [] }; }, retry: () => ({ items: [] }),
+    }); } };
     if (name === './field-window.cjs') return { initialWindowBounds: () => ({}) };
     if (name === './bootstrap-admin.json') return {};
     return require(name);
@@ -49,7 +55,7 @@ async function harness() {
   vm.runInNewContext(fs.readFileSync(mainPath, 'utf8'), { require: customRequire, __dirname: path.dirname(mainPath), process: { platform: process.platform, env: {} } }, { filename: mainPath });
   await new Promise(resolve => setImmediate(resolve));
   const request = (options, event = { sender: window.webContents, senderFrame: window.webContents.mainFrame }) => handlers.get('blade:field')(event, options);
-  return { request, calls, setStatus: next => { snapshot = next; }, cleanup: () => fs.rmSync(directory, { recursive: true, force: true }) };
+  return { request, calls, cloudCalls, syncOptions, serviceOptions, setStatus: next => { snapshot = next; }, cleanup: () => fs.rmSync(directory, { recursive: true, force: true }) };
 }
 
 test('public account mode never grants a session; untrusted windows cannot read or bind', async () => {
@@ -97,4 +103,34 @@ test('capture start and account mutations share the serialized safety boundary',
 test('desktop package includes the unified authentication module', () => {
   const config = require('../apps/desktop/package.json');
   assert.ok(config.build.files.includes('electron/unified-auth.cjs'));
+});
+
+
+test('sync IPC requires trusted authenticated windows and sync failures never turn capture start/stop into errors', async () => {
+  const h = await harness();
+  try {
+    for (const action of ['syncStatus', 'setAutoSync', 'syncRecording', 'retrySync', 'cloudSession', 'cloudBinding']) assert.equal((await h.request({ action })).status, 401);
+    await h.request({ action: 'login' });
+    for (const action of ['cloudSession', 'cloudBinding']) assert.equal((await h.request({ action })).status, 400);
+    assert.equal((await h.request({ action: 'syncStatus' }, { sender: {}, senderFrame: { url: 'file://evil' } })).status, 403);
+    assert.equal((await h.request({ action: 'start', config: {} })).status, 200);
+    assert.equal((await h.request({ action: 'stop' })).status, 200);
+    assert.equal(h.cloudCalls.filter(call => ['started', 'finished'].includes(call[0])).length, 2);
+    const result = await h.request({ action: 'syncStatus' });
+    assert.equal(result.status, 200);
+    assert.equal(result.data.state, 'ready');
+    assert.equal((await h.request({ action: 'syncRecording', id: 'a'.repeat(32), token: 'never-forward' })).status, 200);
+    assert.deepEqual(h.cloudCalls.at(-1), ['upload', 'a'.repeat(32)]);
+  } finally { h.cleanup(); }
+});
+
+
+test('actual main-process wiring points cloud sync at the Python recordings subdirectory', async () => {
+  const h = await harness();
+  try {
+    assert.equal(h.syncOptions.dataDir, path.join(h.serviceOptions.dataDir, 'recordings'));
+    assert.equal(path.basename(h.syncOptions.file), 'blade-cloud-sync.json');
+    assert.equal(typeof h.syncOptions.getLive, 'function');
+    assert.equal((await h.syncOptions.getLive()).state, 'idle');
+  } finally { h.cleanup(); }
 });

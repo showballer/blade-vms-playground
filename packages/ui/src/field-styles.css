@@ -434,3 +434,6 @@
   .field-account-bind-form > .field-form-actions { padding: 12px 14px; }
   .field-account-header { font-size: 12px; padding-inline: 8px; }
 }
+
+.field-cloud-sync-inline { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; padding: 9px 13px; border: 1px solid #e0e8f3; border-radius: 8px; background: #f8fafd; color: #647b96; font-size: 12px; margin-bottom: 14px; }
+.field-cloud-sync-inline strong { font-weight: 500; color: #3a659a; }

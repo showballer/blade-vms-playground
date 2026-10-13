@@ -1,4 +1,5 @@
-// Hardware-free Windows x64 release gate. This script NEVER calls /start or an SDK function.
+// Hardware-free Windows x64 release gate. Only the isolated simulation gate calls
+// /start with source=simulation, and disables the SDK. No real device is accessed.
 // Node 22+: node scripts/test-windows-bundle.cjs --resources <win-unpacked/resources>
 //          --installer <BladeVMS-Setup-VERSION-x64.exe> [--output <report-directory>]
 // The installer test changes only a disposable CI user's BladeVMS installation. Do not run
@@ -18,7 +19,7 @@ const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const digest = value => createHash('sha256').update(value).digest('hex');
 const psQuote = value => `'${String(value).replaceAll("'", "''")}'`;
 const report = { startedAt: new Date().toISOString(), platform: process.platform, arch: process.arch,
-  hardwareTested: false, acquisitionStarted: false, cleanWindowsTested: false,
+  hardwareTested: false, physicalAcquisitionStarted: false, cleanWindowsTested: false,
   environmentCoverage: ['system Python unavailable through child PATH', 'existing runner Python preserved',
     'poisoned PYTHONHOME/PYTHONPATH and simulated activated Conda/venv'],
   limitations: ['CI has no IVS-500 hardware: sample correctness, network, packet loss and laser safety require a physical test.',
@@ -475,6 +476,17 @@ async function main() {
         validateService(path.join(installDirectory, 'resources'), poisoned, path.join(temporary, 'installed service')));
       await check('installed desktop login, change password, ready acquisition screen and safe exit', () =>
         validateInstalledDesktop(installDirectory, poisoned, temporary, options.output));
+      await check('installed frozen simulation, live cloud preview, complete raw upload and CSV export', async () => {
+        const output = path.join(options.output, 'installed-simulation');
+        const result = await execute(process.execPath, [path.join(root, 'scripts/test-windows-simulation.cjs'),
+          '--resources', path.join(installDirectory, 'resources'), '--output', output], { timeoutMs: 120000 });
+        assert.equal(result.code, 0, `Installed simulation gate failed: ${result.stdout} ${result.stderr}`);
+        const evidence = JSON.parse(fs.readFileSync(path.join(output, 'report.json'), 'utf8'));
+        assert.equal(evidence.passed, true); assert.equal(evidence.frozenWindowsTested, true);
+        assert.equal(evidence.hardwareTested, false); assert.equal(evidence.captures.length, 3);
+        return { frozenWindowsTested: true, cloudProtocolPeer: 'local in-memory test peer',
+          packagedCloudSyncSha256: evidence.packagedCloudSyncSha256, captures: evidence.captures };
+      });
       await check('install and app startup do not modify existing Python or environment settings', async () => {
         assert.deepEqual(await environmentSnapshot(), before);
         assert.deepEqual([fakePython, sitecustomize].map(file => digest(fs.readFileSync(file))), sentinelBefore);
@@ -507,7 +519,7 @@ async function main() {
     fs.writeFileSync(path.join(options.output, 'result.json'), JSON.stringify(report, null, 2) + '\n');
   }
   if (failed) throw failed;
-  console.log(`PASS ${report.checks.length} Windows bundle gates. No device, laser or acquisition was started.`);
+  console.log(`PASS ${report.checks.length} Windows bundle gates. Only simulated acquisition was started; no device or laser was accessed.`);
   console.log(`Report: ${path.join(options.output, 'result.json')}`);
 }
 

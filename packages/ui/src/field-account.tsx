@@ -1,8 +1,8 @@
 "use client";
 import React, { memo, useState } from "react";
-import { Link, LoaderCircle, LockKeyhole, ShieldCheck, WifiOff } from "lucide-react";
+import { CloudUpload, Link, LoaderCircle, LockKeyhole, RefreshCw, ShieldCheck, WifiOff } from "lucide-react";
 import { Button, Dialog } from "./common";
-import type { FieldAccountInfo } from "./field-types";
+import type { FieldAccountInfo, FieldSyncStatus } from "./field-types";
 
 export type FieldBindValues = { serverUrl: string; username: string; password: string; currentPassword: string };
 export function fieldAccountServerDefault(location?: { protocol: string; hostname: string; port: string }): string {
@@ -43,6 +43,26 @@ export const FieldAccountPanel = memo(function FieldAccountPanel({ account, busy
     {active && <p className="field-subtext">请先停止并保存采集，再绑定账号或修改密码。</p>}
   </section>;
 });
+
+export function FieldCloudSyncPanel({ account, status, busy, onAuto, onRetry }: {
+  account: FieldAccountInfo | null; status: FieldSyncStatus | null; busy: boolean;
+  onAuto: (enabled: boolean) => void; onRetry: () => void;
+}) {
+  const bound = account?.mode === "unified";
+  const labels = { unbound: "待绑定账号", "signed-out": "等待登录", offline: "等待联网登录", ready: "已连接 Web", syncing: "正在同步", error: "同步待重试" };
+  const states = { recording: "采集中", queued: "等待上传", uploading: "上传中", synced: "已同步", error: "等待重试" };
+  const pending = status?.items.filter(item => item.state !== "synced") || [];
+  return <section className="field-card field-account-card">
+    <div className="field-section-heading"><div><h2>Web 数据同步</h2><p>实时查看采集波形，停止保存后同步完整原始记录。</p></div><CloudUpload size={18} /></div>
+    <div className="field-account-state"><CloudUpload size={17} /><strong>{status ? labels[status.state] : "读取同步状态中"}</strong></div>
+    <div className="field-account-actions"><span>自动同步新采集</span><button type="button" className="field-debug-toggle" role="switch" aria-label="自动同步新采集" aria-checked={Boolean(status?.enabled)} disabled={busy || !bound || !status} onClick={() => onAuto(!status?.enabled)}><span /></button></div>
+    <p className="field-subtext">{bound ? "开启后，新采集将同步到绑定的 Web 账号；关闭后已排队记录仍会继续上传。历史记录可在本机记录中逐条上传。断线保留本机队列，联网登录后继续同步。" : "请先绑定 Web 账号。本机采集和保存可独立使用。"}</p>
+    {status?.error && <p className="field-notice warning" role="status">{status.error}</p>}
+    {pending.length > 0 && <div className="field-table-scroll"><table className="field-table"><thead><tr><th>待同步记录</th><th>状态</th></tr></thead><tbody>{pending.slice(-5).reverse().map(item => <tr key={item.recordingId}><td><strong>{item.name}</strong>{item.error && <small>{item.error}</small>}</td><td>{states[item.state]}{item.state === "uploading" && ` ${item.progress}%`}</td></tr>)}</tbody></table></div>}
+    {bound && <p className="field-inline-help">此处保留最近 200 条已同步记录摘要，完整记录以 Web 为准。</p>}
+    {bound && <div className="field-account-actions"><span className="field-subtext">待同步 {pending.length} 条 · 近期已同步 {status?.items.filter(item => item.state === "synced").length || 0} 条</span><Button disabled={busy || !status || !status.connected} onClick={onRetry}><RefreshCw size={14} />重试同步</Button></div>}
+  </section>;
+}
 
 export function FieldBindAccountDialog({ busy, error, active = false, initialServerUrl = "", onClose, onBind }: {
   busy: boolean; error: string; active?: boolean; initialServerUrl?: string;

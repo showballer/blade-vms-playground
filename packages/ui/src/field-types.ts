@@ -10,6 +10,16 @@ export type FieldAccountInfo = {
   lastVerifiedAt?: number;
   onlineRequired?: boolean;
 };
+export type FieldSyncItem = {
+  recordingId: string; name: string; captureId?: string;
+  state: "recording" | "queued" | "uploading" | "synced" | "error";
+  progress: number; error?: string;
+};
+export type FieldSyncStatus = {
+  enabled: boolean; connected: boolean;
+  state: "unbound" | "signed-out" | "offline" | "ready" | "syncing" | "error";
+  error?: string; items: FieldSyncItem[];
+};
 export type FieldSession = { user: FieldUser; mustChangePassword: boolean; account?: FieldAccountInfo };
 export type FieldSource = "device" | "simulation";
 export type FieldSimulation = { point: "P1" | "P2" | "P3"; scenario: "baseline" | "imbalance" | "impact" | "low_return" };
@@ -75,7 +85,7 @@ export type FieldDeviceRequest = {
 };
 export type FieldRecording = {
   source?: string;
-  simulation?: FieldSimulation;
+  simulation?: FieldSimulation & { position?: number; rpm?: number };
   id: string;
   name: string;
   object?: string;
@@ -117,7 +127,9 @@ export type FieldStatus = {
   realtime?: FieldRealtime;
 };
 export type FieldRequestOptions =
-  | { action: "session" | "accountInfo" | "logout" | "status" | "stop" | "recordings" | "simulation" | "openDataDirectory" | "restartService" | "configureService" | "configureDll" }
+  | { action: "session" | "accountInfo" | "logout" | "status" | "stop" | "recordings" | "simulation" | "openDataDirectory" | "restartService" | "configureService" | "configureDll" | "syncStatus" | "retrySync" }
+  | { action: "setAutoSync"; enabled: boolean }
+  | { action: "syncRecording"; id: string }
   | { action: "frame"; windowMs?: number }
   | { action: "login"; username: string; password: string }
   | { action: "changePassword"; currentPassword: string; newPassword: string }

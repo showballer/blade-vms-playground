@@ -1,13 +1,13 @@
 /** Run against the local Web server. Creates only uniquely named temporary accounts and removes them. */
 import { randomBytes, randomUUID } from "node:crypto";
-import { changeAccountPassword, createManagedUser, issueAccountToken, loginAccount, resetAccountPassword } from "../apps/web/lib/account";
+import { changeAccountPassword, createManagedUser, deleteManagedUser, issueAccountToken, loginAccount, resetAccountPassword } from "../apps/web/lib/account";
 import { digest, HttpError, passwordHash, passwordMatch, pool, type User } from "../apps/web/lib/db";
 import type { RowDataPacket } from "mysql2/promise";
 
 const base = process.env.ACCOUNT_TEST_ORIGIN || "http://127.0.0.1:3210";
 if (!/^http:\/\/(127\.0\.0\.1|localhost):\d+$/.test(base)) throw Error("Account tests require a local Web origin");
 const tenant = `qa-account-${randomUUID()}`;
-const users: User[] = [], checks: string[] = [];
+const users: User[] = [], checks: string[] = [], temporaryRecords: string[] = [];
 const secret = () => randomBytes(24).toString("base64url");
 function check(condition: unknown, message: string): asserts condition { if (!condition) throw Error(message); }
 function passed(message: string) { checks.push(message); }
@@ -165,6 +165,65 @@ async function main() {
   check(remaining[0]?.session_id && passwordMatch(rollbackPassword, remaining[0].password_hash), "Audit failure must preserve both old credentials and session");
   passed("Password and session revocation are atomic with audit insertion");
 
+  const deletePassword = secret(), deleteTarget = await fixture("admin", deletePassword);
+  const deleteToken = await login(deleteTarget, deletePassword);
+  const deleteApiToken = (await status("tokens", 201, "POST", deleteToken, { name: "Temporary delete token" })).data.token as string;
+  const retainedRecord = randomUUID(); temporaryRecords.push(retainedRecord);
+  await pool().execute("INSERT INTO records(id,kind,tenant,body,created_by) VALUES(?,'tasks',?,?,?)", [retainedRecord, tenant, JSON.stringify({ name: "Temporary retained account history" }), deleteTarget.id]);
+  const [historyBefore] = await pool().execute<RowDataPacket[]>("SELECT id FROM audit_logs WHERE actor_id=? AND tenant=?", [deleteTarget.id, tenant]);
+  for (const role of ["analyst", "operator", "viewer"] as User["role"][]) {
+    const password = secret(), unauthorized = await fixture(role, password);
+    await status(`users/${deleteTarget.id}`, 403, "DELETE", await login(unauthorized, password), { confirm: true });
+  }
+  await status(`users/${deleteTarget.id}`, 401, "DELETE", "", { confirm: true });
+  await status(`users/${deleteTarget.id}`, 400, "DELETE", adminToken, { confirm: false });
+  await status(`users/${deleteTarget.id}`, 400, "DELETE", adminToken, { confirm: true, eraseRecords: true });
+  await status(`users/${deleteTarget.id}/extra`, 405, "DELETE", adminToken, { confirm: true });
+  await status(`users/${admin.id}`, 400, "DELETE", adminToken, { confirm: true });
+  await status(`users/${deleteTarget.id}`, 403, "DELETE", adminToken, { confirm: true }, "https://untrusted.invalid");
+  await rejected(deleteManagedUser(stale.user, stale.token, deleteTarget.id), 401, "Revoked administrator cannot delete a user after route authentication");
+  passed("User deletion rejects unauthenticated, non-admin, unconfirmed, malformed and self-delete requests");
+
+  // Failure after the update/session revocation must restore the entire account.
+  db.getConnection = async function () {
+    const connection = await originalGetConnection.call(db), execute = connection.execute;
+    connection.execute = (async function (sql: unknown, ...args: unknown[]) {
+      if (typeof sql === "string" && sql.startsWith("INSERT INTO audit_logs")) throw new HttpError(503, "Injected delete audit failure");
+      return (execute as Function).call(connection, sql, ...args);
+    }) as typeof connection.execute;
+    const release = connection.release;
+    connection.release = () => { connection.execute = execute; connection.release = release; release.call(connection); };
+    return connection;
+  };
+  try { await rejected(deleteManagedUser(admin, adminToken, deleteTarget.id), 503, "Audit failure rolls back account deletion"); }
+  finally { db.getConnection = originalGetConnection; }
+  await status("session", 200, "GET", deleteToken);
+  await status("session", 200, "GET", deleteApiToken);
+  const [notDeleted] = await pool().execute<RowDataPacket[]>("SELECT active,deleted_at FROM users WHERE id=?", [deleteTarget.id]);
+  check(notDeleted[0]?.active === 1 && notDeleted[0].deleted_at === null, "Failed deletion must preserve the account and sessions");
+
+  const deletion = await status(`users/${deleteTarget.id}`, 200, "DELETE", adminToken, { confirm: true });
+  check(deletion.data.retainedRecords === true, "Delete response must report retained historical data");
+  const [deletedRows] = await pool().execute<RowDataPacket[]>("SELECT username,active,deleted_at FROM users WHERE id=?", [deleteTarget.id]);
+  check(deletedRows[0]?.username === deleteTarget.username && deletedRows[0].active === 0 && deletedRows[0].deleted_at, "Deletion must retain username and ownership identity as a disabled tombstone");
+  for (const token of [deleteToken, deleteApiToken]) await status("session", 401, "GET", token);
+  await status("session", 401, "POST", "", { username: deleteTarget.username, password: deletePassword });
+  const visibleUsers = await status("users", 200, "GET", adminToken);
+  check(!visibleUsers.data.some((user: User) => user.id === deleteTarget.id), "Deleted account must disappear from user management");
+  await status(`users/${deleteTarget.id}`, 404, "DELETE", adminToken, { confirm: true });
+  await status(`users/${deleteTarget.id}`, 404, "PUT", adminToken, { name: deleteTarget.name, tenant, role: "admin", active: true });
+  await status(`users/${deleteTarget.id}/password`, 404, "POST", adminToken, { newPassword: secret() });
+  await status("users", 409, "POST", adminToken, { username: deleteTarget.username, name: deleteTarget.name, tenant, role: "viewer", password: secret() });
+  const [historyAfter] = await pool().execute<RowDataPacket[]>("SELECT id FROM audit_logs WHERE actor_id=? AND tenant=?", [deleteTarget.id, tenant]);
+  const [retained] = await pool().execute<RowDataPacket[]>("SELECT created_by,body FROM records WHERE id=? AND tenant=?", [retainedRecord, tenant]);
+  check(retained[0]?.created_by === deleteTarget.id &&
+    (typeof retained[0].body === "string" ? JSON.parse(retained[0].body) : retained[0].body).name === "Temporary retained account history",
+    "Deleted user's task content and original owner must remain");
+  check(historyBefore.every(entry => historyAfter.some(next => next.id === entry.id)), "Deleted user's audit history must remain");
+  const [deletionAudit] = await pool().execute<RowDataPacket[]>("SELECT id FROM audit_logs WHERE actor_id=? AND tenant=? AND action='删除用户'", [admin.id, tenant]);
+  check(deletionAudit.length > 0, "Deletion must leave an administrator audit event");
+  passed("Soft deletion revokes sessions/API tokens, blocks login/re-enable/name reuse, and preserves records/audits");
+
   const [audit] = await pool().execute<RowDataPacket[]>("SELECT action FROM audit_logs WHERE tenant=?", [tenant]);
   for (const action of ["修改统一密码", "重置统一密码", "编辑用户并重置统一密码"])
     check(audit.some(entry => entry.action === action), "Credential audit action missing");
@@ -175,6 +234,7 @@ async function run() {
 try { await main(); console.log(JSON.stringify({ ok: true, checks: checks.length, cases: checks }, null, 2)); }
 catch (error) { console.error(error instanceof Error ? error.message : "Account validation failed"); process.exitCode = 1; }
 finally {
+  for (const id of temporaryRecords) await pool().execute("DELETE FROM records WHERE id=? AND tenant=?", [id, tenant]);
   for (const user of users) {
     await pool().execute("DELETE FROM sessions WHERE user_id=?", [user.id]);
     await pool().execute("DELETE FROM audit_logs WHERE actor_id=? AND tenant=?", [user.id, tenant]);

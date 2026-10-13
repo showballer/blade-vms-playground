@@ -1,4 +1,7 @@
 @import "./custom-select.css";
+@import "./health-layout.css";
+@import "./health-trends.css";
+@import "./signal-analysis.css";
 
 :root {
   --accent: #2d6cc0;

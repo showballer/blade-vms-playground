@@ -35,7 +35,7 @@ import { applyAlertReview, thresholdValues } from "@blade/ui/health-data";
 import { rotationCanonical, rotationCutRecord } from "@blade/ui/rotation-data";
 import { modalConfig, modalRecord, modalBaselineCanonical } from "@blade/ui/modal-data";
 import { signalWorkflow, signalRefs, signalInput, signalRecord, type SignalInput } from "@blade/ui/signal-input";
-import { changeAccountPassword, createManagedUser, issueAccountToken, loginAccount, newAccountPassword, passwordInput, resetAccountPassword, updateManagedUser } from "../../../../lib/account";
+import { changeAccountPassword, createManagedUser, deleteManagedUser, issueAccountToken, loginAccount, newAccountPassword, passwordInput, resetAccountPassword, updateManagedUser } from "../../../../lib/account";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 type Context = { params: Promise<{ path: string[] }> };
@@ -528,6 +528,11 @@ async function handle(req: Request, ctx: Context) {
     }
     if (resource === "users") {
       permission(user, "users", true);
+      if (method === "DELETE" && path.length === 2) {
+        const b = await body(req);
+        if (b.confirm !== true || Object.keys(b).some(key => key !== "confirm")) throw new HttpError(400, "请明确确认删除该账号");
+        return json(await deleteManagedUser(user, tokenFrom(req), kind));
+      }
       if (method === "POST" && path.length === 3 && id === "password") {
         const b = await body(req);
         if (Object.keys(b).some(key => key !== "newPassword")) throw new HttpError(400, "重置密码只接受新密码");
@@ -539,7 +544,7 @@ async function handle(req: Request, ctx: Context) {
       if (method === "GET")
         return json(
           await rows(
-            "SELECT id,username,name,role,tenant,active,created_at FROM users ORDER BY created_at",
+            "SELECT id,username,name,role,tenant,active,created_at FROM users WHERE deleted_at IS NULL ORDER BY created_at",
           ),
         );
       const b = await body(req);

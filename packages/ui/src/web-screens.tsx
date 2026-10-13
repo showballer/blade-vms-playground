@@ -82,8 +82,8 @@ export function Health(props: ContextProps) {
     return <div className="stack"><Card title="健康监测" tools={<Button onClick={() => setManageBaselines(true)}>基线管理</Button>}><Empty text="当前组暂无有效健康基线，不能显示健康度或诊断结论。请先配置基线。" /><p className="muted">{baseline ? baselineHealthIssue(baseline) : "所选基线未登记、已停用或已删除，请在基线管理中明确选择有效记录。"}</p></Card><HealthTrends {...props} />{baselineManager}</div>;
   return (
     <div className="stack health-screen">
-      <Card>
-        <div className="toolbar">
+      <Card className="health-context">
+        <div className="health-filters">
           <Select
             label="监测对象"
             options={
@@ -108,50 +108,50 @@ export function Health(props: ContextProps) {
             onChange={setBaselineId}
           />
           <Select label="关联任务" value={task?.id || ""} options={matchingTasks.map((t: Item) => ({ value: t.id, label: t.name }))} onChange={setTaskId} />
-          <Button onClick={() => setManageBaselines(true)}>基线管理</Button>
-          <Tag tone="amber">演示监测</Tag>
-          <Button
-            className="push"
-            variant="cyan"
-            disabled={!canWrite || running || !task}
-            onClick={async () => {
-              setRunning(true);
-              try {
-                await saveRecord("analyses", {
-                  name: "损伤检测演示 · " + object,
-                  taskId: task.id,
-                  type: "damage",
-                  parameters: { object, baseline: baseline.id, baselineSnapshot: { id: baseline.id, name: baseline.name, rms: baseline.rms, frequency: baseline.frequency, modal: baseline.modal }, thresholds: config || null },
-                  result: { ...damage, metrics, overallGrade: summary.label },
-                  source: "demo",
-                });
-                await refresh();
-                notify("已保存演示检测记录；未调用外部算法");
-              } catch (e) {
-                notify((e as Error).message);
-              } finally {
-                setRunning(false);
-              }
-            }}
-          >
-            {running ? "保存中…" : "重新运行演示检测"}
-          </Button>
+          <div className="health-filter-actions">
+            <Button onClick={() => setManageBaselines(true)}>基线管理</Button>
+            <Tag tone="amber">演示监测</Tag>
+            <Button
+              variant="cyan"
+              disabled={!canWrite || running || !task}
+              onClick={async () => {
+                setRunning(true);
+                try {
+                  await saveRecord("analyses", {
+                    name: "损伤检测演示 · " + object,
+                    taskId: task.id,
+                    type: "damage",
+                    parameters: { object, baseline: baseline.id, baselineSnapshot: { id: baseline.id, name: baseline.name, rms: baseline.rms, frequency: baseline.frequency, modal: baseline.modal }, thresholds: config || null },
+                    result: { ...damage, metrics, overallGrade: summary.label },
+                    source: "demo",
+                  });
+                  await refresh();
+                  notify("已保存演示检测记录；未调用外部算法");
+                } catch (e) {
+                  notify((e as Error).message);
+                } finally {
+                  setRunning(false);
+                }
+              }}
+            >
+              {running ? "保存中…" : "重新运行演示检测"}
+            </Button>
+          </div>
         </div>
         {!task && <p className="muted">当前对象没有可访问任务，检测保存、溯源与报告不可用。指标与趋势仍仅为原型演示样例。</p>}
       </Card>
       <div className="workspace-grid health-grid">
         <div className="stack">
           <div className="metrics">
-            <Card className="metric">
-              <span>健康度</span>
+            <Card className="metric health-score-card">
               <HealthGauge score={b.score} />
-              <small>/100</small>
+              <div className="health-score-copy"><span>健康度</span><strong>基线评分</strong><small>演示监测数据</small></div>
             </Card>
             <Card
-              className={"metric " + (grade === null ? "" : grade === 0 ? "good-metric" : "warning-metric")}
+              className={"metric " + (grade === null || (grade === 0 && !summary.complete) ? "pending-metric" : grade === 0 ? "good-metric" : "warning-metric")}
             >
               <span>预警级别</span>
-              <strong className={grade === null ? "muted" : grade === 3 ? "red-text" : grade ? "orange-text" : "green-text"} data-testid="health-overall-grade">
+              <strong className={grade === null || (grade === 0 && !summary.complete) ? "pending-grade" : grade === 3 ? "red-text" : grade ? "orange-text" : "green-text"} data-testid="health-overall-grade">
                 {summary.label}
               </strong>
               <small>已判定指标的最高等级 · {summary.configured}/{summary.total} 项</small>
@@ -164,6 +164,7 @@ export function Health(props: ContextProps) {
             </Card>
           </div>
           <Card
+            className="health-features"
             title="振动响应特征监测"
             tools={<span className="muted">对比正常态基线 · 演示分析</span>}
           >

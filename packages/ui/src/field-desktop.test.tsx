@@ -4,7 +4,7 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { FieldLoginPanel, FieldPasswordPanel, FieldRecordingList, FieldServicePanel, FieldStartDialog, FieldWaveChart } from "./field-desktop";
 import { fieldCanStart, fieldDate, fieldIsActive, fieldSampleX, validateFieldConfig, type FieldAccountInfo, type FieldRequestOptions, type FieldStatus, type FieldWaveform } from "./field-types";
-import { FieldAccountPanel, FieldBindAccountDialog, fieldAccountServerDefault, fieldAccountTime, fieldAccountUsesPlainHttp } from "./field-account";
+import { FieldAccountPanel, FieldCloudSyncPanel, FieldBindAccountDialog, fieldAccountServerDefault, fieldAccountTime, fieldAccountUsesPlainHttp } from "./field-account";
 import { clampWaveRange, formatWaveTime, waveBounds, waveScaleDraft, type WaveScaleDraft } from "./field-waveform";
 import { FieldDeviceSnapshot } from "./field-device";
 
@@ -279,5 +279,15 @@ check("设备操作进行中禁止启动，旧记录无配置不填默认值", (
   const html = renderToStaticMarkup(<FieldDeviceSnapshot />);
   assert.ok(html.includes("不能用当前设备设置代替"));
   assert.ok(!html.includes("10 kHz"));
+});
+
+
+check("同步设置明确仅自动上传新采集，未绑定时开关不可用", () => {
+  const local = renderToStaticMarkup(<FieldCloudSyncPanel account={{ mode: "local" }} status={{ enabled: true, connected: false, state: "unbound", items: [] }} busy={false} onAuto={() => {}} onRetry={() => {}} />);
+  assert.match(local, /role="switch"[^>]*disabled=""/);
+  assert.ok(local.includes("请先绑定 Web 账号"));
+  const connected = renderToStaticMarkup(<FieldCloudSyncPanel account={unifiedAccount} status={{ enabled: true, connected: true, state: "ready", items: [{ recordingId: "one", name: "new capture", state: "uploading", progress: 45 }] }} busy={false} onAuto={() => {}} onRetry={() => {}} />);
+  assert.ok(connected.includes("历史记录可在本机记录中逐条上传"));
+  assert.ok(connected.includes("45%")); assert.ok(connected.includes("重试同步"));
 });
 console.log(`Field desktop presentation checks: ${checks} passed (static/pure only).`);

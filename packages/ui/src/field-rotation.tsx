@@ -51,9 +51,12 @@ export function FieldRotation({ request, onError, refreshKey = 0, preferredIds =
       const complete = response.recordings.filter(record => record.status === "complete");
       setRecords(complete);
       setLoaded(true);
-      setPositions(previous => Object.fromEntries(complete.map((record, index) => [record.id, previous[record.id] ?? record.position ?? (complete.length > 1 ? (index + 1) / complete.length : 1)])));
+      setPositions(previous => Object.fromEntries(complete.map((record, index) => {
+        const sourcePosition = record.position ?? record.simulation?.position;
+        return [record.id, previous[record.id] ?? (typeof sourcePosition === "number" && Number.isFinite(sourcePosition) && sourcePosition >= 0 && sourcePosition <= 1 ? sourcePosition : complete.length > 1 ? (index + 1) / complete.length : 1)];
+      })));
       setSelected(previous => (preferImported && preferredIds.length ? preferredIds : previous).filter(id => complete.some(record => record.id === id)).slice(0, 8));
-      const importedRpm = preferImported && complete.find(record => preferredIds.includes(record.id) && Number.isFinite(record.rpm) && Number(record.rpm) > 0)?.rpm;
+      const importedRpm = preferImported && complete.filter(record => preferredIds.includes(record.id)).map(record => record.rpm ?? record.simulation?.rpm).find(value => Number.isFinite(value) && Number(value) > 0);
       if (importedRpm) setRpm(importedRpm);
     } catch (error) { if (alive.current) onError(error); }
   }
@@ -99,7 +102,7 @@ export function FieldRotation({ request, onError, refreshKey = 0, preferredIds =
         <div className="field-section-heading"><div><h2>测点选择</h2><p>选择完整记录，填写测点在叶片上的相对位置</p></div><span className="field-badge">已选 {selected.length} / 8</span></div>
         <div className="field-table-scroll field-rotation-records"><table className="field-table"><thead><tr><th>选择</th><th>记录 / 测点</th><th>样本与采样率</th><th>位置 x/L</th></tr></thead><tbody>{records.map(record => <tr key={record.id} className={selected.includes(record.id) ? "selected" : ""}>
           <td><input aria-label={`选择 ${record.name}`} type="checkbox" checked={selected.includes(record.id)} disabled={busy || (!selected.includes(record.id) && selected.length >= 8)} onChange={event => toggle(record.id, event.target.checked)} /></td>
-          <td><strong>{record.name}</strong><small>{record.point || "未填写测点名"} · {record.source === "simulation" ? "模拟数据" : record.source === "measured" ? "实测导入" : "离线数据"}</small>{record.qualityCounts && <small>{Object.entries(record.qualityCounts).map(([label, count]) => `${label} ${count}`).join(" · ")}</small>}</td><td>{record.samples.toLocaleString()} 点 / {record.sampleRate ? `${Number(record.sampleRate.toPrecision(7))} Hz` : "未知"}<small>{record.sampleRate ? `${(record.samples / record.sampleRate).toFixed(2)} 秒` : ""}</small></td>
+          <td><strong>{record.name}</strong><small>{record.point || "未填写测点名"} · {record.source === "simulation" ? "模拟数据" : record.source === "polytec_ivs500" ? "设备采集" : record.source === "measured" ? "实测导入" : "离线数据"}</small>{record.qualityCounts && <small>{Object.entries(record.qualityCounts).map(([label, count]) => `${label} ${count}`).join(" · ")}</small>}</td><td>{record.samples.toLocaleString()} 点 / {record.sampleRate ? `${Number(record.sampleRate.toPrecision(7))} Hz` : "未知"}<small>{record.sampleRate ? `${(record.samples / record.sampleRate).toFixed(2)} 秒` : ""}</small></td>
           <td><input aria-label={`${record.name} x/L`} type="number" min={0} max={1} step="any" disabled={busy || !selected.includes(record.id)} value={positions[record.id] ?? 0} onChange={event => { setResult(null); setPositions(current => ({ ...current, [record.id]: Number(event.target.value) })); }} /></td>
         </tr>)}</tbody></table></div>
         {!records.length && <p className="field-notice">{loaded ? emptyText : "正在加载当前账号的数据记录…"}</p>}

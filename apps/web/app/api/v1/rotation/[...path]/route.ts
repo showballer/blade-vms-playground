@@ -1,4 +1,4 @@
-import { auth, audit, HttpError, permission } from "../../../../../lib/db";
+import { auth, audit, HttpError, requireCaptureAnalysis } from "../../../../../lib/db";
 import { limitedBody, rotationUpload, rotationWorker } from "../../../../../lib/rotation";
 
 export const runtime = "nodejs";
@@ -14,7 +14,7 @@ async function handle(request: Request, context: Context) {
     if (request.method !== "POST") throw new HttpError(405, "不支持的旋转分析操作。");
     const origin = request.headers.get("origin");
     if (origin && origin !== new URL(request.url).origin && origin !== process.env.APP_ORIGIN) throw new HttpError(403, "不允许的请求来源。");
-    permission(user, "analyses", true);
+    requireCaptureAnalysis(user);
     if (route === "import") {
       const result = await rotationUpload(user, request);
       await audit(user, "导入旋转分析数据", `${result.filename} · ${result.recordings.length} 个测点`);

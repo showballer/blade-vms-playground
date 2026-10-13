@@ -41,7 +41,7 @@ async function requireCurrentSession(connection: PoolConnection, actorId: string
 /** Serialize signing in against password changes so an old verification cannot mint a new token after reset. */
 export async function loginAccount(username: string, password: string) {
   return transaction(async connection => {
-    const [rows] = await connection.execute<RowDataPacket[]>("SELECT id,username,name,role,tenant,active,password_hash FROM users WHERE username=? FOR UPDATE", [username]);
+    const [rows] = await connection.execute<RowDataPacket[]>("SELECT id,username,name,role,tenant,active,password_hash FROM users WHERE username=? AND deleted_at IS NULL FOR UPDATE", [username]);
     const user = rows[0] as CredentialUser | undefined;
     if (!user?.active || !passwordMatches(password, user.password_hash)) throw new HttpError(401, "用户名或密码不正确");
     const token = randomBytes(32).toString("base64url");
@@ -54,7 +54,7 @@ export async function loginAccount(username: string, password: string) {
 export async function changeAccountPassword(actor: User, token: string, current: unknown, next: unknown) {
   const currentPassword = passwordInput(current), newPassword = newAccountPassword(next);
   return transaction(async connection => {
-    const [rows] = await connection.execute<RowDataPacket[]>("SELECT id,username,name,role,tenant,active,password_hash FROM users WHERE id=? FOR UPDATE", [actor.id]);
+    const [rows] = await connection.execute<RowDataPacket[]>("SELECT id,username,name,role,tenant,active,password_hash FROM users WHERE id=? AND deleted_at IS NULL FOR UPDATE", [actor.id]);
     const user = rows[0] as CredentialUser | undefined;
     if (!user?.active) throw new HttpError(401, "账号已失效，请重新登录");
     await requireCurrentSession(connection, user.id, token);
@@ -69,7 +69,7 @@ export async function changeAccountPassword(actor: User, token: string, current:
 
 async function managedUsers(connection: PoolConnection, actor: User, token: string, targetId: string) {
   // Lock both rows in a stable order, and re-check privileges inside the same transaction.
-  const [rows] = await connection.execute<RowDataPacket[]>("SELECT id,username,name,role,tenant,active FROM users WHERE id IN (?,?) ORDER BY id FOR UPDATE", [actor.id, targetId]);
+  const [rows] = await connection.execute<RowDataPacket[]>("SELECT id,username,name,role,tenant,active FROM users WHERE id IN (?,?) AND deleted_at IS NULL ORDER BY id FOR UPDATE", [actor.id, targetId]);
   const administrator = rows.find(row => row.id === actor.id) as User | undefined;
   if (!administrator?.active || administrator.role !== "admin") throw new HttpError(403, "此操作需要管理员权限");
   await requireCurrentSession(connection, administrator.id, token);
@@ -105,8 +105,13 @@ export async function createManagedUser(actor: User, token: string, data: { user
   return transaction(async connection => {
     const { administrator } = await managedUsers(connection, actor, token, actor.id);
     const id = randomUUID();
-    await connection.execute("INSERT INTO users(id,username,name,password_hash,role,tenant,active) VALUES(?,?,?,?,?,?,?)",
-      [id, data.username, data.name, hash, data.role, data.tenant, data.active ? 1 : 0]);
+    try {
+      await connection.execute("INSERT INTO users(id,username,name,password_hash,role,tenant,active) VALUES(?,?,?,?,?,?,?)",
+        [id, data.username, data.name, hash, data.role, data.tenant, data.active ? 1 : 0]);
+    } catch (error) {
+      if ((error as { code?: string }).code === "ER_DUP_ENTRY") throw new HttpError(409, "登录账号已被使用；已删除账号的名称也不能重复使用");
+      throw error;
+    }
     await credentialAudit(connection, administrator, "新增用户", data.username);
     return { id };
   });
@@ -123,5 +128,23 @@ export async function updateManagedUser(actor: User, token: string, targetId: st
     if (revoke) await connection.execute("DELETE FROM sessions WHERE user_id=?", [targetId]);
     await credentialAudit(connection, administrator, hash ? "编辑用户并重置统一密码" : "编辑用户", target.username);
     return { ok: true, reauthenticate: revoke && targetId === actor.id };
+  });
+}
+
+/** Remove login access while preserving ownership, original usernames and audit history. */
+export async function deleteManagedUser(actor: User, token: string, targetId: string) {
+  return transaction(async connection => {
+    const { administrator, target } = await managedUsers(connection, actor, token, targetId);
+    if (target.role === "admin" && target.active) {
+      // The locked, active administrator row also prevents a concurrent operation
+      // from removing the last administrator between this check and commit.
+      const [administrators] = await connection.execute<RowDataPacket[]>("SELECT id FROM users WHERE role='admin' AND active=1 AND deleted_at IS NULL");
+      if (administrators.length <= 1) throw new HttpError(400, "不能删除最后一个有效管理员");
+    }
+    if (target.id === administrator.id) throw new HttpError(400, "不能删除当前登录账号");
+    await connection.execute("UPDATE users SET active=0,deleted_at=UTC_TIMESTAMP() WHERE id=? AND deleted_at IS NULL", [target.id]);
+    await connection.execute("DELETE FROM sessions WHERE user_id=?", [target.id]);
+    await credentialAudit(connection, administrator, "删除用户", `${target.username}（保留历史数据）`);
+    return { ok: true, retainedRecords: true };
   });
 }

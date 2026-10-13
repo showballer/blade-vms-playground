@@ -20,7 +20,7 @@ function projectRoot() {
 /** Each job owns a short-lived process. The Web session never exposes service tokens or paths. */
 async function withWorker<T>(user: Pick<User, "id" | "tenant">, operation: (service: string, python: string, data: string) => Promise<T>): Promise<T> {
   const key = createHash("sha256").update(`${user.tenant}\0${user.id}`).digest("hex");
-  if (workers.users.has(key)) throw new HttpError(409, "当前账号已有导入或分析在运行，请稍后重试。");
+  if (workers.users.has(key)) throw new HttpError(429, "当前账号已有导入或分析在运行，请稍后重试。");
   if (workers.active >= 2) throw new HttpError(429, "分析服务繁忙，请稍后重试。");
   const root = projectRoot();
   const service = path.join(/* turbopackIgnore: true */ root, "services/acquisition");

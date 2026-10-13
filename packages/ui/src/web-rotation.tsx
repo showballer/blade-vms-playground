@@ -1,9 +1,10 @@
 "use client";
 import { CustomSelect } from "./custom-select";
 import React, { useCallback, useRef, useState } from "react";
-import { FileUp, FolderInput, LoaderCircle, CheckCircle2 } from "lucide-react";
+import { FileUp, FolderInput, LoaderCircle, CheckCircle2, Radio } from "lucide-react";
 import { Button, type ContextProps } from "./common";
 import { api } from "./api";
+import { WebCaptures } from "./web-captures";
 import { FieldRotation } from "./field-rotation";
 import type { FieldRecording, FieldRequestOptions } from "./field-types";
 import "./field-styles.css";
@@ -11,6 +12,8 @@ import "./web-rotation.css";
 import "./field-bending-view.css";
 
 export function WebRotation({ canWrite, notify }: Pick<ContextProps, "canWrite" | "notify">) {
+  const [sourceMode, setSourceMode] = useState<"live" | "offline">("live");
+  const analysisAnchor = useRef<HTMLDivElement>(null);
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
   const [refreshKey, setRefreshKey] = useState(0), [preferredIds, setPreferredIds] = useState<string[]>([]);
   const [file, setFile] = useState<File | null>(null), [source, setSource] = useState("offline");
@@ -24,7 +27,7 @@ export function WebRotation({ canWrite, notify }: Pick<ContextProps, "canWrite" 
       setError("");
       return api<T>("rotation/analyze", "POST", options.parameters);
     }
-    throw new Error("Web 旋转工作台仅支持离线数据读取和分析。");
+    throw new Error("此操作不支持，请选择已上传或导入的记录进行分析。");
   }, []);
   async function importFile(event: React.FormEvent) {
     event.preventDefault(); if (!file || !canWrite) return;
@@ -43,8 +46,10 @@ export function WebRotation({ canWrite, notify }: Pick<ContextProps, "canWrite" 
     finally { setBusy(false); }
   }
   return <div className="web-rotation-workspace">
-    <header className="rotation-page-heading"><div><h1>旋转测振</h1><p>实测与离线数据分析 · 阶次谱 · 同步平均 · 多点振型重构</p></div><span className="field-badge">恒转速分析</span></header>
-    <section className="field-card rotation-import-card"><div className="field-section-heading"><div><h2><FolderInput size={18} /> 数据导入</h2><p>导入多测点文件或桌面采集记录。</p></div><span className="field-badge">XLSX / CSV / GZ</span></div>
+    <header className="rotation-page-heading"><div><h1>旋转测振</h1><p>实时采集与离线导入 · 阶次谱 · 同步平均 · 多点振型重构</p></div><span className="field-badge">恒转速分析</span></header>
+    <div className="rotation-source-tabs" role="tablist" aria-label="旋转测振数据来源">{([{ id: "live", label: "实时采集", icon: Radio }, { id: "offline", label: "离线导入", icon: FolderInput }] as const).map(item => <button key={item.id} id={`rotation-source-${item.id}`} type="button" role="tab" aria-selected={sourceMode === item.id} aria-controls={`rotation-source-${item.id}-panel`} tabIndex={sourceMode === item.id ? 0 : -1} onClick={() => setSourceMode(item.id)} onKeyDown={event => { if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) { event.preventDefault(); const next = event.key === "Home" ? "live" : event.key === "End" ? "offline" : sourceMode === "live" ? "offline" : "live"; setSourceMode(next); document.getElementById(`rotation-source-${next}`)?.focus(); } }}><item.icon size={17} />{item.label}</button>)}</div>
+    {sourceMode === "live" && <div id="rotation-source-live-panel" role="tabpanel" aria-labelledby="rotation-source-live"><WebCaptures canAnalyze={canWrite} onAnalyze={recording => { setPreferredIds(previous => [...new Set([...previous, recording.id])]); setRefreshKey(value => value + 1); notify(`已选择 ${recording.name}，可在下方配置旋转分析。`); analysisAnchor.current?.scrollIntoView({ behavior: "smooth", block: "start" }); }} /></div>}
+    {sourceMode === "offline" && <section id="rotation-source-offline-panel" role="tabpanel" aria-labelledby="rotation-source-offline" className="field-card rotation-import-card"><div className="field-section-heading"><div><h2><FolderInput size={18} /> 数据导入</h2><p>导入多测点文件或桌面采集记录。</p></div><span className="field-badge">XLSX / CSV / GZ</span></div>
       <form onSubmit={importFile}>
         <div className="rotation-import-grid"><label className="rotation-file-picker"><FileUp size={24} /><span>{file ? file.name : "选择数据文件"}<small>{file ? `${(file.size / 1024 / 1024).toFixed(2)} MB` : "XLSX ≤ 16 MB · CSV/GZ ≤ 128 MB"}</small></span><input ref={input} type="file" aria-label="旋转分析数据文件" accept=".xlsx,.csv,.csv.gz" disabled={busy || !canWrite} onChange={event => { setFile(event.target.files?.[0] || null); setError(""); }} /></label>
           <label>数据来源<CustomSelect value={source} disabled={busy || !canWrite} onChange={event => setSource(event.target.value)}><option value="offline">离线数据（来源待确认）</option><option value="measured">实测数据</option><option value="simulation">模拟数据</option></CustomSelect></label>
@@ -56,8 +61,8 @@ export function WebRotation({ canWrite, notify }: Pick<ContextProps, "canWrite" 
       </form>
       {!canWrite && <p className="field-notice">当前账号为只读权限，请使用具备分析权限的账号导入或计算。</p>}
       {imported && <p className="rotation-import-success" role="status"><CheckCircle2 size={17} />{imported.name} · 已保存 {imported.points} 个测点、{imported.samples.toLocaleString()} 个原始样本，已自动选择。</p>}
-    </section>
+    </section>}
     {error && <div className="field-error" role="alert">{error}<Button variant="ghost" onClick={() => setError("")}>关闭</Button></div>}
-    <FieldRotation request={request} onError={onError} refreshKey={refreshKey} preferredIds={preferredIds} canAnalyze={canWrite && !busy} emptyText="还没有可分析的数据。先在上方导入实测 CSV 或多测点 XLSX，再选择测点和分析参数。" />
+    <div ref={analysisAnchor} className="rotation-analysis-anchor"><FieldRotation request={request} onError={onError} refreshKey={refreshKey} preferredIds={preferredIds} canAnalyze={canWrite && !busy} emptyText="选择已上传的完整采集记录，或通过离线导入添加 CSV / XLSX，再配置测点和分析参数。" /></div>
   </div>;
 }

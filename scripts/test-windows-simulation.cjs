@@ -35,7 +35,7 @@ fs.mkdirSync(output, { recursive: true });
 const report = { startedAt: new Date().toISOString(), platform: process.platform,
   frozenWindowsTested: !options.source, hardwareTested: false, deviceRequests: 0,
   sdkDisabled: true, captures: [], passed: false };
-let service, ownedChild;
+let service, ownedChild, cloud;
 
 async function waitFor(callback, description, timeoutMs = 15000) {
   const deadline = Date.now() + timeoutMs;
@@ -91,6 +91,7 @@ function validateCsv(bytes, recording, expectedPoint) {
 
 async function main() {
   let bridgeFile = path.join(root, 'apps/desktop/electron/field-service.cjs');
+  let cloudFile = path.join(root, 'apps/desktop/electron/field-cloud-sync.cjs');
   if (!options.source) {
     assert.ok(fs.statSync(path.join(options.resources, 'acquisition/BladeAcquisition.exe')).isFile());
     const asar = require('@electron/asar');
@@ -98,6 +99,11 @@ async function main() {
     bridgeFile = path.join(temporary, 'field-service.cjs');
     fs.writeFileSync(bridgeFile, packagedBridge);
     report.packagedBridgeSha256 = sha256(packagedBridge);
+    const packagedCloud = asar.extractFile(path.join(options.resources, 'app.asar'), 'electron/field-cloud-sync.cjs');
+    assert.equal(sha256(packagedCloud), sha256(fs.readFileSync(cloudFile)), 'Packaged cloud-sync must match this release source');
+    cloudFile = path.join(temporary, 'field-cloud-sync.cjs');
+    fs.writeFileSync(cloudFile, packagedCloud);
+    report.packagedCloudSyncSha256 = sha256(packagedCloud);
   }
   const { createFieldService } = require(bridgeFile);
   // A nonexistent explicit DLL makes even an accidental receiver path unable
@@ -139,9 +145,14 @@ async function main() {
   assert.deepEqual(catalog.points.map(point => point.id), ['P1', 'P2', 'P3']);
   assert.equal(catalog.unit, 'm/s');
   report.fixtureSha256 = catalog.sourceSha256;
+  cloud = require('./windows-cloud-sync-harness.cjs').createHarness({ moduleFile: cloudFile,
+    directory: temporary, recordingsDir: path.join(dataDir, 'recordings'), getLive: () => service.frame(1000) });
+  cloud.queue.resume();
   for (const point of catalog.points) {
-    await service.begin({ source: 'simulation', simulation: { point: point.id, scenario: 'baseline' },
+    const started = await service.begin({ source: 'simulation', simulation: { point: point.id, scenario: 'baseline' },
       name: `Windows release simulation ${point.id}`, object: '', turbine: '', point: point.id });
+    cloud.queue.started(started.recording);
+    await cloud.queue.settled();
     const frame = await waitFor(async () => {
       const value = await service.frame(1000);
       assert.notEqual(value.state, 'error', value.error || 'Simulation failed');
@@ -156,10 +167,15 @@ async function main() {
     assert.ok(frame.realtime.spectrum.amplitudes.some(value => value > 0));
     assert.ok(frame.realtime.spectrogram.db.length > 0);
     const id = frame.recording.id;
+    cloud.queue.resume();
+    await cloud.queue.settled();
     await assert.rejects(service.exportRecording(id, path.join(temporary, 'active.csv')), error => error.status === 409);
     const stopped = await service.stop();
     assert.equal(stopped.receiver.running, false);
     assert.equal(stopped.recording.status, 'complete');
+    cloud.queue.finished(stopped.recording);
+    await cloud.queue.settled();
+    const cloudChecks = cloud.assertSynced(id);
     const csvFile = path.join(temporary, `${point.id}.csv`);
     const gzipFile = path.join(temporary, `${point.id}.csv.gz`);
     assert.equal((await service.exportRecording(id, csvFile)).saved, true);
@@ -169,7 +185,7 @@ async function main() {
     validateCsv(csv, stopped.recording, point.id);
     report.captures.push({ point: point.id, samples: stopped.recording.samples,
       sampleRate: point.sampleRate, csvSha256: sha256(csv), rawSamplesMatched: true,
-      gzipRoundtrip: true, realtimeTimeFftStft: true });
+      gzipRoundtrip: true, realtimeTimeFftStft: true, cloudSync: cloudChecks });
     console.log(`PASS ${point.id}: ${options.source ? 'source' : 'frozen'} fixture, simulation, realtime analysis and ${stopped.recording.samples} raw CSV/GZ samples`);
   }
   assert.equal((await service.recordings()).recordings.length, 3);
@@ -188,6 +204,8 @@ async function main() {
 
 main().catch(error => { report.error = error.message; process.exitCode = 1; console.error(error.stack); })
   .finally(async () => {
+    cloud?.queue.dispose();
+    if (cloud) await cloud.queue.settled();
     try { if (service) await service.shutdown({ force: true }); }
     catch (error) { report.cleanupError = error.message; report.passed = false; process.exitCode = 1; }
     report.finishedAt = new Date().toISOString();

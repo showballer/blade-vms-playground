@@ -492,8 +492,15 @@ def import_file(store: RecordingStore, payload: dict):
 
 def dispatch(root: Path, payload: dict):
     action = payload.get("action")
-    if action not in ("recordings", "import", "rotation"):
+    if action not in ("recordings", "import", "rotation", "capture-validate", "capture-waveform", "capture-import"):
         raise ValueError("不支持的 Web 分析操作。")
+    if action.startswith("capture-"):
+        from .native_capture import validate_capture, capture_waveform, import_capture
+        if action == "capture-validate":
+            return {"recording": validate_capture(payload.get("captureDirectory"))}
+        if action == "capture-waveform":
+            return capture_waveform(payload.get("captureDirectory"), payload.get("start", 0), payload.get("end"))
+        return import_capture(RecordingStore(root / "recordings"), payload.get("captureDirectory"))
     store = RecordingStore(root / "recordings")
     if action == "recordings":
         return {"recordings": store.list()}

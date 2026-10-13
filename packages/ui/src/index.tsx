@@ -268,7 +268,7 @@ export function BladeApp({ platform }: { platform: "web" | "desktop" }) {
             <span>
               独立项目数据库 · 按角色授权
               <br />
-              旋转测振支持导入波形分析 · 健康监测保留演示样例
+              支持实时采集与离线导入 · 健康监测保留演示样例
             </span>
           </div>
         </form>
@@ -350,7 +350,7 @@ export function BladeApp({ platform }: { platform: "web" | "desktop" }) {
             <Button onClick={() => setSyncOpen(true)}><CloudUpload size={15} />回传本机任务</Button>
           )}
           <Tag tone={screen === "blade" ? "blue" : "amber"}>
-            {screen === "blade" ? "离线旋转分析" : isOffline() ? "离线演示" : "设备未连接"}
+            {screen === "blade" ? "旋转测振" : isOffline() ? "离线演示" : "设备未连接"}
           </Tag>
           {platform === "web" && <ClientDownload />}
           <Button variant="ghost" aria-label="应用设置" onClick={configure}>
@@ -424,7 +424,7 @@ export function BladeApp({ platform }: { platform: "web" | "desktop" }) {
       </div>
       <footer className="statusbar">
         {screen === "blade" ? <>
-          <span>数据：当前账号独立保存</span>
+          <span>采集按权限查看 · 分析按账号保存</span>
           <span>算法：恒转速阶次分析 · 多点融合 · 弯曲振型</span>
           <span>采样率、来源与质量以所选记录为准</span>
         </> : <>

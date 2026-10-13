@@ -106,9 +106,10 @@ async function limitedJson(response) {
 }
 
 /** Explicit account binding; an independently salted offline verifier is the
- * only password-related persisted data. Web bearer tokens remain call-local.
+ * only password-related persisted data. Web bearer tokens remain call-local by
+ * default, or in main-process memory when capture synchronization is enabled.
  */
-function createUnifiedAuth({ file, localAuth, now = Date.now, fetchImpl = global.fetch } = {}) {
+function createUnifiedAuth({ file, localAuth, now = Date.now, fetchImpl = global.fetch, retainSessionToken = false } = {}) {
   if (typeof file !== "string" || !path.isAbsolute(file) || typeof now !== "function" || typeof fetchImpl !== "function" ||
       !["login", "logout", "session", "requireSession", "changePassword"].every(key => typeof localAuth?.[key] === "function")) throw fail(500, "统一账号配置无效");
   let binding = null;
@@ -126,6 +127,15 @@ function createUnifiedAuth({ file, localAuth, now = Date.now, fetchImpl = global
   let active = null, busy = false, epoch = 0, failures = 0, lockedUntil = 0;
   let clockHighWater = binding?.lastObservedAt ?? 0;
   let storageFailed = false;
+  // Main-process-only capability. Never included in session()/info() responses.
+  let cloud = null;
+  function clearCloudSession() {
+    const previous = cloud; cloud = null;
+    if (previous) void discardToken(previous.serverUrl, previous.token);
+  }
+  async function discardUnpublished(identity, origin) {
+    if (retainSessionToken && identity?.token && cloud?.token !== identity.token) await discardToken(origin, identity.token);
+  }
 
   function clock() {
     const value = now();
@@ -186,6 +196,7 @@ function createUnifiedAuth({ file, localAuth, now = Date.now, fetchImpl = global
     if (onlineVerified) storageFailed = false;
   }
   function invalidate() {
+    clearCloudSession();
     // Rewrite even when the in-memory prohibition is already set: an earlier
     // disk failure may have left only volatile state, and mutations must wait
     // for a persisted prohibition before changing the Web password.
@@ -195,7 +206,7 @@ function createUnifiedAuth({ file, localAuth, now = Date.now, fetchImpl = global
     if (!binding) return { mode: "local" };
     return { mode: "unified", serverUrl: binding.serverUrl, username: binding.user.username,
       offline, offlineUntil: binding.offlineUntil, lastVerifiedAt: binding.lastVerifiedAt,
-      onlineRequired: binding.onlineRequired || storageFailed, syncPolicy: "login-only" };
+      onlineRequired: binding.onlineRequired || storageFailed, syncPolicy: retainSessionToken ? "capture-sync" : "login-only" };
   }
   function response() {
     return { user: { username: active.user.username, name: active.user.name, role: active.user.role },
@@ -205,9 +216,11 @@ function createUnifiedAuth({ file, localAuth, now = Date.now, fetchImpl = global
     if (storageFailed && !binding) throw fail(500, "统一账号绑定状态不确定，请重新打开应用核实；不会回退本机账号");
     return !binding;
   }
-  function publish(user, offline, requestEpoch) {
+  function publish(user, offline, requestEpoch, token) {
     if (epoch !== requestEpoch) throw fail(409, "本次登录已取消，请重新登录");
+    clearCloudSession();
     active = { user: { ...user }, offline };
+    if (retainSessionToken && !offline && token) cloud = { serverUrl: binding.serverUrl, token, user: { ...user } };
     failures = 0; lockedUntil = 0;
     return response();
   }
@@ -276,11 +289,13 @@ function createUnifiedAuth({ file, localAuth, now = Date.now, fetchImpl = global
         loadCurrent();
         const stamp = throttle();
         if (!text(username, 80) || !password(secret)) throw fail(400, "请提供有效统一账号和密码，密码最多 128 个字符");
+        let identity;
+        clearCloudSession();
         try {
-          const identity = await authenticate(binding.serverUrl, username, secret, binding.user);
+          identity = await authenticate(binding.serverUrl, username, secret, binding.user, retainSessionToken);
           if (epoch !== requestEpoch) throw fail(409, "本次登录已取消，请重新登录");
           verified(binding.serverUrl, identity.user, secret, clock().value);
-          return publish(identity.user, false, requestEpoch);
+          return publish(identity.user, false, requestEpoch, identity.token);
         } catch (error) {
           if (error.invalidates) invalidate();
           if (error.status === 401) rejectPassword(stamp.value);
@@ -300,7 +315,7 @@ function createUnifiedAuth({ file, localAuth, now = Date.now, fetchImpl = global
           if (username !== binding.user.username || !correct) rejectPassword(current.value);
           save({ ...binding, lastObservedAt: current.value });
           return publish(binding.user, true, requestEpoch);
-        }
+        } finally { await discardUnpublished(identity, binding.serverUrl); }
       });
     },
     session() {
@@ -314,10 +329,15 @@ function createUnifiedAuth({ file, localAuth, now = Date.now, fetchImpl = global
       return { username: active.user.username, name: active.user.name, role: active.user.role };
     },
     logout() {
-      epoch += 1; active = null;
+      epoch += 1; active = null; clearCloudSession();
       return localAuth.logout();
     },
     info() { localMode(); return { ...account() }; },
+    // These methods are intentionally not exposed by the preload/IPC dispatcher.
+    cloudSession() { return active && !active.offline && cloud ? { ...cloud, user: { ...cloud.user } } : null; },
+    cloudBinding() { return binding ? { serverUrl: binding.serverUrl, user: { ...binding.user } } : null; },
+    clearCloudSession,
+
     async bindAccount({ serverUrl, username, password: secret, currentPassword } = {}) {
       return operation(async requestEpoch => {
         if (binding) throw fail(409, "本机已绑定统一账号，不允许自动替换或回退本机账号");
@@ -326,11 +346,13 @@ function createUnifiedAuth({ file, localAuth, now = Date.now, fetchImpl = global
         if (!text(username, 80) || !password(secret) || !password(currentPassword)) throw fail(400, "请提供 Web 账号密码和当前本机密码");
         const origin = serverOrigin(serverUrl);
         localAuth.login("admin", currentPassword);
-        const identity = await authenticate(origin, username, secret);
-        if (epoch !== requestEpoch) throw fail(409, "本次绑定已取消，请重新登录");
-        verified(origin, identity.user, secret, clock().value, true);
-        localAuth.logout();
-        return publish(identity.user, false, requestEpoch);
+        const identity = await authenticate(origin, username, secret, undefined, retainSessionToken);
+        try {
+          if (epoch !== requestEpoch) throw fail(409, "本次绑定已取消，请重新登录");
+          verified(origin, identity.user, secret, clock().value, true);
+          localAuth.logout();
+          return publish(identity.user, false, requestEpoch, identity.token);
+        } finally { await discardUnpublished(identity, origin); }
       });
     },
     async changePassword(currentPassword, newPassword) {
@@ -348,7 +370,7 @@ function createUnifiedAuth({ file, localAuth, now = Date.now, fetchImpl = global
           if (error.status === 401) rejectPassword(stamp.value);
           throw error;
         }
-        let mutationStarted = false;
+        let mutationStarted = false, updated;
         try {
           if (epoch !== requestEpoch) throw fail(409, "本次改密已取消，请重新登录");
           // Disable the old offline verifier BEFORE sending a potentially
@@ -357,13 +379,13 @@ function createUnifiedAuth({ file, localAuth, now = Date.now, fetchImpl = global
           mutationStarted = true;
           const result = await request(binding.serverUrl, "/api/v1/account/password", { currentPassword, newPassword }, identity.token);
           if (result.ok !== true || result.reauthenticate !== true) throw fail(502, "改密响应格式无效");
-          const updated = await authenticate(binding.serverUrl, binding.user.username, newPassword, binding.user);
+          updated = await authenticate(binding.serverUrl, binding.user.username, newPassword, binding.user, retainSessionToken);
           verified(binding.serverUrl, updated.user, newPassword, clock().value);
-          return publish(updated.user, false, requestEpoch);
+          return publish(updated.user, false, requestEpoch, updated.token);
         } catch (error) {
           if (!mutationStarted || error.storage) throw error;
           throw fail(503, "Web 密码更新或重新登录未确认完成；请使用新密码联网登录核实，本机旧离线密码已停用");
-        } finally { await discardToken(binding.serverUrl, identity.token); }
+        } finally { await discardToken(binding.serverUrl, identity.token); await discardUnpublished(updated, binding.serverUrl); }
       });
     },
   });

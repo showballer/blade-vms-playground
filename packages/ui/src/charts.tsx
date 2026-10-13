@@ -1,7 +1,7 @@
 "use client";
 import { memo, useEffect, useRef } from "react";
 import * as echarts from "echarts/core";
-import { LineChart, BarChart, HeatmapChart, GaugeChart } from "echarts/charts";
+import { LineChart, BarChart, HeatmapChart } from "echarts/charts";
 import {
   GridComponent,
   TooltipComponent,
@@ -17,7 +17,6 @@ echarts.use([
   LineChart,
   BarChart,
   HeatmapChart,
-  GaugeChart,
   GridComponent,
   TooltipComponent,
   LegendComponent,
@@ -332,43 +331,13 @@ export function heatOption() {
   };
 }
 export function HealthGauge({ score }: { score: number }) {
+  const value = Number.isFinite(score) ? Math.max(0, Math.min(100, score)) : 0;
   return (
-    <Chart
-      height={140}
-      label={`健康度 ${score}`}
-      option={{
-        series: [
-          {
-            type: "gauge",
-            startAngle: 90,
-            endAngle: -270,
-            min: 0,
-            max: 100,
-            radius: "83%",
-            progress: {
-              show: true,
-              roundCap: true,
-              width: 10,
-              itemStyle: { color: score >= 90 ? "#1FA971" : "#F5A623" },
-            },
-            axisLine: { lineStyle: { width: 10, color: [[1, "#EEF2F7"]] } },
-            pointer: { show: false },
-            axisTick: { show: false },
-            splitLine: { show: false },
-            axisLabel: { show: false },
-            title: { show: false },
-            detail: {
-              valueAnimation: false,
-              fontSize: 30,
-              fontWeight: 600,
-              color: "#1F2733",
-              offsetCenter: [0, 0],
-              formatter: "{value}",
-            },
-            data: [{ value: score }],
-          },
-        ],
-      }}
-    />
+    <div className="health-gauge" role="img" aria-label={`健康度 ${value}，满分 100`}
+      style={{ background: `conic-gradient(var(--accent) ${value * 3.6}deg, #e9eff7 0deg)` }}>
+      <div className="health-gauge-value" aria-hidden="true">
+        <strong>{value}</strong><span>满分 100</span>
+      </div>
+    </div>
   );
 }
