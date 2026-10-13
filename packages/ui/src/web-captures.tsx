@@ -6,6 +6,7 @@ import { Button } from "./common";
 import { CustomSelect } from "./custom-select";
 import { FieldRecordingViewer, FieldWaveChart } from "./field-waveform";
 import { FieldRealtimeAnalysis } from "./field-realtime";
+import { readCaptureHistory } from "./web-capture-history";
 import { captureLiveLabel, captureProgress, captureUploadLabel, type CaptureDetail, type CaptureFrame, type CaptureSummary } from "./capture-types";
 import type { FieldRecording, FieldRecordingDetail, FieldRequestOptions } from "./field-types";
 import "./web-captures.css";
@@ -30,8 +31,10 @@ export function WebCaptures({ canAnalyze, onAnalyze }: { canAnalyze: boolean; on
   const [loading, setLoading] = useState(true), [busy, setBusy] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0), [history, setHistory] = useState<FieldRecordingDetail | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false), [analysisError, setAnalysisError] = useState("");
+  const [historyFailed, setHistoryFailed] = useState(false), [historyRevision, setHistoryRevision] = useState(0);
   const historyError = useCallback((cause: unknown) => setAnalysisError(cause instanceof Error ? cause.message : "波形读取失败"), []);
-  const selectedRef = useRef("");
+  const selectedRef = useRef(""), viewRef = useRef(view);
+  useEffect(() => { viewRef.current = view; }, [view]);
   useEffect(() => { pausedRef.current = paused; }, [paused]);
   useEffect(() => {
     let canceled = false, timer: ReturnType<typeof setTimeout>;
@@ -51,7 +54,7 @@ export function WebCaptures({ canAnalyze, onAnalyze }: { canAnalyze: boolean; on
   }, [refreshKey]);
   useEffect(() => {
     selectedRef.current = selectedId;
-    setDetail(null); setDisplayed(null); setHistory(null); setError(""); setAnalysisError("");
+    setDetail(null); setDisplayed(null); setHistory(null); setError(""); setAnalysisError(""); setHistoryFailed(false);
     setPaused(false); pausedRef.current = false; setView("waveform");
     if (!selectedId) return;
     let canceled = false, timer: ReturnType<typeof setTimeout>;
@@ -77,18 +80,21 @@ export function WebCaptures({ canAnalyze, onAnalyze }: { canAnalyze: boolean; on
   useEffect(() => {
     if (view !== "recording" || !complete || !selectedId) return;
     let canceled = false;
-    setHistoryLoading(true); setAnalysisError("");
-    void api<FieldRecordingDetail>(`captures/${encodeURIComponent(selectedId)}/waveform`).then(result => {
+    setHistoryLoading(true); setAnalysisError(""); setHistoryFailed(false);
+    void readCaptureHistory(() => api<FieldRecordingDetail>(`captures/${encodeURIComponent(selectedId)}/waveform`), { active: () => !canceled }).then(result => {
       if (!canceled) setHistory(result);
-    }).catch(cause => { if (!canceled) setAnalysisError(cause instanceof Error ? cause.message : "完整记录读取失败"); })
+    }).catch(cause => { if (!canceled) { setHistoryFailed(true); setAnalysisError(cause instanceof Error ? cause.message : "完整记录读取失败"); } })
       .finally(() => { if (!canceled) setHistoryLoading(false); });
     return () => { canceled = true; };
-  }, [view, complete, selectedId]);
+  }, [view, complete, selectedId, historyRevision]);
   const historyRequest = useCallback(async <T,>(options: FieldRequestOptions): Promise<T> => {
     if (options.action !== "waveform" && options.action !== "recording") throw new Error("此页面仅支持原始波形查看。");
     const query = new URLSearchParams();
     if (options.action === "waveform") { if (options.start !== undefined) query.set("start", String(options.start)); if (options.end !== undefined) query.set("end", String(options.end)); }
-    return api<T>(`captures/${encodeURIComponent(selectedId)}/waveform?${query}`);
+    const active = () => selectedRef.current === selectedId && viewRef.current === "recording";
+    const result = await readCaptureHistory(() => api<T>(`captures/${encodeURIComponent(selectedId)}/waveform?${query}`), { active });
+    if (active()) setAnalysisError("");
+    return result;
   }, [selectedId]);
   async function useForAnalysis() {
     if (!selectedId || !complete || !canAnalyze || busy) return;
@@ -111,7 +117,7 @@ export function WebCaptures({ canAnalyze, onAnalyze }: { canAnalyze: boolean; on
         </div>
         {capture && <div className="capture-info-grid"><div><span>采集端</span><strong>{capture.ownerName}</strong><small>{capture.tenant}</small></div><div><span>原始样本 / 采样率</span><strong>{count(capture.recording.samples)} 点</strong><small>{count(capture.recording.sampleRate)} Hz</small></div><div><span>实时连接</span><strong className={disconnected ? "capture-warning" : ""}>{error ? "连接中断" : captureLiveLabel(capture.liveState)}</strong><small>最后接收 {time(capture.lastSeenAt)}</small></div><div><span>原始记录</span><strong>{captureUploadLabel(capture.uploadState)}</strong><small>{capture.totalBytes ? `${captureProgress(capture)}% · ${(capture.receivedBytes / 1048576).toFixed(1)} / ${(capture.totalBytes / 1048576).toFixed(1)} MB` : "停止并保存后上传"}</small></div></div>}
       </>}
-      {analysisError && <p className="field-error" role="alert">{analysisError}</p>}
+      {analysisError && <p className="field-error" role="alert">{analysisError}{historyFailed && view === "recording" && <Button disabled={historyLoading} onClick={() => setHistoryRevision(value => value + 1)}>重试读取</Button>}</p>}
       {capture?.error && <p className="field-error" role="alert">{capture.error}</p>}
     </div>
     {capture && <div className="capture-display-area">
@@ -128,7 +134,7 @@ export function WebCaptures({ canAnalyze, onAnalyze }: { canAnalyze: boolean; on
       {paused && <div className="capture-paused" role="status">显示已暂停 · 画面时间 {time(displayed?.receivedAt)}</div>}
       {view === "waveform" && <section id="capture-waveform-panel" role="tabpanel" aria-labelledby="capture-waveform-tab" className="field-card capture-wave-card"><div className="field-section-heading"><h2><Waves size={17} /> CH1 振动速度</h2><span className="field-subtext">mm/s · 相对时间</span></div><FieldWaveChart waveform={displayed?.waveform} unit="mm/s" /><div className="capture-rssi-heading">RSSI 回波强度 <span>信号质量 · %</span></div><FieldWaveChart waveform={displayed?.waveform} kind="rssi" compact /><p className="capture-preview-note">实时画面为有限显示窗口；完整原始样本以已上传记录为准。</p></section>}
       {view === "analysis" && <div id="capture-analysis-panel" role="tabpanel" aria-labelledby="capture-analysis-tab"><FieldRealtimeAnalysis key={selectedId} realtime={displayed?.realtime} paused={paused} /></div>}
-      {view === "recording" && <section id="capture-recording-panel" role="tabpanel" aria-labelledby="capture-recording-tab" className="field-card capture-history-card"><div className="field-section-heading"><h2><CheckCircle2 size={17} /> 完整原始记录</h2><span className="field-badge green">上传校验通过</span></div>{historyLoading ? <p role="status">正在读取完整记录…</p> : history && <FieldRecordingViewer key={selectedId} detail={history} load={historyRequest} onError={historyError} />}</section>}
+      {view === "recording" && <section id="capture-recording-panel" role="tabpanel" aria-labelledby="capture-recording-tab" className="field-card capture-history-card"><div className="field-section-heading"><h2><CheckCircle2 size={17} /> 完整原始记录</h2><span className="field-badge green">上传校验通过</span></div>{historyLoading ? <p role="status">正在读取完整记录…</p> : !historyFailed && history && <FieldRecordingViewer key={selectedId} detail={history} load={historyRequest} onError={historyError} />}</section>}
     </div>}
   </section>;
 }
