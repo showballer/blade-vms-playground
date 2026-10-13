@@ -1,6 +1,6 @@
 # 本地开发与模拟调试
 
-适用于当前开发源码；已发布 1.4.0 不包含本轮采集上云功能。桌面负责采集、实时观察和原始记录保存；完整旋转测振放在 Web。Windows 完整包通过 `windows-full.yml` 在 Windows x64 环境构建与验证，实际下载版本以 Web 下载弹窗为准；物理设备、SDK 通讯和真实采集吞吐仍需现场验收。
+适用于 2026-10-13 已发布的 Windows 1.5.0 及 115 配套 Web 的开发源码；旧 1.4.0 不包含本轮采集上云功能。桌面负责采集、实时观察和原始记录保存；完整旋转测振放在 Web。Windows CI、115 在线联动和下载入口均已分别验收，见 [本次发布记录](deploy/centos/DEPLOYED-20261013-CAPTURE.md)；物理设备、SDK 通讯和真实采集吞吐仍需现场验收。
 
 ## 启动两端
 
@@ -42,19 +42,19 @@ BLADE_DEV_URL=http://127.0.0.1:5210 npm run desktop
 
 ## Web 客户端下载入口
 
-Web 页头的「下载客户端」读取 `GET /api/desktop-download`，仅在安装包可读且非空时提供本地下载链接。当前默认文件为 `apps/desktop/release/full-1.3.0/BladeVMS-Setup-1.3.0-x64.exe`，明确标记 **1.3.0 历史完整安装包，不包含本轮未打包的源码改动**。目前没有可提供的 macOS 安装包。
+Web 页头的「下载客户端」读取 `GET /api/desktop-download`，仅在安装包可读且非空时提供本地下载链接。115 已发布 `BladeVMS-Setup-1.5.0-x64.exe`，大小 199,476,018 字节，包含采集联动功能。未配置下载环境变量的本地源码仍回退到 `apps/desktop/release/full-1.3.0/BladeVMS-Setup-1.3.0-x64.exe`；这是历史安装包，不能用于本轮联动验收。目前没有可提供的 macOS 安装包。
 
 生产部署建议在 Web 环境变量中配置下列两种方式之一，并重启 Web 使环境变量生效：
 
 ```dotenv
 # 方式一：Web 主机上的现有 Windows 安装包，必须是绝对路径
-BLADE_DESKTOP_WINDOWS_PATH=/srv/blade/releases/BladeVMS-Setup-1.3.0-x64.exe
-BLADE_DESKTOP_WINDOWS_VERSION=1.3.0
+BLADE_DESKTOP_WINDOWS_PATH=/var/lib/bladevms/downloads/BladeVMS-Setup-1.5.0-x64.exe
+BLADE_DESKTOP_WINDOWS_VERSION=1.5.0
 
 # 方式二：已有 HTTP(S) 发布地址，配置后优先于本地路径
-# BLADE_DESKTOP_WINDOWS_URL=https://downloads.example.com/BladeVMS-Setup-1.3.0-x64.exe
-# BLADE_DESKTOP_WINDOWS_VERSION=1.3.0
-# BLADE_DESKTOP_WINDOWS_FILENAME=BladeVMS-Setup-1.3.0-x64.exe
+# BLADE_DESKTOP_WINDOWS_URL=https://downloads.example.com/BladeVMS-Setup-1.5.0-x64.exe
+# BLADE_DESKTOP_WINDOWS_VERSION=1.5.0
+# BLADE_DESKTOP_WINDOWS_FILENAME=BladeVMS-Setup-1.5.0-x64.exe
 ```
 
 更新版本时，将真实安装包放到配置位置，并同步修改对应版本号；推荐先写新文件再原子替换。自定义路径或地址未明确配置合法版本号时，API 返回 `version: null`，不会沿用默认的 1.3.0。只有版本变量而未指定新文件/地址时，仍提供默认 1.3.0 文件和版本。可选 `BLADE_DESKTOP_WINDOWS_FILENAME` 只改变下载展示名称，须为无目录、无控制字符的 `.exe` 文件名。安装包是运行期文件，不会由 Next 构建自动复制到部署目录。
@@ -65,10 +65,12 @@ BLADE_DESKTOP_WINDOWS_VERSION=1.3.0
 
 1. 使用当前本机账号登录桌面；首次登录仍须先修改交付初始密码。
 2. 停止并保存采集，进入「设备与服务 → 账号与密码 → 绑定 Web 账号」。填写当前本机密码、Web 服务器地址、Web 账号及其当前密码，联网完成绑定。仅在 `5210` 本机开发界面默认填写 `http://127.0.0.1:3210`；正式安装环境需填写实际 Web 地址。
-   1.4.0 安装包默认填入 `http://115.190.201.41:3000`，支持 HTTP 和 HTTPS。远程 HTTP 会明文传输账号密码和会话信息，表单与已绑定账号卡片会显示提示；不会关闭 HTTPS 证书验证，也不会自动跟随认证重定向。
+   1.5.0 安装界面默认填入 `http://115.190.201.41:3000`，支持 HTTP 和 HTTPS，无需另配推送地址。远程 HTTP 会明文传输账号密码和会话信息，表单与已绑定账号卡片会显示提示；不会关闭 HTTPS 证书验证，也不会自动跟随认证重定向。
 3. 绑定后，该 Web 账号接管当前本机工作区登录。登录页固定显示绑定账号，桌面与 Web 使用同一密码；绑定服务器、账号身份和租户不能在界面重新指定，旧本机密码不再作为备用登录方式。原有采集记录保留，不因绑定或登录自动上传；开启自动同步后，新开始的采集会推送实时画面并在保存后上传。
 4. 「账号与密码」卡片显示服务器、上次联网验证时间及离线有效期。联网成功验证后，最多可在原有效期内离线登录 30 天；离线登录不会续期。到期、无有效缓存或被要求重新验证时，必须联网登录。
 5. 已绑定桌面从页头密码按钮或「账号与密码 → 修改统一密码」修改 Web 密码，必须联网且采集已停止；新密码为 12–128 位。未绑定桌面的「修改本机密码」仍只影响本机。
+
+联网登录才会取得推送会话。普通断网期间本机采集和保存继续；在同一有效会话内恢复网络后自动重试实时推送和待传记录。重启后选择离线登录只能继续本机工作，须停止保存、退出并联网登录后恢复同步。Web 会话目前为 12 小时且不自动续签；到期也需按上述流程重新登录，30 天离线有效期不延长在线会话。
 
 Web 自助改密入口为「右上角账号 → 修改密码」；管理员可在「系统管理 → 用户与权限」对指定用户执行「重置密码」。改密或重置会撤销该账号已有的 Web 登录与 API 令牌，需使用新密码重新登录。
 

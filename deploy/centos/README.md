@@ -21,7 +21,7 @@
 | 桌面采集与上传暂存 | `/var/lib/bladevms/web-captures`，`bladevms:bladevms`，目录权限 `0700` |
 | 旋转原始数据 | `/var/lib/bladevms/web-rotation`，`bladevms:bladevms`，目录权限 `0700` |
 | 数据库 | 复用现有 MySQL 容器；仅 `blade_vms_playground` 库及 `blade_vms_app` 账号 |
-| Windows 下载（可选） | `/var/lib/bladevms/downloads/BladeVMS-Setup-1.3.0-x64.exe` |
+| 本次 Windows 下载目标 | `/var/lib/bladevms/downloads/BladeVMS-Setup-1.5.0-x64.exe`，验收安装包后启用 |
 
 Next 同时提供 Web 页面和 API。systemd 直接启动一个 Node 进程，不使用 PM2 cluster、多个 Web 副本或另一个 `npm start` 守护进程。旋转分析按请求启动短期 Python 子进程；无需启动采集 HTTP 服务或真实设备连接。
 
@@ -164,15 +164,17 @@ ss -ltnp
 
 ## Windows 下载和桌面统一账号边界
 
-HTTP IP 地址可供浏览器访问 Web。当前桌面统一账号模块只接受可信 HTTPS 服务地址，HTTP 仅允许精确 loopback（`localhost` / `127.0.0.1` / `[::1]`）；因此**不能使用 `http://115.190.201.41:3000` 完成桌面统一账号绑定**。需要后续配置可信证书的 HTTPS 域名，不能通过关闭证书验证或扩大 HTTP 例外绕过。
+Windows 1.5.0 支持 HTTP 和 HTTPS，安装界面默认 `http://115.190.201.41:3000`，可直接绑定当前 115 服务。HTTP 不加密账号密码和会话传输，客户端会显示提示；HTTPS 仍校验证书，认证不跟随重定向。首次登录本机工作区后，在「设备与服务 → 账号与密码」绑定一次 Web 账号；认证、实时画面和原始上传共用同一地址，无需单独配置推送端口。
 
-如启用下载，将现有安装包放入下载目录，设为 `root:bladevms`、`0640`，核对文件 SHA-256，再启用环境模板中的 `BLADE_DESKTOP_WINDOWS_*` 三项并重启 Web。验证元信息、HEAD、首段 Range 及实际下载；例如已安装文件时下列请求应返回 `206` 和正确 `Content-Range`：
+只有成功联网登录才启用云端同步。普通断网期间继续本机采集，原有效会话恢复网络后自动重试。重启后离线登录仍可本机采集，但须停止保存、退出并联网登录后续传。Web 会话当前为 12 小时且没有自动续签，到期需重新联网登录；30 天离线有效期不等于持续推送权限。
+
+本次发布使用 Windows x64 构建的 `BladeVMS-Setup-1.5.0-x64.exe`。先完成安装包测试，再放入下载目录，设为 `root:bladevms`、`0640`，核对文件 SHA-256，随后将环境模板中的 `BLADE_DESKTOP_WINDOWS_PATH`、`BLADE_DESKTOP_WINDOWS_FILENAME`、`BLADE_DESKTOP_WINDOWS_VERSION` 一起指向 1.5.0 并重启 Web。保留旧文件以便回退，不覆盖同名旧版本。验证元信息、HEAD、首段 Range 及实际完整下载 SHA-256；例如已安装文件时下列请求应返回 `206` 和正确 `Content-Range`：
 
 ```sh
 curl --fail --silent --show-error --dump-header /tmp/bladevms-download-headers.txt --header 'Range: bytes=0-1023' --output /tmp/bladevms-download-prefix.bin http://115.190.201.41:3000/api/desktop-download/windows
 ```
 
-`1.3.0` 仅代表已有 Windows 安装包可供下载；本次部署没有据此声称已重新打包、签名或验证包含当前改动的新版 Windows 客户端。未安装文件时，元信息应报告不可用，不能把页面上的下载入口当作安装包已交付的证据。
+本文是部署操作说明，不代表 1.5.0 已构建或发布。发布记录应分别包含 Windows CI／安装验证结果、源码提交、安装包 SHA-256、115 Web 版本及在线接口验收、下载元信息与实际下载校验结果。源码缺省回退的 1.3.0 和旧 1.4.0 均不包含本次自动上传功能；未安装文件时应报告不可用，不能把按钮出现当作交付证据。本次包未代码签名，物理设备采集、UDP 丢包及长期吞吐仍待 Windows 现场验证。
 
 ## 备份、更新与回退
 
@@ -194,7 +196,7 @@ ss -ltnp
 
 上述完整回退适用于本次由 BladeVMS 启用的 Nginx；如果上线后 Nginx 增加了其他业务站点，先移除 BladeVMS server 配置并验证/重载，使 3000 释放，避免停掉其他站点。参考 `/opt/bladevms/rollback/soniva-admin-before.json` 核对旧容器端口和状态，按旧应用自身的健康检查验收。保留新库、新原始数据、发布目录和日志供排查，不删除 MySQL 数据，不把旧应用回退当作撤销 BladeVMS 数据迁移。
 
-## 2026-10-13 联动功能的增量升级
+## 2026-10-13 Windows 1.5.0 联动功能的增量升级
 
 此节是当前源码的部署要求，不代表线上已升级。保留现有数据库和数据目录；不运行 `db:setup`，不重新导入本地数据库。
 
@@ -203,7 +205,7 @@ ss -ltnp
 - 以现有服务身份执行 `node --env-file=/etc/bladevms/web.env /opt/bladevms/current/scripts/migrate-captures.mjs`，只创建 `captures` 表，不初始化账号。
 - 环境新增 `BLADE_CAPTURE_DATA_DIR=/var/lib/bladevms/web-captures`，创建目录并给服务用户 0700 权限。更新 systemd `ReadWritePaths` 后执行 daemon-reload，再切换已构建发布目录并重启。只有环境变量而未放开目录写权限会导致上传失败。
 - 现有 Nginx 的 144 MiB / 200 秒限制足够容纳 4 MiB 原始分段与最长 180 秒完整性校验；保留认证转发和禁用代理缓存。每条原始记录总量上限 64 GiB，不代表可用磁盘配额；上传失败时保留本机源数据。
-- Web 与新版客户端需配套发布。仅更新 Web，不会让旧 1.4.0 客户端产生推送；仅更新客户端而未迁移 Web，会显示同步失败，但本机采集和保存应继续。
+- Web 与 1.5.0 客户端需配套发布。仅更新 Web，不会让旧 1.4.0 客户端产生推送；仅更新客户端而未迁移 Web，会显示同步失败，但本机采集和保存应继续。升级前停止保存并退出客户端；同一 Windows 用户升级保留原账号绑定、密码、队列和记录。
 - 回退代码时保留新增表、字段和原始目录，不删除已上传数据；旧代码不使用新增字段即可继续原有功能。
 
 操作流程和权限见 [桌面与 Web 联动](../../CLOUD_CAPTURE_FLOW.md)。
