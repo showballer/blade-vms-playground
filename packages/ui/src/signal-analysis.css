@@ -1,0 +1,134 @@
+/* Shared signal analysis, including Health's traceability dialog. */
+.signal-layout.signal-analysis-workbench {
+  grid-template-columns: minmax(0, 1fr) 292px;
+  gap: 16px;
+}
+.signal-analysis-workbench .signal-source-fields {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(240px, 1.6fr) 132px auto;
+  gap: 12px;
+  align-items: end;
+}
+.signal-analysis-workbench .signal-source-fields > .inline-field {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  min-width: 0;
+}
+.signal-analysis-workbench .signal-source-fields > .inline-field > span:first-child {
+  color: var(--muted);
+  font-size: 12px;
+}
+.signal-analysis-workbench .signal-source-fields .custom-select {
+  width: 100%;
+  max-width: none;
+}
+.signal-analysis-workbench .signal-source-fields .custom-select-trigger {
+  min-height: 36px;
+  background: #fff;
+}
+.signal-analysis-workbench .signal-compare-button { min-height: 36px; }
+.signal-analysis-workbench .signal-source-context {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-top: 12px;
+}
+.signal-analysis-workbench .signal-source-context .tag { flex: none; margin-top: 1px; }
+.signal-analysis-workbench .signal-source-context > p {
+  flex: 1 1 300px;
+  margin: 0;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.65;
+}
+.signal-analysis-workbench .signal-chart-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+  padding: 12px 16px;
+  background: #fafbfd;
+  border-bottom: 1px solid var(--line);
+}
+.signal-analysis-workbench .signal-view-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.signal-analysis-workbench .signal-view-actions .btn {
+  min-height: 32px;
+  padding: 6px 9px;
+  font-size: 12px;
+}
+.signal-analysis-workbench .signal-view-actions .btn.is-active {
+  background: #eaf2fd;
+  color: var(--accent);
+}
+.signal-analysis-workbench .signal-chart-toolbar .result-export {
+  margin-left: auto;
+  max-width: 100%;
+}
+.signal-analysis-workbench .signal-chart-toolbar .result-export .btn {
+  min-height: 32px;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+.signal-analysis-workbench .signal-chart-toolbar .result-export .custom-select-trigger {
+  min-height: 32px;
+  font-size: 12px;
+}
+.signal-analysis-workbench .signal-chart-content { padding: 16px 16px 8px; }
+.signal-analysis-workbench .signal-chart-status {
+  border-top: 1px solid var(--line);
+  padding: 9px 16px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.signal-analysis-workbench .signal-preprocess-shortcuts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding-bottom: 10px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+.signal-analysis-workbench .signal-preprocess-shortcuts .btn {
+  padding: 5px 7px;
+  min-height: 30px;
+  font-size: 12px;
+  background: #f3f6fa;
+}
+.signal-layout.signal-analysis-workbench .signal-parameter-fields { gap: 10px 10px; }
+.signal-analysis-workbench .signal-parameter-fields > .inline-field {
+  display: grid;
+  grid-template-columns: 65px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+.signal-analysis-workbench .signal-parameter-fields .custom-select { min-width: 0; }
+.signal-analysis-workbench .signal-parameter-fields .custom-select-trigger { background: #fff; }
+.signal-analysis-workbench .signal-parameter-fields .check { margin-block: 2px; }
+@media (max-width: 1190px) {
+  .signal-layout.signal-analysis-workbench { grid-template-columns: minmax(0, 1fr); }
+  .signal-analysis-workbench .signal-source-fields { grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr); }
+  .signal-analysis-workbench .signal-compare-button { justify-self: end; align-self: end; }
+  .signal-analysis-workbench .signal-source-fields > .inline-field:nth-child(3) { max-width: 180px; }
+}
+@media (max-width: 700px) {
+  .signal-analysis-workbench .signal-source-fields { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .signal-analysis-workbench .signal-source-fields > .inline-field:nth-child(3) { max-width: none; }
+  .signal-analysis-workbench .signal-compare-button { justify-self: stretch; }
+  .signal-analysis-workbench .signal-chart-toolbar { padding: 10px 12px; }
+  .signal-analysis-workbench .signal-chart-toolbar .result-export { margin-left: 0; }
+  .signal-analysis-workbench .signal-chart-content { padding: 12px 6px 8px; }
+  .signal-analysis-workbench > aside.stack { display: flex; flex-direction: column; }
+}

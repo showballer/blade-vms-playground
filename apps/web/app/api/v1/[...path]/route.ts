@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import {
   auth,
   audit,
@@ -7,8 +7,6 @@ import {
   HttpError,
   kinds,
   list,
-  passwordHash,
-  passwordMatch,
   permission,
   pool,
   rows,
@@ -37,10 +35,12 @@ import { applyAlertReview, thresholdValues } from "@blade/ui/health-data";
 import { rotationCanonical, rotationCutRecord } from "@blade/ui/rotation-data";
 import { modalConfig, modalRecord, modalBaselineCanonical } from "@blade/ui/modal-data";
 import { signalWorkflow, signalRefs, signalInput, signalRecord, type SignalInput } from "@blade/ui/signal-input";
+import { changeAccountPassword, createManagedUser, deleteManagedUser, issueAccountToken, loginAccount, newAccountPassword, passwordInput, resetAccountPassword, updateManagedUser } from "../../../../lib/account";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 type Context = { params: Promise<{ path: string[] }> };
 const loginAttempts = new Map<string, { n: number; at: number }>();
+const passwordAttempts = new Map<string, { n: number; at: number }>();
 const json = (data: unknown, status = 200) =>
   NextResponse.json(data, { status, headers: { "Cache-Control": "no-store" } });
 function str(v: unknown, max = 200) {
@@ -323,6 +323,8 @@ async function handle(req: Request, ctx: Context) {
     const path = (await ctx.params).path;
     const [resource, kind, id] = path;
     const method = req.method;
+    if (resource === "session" && (path.length !== 1 || !["GET", "POST", "DELETE"].includes(method)))
+      throw new HttpError(405, "会话操作路径或方法无效");
     if (method !== "GET" && method !== "HEAD") {
       const origin = req.headers.get("origin");
       const expected = process.env.APP_ORIGIN || "http://127.0.0.1:3210";
@@ -344,30 +346,23 @@ async function handle(req: Request, ctx: Context) {
     if (resource === "session" && method === "POST") {
       const b = await body(req);
       const username = str(b.username, 80),
-        password = str(b.password, 200);
+        password = passwordInput(b.password);
       const key = username;
       const savedAttempt = loginAttempts.get(key);
       const attempt = savedAttempt && Date.now() - savedAttempt.at < 60000 ? savedAttempt : undefined;
       if (loginAttempts.size > 1000) for (const [name, value] of loginAttempts) if (Date.now() - value.at >= 60000) loginAttempts.delete(name);
       if (attempt && Date.now() - attempt.at < 60000 && attempt.n >= 10)
         throw new HttpError(429, "尝试过于频繁，请一分钟后重试");
-      const [u] = await rows<User & { password_hash: string }>(
-        "SELECT * FROM users WHERE username=? AND active=1",
-        [username],
-      );
-      if (!u || !passwordMatch(password, u.password_hash)) {
-        loginAttempts.set(key, { n: (attempt?.n || 0) + 1, at: Date.now() });
-        throw new HttpError(401, "用户名或密码不正确");
+      let session;
+      try { session = await loginAccount(username, password); }
+      catch (error) {
+        if (error instanceof HttpError && error.status === 401)
+          loginAttempts.set(key, { n: (attempt?.n || 0) + 1, at: Date.now() });
+        throw error;
       }
       loginAttempts.delete(key);
-      const token = randomBytes(32).toString("base64url");
-      await run(
-        "INSERT INTO sessions(id,token_hash,user_id,expires_at) VALUES(?,?,?,DATE_ADD(UTC_TIMESTAMP(),INTERVAL 12 HOUR))",
-        [randomUUID(), digest(token), u.id],
-      );
-      const { password_hash: _, ...user } = u;
-      await audit(user, "登录", username);
-      const res = json({ user, token });
+      const { token } = session;
+      const res = json(session);
       res.cookies.set("blade_session", token, {
         httpOnly: true,
         sameSite: "strict",
@@ -378,6 +373,24 @@ async function handle(req: Request, ctx: Context) {
       return res;
     }
     const user = await auth(req);
+    if (resource === "account") {
+      if (path.length !== 2 || kind !== "password" || method !== "POST") throw new HttpError(405, "账号操作路径或方法无效");
+      const b = await body(req);
+      if (Object.keys(b).some(key => !["currentPassword", "newPassword"].includes(key))) throw new HttpError(400, "本人改密只接受当前密码和新密码");
+      const attempt = passwordAttempts.get(user.id);
+      if (attempt && Date.now() - attempt.at < 60_000 && attempt.n >= 5) throw new HttpError(429, "改密尝试过于频繁，请一分钟后重试");
+      try {
+        const result = await changeAccountPassword(user, tokenFrom(req), b.currentPassword, b.newPassword);
+        passwordAttempts.delete(user.id);
+        const response = json(result); response.cookies.delete("blade_session"); return response;
+      } catch (error) {
+        if (error instanceof HttpError && error.message === "当前密码不正确") {
+          if (passwordAttempts.size > 1000) for (const [key, entry] of passwordAttempts) if (Date.now() - entry.at >= 60_000) passwordAttempts.delete(key);
+          passwordAttempts.set(user.id, { n: attempt && Date.now() - attempt.at < 60_000 ? attempt.n + 1 : 1, at: Date.now() });
+        }
+        throw error;
+      }
+    }
     if (resource === "health") {
       if (kind === "trends" && method === "POST") {
         if (path.length === 2) { const result = await archiveHealthTrend(user, await body(req)); return json(result.record, result.created ? 201 : 200); }
@@ -515,12 +528,23 @@ async function handle(req: Request, ctx: Context) {
     }
     if (resource === "users") {
       permission(user, "users", true);
+      if (method === "DELETE" && path.length === 2) {
+        const b = await body(req);
+        if (b.confirm !== true || Object.keys(b).some(key => key !== "confirm")) throw new HttpError(400, "请明确确认删除该账号");
+        return json(await deleteManagedUser(user, tokenFrom(req), kind));
+      }
+      if (method === "POST" && path.length === 3 && id === "password") {
+        const b = await body(req);
+        if (Object.keys(b).some(key => key !== "newPassword")) throw new HttpError(400, "重置密码只接受新密码");
+        const result = await resetAccountPassword(user, tokenFrom(req), kind, b.newPassword);
+        const response = json(result); if (result.reauthenticate) response.cookies.delete("blade_session"); return response;
+      }
       if (!((method === "GET" || method === "POST") && path.length === 1) && !(method === "PUT" && path.length === 2))
         throw new HttpError(405, "用户操作路径或方法无效");
       if (method === "GET")
         return json(
           await rows(
-            "SELECT id,username,name,role,tenant,active,created_at FROM users ORDER BY created_at",
+            "SELECT id,username,name,role,tenant,active,created_at FROM users WHERE deleted_at IS NULL ORDER BY created_at",
           ),
         );
       const b = await body(req);
@@ -530,50 +554,21 @@ async function handle(req: Request, ctx: Context) {
       if (method === "POST") {
         if (b.active !== undefined && typeof b.active !== "boolean")
           throw new HttpError(400, "启用状态必须为布尔值");
-        const pw = str(b.password);
-        if (pw.length < 8) throw new HttpError(400, "密码至少 8 位");
-        const uid = randomUUID();
-        await run(
-          "INSERT INTO users(id,username,name,password_hash,role,tenant,active) VALUES(?,?,?,?,?,?,?)",
-          [
-            uid,
-            str(b.username, 80),
-            str(b.name, 100),
-            passwordHash(pw),
-            role,
-            str(b.tenant, 100),
-            b.active === false ? 0 : 1,
-          ],
-        );
-        await audit(user, "新增用户", b.username);
-        return json({ id: uid }, 201);
+        return json(await createManagedUser(user, tokenFrom(req), {
+          username: str(b.username, 80), name: str(b.name, 100), role,
+          tenant: str(b.tenant, 100), active: b.active !== false,
+          password: newAccountPassword(b.password),
+        }), 201);
       }
       if (method === "PUT") {
         const uid = kind;
-        if (uid === user.id && (b.active === false || role !== "admin"))
-          throw new HttpError(400, "不能禁用或降级当前管理员");
-        const [old] = await rows<User>("SELECT * FROM users WHERE id=?", [uid]);
-        if (!old) throw new HttpError(404, "用户不存在");
         if (typeof b.active !== "boolean")
           throw new HttpError(400, "启用状态必须为布尔值");
         const name = str(b.name, 100),
           tenant = str(b.tenant, 100);
-        const password = b.password ? str(b.password, 200) : undefined;
-        if (password && password.length < 8)
-          throw new HttpError(400, "密码至少 8 位");
-        const hash = password ? passwordHash(password) : undefined;
-        await run(
-          "UPDATE users SET name=?,role=?,tenant=?,active=?" +
-            (hash ? ",password_hash=?" : "") +
-            " WHERE id=?",
-          [name, role, tenant, b.active ? 1 : 0, ...(hash ? [hash] : []), uid],
-        );
-        await run("DELETE FROM sessions WHERE user_id=? AND user_id<>?", [
-          uid,
-          user.id,
-        ]);
-        await audit(user, "编辑用户", old.username);
-        return json({ ok: true });
+        const password = b.password === undefined || b.password === "" ? undefined : newAccountPassword(b.password);
+        const result = await updateManagedUser(user, tokenFrom(req), uid, { name, role, tenant, active: b.active, password });
+        const response = json(result); if (result.reauthenticate) response.cookies.delete("blade_session"); return response;
       }
     }
     if (resource === "logs") {
@@ -595,14 +590,8 @@ async function handle(req: Request, ctx: Context) {
           ),
         );
       if (method === "POST") {
-        const b = await body(req),
-          token = "bv_" + randomBytes(32).toString("base64url");
-        await run(
-          "INSERT INTO sessions(id,token_hash,user_id,kind,name,expires_at) VALUES(?,?,?,'api',?,DATE_ADD(UTC_TIMESTAMP(),INTERVAL 30 DAY))",
-          [randomUUID(), digest(token), user.id, str(b.name, 100)],
-        );
-        await audit(user, "创建 API 令牌", b.name);
-        return json({ token, expiresIn: "30 天" }, 201);
+        const b = await body(req);
+        return json(await issueAccountToken(user, tokenFrom(req), str(b.name, 100)), 201);
       }
       if (method === "DELETE") {
         await run(

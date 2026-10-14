@@ -3,7 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "overrides": {
-    "exceljs": { "uuid": "11.1.1" }
+    "exceljs": {
+      "uuid": "11.1.1"
+    }
   },
   "workspaces": [
     "apps/*",
@@ -11,6 +13,9 @@
   ],
   "scripts": {
     "test:field": "node scripts/test-local-auth.cjs && node scripts/test-field-service.cjs && node scripts/test-field-window.cjs && tsx packages/ui/src/field-desktop.test.tsx && tsx --tsconfig apps/desktop/tsconfig.json packages/ui/src/field-bending.test.tsx",
+    "test:unified-auth": "node scripts/test-unified-auth.cjs && node scripts/test-field-account-bridge.cjs",
+    "test:unified-account-e2e": "node --env-file=apps/web/.env.local scripts/test-unified-account-e2e.mjs",
+    "test:web-account": "node --env-file=apps/web/.env.local --import tsx scripts/test-web-account.ts",
     "test:bending-desktop": "electron scripts/bending-desktop-validation.cjs",
     "test:field-desktop": "npm run build -w @blade/desktop && electron scripts/field-desktop-smoke.cjs",
     "test:field-responsive": "npm run build -w @blade/desktop && electron scripts/field-responsive-smoke.cjs",
@@ -51,7 +56,12 @@
     "test:rotation-api": "node --env-file=apps/web/.env.local scripts/test-rotation-api.mjs",
     "test:modal": "tsx scripts/test-modal-data.ts",
     "test:modal-api": "node scripts/prepare-desktop.mjs && node --env-file=apps/web/.env.local scripts/test-modal-api.mjs",
-    "package:windows": "npm run package:windows -w @blade/desktop"
+    "package:windows": "npm run package:windows -w @blade/desktop",
+    "test:field-cloud-sync": "node scripts/test-field-cloud-sync.cjs",
+    "test:captures": "tsx scripts/test-capture-permissions.ts && tsx scripts/test-captures.ts",
+    "test:capture-flow-e2e": "node --env-file=apps/web/.env.local scripts/test-capture-flow-e2e.mjs",
+    "db:migrate-captures": "node --env-file=apps/web/.env.local scripts/migrate-captures.mjs",
+    "test:capture-main-e2e": "node --env-file=apps/web/.env.local scripts/test-field-main-capture-e2e.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.19.0",

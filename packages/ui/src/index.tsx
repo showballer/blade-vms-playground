@@ -21,6 +21,7 @@ import {
   ShieldCheck,
   LoaderCircle,
   CloudUpload,
+  KeyRound,
 } from "lucide-react";
 import {
   api,
@@ -31,16 +32,19 @@ import {
   type Item,
 } from "./api";
 import { Button, Dialog, EditDialog, Tag } from "./common";
-import { Acquisition, Blade, Signal } from "./desktop-screens";
+import { Acquisition, Signal } from "./desktop-screens";
 import { Health, ModalAnalysis, Reports } from "./web-screens";
 import { Administration, Developer } from "./admin-screens";
 import { SyncDialog } from "./sync-dialog";
 import { workspaceTask } from "./workspace-context";
+import { WebRotation } from "./web-rotation";
+import { AccountPasswordDialog } from "./account-password-dialog";
+import { ClientDownload } from "./client-download";
 const nav = [
   { id: "acq", name: "数据采集", icon: Activity, platform: "desktop" },
-  { id: "blade", name: "旋转测振", icon: Radio, platform: "desktop" },
-  { id: "signal", name: "信号处理", icon: AudioLines, platform: "desktop" },
   { id: "health", name: "健康监测", icon: HeartPulse, platform: "web" },
+  { id: "signal", name: "信号处理", icon: AudioLines, platform: "desktop" },
+  { id: "blade", name: "旋转测振", icon: Radio, platform: "web" },
   { id: "modal", name: "模态识别", icon: ChartSpline, platform: "web" },
   { id: "report", name: "报告导出", icon: FileText, platform: "web" },
   { id: "dev", name: "二次开发", icon: Code2, platform: "web" },
@@ -57,6 +61,8 @@ export function BladeApp({ platform }: { platform: "web" | "desktop" }) {
     [toast, setToast] = useState(""),
     [settings, setSettings] = useState<string | null>(null),
     [account, setAccount] = useState(false),
+    [changingPassword, setChangingPassword] = useState(false),
+    [loginNotice, setLoginNotice] = useState(""),
     [syncOpen, setSyncOpen] = useState(false),
     [currentTask, setCurrentTask] = useState<Item | undefined>(),
     [navigationTaskId, setNavigationTaskId] = useState<string | undefined>(),
@@ -69,9 +75,14 @@ export function BladeApp({ platform }: { platform: "web" | "desktop" }) {
     setNavigationTaskId(undefined);
     setToast("");
     setAccount(false);
+    setChangingPassword(false);
     setSyncOpen(false);
   }, []);
   const notify = useCallback((message: string) => setToast(message), []);
+  const reauthenticate = useCallback(() => {
+    clearWorkspace(); setOffline(false); setPassword(""); setError("");
+    setLoginNotice("统一密码已更新，请使用新密码重新登录。");
+  }, [clearWorkspace]);
   const refresh = useCallback(async () => {
     const epoch = workspaceEpoch.current;
     const next = await api<Bootstrap>("bootstrap");
@@ -124,6 +135,7 @@ export function BladeApp({ platform }: { platform: "web" | "desktop" }) {
   async function login(e: React.FormEvent) {
     e.preventDefault();
     setError("");
+    setLoginNotice("");
     setBusy(true);
     try {
       clearWorkspace();
@@ -199,6 +211,7 @@ export function BladeApp({ platform }: { platform: "web" | "desktop" }) {
           </div>
           <h2>登录工作台</h2>
           <p className="muted">使用项目账号继续</p>
+          {loginNotice && <p className="muted" role="status">{loginNotice}</p>}
           <label className="form-field">
             <span>账号</span>
             <input
@@ -255,7 +268,7 @@ export function BladeApp({ platform }: { platform: "web" | "desktop" }) {
             <span>
               独立项目数据库 · 按角色授权
               <br />
-              设备与算法尚未接入，图表使用演示数据
+              支持实时采集与离线导入 · 健康监测保留演示样例
             </span>
           </div>
         </form>
@@ -276,15 +289,15 @@ export function BladeApp({ platform }: { platform: "web" | "desktop" }) {
   const activeTask = workspaceTask(data.tasks, currentTask);
   const components: Record<string, React.ReactNode> = {
     acq: <Acquisition {...shared} />,
-    blade: <Blade {...shared} canWrite={canWrite} />,
+    blade: <WebRotation canWrite={canAnalyze} notify={notify} />,
     signal: <Signal {...shared} canWrite={canWrite} />,
     health: <Health {...shared} canWrite={canAnalyze} />,
     modal: <ModalAnalysis {...shared} canWrite={canAnalyze} />,
     report: <Reports {...shared} canWrite={canAnalyze} />,
     dev: <Developer {...shared} />,
-    admin: <Administration {...shared} canWrite={canAnalyze} />,
+    admin: <Administration {...shared} canWrite={canAnalyze} onReauthenticate={reauthenticate} />,
     alerts: (
-      <Administration {...shared} canWrite={canAnalyze} initialTab="alerts" />
+      <Administration {...shared} canWrite={canAnalyze} initialTab="alerts" onReauthenticate={reauthenticate} />
     ),
   };
   return (
@@ -336,9 +349,10 @@ export function BladeApp({ platform }: { platform: "web" | "desktop" }) {
           {platform === "desktop" && typeof window !== "undefined" && window.blade && (
             <Button onClick={() => setSyncOpen(true)}><CloudUpload size={15} />回传本机任务</Button>
           )}
-          <Tag tone="amber">
-            {isOffline() ? "离线演示" : "设备 / 算法未接入"}
+          <Tag tone={screen === "blade" ? "blue" : "amber"}>
+            {screen === "blade" ? "旋转测振" : isOffline() ? "离线演示" : "设备未连接"}
           </Tag>
+          {platform === "web" && <ClientDownload />}
           <Button variant="ghost" aria-label="应用设置" onClick={configure}>
             <Settings size={17} />
           </Button>
@@ -409,6 +423,11 @@ export function BladeApp({ platform }: { platform: "web" | "desktop" }) {
         </main>
       </div>
       <footer className="statusbar">
+        {screen === "blade" ? <>
+          <span>采集按权限查看 · 分析按账号保存</span>
+          <span>算法：恒转速阶次分析 · 多点融合 · 弯曲振型</span>
+          <span>采样率、来源与质量以所选记录为准</span>
+        </> : <>
         <span>
           采样率 <b className="mono">{activeTask?.sampleRate ?? "—"} Hz</b>
         </span>
@@ -422,6 +441,7 @@ export function BladeApp({ platform }: { platform: "web" | "desktop" }) {
         <span>
           算法 <b className="muted">未接入</b>
         </span>
+        </>}
         <time className="push mono">{now}</time>
       </footer>
       {toast && (
@@ -442,6 +462,7 @@ export function BladeApp({ platform }: { platform: "web" | "desktop" }) {
             <dd>{data.user.tenant}</dd>
           </dl>
           <div className="dialog-actions">
+            {platform === "web" && <Button onClick={() => { setAccount(false); setChangingPassword(true); }}><KeyRound size={14} />修改密码</Button>}
             <Button
               variant="danger"
               onClick={async () => {
@@ -461,6 +482,10 @@ export function BladeApp({ platform }: { platform: "web" | "desktop" }) {
           </div>
         </Dialog>
       )}
+      {changingPassword && <AccountPasswordDialog mode="change" username={data.user.username} onClose={() => setChangingPassword(false)} onSave={async values => {
+        await api("account/password", "POST", values);
+        reauthenticate();
+      }} />}
     </div>
   );
 }

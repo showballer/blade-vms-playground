@@ -10,6 +10,7 @@ import math
 import os
 import threading
 from collections import OrderedDict
+from operator import itemgetter
 
 from .storage import HEADER, MAGIC, RECORD, empty_waveform
 
@@ -64,21 +65,53 @@ def envelope_rows(rows, step):
         yield summarize(bucket)
 
 
+def live_envelope(rows, step):
+    """Reduce a wide live window without per-bucket Python rescans.
+
+    Retains velocity/RSSI extrema, missing counts and overrange flags. Source
+    rows remain unchanged; this display envelope is never the FFT input.
+    """
+    import numpy as np
+
+    count = len(rows)
+    indices = np.fromiter(map(itemgetter(0), rows), dtype=np.int64, count=count)
+    values = np.fromiter(map(itemgetter(1), rows), dtype=np.float64, count=count)
+    # None becomes NaN. fmin/fmax retain valid RSSI extrema while buckets with
+    # entirely missing RSSI stay unknown rather than claiming a zero signal.
+    rssi = np.fromiter(map(itemgetter(2), rows), dtype=np.float64, count=count)
+    overrange = np.fromiter(map(itemgetter(3), rows), dtype=np.bool_, count=count)
+    offsets = np.r_[0, np.flatnonzero(np.diff(indices // step)) + 1]
+    ends = np.r_[offsets[1:], count]
+    low, high = np.minimum.reduceat(values, offsets), np.maximum.reduceat(values, offsets)
+    rssi_low, rssi_high = np.fmin.reduceat(rssi, offsets), np.fmax.reduceat(rssi, offsets)
+    missing = np.add.reduceat(np.isnan(rssi), offsets, dtype=np.int64)
+    flags = np.add.reduceat(overrange, offsets, dtype=np.int64)
+    return [{"start": int(indices[a]), "end": int(indices[b - 1]) + 1,
+             "min": float(lo), "max": float(hi),
+             "rssiMin": float(rlo) if np.isfinite(rlo) else None,
+             "rssiMax": float(rhi) if np.isfinite(rhi) else None,
+             "missing": int(miss), "overrange": int(flag)}
+            for a, b, lo, hi, rlo, rhi, miss, flag in zip(offsets, ends, low, high, rssi_low, rssi_high, missing, flags)]
+
+
 def make_wave(rows, rate, origin, start=None, end=None):
     rows = list(rows)
     wave = empty_waveform()
     wave.update(sampleRate=rate, sampleOrigin=origin, representation="raw",
-                sourceSamples=len(rows), overrangeCount=sum(row[3] for row in rows),
-                missingRssiCount=sum(row[2] is None for row in rows))
+                sourceSamples=len(rows), overrangeCount=0, missingRssiCount=0)
     if not rows:
         return wave
     wave.update(sampleStart=rows[0][0], rangeStart=rows[0][0] if start is None else start,
                 rangeEnd=rows[-1][0] + 1 if end is None else end)
     if len(rows) <= RAW_LIMIT:
         wave.update(values=[row[1] for row in rows], rssi=[row[2] for row in rows],
-                    overrange=[row[3] for row in rows])
+                    overrange=[row[3] for row in rows], overrangeCount=sum(bool(row[3]) for row in rows),
+                    missingRssiCount=sum(row[2] is None for row in rows))
     else:
-        wave.update(representation="envelope", envelope=list(envelope_rows(rows, bucket_size(len(rows)))))
+        envelope = live_envelope(rows, bucket_size(len(rows)))
+        wave.update(representation="envelope", envelope=envelope,
+                    overrangeCount=sum(item["overrange"] for item in envelope),
+                    missingRssiCount=sum(item["missing"] for item in envelope))
     # Instantaneous indicators are actual last samples, never an envelope extremum.
     wave["latest"] = {"velocity": rows[-1][1], "rssi": rows[-1][2]}
     return wave
@@ -127,6 +160,7 @@ class WaveformReader:
         if total and (not rate or not math.isfinite(rate) or rate <= 0):
             raise ValueError("记录采样率无效。")
         wave = make_wave([], rate, origin)
+        wave.update(source=manifest.get("source", "polytec_ivs500"), simulation=manifest.get("simulation"))
         wave.update(rangeStart=start, rangeEnd=end, sampleStart=start, sourceSamples=end - start)
         if start == end:
             return {"recording": manifest, "waveform": wave}
@@ -199,4 +233,5 @@ class WaveformReader:
             wave.update(representation="envelope", envelope=aggregates,
                         overrangeCount=sum(item["overrange"] for item in aggregates),
                         missingRssiCount=sum(item["missing"] for item in aggregates))
+        wave.update(source=manifest.get("source", "polytec_ivs500"), simulation=manifest.get("simulation"))
         return {"recording": manifest, "waveform": wave}

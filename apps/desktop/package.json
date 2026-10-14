@@ -1,6 +1,6 @@
 {
   "name": "@blade/desktop",
-  "version": "1.3.0",
+  "version": "1.5.0",
   "private": true,
   "type": "module",
   "description": "BladeVMS 现场采集与分析工作台",
@@ -34,6 +34,7 @@
       "dist/**/*",
       "electron/field-*.cjs",
       "electron/local-auth.cjs",
+      "electron/unified-auth.cjs",
       "electron/bootstrap-admin.json",
       "package.json"
     ],

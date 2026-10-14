@@ -1,4 +1,5 @@
 "use client";
+import { CustomSelect } from "./custom-select";
 import React, { useEffect, useMemo, useState } from "react";
 import { Chart } from "./charts";
 import { Button } from "./common";
@@ -77,36 +78,46 @@ export function BladeBendingView({ data, candidate }: { data: BendingMatch; cand
     const color = `hsl(${mean < 0 ? 215 : 12} 72% ${94 - Math.abs(mean) * 49}%)`;
     return <polygon key={i} points={polygon(a, b, va, vb)} fill={color} stroke={color} strokeWidth={0.6} />;
   });
+  const markers = theory ? [] : data.positions.map((x, i) => {
+    const position = project(x, 0, (valueAt(x) ?? 0) * gain), name = data.pointNames?.[i] ?? `P${i + 1}`;
+    return { position, name, detail: `${name} · x/L=${x} · 位移幅值 ${fmt(data.displacementAmplitudes[i] * 1e6)} μm` };
+  });
   return <div className="field-bending-view">
     <div className="field-bending-toolbar">
-      <label>变形来源<select value={theory ? "theory" : "measured"} onChange={e => { setSource(e.target.value); setPlaying(false); }}>
+      <label>变形来源<CustomSelect aria-label="变形来源" value={theory ? "theory" : "measured"} onChange={e => { setSource(e.target.value); setPlaying(false); }}>
         <option value="measured" disabled={!measurable}>测点复响应（线性插值）</option><option value="theory">第 {candidate.mode} 阶理论模板</option>
-      </select></label>
-      <Button onClick={() => setPlaying(value => !value)}>{playing ? "暂停动画" : "播放动画"}</Button>
-      <Button onClick={() => { setPlaying(false); setPhase(0); }}>复位相位</Button>
+      </CustomSelect></label>
+      <Button type="button" aria-pressed={playing} onClick={() => setPlaying(value => !value)}>{playing ? "暂停动画" : "播放动画"}</Button>
+      <Button type="button" onClick={() => { setPlaying(false); setPhase(0); }}>复位相位</Button>
       <span>{theory ? "理论模型预览 · 非实测" : "工作响应重构 · 假设共同相位"}</span>
     </div>
-    <svg className="field-bending-svg" viewBox="0 0 900 360" role="img" aria-label={theory ? "悬臂梁理论振型三维示意" : "测点响应三维变形示意"}>
-      <title>示意叶片：颜色代表当前相位下的归一化位移，灰色为未变形参考或无测量覆盖区域</title>
-      <polygon points={polygon(0, 1, 0, 0)} fill="#e6ebf2" stroke="#9caec4" strokeDasharray="5 4" />
-      {mesh}
-      {!theory && data.positions.map((x, i) => {
-        const v = valueAt(x) ?? 0, p = project(x, 0, v * gain);
-        const name = data.pointNames?.[i] ?? `P${i + 1}`;
-        return <g key={i}><circle cx={p[0]} cy={p[1]} r={4} fill="#153959" stroke="white"><title>{`${name} · x/L=${x} · 位移幅值 ${fmt(data.displacementAmplitudes[i] * 1e6)} μm`}</title></circle><text x={p[0]} y={p[1] - 10} textAnchor="middle">{name.length > 12 ? `${name.slice(0, 12)}…` : name}</text></g>;
-      })}
-      <text x={32} y={30}>根部固支 · 单方向弯曲 · 非真实叶片几何</text>
-      <text x={32} y={326}>x/L：0（根）→ 1（尖）　相位 {phase.toFixed(0)}°　显示频率 {speed} Hz</text>
-    </svg>
-    <div className="field-bending-legend"><span>−1</span><i /><span>+1　归一化瞬时位移</span></div>
-    <div className="field-bending-controls">
-      <label>相位 {phase.toFixed(0)}°<input aria-label="动画相位" type="range" min={0} max={360} value={phase} onChange={e => { setPlaying(false); setPhase(Number(e.target.value)); }} /></label>
-      <label>播放速度 {speed} Hz<input aria-label="动画速度" type="range" min={0.1} max={2} step={0.1} value={speed} onChange={e => setSpeed(Number(e.target.value))} /></label>
-      <label>归一化显示变形 {Math.round(gain * 100)}% L<input aria-label="归一化显示变形" type="range" min={0.02} max={0.3} step={0.01} value={gain} onChange={e => setGain(Number(e.target.value))} /></label>
-      <label>视角 {yaw}°<input aria-label="叶片水平视角" type="range" min={-60} max={60} value={yaw} onChange={e => setYaw(Number(e.target.value))} /></label>
-      <label>俯仰 {elevation}°<input aria-label="叶片俯仰视角" type="range" min={10} max={70} value={elevation} onChange={e => setElevation(Number(e.target.value))} /></label>
+    <div className="field-bending-scene">
+      <figure className="field-bending-figure">
+        <p className="field-bending-geometry-note">根部固支 · 单方向弯曲 · 非真实叶片几何</p>
+        <div className="field-bending-canvas">
+          <div className="field-bending-projection">
+            <svg className="field-bending-svg" viewBox="0 0 900 360" role="img" aria-label={theory ? "悬臂梁理论振型三维示意" : "测点响应三维变形示意"}>
+              <title>示意叶片：颜色代表当前相位下的归一化位移，灰色为未变形参考或无测量覆盖区域</title>
+              <polygon points={polygon(0, 1, 0, 0)} fill="#e6ebf2" stroke="#9caec4" strokeDasharray="5 4" />
+              {mesh}
+              {markers.map((marker, i) => <circle key={i} cx={marker.position[0]} cy={marker.position[1]} r={4} fill="#153959" stroke="white"><title>{marker.detail}</title></circle>)}
+            </svg>
+            <div className="field-bending-point-labels" aria-hidden="true">{markers.map((marker, i) => <span key={i} title={marker.detail} style={{ left: `${marker.position[0] / 900 * 100}%`, top: `${marker.position[1] / 360 * 100}%` }}>{marker.name}</span>)}</div>
+          </div>
+        </div>
+        <figcaption className="field-bending-caption"><span>x/L：0（根）→ 1（尖）</span><span>相位 {phase.toFixed(0)}° · 显示频率 {speed} Hz</span></figcaption>
+        <div className="field-bending-legend"><span>−1</span><i aria-hidden="true" /><span>+1</span><span>归一化瞬时位移</span><small>灰色：参考 / 无测量覆盖</small></div>
+      </figure>
+      <aside className="field-bending-controls" aria-label="振型显示控制">
+        <h4>显示控制</h4>
+        <label><span>相位<output>{phase.toFixed(0)}°</output></span><input aria-label="动画相位" type="range" min={0} max={360} value={phase} onChange={e => { setPlaying(false); setPhase(Number(e.target.value)); }} /></label>
+        <label><span>播放速度<output>{speed} Hz</output></span><input aria-label="动画速度" type="range" min={0.1} max={2} step={0.1} value={speed} onChange={e => setSpeed(Number(e.target.value))} /></label>
+        <label><span>归一化显示变形<output>{Math.round(gain * 100)}% L</output></span><input aria-label="归一化显示变形" type="range" min={0.02} max={0.3} step={0.01} value={gain} onChange={e => setGain(Number(e.target.value))} /></label>
+        <label><span>视角<output>{yaw}°</output></span><input aria-label="叶片水平视角" type="range" min={-60} max={60} value={yaw} onChange={e => setYaw(Number(e.target.value))} /></label>
+        <label><span>俯仰<output>{elevation}°</output></span><input aria-label="叶片俯仰视角" type="range" min={10} max={70} value={elevation} onChange={e => setElevation(Number(e.target.value))} /></label>
+      </aside>
     </div>
-    <p className="field-notice">动画默认暂停，播放为慢速示意，不是实际振动频率。显示变形是归一化幅度占叶展的比例，不是物理放大倍数；灰色未覆盖区不补造响应，不包含扭转。</p>
+    <details className="field-bending-view-limits"><summary>慢速变形示意 · 显示与模型限制</summary><p>动画默认暂停，播放为慢速示意，不是实际振动频率。显示变形是归一化幅度占叶展的比例，不是物理放大倍数；灰色未覆盖区不补造响应，不包含扭转。</p></details>
   </div>;
 }
 
@@ -131,15 +142,19 @@ export function FieldBending({ data }: { data?: BendingMatch }) {
     <div className="field-table-scroll"><table className="field-table field-bending-scores"><thead><tr><th>弯曲模板（非转频阶次）</th><th>MAC 相似度 ↑</th><th>归一化复数 MSE ↓</th><th>查看</th></tr></thead>
       <tbody>{data.candidates.map(item => <tr key={item.mode} className={item.mode === candidate.mode ? "selected" : ""}><td>第 {item.mode} 阶{data.candidateMode === item.mode ? " · 排序首位" : ""}</td><td>{fmt(item.mac)}</td><td>{fmt(item.normalizedMse)}</td><td><Button aria-pressed={item.mode === candidate.mode} onClick={() => setMode(item.mode)}>查看第 {item.mode} 阶</Button></td></tr>)}</tbody>
     </table></div>
-    <BladeBendingView data={data} candidate={candidate} />
-    <h3>测点响应与第 {candidate.mode} 阶模板对比</h3>
-    <Chart height={320} label="测点复响应与理论振型对比" option={{ animation: false, tooltip: { trigger: "axis" }, legend: { data: ["测点实部", "测点虚部", "理论实部", "理论虚部"] }, grid: { left: 65, right: 25, top: 48, bottom: 45 }, xAxis: { type: "value", name: "x/L", min: 0, max: 1 }, yAxis: { type: "value", name: "归一化响应" }, series: [
-      { name: "测点实部", type: "line", data: measured, symbolSize: 7 },
-      { name: "测点虚部", type: "line", data: imaginary, symbol: "diamond", symbolSize: 6 },
-      { name: "理论实部", type: "line", showSymbol: false, lineStyle: { type: "dashed" }, data: data.curvePositions.map((x, i) => [x, theory[i]]) },
-      { name: "理论虚部", type: "line", showSymbol: false, lineStyle: { type: "dotted" }, data: data.curvePositions.map((x, i) => [x, candidate.fittedCurveImag?.[i] ?? 0]) },
-    ] }} />
-    <p className="field-notice">{candidate.mac == null ? "数据不足：当前理论曲线为单位叶尖模板，未执行拟合。" : "理论曲线用同一组测点做复数最小二乘缩放；MAC 保留相位信息，不对幅值取绝对值后匹配。MSE 是归一化复数残差均方，不是位移单位误差。"}</p>
+    <div className="field-bending-result-grid">
+      <BladeBendingView data={data} candidate={candidate} />
+      <section className="field-bending-comparison" aria-label="测点响应与模板对比">
+        <h3>测点响应与第 {candidate.mode} 阶模板对比</h3>
+        <Chart height={360} label="测点复响应与理论振型对比" option={{ animation: false, tooltip: { trigger: "axis" }, legend: { data: ["测点实部", "测点虚部", "理论实部", "理论虚部"], top: 6, bottom: "auto", type: "scroll", textStyle: { fontSize: 12 } }, grid: { left: 65, right: 25, top: 48, bottom: 45 }, xAxis: { type: "value", name: "x/L", min: 0, max: 1 }, yAxis: { type: "value", name: "归一化响应" }, series: [
+          { name: "测点实部", type: "line", data: measured, symbolSize: 7 },
+          { name: "测点虚部", type: "line", data: imaginary, symbol: "diamond", symbolSize: 6 },
+          { name: "理论实部", type: "line", showSymbol: false, lineStyle: { type: "dashed" }, data: data.curvePositions.map((x, i) => [x, theory[i]]) },
+          { name: "理论虚部", type: "line", showSymbol: false, lineStyle: { type: "dotted" }, data: data.curvePositions.map((x, i) => [x, candidate.fittedCurveImag?.[i] ?? 0]) },
+        ] }} />
+        <p className="field-notice">{candidate.mac == null ? "数据不足：当前理论曲线为单位叶尖模板，未执行拟合。" : "理论曲线用同一组测点做复数最小二乘缩放；MAC 保留相位信息，不对幅值取绝对值后匹配。MSE 是归一化复数残差均方，不是位移单位误差。"}</p>
+      </section>
+    </div>
     <details><summary>计算依据与使用限制</summary><ul>{data.warnings.map(warning => <li key={warning}>{warning}</li>)}</ul></details>
   </section>;
 }

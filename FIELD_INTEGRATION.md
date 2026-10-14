@@ -1,5 +1,9 @@
 # Windows 现场采集联调
 
+## 当前源码开发入口（2026-09-22）
+
+本地启动、Mac 显式模拟采集、实时采集/分析标签及完整原始数据导出见 [LOCAL_DEVELOPMENT.md](LOCAL_DEVELOPMENT.md)。当前源码将完整旋转测振移至 Web，支持导入 XLSX / CSV / CSV.gz；模拟数据会保留来源，不因缺设备而自动回退。**本次未重新生成 Windows 安装包，也未验收物理设备。** 下方保留既有 Windows 打包说明与 1.1.0 历史记录，旧版“无模拟源”“壳包”等措辞不描述当前本地源码。
+
 ## 桌面端 1.2.0 完整安装包
 
 当前打包流程已要求内置 Windows x64 Python 运行时、采集服务、Polytec DLL、SDK 许可/源码以及经过微软签名校验的 VC++ x64 安装程序。缺少这些内容时打包失败。子进程使用绝对路径和独立环境，不调用系统 Python，不继承 Python/Conda 的搜索路径；不修改系统 PATH 或 Python 文件关联。
@@ -15,6 +19,7 @@
 - EXE 使用独立真实现场工作台，不提供离线演示登录、自动模拟源或虚构双通道。
 - 保留无网工作：本机 admin 登录、设备采集、SQLite 元数据索引、原始分块文件与历史预览不依赖 Web/MySQL。
 - Electron 托管 Python 本地进程，不注册为开机常驻 Windows 服务。HTTP/WS 仅监听回环地址；每次启动生成随机会话令牌，令牌不进入渲染页面。
+- 非 Windows 开发机（macOS/Linux）同样由 Electron 托管启动采集服务，改用仓库内 `services/acquisition/.venv` 的 `python -m blade_acquisition`（可用 `BLADE_ACQUISITION_PYTHON` 覆盖解释器路径）。厂商 SDK 仅 Windows 可用，因此开发机可浏览记录、波形与分析，不能连接真实设备；子进程环境同样剔除 Python/Conda 变量，避免模块解析被外部环境污染。
 - 服务启动后闲置。只有完成安全确认并点击开始才修改设备 DAQ 目标 IP、开启激光并采集。停止时尝试关闭本次会话控制的激光；异常应现场确认设备状态。
 - 基于同事 `damage_detection` 的 IVS-500 SDK 接入代码，厂商 DLL/驱动没有随源码发布。未在此 Mac 环境连接真实设备、验证吞吐量或验证 Windows 安装行为。
 - 本版 Windows 壳安装包可以登录和检查缺失依赖；它尚不包含已在 Windows 构建的 Python 服务。完整“一次安装”交付需按下文加入 Windows 服务包后重新打包。

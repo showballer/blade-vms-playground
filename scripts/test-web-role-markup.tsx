@@ -5,7 +5,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Health, Reports } from "../packages/ui/src/web-screens";
 import { ModalAnalysis } from "../packages/ui/src/modal-screen";
-import { Developer, Administration } from "../packages/ui/src/admin-screens";
+import { Developer, Administration, DeleteUserDialog } from "../packages/ui/src/admin-screens";
 import type { Bootstrap, User } from "../packages/ui/src/api";
 import { records } from "./seed-data.mjs";
 
@@ -59,6 +59,11 @@ for (const role of ["admin", "analyst", "operator", "viewer"] as User["role"][])
       const html = renderToStaticMarkup(createElement(Administration, { ...props, initialTab }));
       if (initialTab !== "alerts") assert.equal(html.includes("权限提示"), role !== "admin");
       if (initialTab === "users") assert.equal(buttons(html, "新增用户").length, role === "admin" ? 1 : 0);
+      if (initialTab === "users") {
+        assert.ok(html.includes("角色权限矩阵"), "All roles can understand the permission boundary");
+        assert.ok(html.includes("本人采集与任务"));
+        assert.ok(html.includes("登录账号名不能重复使用"));
+      }
       if (initialTab === "alerts") {
         const actions = buttons(html, "处理");
         assert.ok(actions.length > 0);
@@ -67,5 +72,13 @@ for (const role of ["admin", "analyst", "operator", "viewer"] as User["role"][])
     });
   }
 }
+check("用户删除明确保留记录并默认禁止未确认提交", () => {
+  const html = renderToStaticMarkup(createElement(DeleteUserDialog, { user: { id: "fixture", name: "临时用户", username: "temporary-account" }, onClose: () => {}, onDelete: async () => {} }));
+  state(html, "确认删除账号", true);
+  assert.ok(html.includes("temporary-account"));
+  assert.ok(html.includes("历史采集、任务、分析及审计记录保留"));
+  assert.ok(html.includes("账号名不能重新注册"));
+  assert.ok(html.includes("下次联网登录时校验账号状态"));
+});
 mkdirSync("artifacts", { recursive: true });
 writeFileSync("artifacts/web-role-markup-results.json", JSON.stringify({ at: new Date().toISOString(), scope: "Static React initial markup; not browser, layout, effects, interaction or complete role coverage", results }, null, 2));

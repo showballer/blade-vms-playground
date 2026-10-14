@@ -165,6 +165,7 @@ class RecordingStore:
                             rssi=[row[4] if row[5] & 2 else None for row in rows],
                             overrange=[bool(row[5] & 1) for row in rows])
                 break
+        wave.update(source=manifest.get("source", "polytec_ivs500"), simulation=manifest.get("simulation"))
         return {"recording": manifest, "waveform": wave}
 
     def create(self, metadata: dict) -> "RecordingWriter":
@@ -184,7 +185,9 @@ class RecordingWriter:
             "sampleOrigin": None, "endedAt": None, "status": "incomplete", "error": None,
             "unit": "m/s", "rssiUnit": "%", "channels": ["CH1", "RSSI1"], "chunks": 0,
             "format": "BLADEV01/<QidifB", "overrangeSamples": 0, "missingRssiSamples": 0, "unpairedRssiSamples": 0,
-            "dataLossAssessment": "unverified", "timestampBasis": "host epoch at DAQ start + sample index / SDK base rate",
+            "dataLossAssessment": "not_applicable_simulation" if metadata.get("source") == "simulation" else "unverified",
+            "timestampBasis": ("host epoch at simulation start + continuous sample index / source workbook sample rate"
+                               if metadata.get("source") == "simulation" else "host epoch at DAQ start + sample index / SDK base rate"),
         }
         self.stream = None
         self.chunk_samples = 0

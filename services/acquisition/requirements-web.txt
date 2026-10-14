@@ -1,0 +1,9 @@
+# Web rotation runs a short-lived Python worker, without the device HTTP service.
+# Keep numerical and validation versions aligned with requirements.txt.
+numpy==2.2.6
+scipy==1.15.3
+pydantic==2.13.5
+pydantic-core==2.46.5
+annotated-types==0.8.0
+typing-extensions==4.16.0
+typing-inspection==0.4.4

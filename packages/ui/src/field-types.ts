@@ -1,6 +1,33 @@
-/** Public renderer contract. Service credentials and URLs remain in Electron. */
+/** Public renderer contract. Private acquisition-service credentials and URLs remain in Electron. */
 export type FieldUser = { username: string; name: string; role: string };
-export type FieldSession = { user: FieldUser; mustChangePassword: boolean };
+/** Safe account metadata only; timestamps are Unix milliseconds, never service tokens or password hashes. */
+export type FieldAccountInfo = {
+  mode: "local" | "unified";
+  serverUrl?: string;
+  username?: string;
+  offline?: boolean;
+  offlineUntil?: number;
+  lastVerifiedAt?: number;
+  onlineRequired?: boolean;
+};
+export type FieldSyncItem = {
+  recordingId: string; name: string; captureId?: string;
+  state: "recording" | "queued" | "uploading" | "synced" | "error";
+  progress: number; error?: string;
+};
+export type FieldSyncStatus = {
+  enabled: boolean; connected: boolean;
+  state: "unbound" | "signed-out" | "offline" | "ready" | "syncing" | "error";
+  error?: string; items: FieldSyncItem[];
+};
+export type FieldSession = { user: FieldUser; mustChangePassword: boolean; account?: FieldAccountInfo };
+export type FieldSource = "device" | "simulation";
+export type FieldSimulation = { point: "P1" | "P2" | "P3"; scenario: "baseline" | "imbalance" | "impact" | "low_return" };
+export type FieldSimulationInfo = {
+  points: { id: FieldSimulation["point"]; label: string; sampleRate: number; samples: number; durationSeconds: number }[];
+  scenarios: { id: FieldSimulation["scenario"]; label: string; description: string }[];
+  sourceFile: string; sourceSha256: string; sourceScript: string; notice: string;
+};
 export type FieldConfig = {
   deviceIp: string;
   hostIp: string;
@@ -10,6 +37,7 @@ export type FieldConfig = {
   point: string;
 };
 export type FieldWaveform = {
+  source?: string;
   sampleRate: number | null;
   unit: "m/s";
   sampleStart: number;
@@ -29,6 +57,14 @@ export type FieldWaveform = {
   latest?: { velocity: number; rssi: number | null };
 };
 export type FieldRealtime = {
+  unit?: "m/s";
+  source?: string;
+  recordingId?: string | null;
+  computedAt?: number;
+  sampleRange?: { start: number; end: number };
+  timeDomain?: { times: number[]; values: number[]; unit: "m/s"; representation: "full" | "minmax-display" };
+  spectrogram?: { times: number[]; frequencies: number[]; db: number[][]; unit: "dB re 1 m/s"; windowSamples: number; hopSamples: number };
+  quality?: { overrangeSamples: number; missingRssiSamples: number; lowReturnSamples: number };
   available: boolean;
   sampleRate: number | null;
   sampleStart?: number;
@@ -48,6 +84,8 @@ export type FieldDeviceRequest = {
   value?: string | number; expected?: string | number; confirmChange?: true; confirmLaser?: true;
 };
 export type FieldRecording = {
+  source?: string;
+  simulation?: FieldSimulation & { position?: number; rpm?: number };
   id: string;
   name: string;
   object?: string;
@@ -69,11 +107,13 @@ export type FieldRecordingDetail = {
   waveform?: FieldWaveform;
 };
 export type FieldStatus = {
+  source?: string;
   service: {
     state: "missing" | "starting" | "ready" | "error" | "stopping" | "stopped";
     error?: string;
     executable?: string;
     dllConfigured: boolean;
+    launcher?: "windows-bundle" | "python-module";
   };
   state: "idle" | "starting" | "acquiring" | "stopping" | "error";
   error?: string;
@@ -87,12 +127,16 @@ export type FieldStatus = {
   realtime?: FieldRealtime;
 };
 export type FieldRequestOptions =
-  | { action: "session" | "logout" | "status" | "stop" | "recordings" | "openDataDirectory" | "restartService" | "configureService" | "configureDll" }
+  | { action: "session" | "accountInfo" | "logout" | "status" | "stop" | "recordings" | "simulation" | "openDataDirectory" | "restartService" | "configureService" | "configureDll" | "syncStatus" | "retrySync" }
+  | { action: "setAutoSync"; enabled: boolean }
+  | { action: "syncRecording"; id: string }
   | { action: "frame"; windowMs?: number }
   | { action: "login"; username: string; password: string }
   | { action: "changePassword"; currentPassword: string; newPassword: string }
-  | { action: "start"; config: FieldConfig & { confirmLaser: true } }
+  | { action: "bindAccount"; serverUrl: string; username: string; password: string; currentPassword: string }
+  | { action: "start"; config: FieldConfig & ({ source?: "device"; confirmLaser: true } | { source: "simulation"; simulation: FieldSimulation }) }
   | { action: "recording"; id: string }
+  | { action: "exportRecording"; id: string }
   | { action: "waveform"; id: string; start?: number; end?: number }
   | { action: "analysis"; id: string; parameters: Record<string, unknown> }
   | { action: "rotation"; parameters: Record<string, unknown> }
@@ -115,8 +159,8 @@ export function fieldSampleX(waveform: FieldWaveform, index: number): number {
   return waveform.sampleRate && waveform.sampleRate > 0 ? sample / waveform.sampleRate * 1000 : sample;
 }
 
-export function fieldCanStart(status: FieldStatus | null): boolean {
-  return Boolean(status?.service.state === "ready" && status.service.dllConfigured && !status.deviceBusy && !status.deviceWarning && !fieldIsActive(status) && ["idle", "error"].includes(status.state));
+export function fieldCanStart(status: FieldStatus | null, source: FieldSource = "device"): boolean {
+  return Boolean(status?.service.state === "ready" && (source === "simulation" || status.service.dllConfigured) && !status.deviceBusy && (source === "simulation" || !status.deviceWarning) && !fieldIsActive(status) && ["idle", "error"].includes(status.state));
 }
 
 export function fieldIsActive(status: FieldStatus | null): boolean {

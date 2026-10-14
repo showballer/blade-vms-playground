@@ -2,6 +2,8 @@
 
 以 `../原型/旋转叶片测振系统-双通道原型.dc.html` 和 `../原型/原型-截图/` 的 18 张截图为依据。
 
+**当前本地源码操作以 [LOCAL_DEVELOPMENT.md](LOCAL_DEVELOPMENT.md) 为准**：Mac 显式模拟采集、采集页实时分析、完整 CSV/Gzip 导出，以及 Web 旋转测振导入/计算已接入。下面保留历史版本与业务工作区说明；本次未重新生成 Windows 安装包，未验收物理设备。
+
 本项目包含 Next.js Web 管理端与业务 API、Electron Windows 现场工作台、共享 React UI。**桌面 1.2.0 为完整依赖的现场联调包构建**：本机 admin、首次改密、内置隔离 Python 运行时与采集服务、Polytec x64 DLL、VC++ 运行库安装处理、SQLite 索引及原始分块落盘。缺少必需组件时打包失败，不交付空壳或回退演示数据。真实设备联调与算法验收仍待完成。
 
 **最新 Windows 安装、登录和设备联调步骤以 [WINDOWS_TEST_GUIDE.md](WINDOWS_TEST_GUIDE.md) 为准。** 数据存储和接口边界见 [FIELD_INTEGRATION.md](FIELD_INTEGRATION.md)。下文保留的在线/离线业务工作区、算法演示及原型模块说明是 1.0 业务实现记录，并非现行 EXE 入口；Web 不变，已有数据不删除。
@@ -30,10 +32,10 @@ npm run dev
 另开终端：
 
 ```bash
-# 本地浏览器预览，端口 5210，通过代理调用 3210 的 API
+# 桌面前端开发服务；采集功能需要 Electron 本机桥接
 npm run dev:desktop
 
-# 打开 Electron 热更新界面（需上述两个开发服务已启动）
+# 打开 Electron 热更新界面（需先启动 Vite；本机采集不依赖 Web）
 BLADE_DEV_URL=http://127.0.0.1:5210 npm run desktop
 
 # 或加载本地打包资源，不依赖 Vite 开发服务
@@ -260,3 +262,7 @@ npm run worker
 默认仅监听本机 3210。团队环境应由反向代理提供 HTTPS；如果需要让反向代理跨主机访问，可以明确启动 `npx next start apps/web --hostname 0.0.0.0 --port 3210` 并配置防火墙，勿暴露 MySQL 给桌面客户端。设置 `APP_ORIGIN` 为实际访问域名，使用独立进程管理 Web 和 Worker。定时计划按北京时间解释。
 
 上线前必须另行完成真实业务数据验证、Windows 实机/打印验证、组织账号与 HTTPS 配置、正式签名及完整数据库备份策略。无需引入 Python 服务来运行当前业务工作台。
+
+## 桌面采集与 Web 联动（当前开发源码）
+
+客户端复用绑定的 Web 地址与账号，推送实时窗口，停止保存后断点上传完整原始记录。Web 提供「实时采集」「离线导入」两种入口，支持按角色查看、完整波形区间读取及旋转分析。用户管理新增删除入口，保留历史数据并撤销账号会话。使用流程、权限和验收边界见 [CLOUD_CAPTURE_FLOW.md](CLOUD_CAPTURE_FLOW.md)；旧发布包不自动包含源码更新。

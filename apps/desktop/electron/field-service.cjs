@@ -2,6 +2,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 const net = require('node:net');
 const { spawn } = require('node:child_process');
+const { Readable } = require('node:stream');
+const { pipeline } = require('node:stream/promises');
+const { createGzip } = require('node:zlib');
 const { randomBytes } = require('node:crypto');
 
 function failure(message, status = 503) {
@@ -54,11 +57,29 @@ function windowsServiceEnvironment({ file, dataDir, dll, port, secret, source = 
   return env;
 }
 
+// Non-Windows platforms run the same acquisition service from source through the
+// project virtualenv (services/acquisition/.venv). Real device I/O still needs
+// the Windows-only vendor SDK; playback, waveform and analysis work everywhere.
+function posixServiceEnvironment({ dataDir, dll, port, secret, source = process.env }) {
+  // Mirror the Windows hardening: never inherit Python/Conda/venv variables that
+  // could redirect module resolution away from the project virtualenv.
+  const env = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (typeof value !== 'string' || key.includes('\0')) continue;
+    if (/^(PYTHON|CONDA)/.test(key) || key === 'VIRTUAL_ENV') continue;
+    env[key] = value;
+  }
+  Object.assign(env, { BLADE_SERVICE_PORT: String(port), BLADE_SERVICE_TOKEN: secret,
+    BLADE_DATA_DIR: dataDir, BLADE_POLYTEC_DLL: dll || '', PYTHONUNBUFFERED: '1' });
+  return env;
+}
+
 // The service credential and address never cross the preload bridge. The renderer
 // receives only bounded data; it cannot choose URLs, executable arguments or files.
 function createFieldService({ getConfig, dataDir, resourcesDir, platform = process.platform,
   spawnImpl = spawn, fetchImpl = global.fetch, WebSocketImpl = global.WebSocket,
   environment = process.env,
+  servicesRoot = path.join(__dirname, '..', '..', '..', 'services', 'acquisition'),
   startupTimeoutMs = 25000, requestTimeoutMs = 12000, terminationTimeoutMs = 5000 }) {
   let child = null, opening = null, state = 'stopped', error = null;
   let port = null, secret = '', socket = null, cachedFrame = null, receivedAt = 0;
@@ -67,7 +88,19 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
   let snapshotEpoch = 0;
   const exitedChildren = new WeakSet();
 
+  function pythonLauncher() {
+    const override = environment.BLADE_ACQUISITION_PYTHON;
+    if (typeof override === 'string' && override.length > 0 && path.isAbsolute(override) && fs.existsSync(override)) {
+      return { python: override, root: servicesRoot };
+    }
+    const candidate = path.join(servicesRoot, '.venv', 'bin', 'python');
+    return { python: fs.existsSync(candidate) ? candidate : null, root: servicesRoot };
+  }
   function executable() {
+    if (platform !== 'win32') {
+      const resolved = pythonLauncher();
+      return resolved.python || path.join(resolved.root, '.venv', 'bin', 'python');
+    }
     return getConfig().executable || path.join(resourcesDir, 'acquisition', 'BladeAcquisition.exe');
   }
   function dllPath() {
@@ -75,9 +108,34 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
   }
   function serviceInfo() {
     return { state, error, executable: executable(),
-      dllConfigured: fs.existsSync(dllPath()) };
+      dllConfigured: fs.existsSync(dllPath()),
+      launcher: platform === 'win32' ? 'windows-bundle' : 'python-module' };
+  }
+  function launchSpec() {
+    if (platform === 'win32') {
+      const file = executable();
+      if (!fs.existsSync(file)) {
+        return { state: 'missing', error: '未找到 Windows x64 采集服务。请在设置中选择联调好的 BladeAcquisition.exe，或将完整服务目录放入安装资源。' };
+      }
+      if (!path.isAbsolute(file) || path.extname(file).toLowerCase() !== '.exe') throw failure('请选择本机 Windows 采集服务 EXE');
+      return { file, args: [], cwd: path.dirname(file),
+        environment: ({ port, secret }) => windowsServiceEnvironment({ file, dataDir, dll: dllPath(), port, secret, source: environment }) };
+    }
+    const resolved = pythonLauncher();
+    if (!resolved.python) {
+      return { state: 'missing', error: '未找到本机 Python 采集服务环境。请先在 services/acquisition 创建 .venv 并安装依赖（pip install -r requirements.txt），或通过 BLADE_ACQUISITION_PYTHON 指定解释器。' };
+    }
+    if (!fs.existsSync(path.join(resolved.root, 'blade_acquisition', '__main__.py'))) {
+      return { state: 'missing', error: '未找到采集服务源码 blade_acquisition，请确认 services/acquisition 目录完整。' };
+    }
+    return { file: resolved.python, args: ['-m', 'blade_acquisition'], cwd: resolved.root,
+      environment: ({ port, secret }) => posixServiceEnvironment({ dataDir, dll: getConfig().dll || '', port, secret, source: environment }) };
   }
   function envelope(data = lastStatus) {
+    // A failed child cannot be presented as healthy acquisition. Keep unknown
+    // live-process guards, but distinguish a terminated receiver from hardware.
+    if (state === 'error') return { ...data, state: 'error', error: error || '本机采集服务异常，请检查未完成记录',
+      ...(!child ? { receiver: { ...data.receiver, running: false } } : {}), service: serviceInfo() };
     return { ...data, service: serviceInfo() };
   }
   function closeSocket() {
@@ -158,22 +216,17 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     if (state === 'ready' && child) return envelope();
     if (child) { state = 'error'; error = '旧采集进程尚未退出，请先重启服务或检查进程'; return envelope(); }
     opening = (async () => {
-      const file = executable();
-      if (!fs.existsSync(file)) {
-        state = 'missing'; error = '未找到 Windows x64 采集服务。请在设置中选择联调好的 BladeAcquisition.exe，或将完整服务目录放入安装资源。';
+      const spec = launchSpec();
+      if (spec.error) {
+        state = spec.state; error = spec.error;
         return envelope();
       }
-      if (platform !== 'win32') {
-        state = 'error'; error = '设备采集服务只在 Windows x64 实机启动；当前系统可查看客户端界面。';
-        return envelope();
-      }
-      if (!path.isAbsolute(file) || path.extname(file).toLowerCase() !== '.exe') throw failure('请选择本机 Windows 采集服务 EXE');
       state = 'starting'; error = null; stopping = false; logTail = '';
       const current = ++generation;
       port = await freePort(); secret = randomBytes(32).toString('hex');
-      const env = windowsServiceEnvironment({ file, dataDir, dll: dllPath(), port, secret, source: environment });
+      const env = spec.environment({ port, secret });
       try {
-        const processChild = spawnImpl(file, [], { cwd: path.dirname(file), env,
+        const processChild = spawnImpl(spec.file, spec.args, { cwd: spec.cwd, env,
           shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
         child = processChild;
         const capture = bytes => {
@@ -263,12 +316,22 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     return frameRequest;
   }
   async function begin(config) {
-    if (!config || config.confirmLaser !== true) throw failure('必须明确确认开启激光、设置设备目标地址和开始采集', 400);
-    for (const field of ['deviceIp', 'hostIp']) {
-      if (typeof config[field] !== 'string' || net.isIP(config[field]) !== 4) throw failure('设备和本机网卡地址须为有效 IPv4 地址', 400);
+    if (!config || (config.source !== undefined && !['device', 'simulation'].includes(config.source))) throw failure('无效采集来源', 400);
+    const simulated = config.source === 'simulation';
+    const body = {};
+    if (simulated) {
+      if (!config.simulation || !['P1', 'P2', 'P3'].includes(config.simulation.point) ||
+          !['baseline', 'imbalance', 'impact', 'low_return'].includes(config.simulation.scenario)) throw failure('请选择有效的模拟测点和场景', 400);
+      body.source = 'simulation';
+      body.simulation = { point: config.simulation.point, scenario: config.simulation.scenario };
+    } else {
+      if (config.confirmLaser !== true) throw failure('必须明确确认开启激光、设置设备目标地址和开始采集', 400);
+      for (const field of ['deviceIp', 'hostIp']) {
+        if (typeof config[field] !== 'string' || net.isIP(config[field]) !== 4) throw failure('设备和本机网卡地址须为有效 IPv4 地址', 400);
+      }
+      if (config.deviceIp === config.hostIp) throw failure('设备 IP 与本机网卡 IP 不能相同', 400);
+      Object.assign(body, { deviceIp: config.deviceIp, hostIp: config.hostIp, confirmLaser: true });
     }
-    if (config.deviceIp === config.hostIp) throw failure('设备 IP 与本机网卡 IP 不能相同', 400);
-    const body = { deviceIp: config.deviceIp, hostIp: config.hostIp, confirmLaser: true };
     for (const field of ['name', 'object', 'turbine', 'point']) {
       if (typeof config[field] !== 'string' || (field === 'name' && !config[field].trim()) || config[field].length > 120) throw failure('请填写有效的采集任务信息，任务名不能为空，各字段最多120字', 400);
       body[field] = config[field].trim();
@@ -287,6 +350,29 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
   async function recordings(id) {
     if (id !== undefined && (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,100}$/.test(id))) throw failure('无效录制编号', 400);
     await ready(); return http(id === undefined ? 'recordings' : `recordings/${id}`);
+  }
+  async function simulation() {
+    await ready(); return http('simulation');
+  }
+  async function exportRecording(id, file) {
+    if (typeof id !== 'string' || !/^[0-9a-f]{32}$/.test(id) || typeof file !== 'string' || !path.isAbsolute(file) || !/\.csv(?:\.gz)?$/i.test(file)) throw failure('无效原始数据导出请求', 400);
+    await ready();
+    const current = generation, target = child;
+    const temporary = `${file}.${randomBytes(8).toString('hex')}.tmp`;
+    try {
+      const response = await fetchImpl(`http://127.0.0.1:${port}/api/field/recordings/${id}/export`, {
+        redirect: 'error', signal: AbortSignal.timeout(300000), headers: { Authorization: `Bearer ${secret}` },
+      });
+      if (!response.ok) { const data = await response.json().catch(() => ({})); throw failure(typeof data.detail === 'string' ? data.detail : '原始记录导出失败', response.status); }
+      if (!response.body) throw failure('采集服务未返回原始数据');
+      const output = fs.createWriteStream(temporary, { flags: 'wx', mode: 0o600 });
+      const input = Readable.fromWeb(response.body);
+      if (/\.gz$/i.test(file)) await pipeline(input, createGzip(), output);
+      else await pipeline(input, output);
+      if (current !== generation || target !== child) throw failure('采集服务已变化，请重试导出', 409);
+      await fs.promises.rename(temporary, file);
+      return { saved: true, fileName: path.basename(file) };
+    } finally { await fs.promises.unlink(temporary).catch(() => {}); }
   }
   function validateWave(wave) {
     if (!wave || !Array.isArray(wave.values) || wave.values.length > 4096 ||
@@ -346,6 +432,6 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     await ready();
     return http('rotation', 'POST', parameters);
   }
-  return { start, status, frame, begin, stop, recordings, waveform, analysis, rotation, device, shutdown, serviceInfo };
+  return { start, status, frame, begin, stop, recordings, simulation, exportRecording, waveform, analysis, rotation, device, shutdown, serviceInfo };
 }
-module.exports = { createFieldService, windowsServiceEnvironment, failure };
+module.exports = { createFieldService, windowsServiceEnvironment, posixServiceEnvironment, failure };

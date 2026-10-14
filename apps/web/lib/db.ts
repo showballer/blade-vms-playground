@@ -95,7 +95,7 @@ export async function auth(req: Request) {
   const token = tokenFrom(req);
   if (!token) throw new HttpError(401, "请先登录");
   const [user] = await rows<User>(
-    "SELECT u.id,u.username,u.name,u.role,u.tenant,u.active FROM sessions s JOIN users u ON s.user_id=u.id WHERE s.token_hash=? AND s.expires_at>UTC_TIMESTAMP() AND u.active=1",
+    "SELECT u.id,u.username,u.name,u.role,u.tenant,u.active FROM sessions s JOIN users u ON s.user_id=u.id WHERE s.token_hash=? AND s.expires_at>UTC_TIMESTAMP() AND u.active=1 AND u.deleted_at IS NULL",
     [digest(token)],
   );
   if (!user) throw new HttpError(401, "会话已失效，请重新登录");
@@ -157,6 +157,24 @@ export function permission(user: User, kind: string, write = false) {
   if (user.role === "viewer") throw new HttpError(403, "访客仅有查看权限");
   if (user.role === "operator" && !["tasks", "analyses", "batches", "imports"].includes(kind))
     throw new HttpError(403, "此操作需要分析员权限");
+}
+/** SQL predicates for capture queries using the alias c and its owner_id column. */
+export function captureScope(user: User) {
+  if (user.role === "admin") return { sql: "", args: [] as unknown[] };
+  return user.role === "operator"
+    ? { sql: " AND c.tenant=? AND c.owner_id=?", args: [user.tenant, user.id] as unknown[] }
+    : { sql: " AND c.tenant=?", args: [user.tenant] as unknown[] };
+}
+export function canReadCapture(user: User, capture: { ownerId: string; tenant: string }) {
+  return user.role === "admin" || (user.tenant === capture.tenant &&
+    (user.role !== "operator" || user.id === capture.ownerId));
+}
+/** Capture writes remain attributed to the authenticated account. */
+export function requireCaptureWrite(user: User) {
+  if (!["admin", "analyst", "operator"].includes(user.role)) throw new HttpError(403, "访客只能查看采集记录和实时波形");
+}
+export function requireCaptureAnalysis(user: User) {
+  if (!["admin", "analyst"].includes(user.role)) throw new HttpError(403, "旋转分析需要管理员或分析员权限");
 }
 export type RecordItem = {
   id: string;

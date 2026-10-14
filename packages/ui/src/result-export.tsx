@@ -1,4 +1,5 @@
 "use client";
+import { CustomSelect } from "./custom-select";
 import { useState } from "react";
 import { download, saveDataFile, type Item } from "./api";
 import { Button, Dialog, Select, Table } from "./common";
@@ -8,7 +9,7 @@ export function ResultExport({ getData, path, notify, label = "导出数值结�
   getData?: () => ResultDataset; path?: string; notify: (message: string) => void; label?: string; includeRecord?: boolean; disabled?: boolean; datasetKey?: string;
 }) {
   const [format, setFormat] = useState<string>("csv"), [busy, setBusy] = useState(false);
-  return <div className="joined result-export"><select aria-label={`${label}格式`} value={format} disabled={busy} onChange={(e) => setFormat(e.target.value)}>{resultFormats.map((value) => <option key={value} value={value}>{value.toUpperCase()}</option>)}{includeRecord && path && <option value="record-json">任务记录 JSON</option>}</select>
+  return <div className="joined result-export"><CustomSelect aria-label={`${label}格式`} value={format} disabled={busy} onChange={(e) => setFormat(e.target.value)}>{resultFormats.map((value) => <option key={value} value={value}>{value.toUpperCase()}</option>)}{includeRecord && path && <option value="record-json">任务记录 JSON</option>}</CustomSelect>
     <Button disabled={busy || disabled} onClick={async () => {
       setBusy(true);
       try {

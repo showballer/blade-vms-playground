@@ -26,8 +26,12 @@ def realtime_snapshot(values, rate: float, sample_start: int = 0, max_fft: int =
     n = int(x.size)
     base = {"available": False, "sampleRate": rate if math.isfinite(rate) and rate > 0 else None,
             "sampleStart": sample_start, "sampleCount": n, "windowSamples": 0,
+            "unit": "m/s", "frequencySpacingHz": None,
             "features": {"mean": None, "rms": None, "peak": None, "peakToPeak": None, "dominantHz": None},
             "spectrum": {"frequencies": [], "amplitudes": []},
+            "timeDomain": {"times": [], "values": [], "unit": "m/s", "representation": "full"},
+            "spectrogram": {"times": [], "frequencies": [], "db": [], "unit": "dB re 1 m/s",
+                            "windowSamples": 0, "hopSamples": 0},
             "warnings": ["实时结果使用最近窗口；停止采集后请使用完整记录进行离线分析。"]}
     if n < 64 or not math.isfinite(rate) or rate <= 0 or not np.isfinite(x).all():
         return base
@@ -40,12 +44,29 @@ def realtime_snapshot(values, rate: float, sample_start: int = 0, max_fft: int =
         amplitude[1:-1 if size % 2 == 0 else None] *= 2
     frequencies = np.fft.rfftfreq(size, 1 / rate)
     index = int(np.argmax(amplitude[1:]) + 1) if amplitude.size > 1 else 0
+    first = sample_start + n - size
+    # Downsample only the display curve, after numerical calculations have their
+    # own raw, contiguous input. Min/max reduction retains short impact peaks.
+    time_curve = curve((np.arange(size) + first) / rate, x, limit=1000)
+    segment = min(256, size)
+    hop = segment // 4
+    stft_f, stft_t, coefficients = signal.stft(x, fs=rate, window="hann", nperseg=segment,
+                                             noverlap=segment - hop, detrend="constant",
+                                             boundary=None, padded=False, scaling="spectrum")
+    stft_amplitude = np.abs(coefficients)
+    stft_amplitude[1:-1] *= 2
+    decibels = 20 * np.log10(np.maximum(stft_amplitude, 1e-12))
     base.update(available=True, sampleStart=sample_start + n - size, sampleCount=size,
                 windowSamples=size,
                 features={"mean": float(x.mean()), "rms": float(np.sqrt(np.mean(x ** 2))),
                           "peak": float(np.max(np.abs(x))), "peakToPeak": float(np.ptp(x)),
                           "dominantHz": float(frequencies[index]) if amplitude[index] > 1e-14 else None},
                 spectrum={"frequencies": frequencies.tolist(), "amplitudes": amplitude.tolist()},
+                timeDomain={"times": time_curve["x"], "values": time_curve["y"], "unit": "m/s",
+                            "representation": time_curve["representation"]},
+                spectrogram={"times": (stft_t + first / rate).tolist(), "frequencies": stft_f.tolist(),
+                             "db": decibels.tolist(), "unit": "dB re 1 m/s",
+                             "windowSamples": segment, "hopSamples": hop},
                 frequencySpacingHz=float(rate / size))
     return base
 
@@ -126,7 +147,8 @@ def read_raw(store, recording_id, start, end):
     return values, rate, {"recordingId": recording_id, "recordingName": manifest.get("name", recording_id),
                           "source": manifest.get("source", "polytec_ivs500"), "sampleOrigin": origin,
                           "rawSha256": digest.hexdigest(), "missingRssiSamples": missing,
-                          "overrangeSamples": overrange, "dataLossAssessment": "unverified"}
+                          "overrangeSamples": overrange, "simulation": manifest.get("simulation"),
+                          "dataLossAssessment": manifest.get("dataLossAssessment", "unverified")}
 
 
 def spectrum(x, rate, window):

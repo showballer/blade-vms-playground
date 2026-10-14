@@ -5,6 +5,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { gunzipSync } = require("node:zlib");
 const { EventEmitter } = require("node:events");
 const { createFieldService, windowsServiceEnvironment } = require("../apps/desktop/electron/field-service.cjs");
 
@@ -50,6 +51,7 @@ function fixture(t, overrides = {}) {
   }
   const service = createFieldService({
     getConfig: () => ({ executable }), dataDir: path.join(directory, "data"), resourcesDir: directory,
+    servicesRoot: path.join(directory, "services-acquisition"),
     platform: "win32", startupTimeoutMs: 300, requestTimeoutMs: 300, terminationTimeoutMs: 20,
     WebSocketImpl: FakeSocket,
     spawnImpl(file, args, options) {
@@ -86,6 +88,15 @@ function fixture(t, overrides = {}) {
     fs.rmSync(directory, { recursive: true, force: true });
   });
   return { service, children, requests, sockets, directory };
+}
+
+function pythonServiceFixture() {
+  const servicesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "blade-services-root-"));
+  fs.mkdirSync(path.join(servicesRoot, ".venv", "bin"), { recursive: true });
+  fs.writeFileSync(path.join(servicesRoot, ".venv", "bin", "python"), "fixture; never executed");
+  fs.mkdirSync(path.join(servicesRoot, "blade_acquisition"), { recursive: true });
+  fs.writeFileSync(path.join(servicesRoot, "blade_acquisition", "__main__.py"), "# fixture");
+  return servicesRoot;
 }
 
 test("start is single-flight and secret stays in process environment and authenticated transport", async (t) => {
@@ -201,13 +212,55 @@ test("service startup passes only the isolated environment without invoking syst
   assert.equal(environment.Path, "C:\\Miniconda\\Scripts;C:\\Python32");
 });
 
-test("missing executable and non-Windows platform never start a process", async (t) => {
-  const f = fixture(t, { options: { platform: "darwin" } });
-  assert.equal((await f.service.start()).service.state, "error");
-  assert.equal(f.children.length, 0);
+test("missing Windows bundle reports missing without spawning", async (t) => {
+  const f = fixture(t);
   fs.unlinkSync(path.join(f.directory, "BladeAcquisition.exe"));
   assert.equal((await f.service.start()).service.state, "missing");
   assert.equal(f.children.length, 0);
+});
+
+test("non-Windows platform without a virtualenv reports missing without spawning", async (t) => {
+  const f = fixture(t, { options: { platform: "darwin" } });
+  const result = await f.service.start();
+  assert.equal(result.service.state, "missing");
+  assert.match(result.service.error, /Python 采集服务环境/);
+  assert.equal(f.children.length, 0);
+});
+
+test("non-Windows platform spawns python -m blade_acquisition with a scrubbed environment", async (t) => {
+  const servicesRoot = pythonServiceFixture();
+  const environment = Object.freeze({ PATH: "/usr/bin:/bin", PYTHONPATH: "/foreign", PYTHONHOME: "/conda",
+    VIRTUAL_ENV: "/venv", CONDA_PREFIX: "/conda", DATABASE_URL: "mysql://should-not-leak" });
+  const f = fixture(t, { options: { platform: "darwin", servicesRoot, environment } });
+  const result = await f.service.start();
+  assert.equal(result.service.state, "ready");
+  assert.equal(result.service.launcher, "python-module");
+  assert.equal(f.children.length, 1);
+  const child = f.children[0];
+  assert.equal(child.file, path.join(servicesRoot, ".venv", "bin", "python"));
+  assert.deepEqual(child.args, ["-m", "blade_acquisition"]);
+  assert.equal(child.options.cwd, servicesRoot);
+  assert.equal(child.options.shell, false);
+  assert.equal(child.options.windowsHide, true);
+  assert.equal(child.options.env.PATH, "/usr/bin:/bin");
+  for (const key of ["PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "CONDA_PREFIX"]) assert.equal(Object.hasOwn(child.options.env, key), false);
+  assert.equal(child.options.env.DATABASE_URL, "mysql://should-not-leak");
+  assert.equal(child.options.env.BLADE_DATA_DIR, path.join(f.directory, "data"));
+  assert.match(child.options.env.BLADE_SERVICE_TOKEN, /^[a-f0-9]{64}$/);
+  assert.equal(child.options.env.BLADE_POLYTEC_DLL, "");
+  fs.rmSync(servicesRoot, { recursive: true, force: true });
+});
+
+test("BLADE_ACQUISITION_PYTHON overrides the virtualenv interpreter", async (t) => {
+  const servicesRoot = pythonServiceFixture();
+  const custom = path.join(servicesRoot, "custom-python");
+  fs.writeFileSync(custom, "fixture");
+  const f = fixture(t, { options: { platform: "darwin", servicesRoot,
+    environment: Object.freeze({ PATH: "/usr/bin", BLADE_ACQUISITION_PYTHON: custom }) } });
+  assert.equal((await f.service.start()).service.state, "ready");
+  assert.equal(f.children[0].file, custom);
+  assert.deepEqual(f.children[0].args, ["-m", "blade_acquisition"]);
+  fs.rmSync(servicesRoot, { recursive: true, force: true });
 });
 
 test("laser and acquisition require complete explicit confirmation before any start call", async (t) => {
@@ -220,6 +273,132 @@ test("laser and acquisition require complete explicit confirmation before any st
   assert.equal(f.requests.length, 0);
   await f.service.begin({ ...config, confirmLaser: true });
   assert.equal(f.requests.filter(request => request.route === "start").length, 1);
+});
+
+test("simulation needs an explicit source and rejects invalid point/scenario before launching or requesting", async (t) => {
+  const f = fixture(t);
+  const config = { source: "simulation", name: "模拟风机", object: "叶片", turbine: "机组", point: "测点",
+    simulation: { point: "P2", scenario: "impact" } };
+  for (const source of ["mock", "SIMULATION", "", null, false]) {
+    await assert.rejects(f.service.begin({ ...config, source }), { status: 400 });
+  }
+  for (const simulation of [undefined, {}, { point: "P0", scenario: "baseline" }, { point: "P4", scenario: "impact" },
+    { point: "P1", scenario: "unknown" }, { point: "P1", scenario: "" }, { point: "P1", scenario: null }]) {
+    await assert.rejects(f.service.begin({ ...config, simulation }), { status: 400 });
+  }
+  await assert.rejects(f.service.begin({ ...config, source: undefined }), { status: 400 });
+  await assert.rejects(f.service.begin({ ...config, name: "  " }), { status: 400 });
+  assert.equal(f.children.length, 0);
+  assert.equal(f.requests.length, 0);
+});
+
+test("explicit simulation starts without DLL, device addresses or laser consent and forwards only simulation controls", async (t) => {
+  const f = fixture(t, { fetch: ({ route }) => response(route === "start" ? { ...acquiring(), source: "simulation" } : idle()) });
+  const config = { source: "simulation", simulation: { point: "P2", scenario: "impact", file: "/must-not-forward" },
+    name: "  模拟风机  ", object: "叶片", turbine: "", point: "" };
+  assert.equal(f.service.serviceInfo().dllConfigured, false);
+  const result = await f.service.begin(config);
+  assert.equal(result.state, "acquiring");
+  assert.equal(result.source, "simulation");
+  const starts = f.requests.filter(request => request.route === "start");
+  assert.equal(starts.length, 1);
+  assert.equal(starts[0].options.method, "POST");
+  assert.deepEqual(JSON.parse(starts[0].options.body), { source: "simulation", simulation: { point: "P2", scenario: "impact" },
+    name: "模拟风机", object: "叶片", turbine: "", point: "" });
+  assert.equal(f.requests.filter(request => request.route === "device").length, 0);
+});
+
+test("simulation cannot make omitted/default device source bypass laser confirmation or IPv4 checks", async (t) => {
+  const f = fixture(t);
+  const config = { source: "device", simulation: { point: "P1", scenario: "baseline" }, name: "设备任务", object: "", turbine: "", point: "",
+    deviceIp: "192.168.0.10", hostIp: "192.168.0.2" };
+  for (const confirmLaser of [undefined, false, 1, "true"]) await assert.rejects(f.service.begin({ ...config, confirmLaser }), { status: 400 });
+  for (const patch of [{ deviceIp: "" }, { hostIp: "" }, { hostIp: "192.168.0.10" }, { deviceIp: "::1" }, { hostIp: "example.com" }]) {
+    await assert.rejects(f.service.begin({ ...config, ...patch, confirmLaser: true }), { status: 400 });
+  }
+  assert.equal(f.children.length, 0);
+  assert.equal(f.requests.length, 0);
+  await f.service.begin({ ...config, source: undefined, confirmLaser: true });
+  const body = JSON.parse(f.requests.find(request => request.route === "start").options.body);
+  assert.equal(body.confirmLaser, true);
+  assert.equal(body.deviceIp, config.deviceIp);
+  assert.equal(body.hostIp, config.hostIp);
+  assert.equal(body.simulation, undefined);
+  assert.notEqual(body.source, "simulation");
+});
+
+test("device startup errors propagate and never retry as simulation", async (t) => {
+  const f = fixture(t, { fetch: ({ route }) => route === "start" ? response({ detail: "设备 DLL 不可用" }, 503) : response(idle()) });
+  await assert.rejects(f.service.begin({ source: "device", confirmLaser: true, name: "设备任务", object: "", turbine: "", point: "",
+    deviceIp: "192.168.0.10", hostIp: "192.168.0.2" }), error => error.status === 503 && /DLL/.test(error.message));
+  const starts = f.requests.filter(request => request.route === "start");
+  assert.equal(starts.length, 1);
+  const body = JSON.parse(starts[0].options.body);
+  assert.notEqual(body.source, "simulation");
+  assert.equal(body.simulation, undefined);
+});
+
+test("recording export streams original CSV into gzip or CSV without buffering via text()", async (t) => {
+  const chunks = ["# source=simulation\n", "time_s,velocity_mps\n", "0,0.001\n", "0.001,-0.002\n"];
+  const f = fixture(t, { fetch: ({ route }) => {
+    if (!route.endsWith("/export")) return response(idle());
+    let index = 0;
+    return { ok: true, status: 200, body: new ReadableStream({ pull(controller) {
+      if (index === chunks.length) controller.close();
+      else controller.enqueue(new TextEncoder().encode(chunks[index++]));
+    } }), text() { throw Error("export must stream, not buffer through response.text()"); } };
+  } });
+  for (const suffix of ["csv.gz", "csv"]) {
+    const file = path.join(f.directory, `original.${suffix}`);
+    assert.deepEqual(await f.service.exportRecording("a".repeat(32), file), { saved: true, fileName: `original.${suffix}` });
+    const stored = fs.readFileSync(file);
+    assert.equal((suffix.endsWith("gz") ? gunzipSync(stored) : stored).toString("utf8"), chunks.join(""));
+    // Windows access is governed by ACLs; POSIX permission bits are not preserved.
+    if (process.platform !== 'win32') assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  }
+  assert.equal(fs.readdirSync(f.directory).some(file => file.endsWith(".tmp")), false);
+  const request = f.requests.find(request => request.route.endsWith("/export"));
+  assert.equal(request.route, `recordings/${"a".repeat(32)}/export`);
+  assert.match(request.options.headers.Authorization, /^Bearer [a-f0-9]{64}$/);
+});
+
+test("failed recording export preserves an existing file and leaves no temporary file", async (t) => {
+  const f = fixture(t, { fetch: ({ route }) => route.endsWith("/export")
+    ? new Response(JSON.stringify({ detail: "原始记录尚未完整保存" }), { status: 409 }) : response(idle()) });
+  const file = path.join(f.directory, "original.csv.gz");
+  fs.writeFileSync(file, "EXISTING EXPORT");
+  await assert.rejects(f.service.exportRecording("a".repeat(32), file), error => error.status === 409 && /完整保存/.test(error.message));
+  assert.equal(fs.readFileSync(file, "utf8"), "EXISTING EXPORT");
+  assert.equal(fs.readdirSync(f.directory).some(file => file.endsWith(".tmp")), false);
+});
+
+test("a truncated export stream cannot replace an existing file or leave its partial data", async (t) => {
+  const f = fixture(t, { fetch: ({ route }) => {
+    if (!route.endsWith("/export")) return response(idle());
+    let sent = false;
+    return { ok: true, status: 200, body: new ReadableStream({ pull(controller) {
+      if (sent) controller.error(Error("stream interrupted"));
+      else { sent = true; controller.enqueue(new TextEncoder().encode("time_s,velocity_mps\n0,0.001\n")); }
+    } }) };
+  } });
+  const file = path.join(f.directory, "original.csv");
+  fs.writeFileSync(file, "KEEP COMPLETE FILE");
+  await assert.rejects(f.service.exportRecording("a".repeat(32), file), /stream interrupted/);
+  assert.equal(fs.readFileSync(file, "utf8"), "KEEP COMPLETE FILE");
+  assert.equal(fs.readdirSync(f.directory).some(file => file.endsWith(".tmp")), false);
+});
+
+test("recording export rejects invalid ids or relative/non-CSV targets before launching or fetching", async (t) => {
+  const f = fixture(t);
+  const file = path.join(f.directory, "original.csv.gz");
+  for (const id of ["../secret", "", "a".repeat(31), "g".repeat(32), null]) {
+    await assert.rejects(f.service.exportRecording(id, file), { status: 400 });
+  }
+  for (const invalidFile of ["relative.csv", "", path.join(f.directory, "original.json"), path.join(f.directory, "original.csv.gz.tmp"), null]) {
+    await assert.rejects(f.service.exportRecording("a".repeat(32), invalidFile), { status: 400 });
+  }
+  assert.equal(f.children.length, 0);
+  assert.equal(f.requests.length, 0);
 });
 
 test("HTTP frame fallback remains bounded and a failed stop is not acknowledged as saved", async (t) => {

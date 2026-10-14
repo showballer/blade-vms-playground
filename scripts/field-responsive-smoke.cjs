@@ -220,13 +220,13 @@ app.on('browser-window-created', (_event, win) => {
       });
       assert.equal((await field({ action: 'changePassword', currentPassword: initial, newPassword: changed })).status, 200);
       await reload();
-      await waitFor(async () => (await body()).includes('开始真实采集'), 'authenticated acquisition UI');
+      await waitFor(async () => (await body()).includes('开始采集'), 'authenticated acquisition UI');
 
       for (const size of sizes) {
         await check(`${size.name}: acquisition has a bounded vertical scroll area`, async () => {
           const viewport = await resize(size);
           await reload();
-          await waitFor(async () => (await body()).includes('开始真实采集'), 'fresh acquisition UI');
+          await waitFor(async () => (await body()).includes('开始采集'), 'fresh acquisition UI');
           await navigate('数据采集', '采集任务');
           const top = await layout('.field-content');
           assert.ok(['auto', 'scroll'].includes(top.overflowY), `Main overflowY must scroll: ${JSON.stringify(top)}`);
@@ -241,7 +241,7 @@ app.on('browser-window-created', (_event, win) => {
         });
 
         await check(`${size.name}: confirmation dialog safety checks and footer reachable`, async () => {
-          const start = button('.field-acquisition-actions', '开始真实采集');
+          const start = button('.field-capture-inputs', '开始采集');
           assert.equal((await reach(start)).disabled, false);
           await js(`${start}.click()`);
           await waitFor(() => js("Boolean(document.querySelector('dialog[open]'))"), 'start confirmation dialog');

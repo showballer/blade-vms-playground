@@ -1,4 +1,5 @@
 "use client";
+import { CustomSelect } from "./custom-select";
 import { useState } from "react";
 import { Button, Dialog, Tag } from "./common";
 import { validateTaskMetadata, type TaskChannel } from "./task-metadata";
@@ -39,7 +40,7 @@ export function TaskMetadataDialog({ task, onClose, onSave }: {
         <p className="muted">通道描述用于追溯，不执行单位换算。当前波形导入为单列幅值，请确认其对应通道；不要把描述数量当作已保存的波形通道数。</p>
         {channels.map((ch, i) => <div className="toolbar space-top" key={i}>
           <input aria-label={`通道 ${i + 1} 编号`} type="number" min={1} max={256} step={1} value={ch.no} onChange={(e) => setChannels(channels.map((c, j) => j === i ? { ...c, no: Number(e.target.value) } : c))} style={{ width: 80 }} required />
-          <select aria-label={`通道 ${i + 1} 类型`} value={ch.type} onChange={(e) => setChannels(channels.map((c, j) => j === i ? { ...c, type: e.target.value } : c))}>{signals.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}</select>
+          <CustomSelect aria-label={`通道 ${i + 1} 类型`} value={ch.type} onChange={(e) => setChannels(channels.map((c, j) => j === i ? { ...c, type: e.target.value } : c))}>{signals.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}</CustomSelect>
           <input aria-label={`通道 ${i + 1} 单位`} placeholder="单位" maxLength={30} value={ch.unit} onChange={(e) => setChannels(channels.map((c, j) => j === i ? { ...c, unit: e.target.value } : c))} style={{ width: 120 }} required />
           <Button type="button" aria-label={`移除通道 ${i + 1}`} onClick={() => setChannels(channels.filter((_, j) => j !== i))}>移除</Button>
         </div>)}

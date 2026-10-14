@@ -1,6 +1,7 @@
 import mysql from "mysql2/promise";
 import { randomBytes, scryptSync, randomUUID } from "node:crypto";
 import { records } from "./seed-data.mjs";
+import { migrateUserSoftDelete } from "./migrations/user-soft-delete.mjs";
 if (
   process.env.DB_NAME !== "blade_vms_playground" ||
   process.env.DB_USER !== "blade_vms_app"
@@ -15,12 +16,13 @@ const db = await mysql.createConnection({
 });
 const tables = [
   `CREATE TABLE IF NOT EXISTS sync_imports (idempotency_key CHAR(64) PRIMARY KEY,user_id VARCHAR(64) NOT NULL,tenant VARCHAR(100) NOT NULL,client_id VARCHAR(64) NOT NULL,local_id VARCHAR(64) NOT NULL,revision CHAR(64) NOT NULL,payload_hash CHAR(64) NOT NULL,response JSON,created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,INDEX sync_user_tenant(user_id,tenant))`,
-  `CREATE TABLE IF NOT EXISTS users (id VARCHAR(64) PRIMARY KEY,username VARCHAR(80) NOT NULL UNIQUE,name VARCHAR(100) NOT NULL,password_hash VARCHAR(255) NOT NULL,role VARCHAR(20) NOT NULL,tenant VARCHAR(100) NOT NULL DEFAULT '新能源A组',active BOOLEAN NOT NULL DEFAULT 1,created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
+  `CREATE TABLE IF NOT EXISTS users (id VARCHAR(64) PRIMARY KEY,username VARCHAR(80) NOT NULL UNIQUE,name VARCHAR(100) NOT NULL,password_hash VARCHAR(255) NOT NULL,role VARCHAR(20) NOT NULL,tenant VARCHAR(100) NOT NULL DEFAULT '新能源A组',active BOOLEAN NOT NULL DEFAULT 1,deleted_at DATETIME NULL DEFAULT NULL,created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
   `CREATE TABLE IF NOT EXISTS sessions (id VARCHAR(64) PRIMARY KEY,token_hash CHAR(64) NOT NULL UNIQUE,user_id VARCHAR(64) NOT NULL,expires_at DATETIME NOT NULL,kind VARCHAR(20) NOT NULL DEFAULT 'session',name VARCHAR(100),created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE)`,
   `CREATE TABLE IF NOT EXISTS records (id VARCHAR(64) PRIMARY KEY,kind VARCHAR(30) NOT NULL,tenant VARCHAR(100) NOT NULL,body JSON NOT NULL,created_by VARCHAR(64),created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,INDEX records_kind_tenant(kind,tenant))`,
   `CREATE TABLE IF NOT EXISTS audit_logs (id VARCHAR(64) PRIMARY KEY,actor_id VARCHAR(64),actor_name VARCHAR(100),tenant VARCHAR(100),action VARCHAR(100) NOT NULL,target VARCHAR(255),result VARCHAR(30) NOT NULL DEFAULT '成功',created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,INDEX audit_tenant_time(tenant,created_at))`,
 ];
 for (const t of tables) await db.query(t);
+await migrateUserSoftDelete(db);
 function hash(p) {
   const salt = randomBytes(16).toString("hex");
   return salt + ":" + scryptSync(p, salt, 64).toString("hex");

@@ -8,10 +8,12 @@ import {
   ShieldCheck,
   Copy,
   BookOpen,
+  Trash2,
 } from "lucide-react";
 import { api, download, saveBlob, roleNames, type Item } from "./api";
 import { apiExamples, apiExample, apiRequestSample, apiReferenceMarkdown, readApiExample, type ApiExample } from "./developer-api";
 import { AuditLogScreen } from "./audit-log-screen";
+import { AccountPasswordDialog } from "./account-password-dialog";
 import {
   Button,
   Card,
@@ -51,23 +53,59 @@ const userFields: Field[] = [
   { key: "tenant", label: "课题组", required: true },
   {
     key: "password",
-    label: "密码（至少 8 位；编辑时留空不修改）",
+    label: "统一密码（12–128 位）",
     type: "password",
+    required: true,
   },
   { key: "active", label: "启用用户", type: "checkbox" },
 ];
+export function RolePermissionMatrix() {
+  return <div className="space-top">
+    <h3>角色权限矩阵</h3>
+    <Table headers={["角色", "数据范围 / 实时查看", "采集上传 / 文件导入", "分析 / 复核", "报告 / 导出", "用户 / 系统管理"]}>
+      {[
+        ["管理员", "全部课题组", "可上传、导入", "全部分析与复核", "生成、查看、导出", "可管理"],
+        ["分析员", "所属课题组", "可上传、导入", "旋转、模态、损伤与复核", "生成、查看、导出", "无"],
+        ["操作员", "本人采集与任务", "采集上传、任务文件导入", "本人任务基础分析；不可复核", "本人任务查看、导出", "无"],
+        ["访客", "所属课题组", "只读", "只读", "查看、导出", "无"],
+      ].map(row => <tr key={row[0]}>{row.map((cell, index) => <td key={index}>{cell}</td>)}</tr>)}
+    </Table>
+    <p className="hint">权限由服务端校验。操作员不能执行旋转、模态或损伤分析，不能生成报告或复核告警；访客不能绑定桌面采集。删除账号保留历史采集、任务、分析与审计记录，登录账号名不能重复使用。</p>
+  </div>;
+}
+
+export function DeleteUserDialog({ user, onClose, onDelete }: {
+  user: Item; onClose: () => void; onDelete: () => Promise<void>;
+}) {
+  const [confirmed, setConfirmed] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState("");
+  return <Dialog title="删除用户" onClose={() => { if (!busy) onClose(); }}>
+    <p className="dialog-message">删除 <strong>{user.name}（{user.username}）</strong> 后，该账号从用户列表移除，不能再登录，服务器会话和令牌立即失效。历史采集、任务、分析及审计记录保留，账号名不能重新注册。</p>
+    <p className="hint">已绑定的离线桌面将在下次联网登录时校验账号状态；不会远程中断正在运行的采集。若只需暂时停用，请取消并使用“禁用”。</p>
+    <label className="inline-field"><input type="checkbox" checked={confirmed} disabled={busy} onChange={event => setConfirmed(event.target.checked)} />我确认删除此账号并保留历史数据</label>
+    {error && <p role="alert" className="error">{error}</p>}
+    <div className="dialog-actions"><Button disabled={busy} onClick={onClose}>取消</Button><Button variant="danger" disabled={busy || !confirmed} onClick={async () => {
+      if (!confirmed || busy) return;
+      setBusy(true); setError("");
+      try { await onDelete(); onClose(); }
+      catch (cause) { setError((cause as Error).message); setBusy(false); }
+    }}>{busy ? "正在删除…" : "确认删除账号"}</Button></div>
+  </Dialog>;
+}
 export function Administration({
   data,
   refresh,
   notify,
   canWrite,
   initialTab = "users",
-}: ContextProps & { initialTab?: string }) {
+  onReauthenticate,
+}: ContextProps & { initialTab?: string; onReauthenticate?: () => void }) {
   const [tab, setTab] = useState(initialTab),
     [users, setUsers] = useState<Item[]>([]),
     [backups, setBackups] = useState<Item[]>([]),
     [query, setQuery] = useState(""),
     [editing, setEditing] = useState<Item | Record<string, any> | null>(null),
+    [resettingPassword, setResettingPassword] = useState<Item | null>(null),
+    [deletingUser, setDeletingUser] = useState<Item | null>(null),
     [review, setReview] = useState<Item | null>(null),
     [restore, setRestore] = useState<Item | null>(null),
     [schedule, setSchedule] = useState(false),
@@ -119,6 +157,7 @@ export function Administration({
             当前角色为{roleNames[data.user.role as keyof typeof roleNames]}
             。用户、审计和备份管理仅管理员可访问。
           </p>
+          {tab === "users" && <RolePermissionMatrix />}
         </Card>
       ) : (
         <>
@@ -183,6 +222,7 @@ export function Administration({
                         >
                           编辑权限
                         </Button>
+                        <Button variant="ghost" onClick={() => setResettingPassword(u)}><KeyRound size={14} />重置密码</Button>
                         <Button
                           variant="ghost"
                           disabled={u.id === data.user.id}
@@ -201,38 +241,12 @@ export function Administration({
                         >
                           {u.active ? "禁用" : "启用"}
                         </Button>
+                        <Button variant="ghost" disabled={u.id === data.user.id} aria-label={`删除账号 ${u.username}`} onClick={() => setDeletingUser(u)}><Trash2 size={14} />删除</Button>
                       </td>
                     </tr>
                   ))}
               </Table>
-              <div className="space-top">
-                <h3>角色权限矩阵</h3>
-                <Table
-                  headers={[
-                    "角色",
-                    "采集任务",
-                    "分析 / 复核",
-                    "报告 / 导出",
-                    "用户 / 备份",
-                  ]}
-                >
-                  {[
-                    ["管理员", "读写", "读写", "读写", "读写"],
-                    ["分析员", "读写", "读写", "读写", "无"],
-                    ["操作员", "本人任务读写", "本人任务基础分析", "本人任务查看 / 导出", "无"],
-                    ["访客", "只读", "只读", "查看 / 导出", "无"],
-                  ].map((r) => (
-                    <tr key={r[0]}>
-                      {r.map((c, i) => (
-                        <td key={i}>{c}</td>
-                      ))}
-                    </tr>
-                  ))}
-                </Table>
-                <p className="hint">
-                  权限由服务端校验。非管理员限制在所属课题组；操作员仅能访问本人任务及其关联结果，不能写模态、损伤或报告。
-                </p>
-              </div>
+              <RolePermissionMatrix />
             </Card>
           )}
           {tab === "logs" && <AuditLogScreen notify={notify} />}
@@ -357,22 +371,35 @@ export function Administration({
           title={editing.id ? "编辑用户与权限" : "新增用户"}
           fields={
             editing.id
-              ? userFields.filter((f) => f.key !== "username")
+              ? userFields.filter((f) => f.key !== "username" && f.key !== "password")
               : userFields
           }
           initial={editing}
           onClose={() => setEditing(null)}
           onSave={async (v) => {
-            await api(
+            const result = await api<{ reauthenticate?: boolean }>(
               "users" + (editing.id ? "/" + editing.id : ""),
               editing.id ? "PUT" : "POST",
               v,
             );
+            if (result.reauthenticate) { onReauthenticate?.(); return; }
             await load();
             notify("用户已保存");
           }}
         />
       )}
+      {resettingPassword && <AccountPasswordDialog mode="reset" username={resettingPassword.username} onClose={() => setResettingPassword(null)} onSave={async ({ newPassword }) => {
+        const result = await api<{ reauthenticate: boolean }>("users/" + resettingPassword.id + "/password", "POST", { newPassword });
+        setResettingPassword(null);
+        if (result.reauthenticate) { onReauthenticate?.(); return; }
+        notify("统一密码已重置；已绑定桌面下次联网登录请使用新密码。");
+        await load();
+      }} />}
+      {deletingUser && <DeleteUserDialog user={deletingUser} onClose={() => setDeletingUser(null)} onDelete={async () => {
+        await api("users/" + deletingUser.id, "DELETE", { confirm: true });
+        setUsers(previous => previous.filter(user => user.id !== deletingUser.id));
+        notify("用户已删除；历史数据和审计记录已保留。");
+      }} />}
       {review && (
         <EditDialog
           title="告警处理"

@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useId, useMemo, useState } from "react";
+import { Archive, ChevronDown, PencilLine } from "lucide-react";
 import { api, type Item } from "./api";
 import { Button, Card, EditDialog, Empty, Select, Table, Tag, type ContextProps } from "./common";
 import { Chart, lineOption } from "./charts";
@@ -63,12 +64,12 @@ export function HealthTrends({ data, refresh, notify, go, task, baseline, config
     catch (error) { notify((error as Error).message); } finally { setBusy(false); }
   }
   const sourceControls = <>
-    <div className="toolbar">
+    <div className="toolbar trend-source-row">
       <Select label="趋势记录" value={record?.id || ""} disabled={busy} options={[{ value: "", label: "当前演示预览" }, ...history.map(a => ({ value: a.id, label: a.name + " · " + a.result?.dataset?.metadata?.snapshotAt }))]} onChange={openArchive} />
       <label className="inline-field"><input type="checkbox" checked={all} disabled={busy} onChange={e => { setAll(e.target.checked); setRecord(null); setView("trend"); }} />全部可见归档</label>
       <Button disabled={busy} onClick={async () => { setBusy(true); try { await refresh(); if (record) setRecord(await api<Item>("records/analyses/" + encodeURIComponent(record.id))); } catch (e) { notify((e as Error).message); } finally { setBusy(false); } }}>刷新趋势记录</Button>
     </div>
-    {!record ? <div className="toolbar space-top">
+    {!record ? <div className="toolbar trend-preview-row">
       <label className="inline-field"><span>展示起日</span><input aria-label="展示起日" type="date" min="1900-01-01" max="2099-12-02" value={startDate} disabled={busy} onChange={e => setStartDate(e.target.value)} /></label>
       <Button variant="primary" disabled={!writable || busy || !preview.dataset} onClick={async () => {
         setBusy(true);
@@ -80,25 +81,29 @@ export function HealthTrends({ data, refresh, notify, go, task, baseline, config
         } catch (e) { notify((e as Error).message); } finally { setBusy(false); }
       }}>{busy ? "处理中…" : "归档当前演示趋势"}</Button>
     </div> : <><p className="hint" data-testid="health-trend-snapshot">归档任务：{record.result?.dataset?.metadata?.task?.name} · 基线：{record.result?.dataset?.metadata?.baseline?.name} · 展示起日：{record.parameters?.startDate} · 归档时间：{record.result?.dataset?.metadata?.snapshotAt}</p>
-      <div className="toolbar"><Select label="归档视图" value={view} disabled={busy} options={[{ value: "trend", label: "30 日演示趋势" }, ...(record.result?.datasets?.waveform ? [{ value: "waveform", label: "源任务波形快照" }] : [])]} onChange={v => { setView(v); setPlaying(false); setCursor(0); }} />
+      <div className="toolbar trend-snapshot-controls"><Select label="归档视图" value={view} disabled={busy} options={[{ value: "trend", label: "30 日演示趋势" }, ...(record.result?.datasets?.waveform ? [{ value: "waveform", label: "源任务波形快照" }] : [])]} onChange={v => { setView(v); setPlaying(false); setCursor(0); }} />
         <Button disabled={busy} onClick={() => setDetails(true)}>数据与元信息</Button>
         <Button disabled={!writable || !(data.tasks as Item[]).some(t => t.id === record.taskId)} onClick={() => go("report", { taskId: record.taskId })}>生成关联任务报告</Button>
       </div>{!record.result?.datasets?.waveform && <p className="muted">归档时源任务没有采样点，仅保留趋势，不补造波形。</p>}</>}
   </>;
-  const archiveToggle = <Button aria-expanded={archiveControls} aria-controls={archivePanelId} onClick={() => setArchiveControls(!archiveControls)}>{archiveControls ? "收起归档设置" : "归档设置与历史"}</Button>;
-  return <Card title="趋势跟踪与归档" className="health-trends" tools={<div className="toolbar">{!waveform && <Select label="趋势指标组" value={curveGroup} options={healthTrendGroups} onChange={setCurveGroup} />}<Tag tone="amber">演示趋势 · 人工标记</Tag></div>}>
+  const markDisabledReason = !writable ? "当前角色没有人工标记权限" : !record ? "归档当前趋势后可添加人工信号标记" : annotations.length >= 200 ? "已达到 200 条标记上限（含撤回历史）" : undefined;
+  const archiveToggle = <Button variant="ghost" className="trend-archive-toggle" aria-expanded={archiveControls} aria-controls={archivePanelId} onClick={() => setArchiveControls(!archiveControls)}><Archive size={15} aria-hidden="true" />{archiveControls ? "收起归档设置" : "归档设置与历史"}<ChevronDown size={14} className={archiveControls ? "is-open" : ""} aria-hidden="true" /></Button>;
+  return <Card title="趋势跟踪与归档" className="health-trends" tools={<div className="trend-heading-tools"><Tag tone={waveform ? "blue" : "amber"}>{waveform ? "归档原始波形" : record ? "演示趋势 · 已归档" : "演示趋势 · 未归档"}</Tag>{archiveToggle}</div>}>
+    {dataset && <div className="trend-chart-toolbar">
+      <div className="trend-view-controls">{!waveform ? <Select label="趋势指标组" value={curveGroup} options={healthTrendGroups} onChange={setCurveGroup} /> : <span className="trend-view-label">源任务波形快照</span>}</div>
+      <div className="trend-data-actions">
+        <span className="trend-mark-action" title={markDisabledReason}><Button variant="ghost" disabled={!record || !writable || busy || annotations.length >= 200} onClick={() => { setPlaying(false); setMark({ id: crypto.randomUUID(), target: view }); }}><PencilLine size={15} aria-hidden="true" />添加人工信号标记</Button></span>
+        <ResultExport label={record ? "导出归档数值" : "导出演示趋势"} path={record ? `export/analyses/${record.id}` : undefined} datasetKey={record ? view : undefined} getData={() => dataset!} notify={notify} />
+      </div>
+    </div>}
+    <div id={archivePanelId} className="trend-archive-controls" role="region" aria-label="归档设置与历史" hidden={!archiveControls}>{sourceControls}</div>
     {dataset ? <>{!waveform && <><span className="sr-only" data-testid="health-trend-columns">当前显示：{healthTrendColumns(dataset, curveGroup).map(s => s.name).join("、") || "此归档没有该组指标"}</span>
       {record && healthTrendColumns(dataset).length < trendSeries.length && <p className="muted">旧归档仅有 {healthTrendColumns(dataset).length} 项趋势，缺失指标不补造；导出仍保留原始数据列。</p>}</>}
-      <Chart option={option} height={waveform ? 230 : 190} label={waveform ? "健康归档波形与人工标记" : "健康趋势与人工标记"} />
-      {waveform && <div className="toolbar"><Button disabled={count < 2 || !(rate > 0)} onClick={() => { if (!playing && position >= count - 1) setCursor(0); setPlaying(!playing); }}>{playing ? "暂停归档波形" : "播放归档波形"}</Button><Select label="归档回放速度" value={speed} options={["0.5", "1", "2"]} onChange={setSpeed} />
+      {waveform && <div className="toolbar trend-playback-controls"><Button disabled={count < 2 || !(rate > 0)} onClick={() => { if (!playing && position >= count - 1) setCursor(0); setPlaying(!playing); }}>{playing ? "暂停归档波形" : "播放归档波形"}</Button><Select label="归档回放速度" value={speed} options={["0.5", "1", "2"]} onChange={setSpeed} />
         <input aria-label="归档回放位置" type="range" min={0} max={Math.max(0, count - 1)} value={Math.max(0, position)} onChange={e => { setPlaying(false); setCursor(Number(e.target.value)); }} />
         <span className="mono" data-testid="health-trend-cursor">{position} / {count - 1} · {(position / rate).toFixed(3)} s</span><Button onClick={() => { setPlaying(false); setCursor(0); }}>复位回放</Button></div>}
-      <div className="toolbar space-top"><ResultExport label={record ? "导出归档数值" : "导出演示趋势"} path={record ? `export/analyses/${record.id}` : undefined} datasetKey={record ? view : undefined} getData={() => dataset!} notify={notify} />
-        <Button disabled={!record || !writable || busy || annotations.length >= 200} onClick={() => { setPlaying(false); setMark({ id: crypto.randomUUID(), target: view }); }}>添加人工信号标记</Button>
-        {archiveToggle}
-      </div>
-    </> : <><Empty text={error || "暂无趋势"} />{archiveToggle}</>}
-    <div id={archivePanelId} className="trend-archive-controls" hidden={!archiveControls}>{sourceControls}</div>
+      <div className="trend-chart-surface"><Chart option={option} height={waveform ? 260 : 230} label={waveform ? "健康归档波形与人工标记" : "健康趋势与人工标记"} /></div>
+    </> : <Empty text={error || "暂无趋势"} />}
     <details className="health-explanation"><summary>演示数据与标记说明</summary><p className="muted">趋势为固定 30 日变化率样例，不对应上方指标的绝对值；零线仅为变化率参考。展示日期不代表真实长期监测，未执行漂移识别或异常剔除。波形快照独立保存原任务数值，与每天趋势点没有真实时间关联。红点/红带仅表示人工标记，不改变数据。切换指标组只影响图表，导出始终包含归档全部数据列。</p></details>
     {record && <><h3>异常信号标记记录 <small>（含撤回历史）</small></h3>{annotations.length ? <div className="saved-result-table"><Table headers={["目标 / 索引范围", "类别 / 说明", "记录人 / 时间", "状态 / 操作"]}>{annotations.map(a => <tr key={a.id} data-testid={"health-annotation-" + a.id}>
       <td><button className="text-link" onClick={() => { setView(a.target); if (a.target === "trend") setCurveGroup("all"); setPlaying(false); setCursor(a.startIndex); }}>{a.target === "trend" ? trendSeries.find(s => s.key === a.series)?.name : "原始波形"} [{a.startIndex}, {a.endIndex})</button></td>

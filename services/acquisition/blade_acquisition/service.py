@@ -7,19 +7,23 @@ import ipaddress
 import math
 import os
 import threading
+import time
 from collections import deque
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from itertools import islice
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, StrictBool, field_validator
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, Field, StrictBool, field_validator, model_validator
 
 from .receiver import Batch, PolytecReceiver, ReceiverConfig
 from .storage import DISPLAY_LIMIT, RecordingStore, empty_waveform
 from .waveform import WaveformReader, make_wave
 from .device import DevicePanel, WRITABLE
+from .simulation import SimulationConfig, SimulationReceiver, simulation_catalog
 
 
 @dataclass(frozen=True)
@@ -44,28 +48,36 @@ class Settings:
 
 
 class StartRequest(BaseModel):
-    deviceIp: str = Field(min_length=7, max_length=15)
-    hostIp: str = Field(min_length=7, max_length=15)
+    source: Literal["polytec_ivs500", "simulation"] = "polytec_ivs500"
+    simulation: SimulationConfig | None = None
+    deviceIp: str = Field(default="", max_length=15)
+    hostIp: str = Field(default="", max_length=15)
     name: str = Field(min_length=1, max_length=120)
     object: str = Field(default="", max_length=120)
     turbine: str = Field(default="", max_length=120)
     point: str = Field(default="", max_length=120)
-    confirmLaser: StrictBool
+    confirmLaser: StrictBool = False
 
     @field_validator("deviceIp", "hostIp")
     @classmethod
     def valid_address(cls, value: str) -> str:
+        if value == "":
+            return value
         address = ipaddress.IPv4Address(value)
         if address.is_unspecified or address.is_multicast or address.is_loopback or address.is_reserved:
             raise ValueError("设备和本机网卡必须是有效的非回环 IPv4 地址。")
         return str(address)
 
-    @field_validator("confirmLaser")
-    @classmethod
-    def explicit_laser_permission(cls, value: bool) -> bool:
-        if value is not True:
-            raise ValueError("必须确认激光安全及允许修改设备 DAQ 目标后才能开始。")
-        return value
+    @model_validator(mode="after")
+    def validate_source(self):
+        if self.source == "polytec_ivs500":
+            if not self.deviceIp or not self.hostIp or self.confirmLaser is not True:
+                raise ValueError("真实设备采集必须提供有效设备/本机 IPv4 地址，并确认激光安全及允许修改设备 DAQ 目标。")
+            if self.simulation is not None:
+                raise ValueError("模拟参数只允许用于显式 simulation 数据源。")
+        elif self.simulation is None:
+            self.simulation = SimulationConfig()
+        return self
 
     @field_validator("name", "object", "turbine", "point")
     @classmethod
@@ -117,16 +129,24 @@ class AcquisitionController:
         self.device_snapshot = None
         self.device_warning = None
         self.device_warning_ip = None
+        self.source = "polytec_ivs500"
+        self.simulation = None
+        self.realtime_lock = threading.Lock()
+        self.realtime_cache = None
+        self.realtime_cache_key = None
+        self.realtime_cache_at = 0.0
 
     def status(self) -> dict:
         with self.lock:
             return {"state": self.state, "error": self.error,
-                    "receiver": {"source": "polytec_ivs500", "running": bool(self.thread and self.thread.is_alive()),
-                                 "deviceIp": self.device_ip, "hostIp": self.host_ip, "dataPort": 60113,
+                    "receiver": {"source": self.source, "simulation": copy.deepcopy(self.simulation),
+                                 "unit": "m/s", "running": bool(self.thread and self.thread.is_alive()),
+                                 "deviceIp": self.device_ip, "hostIp": self.host_ip,
+                                 "dataPort": 60113 if self.source == "polytec_ivs500" else None,
                                  "sampleRate": self.writer.manifest["sampleRate"] if self.writer else None,
                                  "channels": ["CH1", "RSSI1"],
                                  "dllAvailable": bool(self.settings.dll_path and Path(self.settings.dll_path).is_file()),
-                                 "dataLossAssessment": "unverified"},
+                                 "dataLossAssessment": "not_applicable_simulation" if self.source == "simulation" else "unverified"},
                     "recording": copy.deepcopy(self.writer.manifest) if self.writer else None,
                     "deviceBusy": self.device_busy,
                     "deviceWarning": self.device_warning,
@@ -138,12 +158,41 @@ class AcquisitionController:
             status = self.status()
             rate = status["receiver"]["sampleRate"]
             size = min(250_000, max(1, math.ceil(rate * window_ms / 1000))) if rate and window_ms else DISPLAY_LIMIT
-            all_rows = list(self.rows)
-            rows = all_rows[-size:]
-            realtime_rows = all_rows[-4096:]
+            # Copy only the needed tail, never all 250k buffered samples for a
+            # 2048-point display. No numerical work is done under this lock.
+            tail = list(islice(reversed(self.rows), max(size, 4096)))
+            tail.reverse()
+            rows = tail[-size:]
+            realtime_rows = tail[-4096:]
             origin = self.writer.manifest.get("sampleOrigin") if self.writer else None
         wave = make_wave(rows, rate, origin)
-        return {**status, "waveform": wave, "realtime": self._realtime_result(realtime_rows, rate)}
+        wave.update(source=status["receiver"]["source"], simulation=status["receiver"]["simulation"])
+        return {**status, "waveform": wave, "realtime": self._cached_realtime(realtime_rows, rate, status)}
+
+    def _cached_realtime(self, rows, rate, status):
+        recording_id = status["recording"]["id"] if status["recording"] else None
+        key = (recording_id, rows[-1][0] if rows else None)
+        # All callers share one bounded calculation. Display can refresh faster
+        # while FFT/STFT stays at 4 Hz; its own sample range/time stays explicit.
+        with self.realtime_lock:
+            now = time.monotonic()
+            if self.realtime_cache is not None and self.realtime_cache_key[0] == recording_id:
+                if self.realtime_cache_key == key or (self.realtime_cache.get("available") and
+                        status["state"] == "acquiring" and now - self.realtime_cache_at < 0.25):
+                    return self.realtime_cache
+            result = self._realtime_result(rows, rate)
+            count = result.get("sampleCount", len(rows))
+            selected = rows[-count:] if count else []
+            result.update(source=status["receiver"]["source"], recordingId=recording_id, unit="m/s",
+                          computedAt=time.time(),
+                          sampleRange={"start": selected[0][0] if selected else 0,
+                                       "end": selected[-1][0] + 1 if selected else 0},
+                          quality={"overrangeSamples": sum(bool(r[3]) for r in selected),
+                                   "missingRssiSamples": sum(r[2] is None for r in selected),
+                                   "lowReturnSamples": sum(r[2] is not None and r[2] < 20 for r in selected),
+                                   "lowReturnThresholdPercent": 20})
+            self.realtime_cache, self.realtime_cache_key, self.realtime_cache_at = result, key, now
+            return result
 
     @staticmethod
     def _realtime_result(rows, rate):
@@ -162,8 +211,9 @@ class AcquisitionController:
         with self.lock:
             status = self.status()
             rate = status["receiver"]["sampleRate"]
-            rows = list(self.rows)[-4096:]
-        result = self._realtime_result(rows, rate)
+            rows = list(islice(reversed(self.rows), 4096))
+            rows.reverse()
+        result = self._cached_realtime(rows, rate, status)
         return {**status, "realtime": result}
 
     def configure_device(self, request: DeviceRequest):
@@ -203,27 +253,33 @@ class AcquisitionController:
     def start(self, request: StartRequest) -> dict:
         with self.operation_lock:
             with self.lock:
-                if self.device_warning:
+                if self.device_warning and request.source == "polytec_ivs500":
                     raise HTTPException(409, self.device_warning)
                 if self.thread and self.thread.is_alive():
                     raise HTTPException(409, "已有采集运行或正在收尾，请先停止。")
-                receiver = self.receiver_factory(ReceiverConfig(request.deviceIp, request.hostIp, self.settings.dll_path))
                 try:
+                    receiver = (SimulationReceiver(request.simulation) if request.source == "simulation" else
+                                self.receiver_factory(ReceiverConfig(request.deviceIp, request.hostIp, self.settings.dll_path)))
                     receiver.validate()
-                except (OSError, RuntimeError) as exc:
+                except (OSError, RuntimeError, ValueError) as exc:
                     self.state, self.error = "error", str(exc)
                     raise HTTPException(503, str(exc)) from exc
-                metadata = request.model_dump(exclude={"confirmLaser"})
+                metadata = request.model_dump(exclude={"confirmLaser", "simulation"})
+                simulation = receiver.provenance() if request.source == "simulation" else None
+                metadata["simulation"] = simulation
+                if simulation:
+                    metadata.update(deviceIp="", hostIp="", point=request.point or request.simulation.point)
                 try:
                     self.writer = self.store.create(metadata)
                 except OSError as exc:
                     self.state, self.error = "error", f"无法创建本地采集记录：{exc}"
                     raise HTTPException(507, self.error) from exc
-                self.device_ip, self.host_ip = request.deviceIp, request.hostIp
+                self.device_ip, self.host_ip = metadata["deviceIp"], metadata["hostIp"]
+                self.source, self.simulation = request.source, simulation
                 self.rows.clear()
                 self.stop_event.clear()
                 self.state, self.error = "starting", None
-                self.thread = threading.Thread(target=self._run, args=(receiver,), name="blade-polytec", daemon=True)
+                self.thread = threading.Thread(target=self._run, args=(receiver,), name=f"blade-{request.source}", daemon=True)
                 self.thread.start()
                 return self.status()
 
@@ -320,6 +376,10 @@ def create_app(settings: Settings, receiver_factory=PolytecReceiver) -> FastAPI:
     def status():
         return controller.status()
 
+    @app.get("/api/field/simulation")
+    def simulation():
+        return simulation_catalog()
+
     @app.get("/api/field/frame")
     def frame(window_ms: int | None = Query(default=None, ge=1, le=1000)):
         return controller.frame(window_ms)
@@ -377,6 +437,20 @@ def create_app(settings: Settings, receiver_factory=PolytecReceiver) -> FastAPI:
         except (OSError, ValueError) as exc:
             raise HTTPException(500, f"无法读取波形：{exc}") from exc
 
+    @app.get("/api/field/recordings/{recording_id}/export")
+    def recording_export(recording_id: str):
+        try:
+            from .csv_export import prepare_export, stream_csv
+            manifest, chunks = prepare_export(controller.store, recording_id)
+            return StreamingResponse(stream_csv(manifest, chunks), media_type="text/csv; charset=utf-8",
+                                     headers={"Content-Disposition": f'attachment; filename="{recording_id}.csv"'})
+        except (KeyError, FileNotFoundError) as exc:
+            raise HTTPException(404, "原始记录不存在。") from exc
+        except BlockingIOError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except (OSError, ValueError) as exc:
+            raise HTTPException(422, f"无法导出原始记录：{exc}") from exc
+
     @app.post("/api/field/recordings/{recording_id}/analysis")
     def recording_analysis(recording_id: str, parameters: dict):
         # Run in FastAPI's worker pool, outside the acquisition lock. Single job
@@ -433,7 +507,7 @@ def create_app(settings: Settings, receiver_factory=PolytecReceiver) -> FastAPI:
         await socket.accept(subprotocol="blade")
         try:
             while True:
-                await socket.send_json(controller.frame())
+                await socket.send_json(await asyncio.to_thread(controller.frame))
                 await asyncio.sleep(0.25)
         except (WebSocketDisconnect, RuntimeError):
             return

@@ -59,14 +59,14 @@ app.on('browser-window-created', (_event, win) => {
         const credential = fs.readFileSync(path.join(profile, 'blade-local-auth.json'), 'utf8');
         assert.ok(!credential.includes(initial) && !credential.includes(changed));
         await reload();
-        await waitFor(async () => (await body()).includes('开始真实采集'), 'field acquisition page');
+        await waitFor(async () => (await body()).includes('开始采集'), 'field acquisition page');
         assert.ok((await body()).includes('本机运行'));
       });
       await check('missing Windows service shows empty data and disabled start, never demo', async () => {
         await waitFor(async () => (await body()).includes('采集服务未安装'), 'missing service status');
         assert.equal((await field({ action: 'frame' })).data.service.state, 'missing');
         assert.ok((await body()).includes('等待真实振动数据'));
-        assert.equal(await js('[...document.querySelectorAll("button")].find(b=>b.textContent.includes("开始真实采集")).disabled'), true);
+        assert.equal(await js('[...document.querySelectorAll("button")].find(b=>b.textContent.includes("开始采集")).disabled'), true);
         assert.ok(!fs.existsSync(path.join(profile, 'blade-offline.json')));
       });
       fs.writeFileSync(path.join(output, '03-acquisition-missing.png'), (await wc.capturePage()).toPNG());

@@ -1,6 +1,7 @@
-// Hardware-free Windows x64 release gate. This script NEVER calls /start or an SDK function.
+// Hardware-free Windows x64 release gate. Only the isolated simulation gate calls
+// /start with source=simulation, and disables the SDK. No real device is accessed.
 // Node 22+: node scripts/test-windows-bundle.cjs --resources <win-unpacked/resources>
-//          --installer <BladeVMS-Setup-1.3.0-x64.exe> [--output <report-directory>]
+//          --installer <BladeVMS-Setup-VERSION-x64.exe> [--output <report-directory>]
 // The installer test changes only a disposable CI user's BladeVMS installation. Do not run
 // against a real user's existing installation. Outside CI, opt in with BLADE_ALLOW_INSTALL_SMOKE=1.
 'use strict';
@@ -18,7 +19,7 @@ const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const digest = value => createHash('sha256').update(value).digest('hex');
 const psQuote = value => `'${String(value).replaceAll("'", "''")}'`;
 const report = { startedAt: new Date().toISOString(), platform: process.platform, arch: process.arch,
-  hardwareTested: false, acquisitionStarted: false, cleanWindowsTested: false,
+  hardwareTested: false, physicalAcquisitionStarted: false, cleanWindowsTested: false,
   environmentCoverage: ['system Python unavailable through child PATH', 'existing runner Python preserved',
     'poisoned PYTHONHOME/PYTHONPATH and simulated activated Conda/venv'],
   limitations: ['CI has no IVS-500 hardware: sample correctness, network, packet loss and laser safety require a physical test.',
@@ -327,7 +328,7 @@ async function validateInstalledDesktop(directory, environment, temporary, outpu
     assert.equal(stored.mustChangePassword, false, 'Electron must use the disposable --user-data-dir profile');
     assert.equal(stored.hash, scryptSync(changed, stored.salt, 64).toString('hex'), 'Changed test password was not persisted');
     await reload();
-    await waitFor(async () => (await body()).includes('开始真实采集'), 'authenticated acquisition UI');
+    await waitFor(async () => (await body()).includes('开始采集'), 'authenticated acquisition UI');
     const status = await waitFor(async () => {
       const response = await field({ action: 'status' });
       return response.status === 200 && response.data.service.state === 'ready' && response.data;
@@ -339,11 +340,43 @@ async function validateInstalledDesktop(directory, environment, temporary, outpu
     const frame = await field({ action: 'frame' });
     assert.equal(frame.status, 200); assert.deepEqual(frame.data.waveform.values, []);
     assert.deepEqual((await field({ action: 'recordings' })).data.recordings, []);
+    await waitFor(async () => (await body()).includes('等待振动数据'), 'empty live waveform UI');
     const text = await body();
-    assert.ok(text.includes('等待真实振动数据'));
+    assert.ok(text.includes('等待振动数据'));
+    assert.ok(text.includes('等待 RSSI 数据'));
     assert.ok(!text.includes('离线演示工作区'));
-    await waitFor(async () => await cdp.evaluate('[...document.querySelectorAll("button")].find(b=>b.textContent.includes("开始真实采集"))?.disabled') === false,
-      'renderer polling updates the ready start control');
+    // The current form uses native required validation, rather than disabling
+    // its button for missing task/IP fields. Prove both validation states
+    // without submitting the form or invoking start against any device.
+    const captureForm = () => cdp.evaluate(`(() => {
+      const form = document.querySelector('.field-capture-setup form');
+      const inputs = [...form.querySelectorAll('input[required]')];
+      const button = form.querySelector('button[type="submit"]');
+      return { valid: form.checkValidity(), missingRequired: inputs.filter(input => input.validity.valueMissing).length,
+        requiredValues: inputs.map(input => input.value), startDisabled: button.disabled };
+    })()`);
+    const emptyForm = await captureForm();
+    assert.equal(emptyForm.valid, false, 'Empty acquisition configuration must not pass form validation');
+    assert.equal(emptyForm.missingRequired, 3, 'Task name, device IP and host IP must all be required');
+    assert.deepEqual(emptyForm.requiredValues, ['', '', '']);
+    for (const [selector, value] of [
+      ['input[aria-label="任务名称"]', 'TEST ONLY · ready control without acquisition'],
+      ['input[placeholder="设备 IPv4 地址"]', '192.0.2.10'],
+      ['input[placeholder="连接设备的网卡 IPv4 地址"]', '192.0.2.20'],
+    ]) {
+      await cdp.evaluate(`(() => {
+        const input = document.querySelector(${JSON.stringify(selector)});
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(value)});
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      })()`);
+      await waitFor(async () => await cdp.evaluate(`document.querySelector(${JSON.stringify(selector)}).value`) === value,
+        'test-only acquisition field is displayed');
+    }
+    await waitFor(async () => { const form = await captureForm(); return form.valid && !form.startDisabled; },
+      'valid test-only configuration enables the ready start control');
+    assertIdle((await field({ action: 'status' })).data);
+    assert.deepEqual((await field({ action: 'frame' })).data.waveform.values, []);
+    assert.deepEqual((await field({ action: 'recordings' })).data.recordings, []);
     const screenshot = await cdp.send('Page.captureScreenshot', { format: 'png' });
     fs.writeFileSync(path.join(output, 'installed-windows-acquisition-idle.png'), Buffer.from(screenshot.data, 'base64'));
     const viewports = [[1366, 768, 1], [1280, 720, 1], [1024, 600, 1], [853, 480, 1.5]];
@@ -351,7 +384,7 @@ async function validateInstalledDesktop(directory, environment, temporary, outpu
       await cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: scale, mobile: false });
       await pause(200);
       for (const screenName of ['数据采集', '设备与服务', '本机记录']) {
-        await cdp.evaluate(`[...document.querySelectorAll('.field-sidebar button')].find(b=>b.textContent.includes(${JSON.stringify(screenName)})).click()`);
+        await cdp.evaluate(`[...document.querySelectorAll('.field-sidebar button')].find(b=>b.textContent.trim() === ${JSON.stringify(screenName)}).click()`);
         await pause(300);
         const layout = await cdp.evaluate(`(() => {
           const main = document.querySelector('.field-content');
@@ -381,7 +414,8 @@ async function validateInstalledDesktop(directory, environment, temporary, outpu
     await waitFor(async () => (await executableProcesses(serviceExe)).length === 0, 'no acquisition service orphan after UI exit', 15000);
     safelyClosed = true;
     return { isolatedCredentials: true, login: true, requiredPasswordChange: true, passwordPersistence: true,
-      serviceReady: true, dllAvailable: true, startControlEnabled: true, displayedSamples: 0,
+      serviceReady: true, dllAvailable: true, emptyConfigurationBlockedByFormValidation: true,
+      startControlEnabledAfterValidConfiguration: true, displayedSamples: 0,
       hardwareTouched: false, safeAppClose: true, noServiceOrphan: true,
       responsiveViewports: viewports, responsiveScreens: 3 };
   } finally {
@@ -442,6 +476,17 @@ async function main() {
         validateService(path.join(installDirectory, 'resources'), poisoned, path.join(temporary, 'installed service')));
       await check('installed desktop login, change password, ready acquisition screen and safe exit', () =>
         validateInstalledDesktop(installDirectory, poisoned, temporary, options.output));
+      await check('installed frozen simulation, live cloud preview, complete raw upload and CSV export', async () => {
+        const output = path.join(options.output, 'installed-simulation');
+        const result = await execute(process.execPath, [path.join(root, 'scripts/test-windows-simulation.cjs'),
+          '--resources', path.join(installDirectory, 'resources'), '--output', output], { timeoutMs: 120000 });
+        assert.equal(result.code, 0, `Installed simulation gate failed: ${result.stdout} ${result.stderr}`);
+        const evidence = JSON.parse(fs.readFileSync(path.join(output, 'report.json'), 'utf8'));
+        assert.equal(evidence.passed, true); assert.equal(evidence.frozenWindowsTested, true);
+        assert.equal(evidence.hardwareTested, false); assert.equal(evidence.captures.length, 3);
+        return { frozenWindowsTested: true, cloudProtocolPeer: 'local in-memory test peer',
+          packagedCloudSyncSha256: evidence.packagedCloudSyncSha256, captures: evidence.captures };
+      });
       await check('install and app startup do not modify existing Python or environment settings', async () => {
         assert.deepEqual(await environmentSnapshot(), before);
         assert.deepEqual([fakePython, sitecustomize].map(file => digest(fs.readFileSync(file))), sentinelBefore);
@@ -474,7 +519,7 @@ async function main() {
     fs.writeFileSync(path.join(options.output, 'result.json'), JSON.stringify(report, null, 2) + '\n');
   }
   if (failed) throw failed;
-  console.log(`PASS ${report.checks.length} Windows bundle gates. No device, laser or acquisition was started.`);
+  console.log(`PASS ${report.checks.length} Windows bundle gates. Only simulated acquisition was started; no device or laser was accessed.`);
   console.log(`Report: ${path.join(options.output, 'result.json')}`);
 }
 

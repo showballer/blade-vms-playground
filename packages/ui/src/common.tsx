@@ -2,6 +2,8 @@
 import React, { useEffect, useRef, useState } from "react";
 import { X, LoaderCircle, Download, Search } from "lucide-react";
 import { api, download, isOffline, type Item } from "./api";
+import { CustomSelect } from "./custom-select";
+export { CustomSelect } from "./custom-select";
 export function Button({
   children,
   variant = "outline",
@@ -66,7 +68,7 @@ export function Select({
   return (
     <label className="inline-field">
       {label && <span>{label}</span>}
-      <select
+      <CustomSelect
         aria-label={label}
         disabled={disabled}
         value={current}
@@ -82,7 +84,7 @@ export function Select({
             </option>
           ),
         )}
-      </select>
+      </CustomSelect>
     </label>
   );
 }
@@ -219,7 +221,8 @@ export function EditDialog({
                 {f.required && <em> *</em>}
               </span>
               {f.type === "select" ? (
-                <select
+                <CustomSelect
+                  aria-label={f.label}
                   value={values[f.key] ?? ""}
                   onChange={(e) =>
                     setValues({ ...values, [f.key]: e.target.value })
@@ -239,7 +242,7 @@ export function EditDialog({
                       </option>
                     ),
                   )}
-                </select>
+                </CustomSelect>
               ) : f.type === "textarea" ? (
                 <textarea
                   required={f.required}
@@ -350,7 +353,7 @@ export function ExportButton({
   const [fmt, setFmt] = useState(formats[0]);
   return (
     <div className="joined">
-      <select
+      <CustomSelect
         aria-label="导出格式"
         value={fmt}
         onChange={(e) => setFmt(e.target.value)}
@@ -362,7 +365,7 @@ export function ExportButton({
               {f.toUpperCase()}
             </option>
           ))}
-      </select>
+      </CustomSelect>
       <Button
         onClick={async () => {
           try {

@@ -15,6 +15,9 @@ on:
       - 'scripts/test-field-window.cjs'
       - 'scripts/field-waveform-smoke.cjs'
       - 'scripts/test-local-auth.cjs'
+      - 'scripts/test-unified-auth.cjs'
+      - 'scripts/test-field-account-bridge.cjs'
+      - 'scripts/test-field-cloud-sync.cjs'
       - 'package.json'
       - 'package-lock.json'
       - 'WINDOWS_TEST_GUIDE.md'
@@ -35,6 +38,12 @@ jobs:
         shell: pwsh
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Read desktop release version
+        id: desktop
+        run: |
+          $version = (Get-Content apps/desktop/package.json -Raw | ConvertFrom-Json).version
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid desktop release version' }
+          "version=$version" >> $env:GITHUB_OUTPUT
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '22'
@@ -51,6 +60,10 @@ jobs:
         run: |
           npm run test:field
           if ($LASTEXITCODE -ne 0) { throw 'Field unit tests failed' }
+          npm run test:unified-auth
+          if ($LASTEXITCODE -ne 0) { throw 'Unified account tests failed' }
+          npm run test:field-cloud-sync
+          if ($LASTEXITCODE -ne 0) { throw 'Cloud sync queue tests failed' }
           npm run typecheck
           if ($LASTEXITCODE -ne 0) { throw 'Type checks failed' }
       - name: Build frozen Python service with supplied x64 SDK
@@ -61,24 +74,30 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: npm run package:windows
+      - name: Verify packaged simulation, realtime analysis and complete CSV export
+        run: |
+          node scripts/test-windows-simulation.cjs --resources apps/desktop/release/win-unpacked/resources
+          if ($LASTEXITCODE -ne 0) { throw 'Frozen simulation and export verification failed' }
       - name: Verify waveform and device configuration UI without hardware
         run: npm run test:field-waveform
       - name: Verify frozen runtime, install, login, coexistence and uninstall
-        run: node scripts/test-windows-bundle.cjs --resources apps/desktop/release/win-unpacked/resources --installer apps/desktop/release/BladeVMS-Setup-1.3.0-x64.exe
+        run: node scripts/test-windows-bundle.cjs --resources apps/desktop/release/win-unpacked/resources --installer apps/desktop/release/BladeVMS-Setup-${{ steps.desktop.outputs.version }}-x64.exe
       - name: Record package checksums
         run: |
           Get-ChildItem apps/desktop/release -File | Where-Object { $_.Extension -in '.exe', '.zip' } | ForEach-Object {
             "{0}  {1}" -f (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant(), $_.Name
           } | Set-Content -Encoding utf8NoBOM apps/desktop/release/SHA256SUMS.txt
           Copy-Item WINDOWS_TEST_GUIDE.md apps/desktop/release/
+          Copy-Item CLOUD_CAPTURE_FLOW.md apps/desktop/release/
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: BladeVMS-1.3.0-windows-x64-full
+          name: BladeVMS-${{ steps.desktop.outputs.version }}-windows-x64-full
           path: |
-            apps/desktop/release/BladeVMS-Setup-1.3.0-x64.exe
-            apps/desktop/release/BladeVMS-1.3.0-win.zip
+            apps/desktop/release/BladeVMS-Setup-${{ steps.desktop.outputs.version }}-x64.exe
+            apps/desktop/release/BladeVMS-${{ steps.desktop.outputs.version }}-win.zip
             apps/desktop/release/SHA256SUMS.txt
             apps/desktop/release/WINDOWS_TEST_GUIDE.md
+            apps/desktop/release/CLOUD_CAPTURE_FLOW.md
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
@@ -89,6 +108,7 @@ jobs:
           name: windows-verification-evidence
           path: |
             artifacts/windows-bundle-smoke/
+            artifacts/windows-simulation-smoke/report.json
             artifacts/field-waveform-smoke/
           if-no-files-found: warn
           retention-days: 30
