@@ -99,6 +99,12 @@ class PolytecReceiver:
         self.api.PolyLastCommunicationStatus(message, len(message))
         raise RuntimeError(f"{operation} failed ({code}): {message.value.decode(errors='replace')}")
 
+    @staticmethod
+    def _is_unsupported_destination_error(error: Exception) -> bool:
+        text = str(error)
+        return ("DAQ destination failed (5)" in text and
+                ("Wrong attribute" in text or "wrong device command" in text.lower()))
+
     def _read_channel(self, channel: int) -> list[int]:
         count = C.c_size_t()
         self._check(self.api.PolyExtractedSampleCount(self.acquisition.value, channel, 0, C.byref(count)), "ExtractedSampleCount")
@@ -120,10 +126,26 @@ class PolytecReceiver:
                 return
             self._check(self.api.PolyOpenUdpEthernetCommunication(C.byref(self.communication), self.config.device_ip.encode("ascii"), 6000), "Open UDP")
             communication_open = True
+            destination_warning = None
             destination = C.create_string_buffer(256)
-            self._check(self.api.PolySendGetString(self.communication.value, SIGNAL_PROCESSING, 0, DESTINATION_IP, destination, len(destination)), "Get DAQ destination")
-            if destination.value.decode(errors="replace") != self.config.host_ip:
-                self._check(self.api.PolySendSetString(self.communication.value, SIGNAL_PROCESSING, 0, DESTINATION_IP, self.config.host_ip.encode("ascii")), "Set DAQ destination")
+            try:
+                self._check(self.api.PolySendGetString(self.communication.value, SIGNAL_PROCESSING, 0, DESTINATION_IP, destination, len(destination)), "Get DAQ destination")
+                if destination.value.decode(errors="replace") != self.config.host_ip:
+                    self._check(self.api.PolySendSetString(self.communication.value, SIGNAL_PROCESSING, 0, DESTINATION_IP, self.config.host_ip.encode("ascii")), "Set DAQ destination")
+            except RuntimeError as exc:
+                if not self._is_unsupported_destination_error(exc):
+                    raise
+                # Some older firmware rejects GET/SET attribute 90 although the
+                # SDK exposes it. Do not prevent a compatibility capture: try a
+                # direct SET, then continue if the same unsupported-command error
+                # is returned. UDP reception remains the authoritative check.
+                destination_warning = str(exc)
+                try:
+                    self._check(self.api.PolySendSetString(self.communication.value, SIGNAL_PROCESSING, 0, DESTINATION_IP, self.config.host_ip.encode("ascii")), "Set DAQ destination")
+                except RuntimeError as set_error:
+                    if not self._is_unsupported_destination_error(set_error):
+                        raise
+                    destination_warning = f"{destination_warning}; {set_error}"
             self._check(self.api.PolyOpenDataAcquisition(C.byref(self.acquisition), self.communication.value, self.config.buffer_capacity), "Open acquisition")
             acquisition_open = True
             self._check(self.api.PolyStopDataAcquisition(self.acquisition.value), "Initial stop")
@@ -156,6 +178,11 @@ class PolytecReceiver:
             except (AttributeError, RuntimeError, ValueError) as exc:
                 self.device_settings = {"deviceIp": self.config.device_ip, "readAt": time.time(),
                                         "source": "unavailable", "fields": {}, "error": str(exc)}
+            if destination_warning:
+                self.device_settings = {**getattr(self, "device_settings", {}),
+                                        "daqDestination": {"requestedHostIp": self.config.host_ip,
+                                                            "status": "firmware_unsupported",
+                                                            "warning": destination_warning}}
             if stop.is_set():
                 return
             # Treat a timed-out laser command as uncertain, not success; cleanup still turns it off.

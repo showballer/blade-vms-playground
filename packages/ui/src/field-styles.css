@@ -437,3 +437,14 @@
 
 .field-cloud-sync-inline { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; padding: 9px 13px; border: 1px solid #e0e8f3; border-radius: 8px; background: #f8fafd; color: #647b96; font-size: 12px; margin-bottom: 14px; }
 .field-cloud-sync-inline strong { font-weight: 500; color: #3a659a; }
+.field-turntable-setup { border-top: 1px solid var(--border, #e4e8ef); margin-top: 14px; padding-top: 14px; }
+.field-turntable-setup .field-config-grid { margin-top: 12px; }
+.field-turntable-toggle { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.field-turntable-toggle input[type="checkbox"] { width: 16px; height: 16px; flex: none; }
+.field-turntable-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-block: 14px; }
+.field-turntable-check { padding: 14px; border: 1px solid #dce6f3; border-radius: 8px; background: #f8fafd; }
+.field-turntable-check h3 { font-size: 14px; margin: 0; }
+.field-turntable-check dd { overflow-wrap: anywhere; }
+.field-turntable-test { display: grid; gap: 12px; margin-block: 14px; }
+.field-turntable-test > label:not(.field-turntable-toggle) { display: flex; align-items: center; gap: 12px; font-size: 13px; }
+.field-turntable-test > .btn { justify-self: start; }

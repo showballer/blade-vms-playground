@@ -44,6 +44,8 @@ def stream_csv(manifest, chunks):
                 "sampleRate": manifest["sampleRate"], "samples": manifest["samples"], "unit": "m/s",
                 "point": manifest.get("point", ""), "position": simulation.get("position"),
                 "rpm": simulation.get("rpm"), "dataLossAssessment": manifest.get("dataLossAssessment", "unverified")}
+    if manifest.get("turntable"):
+        metadata["turntable"] = manifest["turntable"]
     yield "# BladeVMS " + json.dumps(metadata, ensure_ascii=False, allow_nan=False, separators=(",", ":")) + "\n"
     yield "time_s,velocity_m_s,RSSI_percent,overrange\n"
     expected = 0

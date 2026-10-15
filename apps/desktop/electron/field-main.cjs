@@ -28,6 +28,7 @@ function persistConfig(next) {
 async function idleRequired() {
   const status = await service.status();
   if (status.deviceBusy) throw failure('设备配置进行中，请等待完成并确认激光状态', 409);
+  if (status.turntableBusy) throw failure('转盘检查或试转进行中，请先停止并确认停稳', 409);
   if (status.receiver?.running || ['starting', 'acquiring', 'stopping'].includes(status.state)) throw failure('请先停止采集并确认保存，再修改服务设置或退出登录', 409);
   if (status.service.error && status.service.state === 'ready') throw failure('服务状态未知，请先停止采集或关闭软件检查数据，不能直接替换正在运行的服务', 409);
 }
@@ -76,6 +77,8 @@ async function dispatch(options) {
   auth.requireSession();
   switch (action) {
     case 'status': return service.status();
+    case 'turntable': return service.turntable(options.request);
+    case 'turntablePorts': return service.turntablePorts();
     case 'frame': return service.frame(options.windowMs);
     case 'syncStatus': return cloudSync.status();
     case 'setAutoSync': return cloudSync.setEnabled(options.enabled);
@@ -99,7 +102,7 @@ async function dispatch(options) {
       const detail = await service.recordings(options.id);
       if (detail.recording?.status !== 'complete') throw failure('请先停止并完整保存记录，再导出原始数据', 409);
       const name = String(detail.recording.name || options.id).replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').slice(0, 100);
-      const result = await dialog.showSaveDialog(win, { title: '导出完整原始波形，可导入 Web 旋转测振', defaultPath: `${name}.csv.gz`, filters: [{ name: '压缩 CSV 原始波形', extensions: ['csv.gz'] }, { name: 'CSV 原始波形', extensions: ['csv'] }] });
+      const result = await dialog.showSaveDialog(win, { title: '导出原始波形或转盘遥测', defaultPath: `${name}.csv.gz`, filters: [{ name: '压缩 CSV 原始波形', extensions: ['csv.gz'] }, { name: 'CSV 原始波形', extensions: ['csv'] }, { name: '转盘遥测 JSONL', extensions: ['jsonl'] }] });
       if (result.canceled || !result.filePath) return { canceled: true };
       return service.exportRecording(options.id, result.filePath);
     }

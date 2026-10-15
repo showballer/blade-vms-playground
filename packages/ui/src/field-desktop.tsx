@@ -12,7 +12,7 @@ import { FieldAnalysis } from "./field-analysis";
 import { FieldAcquisition } from "./field-acquisition";
 import { FieldAccountPanel, FieldCloudSyncPanel, FieldBindAccountDialog, fieldAccountServerDefault, fieldAccountTime, type FieldBindValues } from "./field-account";
 import {
-  fieldDate, fieldIsActive, validateFieldConfig,
+  fieldDate, fieldIsActive, fieldTurntableReady, validateFieldConfig,
   type FieldConfig, type FieldRecording, type FieldRecordingDetail,
   type FieldRequest, type FieldRequestOptions, type FieldSession, type FieldAccountInfo,
   type FieldStatus, type FieldDeviceSettings,
@@ -148,15 +148,16 @@ export function FieldServicePanel({ status, busy, onAction }: {
 export function FieldStartDialog({ config, busy, error, onClose, onStart }: {
   config: FieldConfig; busy: boolean; error: string; onClose: () => void; onStart: () => void;
 }) {
-  const [laser, setLaser] = useState(false), [target, setTarget] = useState(false), [capture, setCapture] = useState(false);
+  const [laser, setLaser] = useState(false), [target, setTarget] = useState(false), [capture, setCapture] = useState(false), [motion, setMotion] = useState(false);
   return <Dialog title="开始真实采集前确认" onClose={() => { if (!busy) onClose(); }}>
     <div className="field-confirm"><div className="field-confirm-body"><p className="field-notice warning"><AlertTriangle size={17} />此操作会向真实设备发送控制指令。请先确认现场激光安全、设备状态和网卡配置。</p>
       <dl className="field-details"><div><dt>任务</dt><dd>{config.name}</dd></div><div><dt>设备 IP</dt><dd>{config.deviceIp}</dd></div><div><dt>本机设备网卡 IP</dt><dd>{config.hostIp}</dd></div></dl>
       <label><input type="checkbox" checked={target} disabled={busy} onChange={(event) => setTarget(event.target.checked)} /><span>允许将设备 DAQ 数据目标 IP 修改为 <b>{config.hostIp}</b>，并确认这不是其他电脑正在使用的采集连接。</span></label>
       <label><input type="checkbox" checked={laser} disabled={busy} onChange={(event) => setLaser(event.target.checked)} /><span>已确认现场人员与光路安全，允许开启设备激光。本次采集独占激光控制；停止时会尝试关闭激光，异常时须在现场确认设备状态。</span></label>
       <label><input type="checkbox" checked={capture} disabled={busy} onChange={(event) => setCapture(event.target.checked)} /><span>允许开始采集 CH1 振动速度及 RSSI，并将原始数据保存到本机。</span></label>
+      {config.turntable && <label><input type="checkbox" checked={motion} disabled={busy} onChange={event => setMotion(event.target.checked)} /><span>允许 {config.turntable.port} 轴 {config.turntable.axis} 按输出轴 {config.turntable.speedRpm} rpm {config.turntable.direction === "forward" ? "正向" : "反向"}连续转动。已确认机械连续转动条件、限位与外部 SON；停止并保存将先停止转盘。{config.turntable.durationSeconds > 0 ? `约 ${config.turntable.durationSeconds} 秒后自动停止联合任务。` : "本任务需人工停止。"}</span></label>}
       {error && <p className="field-error" role="alert">{error}</p>}</div>
-      <div className="field-form-actions"><Button disabled={busy} onClick={onClose}>取消</Button><Button variant="primary" disabled={busy || !target || !laser || !capture} onClick={onStart}>{busy ? <LoaderCircle size={15} className="spin" /> : <Play size={15} />}确认并开始采集</Button></div>
+      <div className="field-form-actions"><Button disabled={busy} onClick={onClose}>取消</Button><Button variant="primary" disabled={busy || !target || !laser || !capture || !!config.turntable && !motion} onClick={onStart}>{busy ? <LoaderCircle size={15} className="spin" /> : <Play size={15} />}确认并开始采集</Button></div>
     </div>
   </Dialog>;
 }
@@ -227,7 +228,7 @@ export function FieldDesktopApp() {
     void Promise.allSettled([accountRequest, sessionRequest]).then(() => { if (!canceled) setLoading(false); });
     try {
       const saved = JSON.parse(localStorage.getItem("blade-field-config-v1") || "null");
-      if (saved && typeof saved === "object") setConfig(Object.fromEntries(Object.keys(blankConfig).map((key) => [key, typeof saved[key] === "string" ? saved[key] : ""])) as FieldConfig);
+      if (saved && typeof saved === "object") setConfig({ ...blankConfig, ...Object.fromEntries(Object.keys(blankConfig).map((key) => [key, typeof saved[key] === "string" ? saved[key] : ""])) });
     } catch { /* A corrupt optional form draft never prevents local login. */ }
     return () => { canceled = true; mounted.current = false; };
   }, [acceptSession]);
@@ -315,12 +316,12 @@ export function FieldDesktopApp() {
     });
   }
   const active = fieldIsActive(status);
-  const accountLocked = active || Boolean(status?.deviceBusy);
+  const accountLocked = active || Boolean(status?.deviceBusy || status?.turntableBusy);
   const unifiedAccount = account?.mode === "unified";
   function openPassword() { if (!busy && !accountLocked) { setError(""); setChangingPassword(true); } }
   async function startSimulation(simulation: FieldSimulation) {
     await operate("start", async () => {
-      const normalized = Object.fromEntries(Object.entries(config).map(([key, value]) => [key, value.trim()])) as FieldConfig;
+      const normalized = Object.fromEntries(Object.entries(config).filter(([key]) => key !== "turntable").map(([key, value]) => [key, typeof value === "string" ? value.trim() : value])) as FieldConfig;
       if (!normalized.name) throw new Error("请填写采集任务名称");
       await fieldCall({ action: "start", config: { ...normalized, source: "simulation", simulation } });
       try { localStorage.setItem("blade-field-config-v1", JSON.stringify(normalized)); } catch { /* Optional draft. */ }
@@ -359,10 +360,12 @@ export function FieldDesktopApp() {
       </div><footer className="field-statusbar"><span><span className={`field-status-dot ${status?.service.state === "ready" ? "green" : ""}`} />{status ? serviceLabels[status.service.state] : "正在读取本机状态"}</span><span>原始数据保存在本机</span></footer>
     </>}
     {bindingAccount && session && !session.mustChangePassword && account?.mode === "local" && <FieldBindAccountDialog busy={Boolean(busy)} active={accountLocked} error={error} initialServerUrl={fieldAccountServerDefault(typeof window === "undefined" ? undefined : window.location)} onClose={() => { setBindingAccount(false); setError(""); }} onBind={bindAccount} />}
+    {status?.turntableBusy && !active && status.turntable?.port && status.turntable.axis && <div className="field-live-controls" aria-label="独立试转控制"><p><strong>转盘检查 / 试转进行中 · {status.turntable.port} 轴 {status.turntable.axis}</strong></p><Button type="button" variant="danger" disabled={!!busy || status.turntable.state === "test_stopping"} onClick={() => void operate("turntableStop", async () => { await fieldCall({ action: "turntable", request: { action: "stop", port: status.turntable!.port!, axis: status.turntable!.axis as 1 | 2, confirmMotion: true } }); setStatus(await fieldCall<FieldStatus>({ action: "status" })); })}>停止独立试转</Button></div>}
     {confirmStart && <FieldStartDialog config={config} busy={Boolean(busy)} error={error} onClose={() => { setConfirmStart(false); setError(""); }} onStart={() => void operate("start", async () => {
-      const normalized = Object.fromEntries(Object.entries(config).map(([key, value]) => [key, value.trim()])) as FieldConfig;
+      const normalized = Object.fromEntries(Object.entries(config).map(([key, value]) => [key, typeof value === "string" ? value.trim() : value])) as FieldConfig;
       const invalid = validateFieldConfig(normalized); if (invalid) throw new Error(invalid);
-      await fieldCall({ action: "start", config: { ...normalized, confirmLaser: true } });
+      if (!fieldTurntableReady(status, normalized.turntable)) throw new Error("请先完成当前参数的转盘试转并确认设置。");
+      await fieldCall({ action: "start", config: { ...normalized, confirmLaser: true, ...(normalized.turntable ? { confirmMotion: true } : {}) } });
       try { localStorage.setItem("blade-field-config-v1", JSON.stringify(normalized)); } catch { /* Saving a draft is optional; raw acquisition storage is managed by Python. */ }
       setConfig(normalized); setConfirmStart(false); setStatus(await fieldCall<FieldStatus>({ action: "status" }));
       setNotice("已向设备发送采集请求，请核对真实接收值与保存状态。");

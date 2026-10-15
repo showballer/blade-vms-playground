@@ -403,6 +403,22 @@ class FakeSdk:
         self.closed.append("communication")
 
 
+class LegacyDestinationSdk(FakeSdk):
+    """Older firmware rejects attribute 90 but still permits DAQ startup."""
+    def PolySendGetString(self, *arguments):
+        if arguments[3] == 90:
+            return 5
+        return super().PolySendGetString(*arguments)
+
+    def PolySendSetString(self, *arguments):
+        if arguments[3] == 90:
+            return 5
+        return 0
+
+    def PolyLastCommunicationStatus(self, buffer, *_):
+        buffer.value = b"Firmware error: Wrong attribute: The device firmware received a wrong device command. (Device command: 90)"
+
+
 class ReceiverTests(unittest.TestCase):
     def test_sdk_conversion_timing_and_laser_cleanup(self):
         receiver = PolytecReceiver(ReceiverConfig(START["deviceIp"], START["hostIp"], "fixture-only"))
@@ -442,6 +458,18 @@ class ReceiverTests(unittest.TestCase):
         with patch.object(receiver, "_load_api", return_value=sdk):
             with self.assertRaisesRegex(RuntimeError, "disk full"):
                 receiver.run(threading.Event(), lambda *_: None, fail_disk)
+        self.assertEqual(sdk.laser_commands, [1, 0])
+
+    def test_legacy_firmware_destination_attribute_is_warning(self):
+        receiver = PolytecReceiver(ReceiverConfig(START["deviceIp"], START["hostIp"], "fixture-only"))
+        sdk = LegacyDestinationSdk()
+        with patch.object(receiver, "_load_api", return_value=sdk):
+            def ready(*_):
+                stop.set()
+            stop = threading.Event()
+            receiver.run(stop, ready, lambda *_: self.fail("legacy compatibility test should stop before samples"))
+        self.assertEqual(receiver.device_settings["daqDestination"]["status"], "firmware_unsupported")
+        self.assertIn("Device command: 90", receiver.device_settings["daqDestination"]["warning"])
         self.assertEqual(sdk.laser_commands, [1, 0])
 
 

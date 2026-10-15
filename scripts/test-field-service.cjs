@@ -362,6 +362,37 @@ test("recording export streams original CSV into gzip or CSV without buffering v
   assert.match(request.options.headers.Authorization, /^Bearer [a-f0-9]{64}$/);
 });
 
+test("turntable telemetry export accepts JSONL and uses the dedicated route", async (t) => {
+  const f = fixture(t, { fetch: ({ route }) => route.endsWith("/turntable-export")
+    ? { ok: true, status: 200, body: ReadableStream.from([new TextEncoder().encode('{"event":"finished"}\\n')]) }
+    : response(idle()) });
+  const file = path.join(f.directory, "turntable.jsonl");
+  assert.deepEqual(await f.service.exportRecording("a".repeat(32), file), { saved: true, fileName: "turntable.jsonl" });
+  assert.equal(fs.readFileSync(file, "utf8"), '{"event":"finished"}\\n');
+  assert.equal(f.requests.at(-1).route, `recordings/${"a".repeat(32)}/turntable-export`);
+});
+
+test("turntable standalone test validates consent, limits and protocol before any device call", async t => {
+  const f = fixture(t);
+  const config = { port: 'COM6', axis: 2, speedRpm: 0.2, direction: 'reverse', durationSeconds: 0, protocol: 'continuous' };
+  for (const changes of [{ confirmMotion: undefined }, { speedRpm: NaN }, { speedRpm: 0 }, { testSeconds: 100 }, { protocol: 'guess' }]) {
+    await assert.rejects(f.service.turntable({ ...config, action: 'test', confirmMotion: true, ...changes }), { status: 400 });
+  }
+  assert.equal(f.requests.length, 0);
+  await f.service.turntable({ ...config, action: 'test', confirmMotion: true, testSeconds: 3 });
+  const call = f.requests.find(item => item.route === 'turntable');
+  assert.deepEqual(JSON.parse(call.options.body), { ...config, action: 'test', testSeconds: 3, confirmMotion: true, confirmRecovery: false });
+  assert.equal(f.requests.some(item => ['start', 'device'].includes(item.route)), false);
+});
+
+test("busy turntable allows a stop request but blocks probes and setting confirmation", async t => {
+  const f = fixture(t, { fetch: ({ route }) => response(route === 'turntable' ? idle() : { ...idle(), turntableBusy: true }) });
+  const config = { port: 'COM6', axis: 1, speedRpm: 0.2, direction: 'forward', durationSeconds: 0, confirmMotion: true };
+  for (const action of ['probe', 'test', 'prepare']) await assert.rejects(f.service.turntable({ ...config, action }), { status: 409 });
+  await f.service.turntable({ port: 'COM6', axis: 1, action: 'stop', confirmMotion: true });
+  assert.equal(f.requests.filter(item => item.route === 'turntable').length, 1);
+});
+
 test("failed recording export preserves an existing file and leaves no temporary file", async (t) => {
   const f = fixture(t, { fetch: ({ route }) => route.endsWith("/export")
     ? new Response(JSON.stringify({ detail: "原始记录尚未完整保存" }), { status: 409 }) : response(idle()) });

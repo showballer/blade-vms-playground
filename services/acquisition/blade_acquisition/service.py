@@ -24,6 +24,12 @@ from .storage import DISPLAY_LIMIT, RecordingStore, empty_waveform
 from .waveform import WaveformReader, make_wave
 from .device import DevicePanel, WRITABLE
 from .simulation import SimulationConfig, SimulationReceiver, simulation_catalog
+from .turntable import (TurntableConfig, TurntableRequest, MotionGuard, TelemetryWriter,
+                        DEFAULT_MOTOR_FACTORY, snapshot as motor_snapshot, require_ready,
+                        start_motor, renew_motor, test_key)
+
+MOTOR_STARTUP_SECONDS = 10.0
+DAQ_READY_SECONDS = 30.0
 
 
 @dataclass(frozen=True)
@@ -57,6 +63,8 @@ class StartRequest(BaseModel):
     turbine: str = Field(default="", max_length=120)
     point: str = Field(default="", max_length=120)
     confirmLaser: StrictBool = False
+    turntable: TurntableConfig | None = None
+    confirmMotion: StrictBool = False
 
     @field_validator("deviceIp", "hostIp")
     @classmethod
@@ -70,6 +78,8 @@ class StartRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_source(self):
+        if self.turntable is not None and (self.source != "polytec_ivs500" or self.confirmMotion is not True):
+            raise ValueError("联合转盘任务只支持真实采集，且必须明确确认转盘运动")
         if self.source == "polytec_ivs500":
             if not self.deviceIp or not self.hostIp or self.confirmLaser is not True:
                 raise ValueError("真实设备采集必须提供有效设备/本机 IPv4 地址，并确认激光安全及允许修改设备 DAQ 目标。")
@@ -112,7 +122,7 @@ class DeviceRequest(BaseModel):
 
 
 class AcquisitionController:
-    def __init__(self, settings: Settings, receiver_factory=PolytecReceiver):
+    def __init__(self, settings: Settings, receiver_factory=PolytecReceiver, motor_factory=DEFAULT_MOTOR_FACTORY):
         self.settings = settings
         self.store = RecordingStore(settings.data_dir / "recordings")
         self.wave_reader = WaveformReader(self.store)
@@ -135,12 +145,23 @@ class AcquisitionController:
         self.realtime_cache = None
         self.realtime_cache_key = None
         self.realtime_cache_at = 0.0
+        self.motor_factory = motor_factory
+        self.motion_guard = MotionGuard(settings.data_dir)
+        self.turntable_busy = False
+        self.turntable_snapshot = {"state": "disconnected", "feedback": None}
+        self.capture_thread = None
+        self.capture_stop = None
+        self.turntable_test = None
+        self.turntable_preparation = None
+        self.test_thread = None
+        self.test_stop = threading.Event()
 
     def status(self) -> dict:
         with self.lock:
             return {"state": self.state, "error": self.error,
                     "receiver": {"source": self.source, "simulation": copy.deepcopy(self.simulation),
-                                 "unit": "m/s", "running": bool(self.thread and self.thread.is_alive()),
+                                 "unit": "m/s", "running": bool((self.thread and self.thread.is_alive()) or
+                                                                (self.capture_thread and self.capture_thread.is_alive())),
                                  "deviceIp": self.device_ip, "hostIp": self.host_ip,
                                  "dataPort": 60113 if self.source == "polytec_ivs500" else None,
                                  "sampleRate": self.writer.manifest["sampleRate"] if self.writer else None,
@@ -151,7 +172,193 @@ class AcquisitionController:
                     "deviceBusy": self.device_busy,
                     "deviceWarning": self.device_warning,
                     "deviceSettings": copy.deepcopy(self.device_snapshot),
+                    "turntable": copy.deepcopy(self.turntable_snapshot),
+                    "turntableBusy": self.turntable_busy,
+                    "turntableWarning": self.motion_guard.warning,
+                    "turntableTest": copy.deepcopy(self.turntable_test),
+                    "turntablePreparation": copy.deepcopy(self.turntable_preparation),
                     "indexWarning": self.store.index_error}
+
+    def turntable_operation(self, request: TurntableRequest):
+        if request.action in ("stop", "test", "prepare") and not request.confirmMotion:
+            raise HTTPException(422, "请明确确认试转/停止，或确认已观察到实际转动并完成设置")
+        with self.lock:
+            testing = self.test_thread and self.test_thread.is_alive()
+            if testing and request.action == "stop":
+                if (request.port, request.axis) != (self.turntable_snapshot.get("port"), self.turntable_snapshot.get("axis")):
+                    raise HTTPException(409, "请停止当前试转的同一端口和轴")
+                self.test_stop.set()
+        if testing and request.action == "stop":
+            return self._stop_turntable_test()
+        if not self.operation_lock.acquire(blocking=False):
+            raise HTTPException(409, "设备操作进行中，请等待完成")
+        motor, handed_off = None, False
+        try:
+            with self.lock:
+                if self.status()["receiver"]["running"]:
+                    raise HTTPException(409, "联合采集期间由任务独占转盘；请使用停止并保存")
+                self.turntable_busy = True
+                self.turntable_preparation = None
+            if request.action == "test":
+                if self.motion_guard.warning:
+                    raise RuntimeError(self.motion_guard.warning)
+                with self.lock:
+                    self.turntable_test = None
+                    self.test_stop = threading.Event()
+                    self.turntable_snapshot = {"state": "testing", "port": request.port, "axis": request.axis,
+                                               "feedback": None, "config": request.config().model_dump()}
+                    self.test_thread = threading.Thread(target=self._run_turntable_test, args=(request,),
+                                                        name="blade-turntable-test", daemon=True)
+                    self.test_thread.start()
+                    handed_off = True
+                return self.status()
+            if request.action == "prepare":
+                result = self.turntable_test
+                if self.motion_guard.warning or not result or not result.get("passed") or result.get("config") != test_key(request.config()):
+                    raise RuntimeError("请先使用当前串口、轴、接口、转速和方向完成试转及停稳检查")
+            motor = self.motor_factory(request.port, timeout=2.0, gear_ratio=50.0)
+            motor.connect()
+            if request.action == "stop":
+                if self.motion_guard.warning and self.motion_guard.identity and self.motion_guard.identity != (request.port, request.axis):
+                    raise RuntimeError("请选择上次未确认停止的同一端口和轴进行恢复")
+                self.motion_guard.mark(request, True, "转盘停止尚未确认")
+                motor.stop(request.axis)
+            feedback = motor_snapshot(motor, request.axis)
+            if request.action == "prepare":
+                require_ready(feedback)
+                with self.lock:
+                    self.turntable_preparation = {"config": request.config().model_dump(), "checkedAt": time.time(),
+                                                  "ready": True}
+            if request.confirmRecovery or request.action == "stop":
+                require_ready(feedback)
+                identity = self.motion_guard.identity
+                if self.motion_guard.warning and identity and identity != (request.port, request.axis):
+                    raise RuntimeError("请选择上次未确认停止的同一端口和轴进行恢复")
+                self.motion_guard.mark(request, False)
+            with self.lock:
+                self.turntable_snapshot = {"state": "prepared" if request.action == "prepare" else "checked", "port": request.port,
+                                           "axis": request.axis, "feedback": feedback,
+                                           "connected": False, "error": None}
+            return self.status()
+        except HTTPException:
+            raise
+        except Exception as exc:
+            with self.lock:
+                self.turntable_test = None
+                self.turntable_snapshot = {"state": "error", "port": request.port, "axis": request.axis,
+                                           "feedback": None, "error": str(exc)}
+            raise HTTPException(503, f"转盘检查/停止失败：{exc}") from exc
+        finally:
+            try:
+                if motor is not None:
+                    motor.close(stop=False)
+            finally:
+                if not handed_off:
+                    with self.lock:
+                        self.turntable_busy = False
+                    self.operation_lock.release()
+
+    def _stop_turntable_test(self):
+        with self.lock:
+            thread = self.test_thread
+            self.test_stop.set()
+        if thread:
+            thread.join(60)
+            if thread.is_alive():
+                raise HTTPException(503, "试转停止尚未确认，请现场核查转盘状态")
+        if self.motion_guard.warning:
+            raise HTTPException(503, self.motion_guard.warning)
+        return self.status()
+
+    def _run_turntable_test(self, request):
+        """Serial owner for a bounded, cancellable test; never opens DAQ or laser."""
+        config = request.config()
+        motor, attempted, passed, cancelled = None, False, False, False
+        errors = []
+        first_position = delta = 0
+        effective = None
+        matched_at = None
+
+        def update(state, feedback=None, **extra):
+            with self.lock:
+                self.turntable_snapshot.update(state=state, **extra)
+                if feedback is not None:
+                    self.turntable_snapshot["feedback"] = feedback
+
+        try:
+            motor = self.motor_factory(config.port, timeout=2.0, gear_ratio=50.0)
+            motor.connect()
+            feedback = motor_snapshot(motor, config.axis)
+            update("checked", feedback, connected=True)
+            require_ready(feedback)
+            first_position = feedback["positionRaw"]
+            if self.test_stop.is_set():
+                cancelled = True
+                return
+            self.motion_guard.mark(config, True, "试转停止尚未确认")
+            attempted = True
+            effective = start_motor(motor, config, self.test_stop)
+            if effective is None:
+                cancelled = True
+                return
+            started = time.monotonic()
+            update("testing", effectiveRpm=effective)
+            deviations = 0
+            while not self.test_stop.is_set():
+                renew_motor(motor, config)
+                feedback = motor_snapshot(motor, config.axis)
+                delta = feedback["positionRaw"] - first_position
+                update("testing", feedback, positionDelta=delta)
+                if feedback["alarmCode"] or feedback["limitFlags"] not in (None, 0):
+                    raise RuntimeError("试转检测到报警或已反馈的限位异常")
+                matched = abs(feedback["outputRpm"] - effective) <= max(0.01, abs(effective) * 0.1)
+                now = time.monotonic()
+                if matched and delta != 0 and matched_at is None:
+                    matched_at = now
+                if matched_at is None and now - started >= MOTOR_STARTUP_SECONDS:
+                    raise RuntimeError("命令已接收，但 10 秒内未同时检测到目标转速和位置变化；请检查控制轴、SON、驱动器模式和固件接口")
+                if matched_at is not None:
+                    deviations = 0 if matched else deviations + 1
+                    if deviations >= 3:
+                        raise RuntimeError("试转连续三次反馈偏离设定转速")
+                    if now - matched_at >= request.testSeconds:
+                        passed = True
+                        break
+                self.test_stop.wait(0.2)
+            cancelled = self.test_stop.is_set()
+        except Exception as exc:
+            errors.append(str(exc))
+        finally:
+            if attempted:
+                update("test_stopping")
+                try:
+                    motor.stop(config.axis)
+                    feedback = motor_snapshot(motor, config.axis)
+                    if feedback["motorRpm"] != 0:
+                        raise RuntimeError("停止后反馈仍非零速")
+                    self.motion_guard.mark(config, False)
+                    update("stopped", feedback, stopConfirmed=True, connected=False)
+                except Exception as exc:
+                    errors.append(f"试转停止未确认：{exc}")
+                    self.motion_guard.warning = errors[-1] + "；请现场核查后读取并确认恢复"
+                    update("unknown", stopConfirmed=False)
+            if motor:
+                try:
+                    motor.close(stop=False)
+                except Exception as exc:
+                    errors.append(f"关闭试转串口失败：{exc}")
+            with self.lock:
+                self.turntable_test = {"passed": passed and not cancelled and not errors,
+                                       "cancelled": cancelled, "config": test_key(config),
+                                       "effectiveRpm": effective, "positionDelta": delta,
+                                       "testedAt": time.time(), "error": "; ".join(errors) or None}
+                self.turntable_snapshot.update(connected=False, error="; ".join(errors) or None)
+                if errors and self.turntable_snapshot["state"] != "unknown":
+                    self.turntable_snapshot["state"] = "error"
+                elif not attempted and not errors:
+                    self.turntable_snapshot["state"] = "checked"
+                self.turntable_busy = False
+            self.operation_lock.release()
 
     def frame(self, window_ms=None) -> dict:
         with self.lock:
@@ -225,7 +432,7 @@ class AcquisitionController:
             raise HTTPException(409, "设备操作进行中，请等待完成。")
         try:
             with self.lock:
-                if self.thread and self.thread.is_alive():
+                if self.status()["receiver"]["running"]:
                     raise HTTPException(409, "采集期间不可读取控制配置或修改设备，请先停止并保存。")
                 self.device_busy = True
                 # A failed/uncertain write must not leave old values marked as verified.
@@ -251,11 +458,20 @@ class AcquisitionController:
             self.operation_lock.release()
 
     def start(self, request: StartRequest) -> dict:
+        with self.lock:
+            if self.turntable_busy:
+                raise HTTPException(409, "转盘检查/试转仍在进行，请先确认停稳并完成设置")
         with self.operation_lock:
             with self.lock:
                 if self.device_warning and request.source == "polytec_ivs500":
                     raise HTTPException(409, self.device_warning)
-                if self.thread and self.thread.is_alive():
+                if request.turntable and self.motion_guard.warning:
+                    raise HTTPException(409, self.motion_guard.warning)
+                if request.turntable:
+                    preparation = self.turntable_preparation
+                    if not preparation or not preparation.get("ready") or preparation["config"] != request.turntable.model_dump():
+                        raise HTTPException(409, "请先完成当前参数的转盘试转、停稳检查和设置确认")
+                if self.status()["receiver"]["running"]:
                     raise HTTPException(409, "已有采集运行或正在收尾，请先停止。")
                 try:
                     receiver = (SimulationReceiver(request.simulation) if request.source == "simulation" else
@@ -264,7 +480,10 @@ class AcquisitionController:
                 except (OSError, RuntimeError, ValueError) as exc:
                     self.state, self.error = "error", str(exc)
                     raise HTTPException(503, str(exc)) from exc
-                metadata = request.model_dump(exclude={"confirmLaser", "simulation"})
+                metadata = request.model_dump(exclude={"confirmLaser", "confirmMotion", "simulation", "turntable"})
+                if request.turntable:
+                    metadata["turntable"] = {"config": request.turntable.model_dump(), "state": "checking",
+                                             "synchronization": "host_observation_only"}
                 simulation = receiver.provenance() if request.source == "simulation" else None
                 metadata["simulation"] = simulation
                 if simulation:
@@ -279,7 +498,9 @@ class AcquisitionController:
                 self.rows.clear()
                 self.stop_event.clear()
                 self.state, self.error = "starting", None
-                self.thread = threading.Thread(target=self._run, args=(receiver,), name=f"blade-{request.source}", daemon=True)
+                self.turntable_preparation = None
+                self.turntable_snapshot = {"state": "checking" if request.turntable else "disconnected", "feedback": None}
+                self.thread = threading.Thread(target=self._run, args=(receiver, request.turntable), name=f"blade-{request.source}", daemon=True)
                 self.thread.start()
                 return self.status()
 
@@ -301,10 +522,156 @@ class AcquisitionController:
                               batch.rssi[index] if index < len(batch.rssi) else None,
                               batch.overrange[index]) for index in range(offset, len(batch.values)))
 
-    def _run(self, receiver) -> None:
+    def _run_joint(self, receiver, config):
+        """Own the motor on this coordinator thread; DAQ never waits on serial I/O."""
+        ready, capture_done, capture_stop = threading.Event(), threading.Event(), threading.Event()
+        capture_errors = []
+        motor, telemetry, capture = None, None, None
+        attempted = False
+        failures = []
+
+        def event(kind, **data):
+            with self.lock:
+                samples = self.writer.manifest["samples"]
+            telemetry.write(kind, {"receivedSamples": samples, **data})
+
+        def update(state, feedback=None, **extra):
+            with self.lock:
+                previous = self.turntable_snapshot
+                self.turntable_snapshot = {**previous, "state": state, "port": config.port,
+                                           "axis": config.axis, **extra}
+                if feedback is not None:
+                    self.turntable_snapshot["feedback"] = feedback
+                self.writer.manifest["turntable"].update(self.turntable_snapshot)
+
+        def receive_loop():
+            try:
+                def on_ready(rate, origin):
+                    self._ready(rate, origin, receiver)
+                    ready.set()
+                receiver.run(capture_stop, on_ready, self._receive)
+            except Exception as exc:
+                capture_errors.append(str(exc))
+            finally:
+                capture_done.set()
+
+        try:
+            telemetry = TelemetryWriter(self.writer.directory)
+            event("configured", config=config.model_dump())
+            motor = self.motor_factory(config.port, timeout=2.0, gear_ratio=50.0)
+            motor.connect()
+            feedback = motor_snapshot(motor, config.axis)
+            update("checked", feedback, connected=True)
+            event("preflight", feedback=feedback)
+            require_ready(feedback)
+            if self.stop_event.is_set():
+                return
+            capture = threading.Thread(target=receive_loop, name="blade-joint-receiver", daemon=True)
+            self.capture_thread, self.capture_stop = capture, capture_stop
+            capture.start()
+            deadline = time.monotonic() + DAQ_READY_SECONDS
+            while not ready.wait(0.05):
+                if self.stop_event.is_set():
+                    return
+                if capture_done.is_set():
+                    raise RuntimeError("; ".join(capture_errors) or "采集未就绪即退出")
+                if time.monotonic() > deadline:
+                    raise RuntimeError("采集未在 30 秒内就绪，未启动转盘")
+            if self.stop_event.is_set():
+                return
+            if capture_done.is_set():
+                raise RuntimeError("; ".join(capture_errors) or "采集已退出，未启动转盘")
+            # Persist before any motion. A crash/timeout cannot erase uncertainty.
+            self.motion_guard.mark(config, True)
+            attempted = True
+            update("starting")
+            effective = start_motor(motor, config, self.stop_event)
+            if effective is None:
+                return
+            started = time.monotonic()
+            update("awaiting_feedback", effectiveRpm=effective, commandAcceptedAt=time.time())
+            event("accepted", effectiveRpm=effective)
+            seen_running, deviations = False, 0
+            while not self.stop_event.is_set():
+                if capture_done.is_set():
+                    raise RuntimeError("; ".join(capture_errors) or "采集意外退出")
+                renew_motor(motor, config)
+                feedback = motor_snapshot(motor, config.axis)
+                if feedback["alarmCode"] or feedback["limitFlags"] not in (None, 0):
+                    event("status", feedback=feedback)
+                    update("error", feedback)
+                    raise RuntimeError("转盘报警或限位触发/旁路")
+                matched = abs(feedback["outputRpm"] - effective) <= max(0.01, abs(effective) * 0.1)
+                seen_running = seen_running or matched
+                update("running" if matched else "awaiting_feedback", feedback)
+                event("status", feedback=feedback)
+                age = time.monotonic() - started
+                if age > MOTOR_STARTUP_SECONDS and not seen_running:
+                    raise RuntimeError("转盘启动 10 秒后仍未达到设定速度，请检查 SON 和驱动器")
+                if seen_running:
+                    deviations = 0 if matched else deviations + 1
+                    if deviations >= 3:
+                        raise RuntimeError("转盘连续三次反馈偏离运行速度，联合任务已停止")
+                if config.durationSeconds and age >= config.durationSeconds:
+                    if not seen_running:
+                        raise RuntimeError("自动停止时间已到，但转盘尚未达到目标转速；请先独立试转并检查 SON 和驱动器")
+                    event("duration_elapsed")
+                    break
+                self.stop_event.wait(0.5)
+        except Exception as exc:
+            failures.append(str(exc))
+        finally:
+            if attempted:
+                update("stopping")
+                with self.lock:
+                    self.state = "stopping"
+                try:
+                    # The receiver stays alive through normal motor deceleration.
+                    motor.stop(config.axis)
+                    feedback = motor_snapshot(motor, config.axis)
+                    if feedback["motorRpm"] != 0:
+                        raise RuntimeError("停止后读回仍非零速")
+                    self.motion_guard.mark(config, False)
+                    update("stopped", feedback, stoppedAt=time.time(), stopConfirmed=True)
+                    event("stopped", feedback=feedback)
+                except Exception as exc:
+                    failures.append(f"转盘停止未确认：{exc}")
+                    self.motion_guard.warning = failures[-1] + "；请现场核查后读取并确认恢复"
+                    update("unknown", stopConfirmed=False, error=failures[-1])
+            capture_stop.set()
+            if capture:
+                capture.join(20)
+                if capture.is_alive():
+                    failures.append("采集线程未退出，不能确认激光已关闭或数据完成")
+            failures.extend(capture_errors)
+            if motor:
+                try:
+                    motor.close(stop=False)
+                except Exception as exc:
+                    failures.append(f"关闭转盘串口失败：{exc}")
+            if telemetry:
+                try:
+                    event("finished", errors=failures)
+                except Exception as exc:
+                    failures.append(f"转盘遥测收尾失败：{exc}")
+                try:
+                    details = telemetry.finish()
+                    with self.lock:
+                        self.writer.manifest["turntable"]["telemetry"] = details
+                except Exception as exc:
+                    failures.append(f"转盘遥测持久化失败：{exc}")
+            update(self.turntable_snapshot["state"] if attempted else ("error" if failures else "checked"),
+                   connected=False, error="; ".join(failures) or None)
+            if failures:
+                raise RuntimeError("; ".join(failures))
+
+    def _run(self, receiver, turntable=None) -> None:
         failure = None
         try:
-            receiver.run(self.stop_event, lambda rate, origin: self._ready(rate, origin, receiver), self._receive)
+            if turntable is not None:
+                self._run_joint(receiver, turntable)
+            else:
+                receiver.run(self.stop_event, lambda rate, origin: self._ready(rate, origin, receiver), self._receive)
         except Exception as exc:
             failure = str(exc)
             self.stop_event.set()
@@ -312,7 +679,11 @@ class AcquisitionController:
             with self.lock:
                 failure = failure or self.error
                 try:
-                    self.writer.finish(failure)
+                    if self.capture_thread and self.capture_thread.is_alive():
+                        self.writer.manifest["error"] = failure
+                        self.writer.persist()
+                    else:
+                        self.writer.finish(failure)
                 except Exception as exc:
                     failure = f"{failure + '; ' if failure else ''}采集数据收尾失败：{exc}"
                 self.error = failure
@@ -320,26 +691,35 @@ class AcquisitionController:
 
     def stop(self) -> dict:
         with self.lock:
-            if self.device_busy:
+            testing = self.test_thread and self.test_thread.is_alive()
+            if testing:
+                self.test_stop.set()
+        if testing:
+            return self._stop_turntable_test()
+        with self.lock:
+            if self.device_busy or self.turntable_busy:
                 raise HTTPException(409, "设备配置/聚焦仍在进行，请等待完成并现场确认激光状态。")
         with self.operation_lock:
             with self.lock:
                 thread = self.thread
                 if not thread or not thread.is_alive():
+                    if self.capture_thread and self.capture_thread.is_alive():
+                        raise HTTPException(503, "接收线程仍未退出，请核查激光和转盘状态，不能重启采集")
                     return self.status()
                 self.state = "stopping"
                 self.stop_event.set()
-            thread.join(timeout=20)
+            timeout = 60 if self.writer and self.writer.manifest.get("turntable") else 20
+            thread.join(timeout=timeout)
             if thread.is_alive():
                 with self.lock:
                     self.state = "error"
-                    self.error = "采集线程未在 20 秒内退出，记录仍未完成；请确认设备激光已关闭并检查 SDK。"
+                    self.error = f"采集线程未在 {timeout} 秒内退出，记录仍未完成；请确认转盘停稳、激光已关闭并检查设备。"
                 raise HTTPException(503, self.error)
             return self.status()
 
 
-def create_app(settings: Settings, receiver_factory=PolytecReceiver) -> FastAPI:
-    controller = AcquisitionController(settings, receiver_factory)
+def create_app(settings: Settings, receiver_factory=PolytecReceiver, motor_factory=DEFAULT_MOTOR_FACTORY) -> FastAPI:
+    controller = AcquisitionController(settings, receiver_factory, motor_factory)
 
     @asynccontextmanager
     async def lifespan(_app):
@@ -391,6 +771,37 @@ def create_app(settings: Settings, receiver_factory=PolytecReceiver) -> FastAPI:
     @app.post("/api/field/device")
     def device(request: DeviceRequest):
         return controller.configure_device(request)
+
+    @app.get("/api/field/turntable/ports")
+    def turntable_ports():
+        try:
+            from serial.tools.list_ports import comports
+            return {"ports": [{"port": port.device, "description": port.description}
+                              for port in comports() if port.device.startswith("COM")]}
+        except ImportError as exc:
+            raise HTTPException(503, "采集服务缺少 pyserial，请更新服务包") from exc
+
+    @app.post("/api/field/turntable")
+    def turntable(request: TurntableRequest):
+        return controller.turntable_operation(request)
+
+    @app.get("/api/field/recordings/{recording_id}/turntable-export")
+    def turntable_export(recording_id: str):
+        try:
+            directory = controller.store.directory(recording_id)
+            manifest = controller.store._read_manifest(directory)
+            if manifest.get("status") != "complete":
+                raise HTTPException(409, "请先停止并完整保存联合任务，再导出遥测")
+            path = directory / "turntable.jsonl"
+            if not manifest.get("turntable") or path.is_symlink() or not path.is_file():
+                raise HTTPException(404, "该记录没有转盘遥测文件")
+            def stream():
+                with path.open("rb") as source:
+                    while payload := source.read(65536):
+                        yield payload
+            return StreamingResponse(stream(), media_type="application/x-ndjson")
+        except (KeyError, FileNotFoundError) as exc:
+            raise HTTPException(404, "联合采集记录不存在") from exc
 
     @app.post("/api/field/start")
     def start(request: StartRequest):

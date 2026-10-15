@@ -10,6 +10,17 @@ const { randomBytes } = require('node:crypto');
 function failure(message, status = 503) {
   return Object.assign(new Error(message), { status });
 }
+function turntableConfig(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) ||
+      Object.keys(value).some(key => !['port', 'axis', 'speedRpm', 'direction', 'durationSeconds', 'protocol'].includes(key)) ||
+      !/^COM[1-9][0-9]{0,3}$/.test(value.port) || ![1, 2].includes(value.axis) ||
+      typeof value.speedRpm !== 'number' || !Number.isFinite(value.speedRpm) || value.speedRpm < 0.02 || value.speedRpm > 100 ||
+      !['forward', 'reverse'].includes(value.direction) || typeof value.durationSeconds !== 'number' ||
+      !Number.isFinite(value.durationSeconds) || value.durationSeconds < 0 || value.durationSeconds > 86400 ||
+      (value.protocol !== undefined && !['legacy_speed', 'continuous'].includes(value.protocol))) throw failure('无效转盘参数：输出轴 0.02～100 rpm，运行时长 0～86400 秒', 400);
+  return { port: value.port, axis: value.axis, speedRpm: value.speedRpm, direction: value.direction, durationSeconds: value.durationSeconds,
+    protocol: value.protocol || 'legacy_speed' };
+}
 function freePort() {
   return new Promise((resolve, reject) => {
     const server = net.createServer();
@@ -146,7 +157,7 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     const requestGeneration = generation, requestChild = child;
     const response = await fetchImpl(`http://127.0.0.1:${port}/api/field/${route}`, {
       method, redirect: 'error', signal: AbortSignal.timeout(route.endsWith('/analysis') || route === 'rotation' || route.endsWith('/waveform') || route.includes('/waveform?') ? 120000 :
-        route === 'device' ? 90000 : route === 'stop' ? Math.max(30000, requestTimeoutMs) : requestTimeoutMs),
+        route === 'device' ? 90000 : route === 'stop' || route === 'turntable' ? Math.max(75000, requestTimeoutMs) : requestTimeoutMs),
       headers: { Authorization: `Bearer ${secret}`, 'Content-Type': 'application/json' },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
@@ -319,6 +330,11 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     if (!config || (config.source !== undefined && !['device', 'simulation'].includes(config.source))) throw failure('无效采集来源', 400);
     const simulated = config.source === 'simulation';
     const body = {};
+    if (config.turntable !== undefined) {
+      if (simulated || config.confirmMotion !== true) throw failure('联合转盘任务必须使用真实采集并确认转盘运动', 400);
+      body.turntable = turntableConfig(config.turntable);
+      body.confirmMotion = true;
+    }
     if (simulated) {
       if (!config.simulation || !['P1', 'P2', 'P3'].includes(config.simulation.point) ||
           !['baseline', 'imbalance', 'impact', 'low_return'].includes(config.simulation.scenario)) throw failure('请选择有效的模拟测点和场景', 400);
@@ -355,12 +371,13 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     await ready(); return http('simulation');
   }
   async function exportRecording(id, file) {
-    if (typeof id !== 'string' || !/^[0-9a-f]{32}$/.test(id) || typeof file !== 'string' || !path.isAbsolute(file) || !/\.csv(?:\.gz)?$/i.test(file)) throw failure('无效原始数据导出请求', 400);
+    if (typeof id !== 'string' || !/^[0-9a-f]{32}$/.test(id) || typeof file !== 'string' || !path.isAbsolute(file) || !/\.(?:csv(?:\.gz)?|jsonl)$/i.test(file)) throw failure('无效原始数据导出请求', 400);
     await ready();
     const current = generation, target = child;
     const temporary = `${file}.${randomBytes(8).toString('hex')}.tmp`;
     try {
-      const response = await fetchImpl(`http://127.0.0.1:${port}/api/field/recordings/${id}/export`, {
+      const route = /\.jsonl$/i.test(file) ? 'turntable-export' : 'export';
+      const response = await fetchImpl(`http://127.0.0.1:${port}/api/field/recordings/${id}/${route}`, {
         redirect: 'error', signal: AbortSignal.timeout(300000), headers: { Authorization: `Bearer ${secret}` },
       });
       if (!response.ok) { const data = await response.json().catch(() => ({})); throw failure(typeof data.detail === 'string' ? data.detail : '原始记录导出失败', response.status); }
@@ -397,9 +414,28 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
       !(typeof value === 'string' && value.length <= 120 && !value.includes('\0')) && !(Number.isInteger(value) && [0, 1].includes(value))) throw failure('无效设备配置值', 400);
     await ready();
     const current = await http('status');
-    if (current.deviceBusy || current.receiver?.running || ['starting', 'acquiring', 'stopping'].includes(current.state)) throw failure('设备正在使用，请先停止并保存', 409);
+    if (current.deviceBusy || current.turntableBusy || current.receiver?.running || ['starting', 'acquiring', 'stopping'].includes(current.state)) throw failure('设备正在使用，请先停止并保存', 409);
     return http('device', 'POST', Object.fromEntries(['deviceIp', 'action', 'key', 'value', 'expected', 'confirmChange', 'confirmLaser']
       .filter(key => request[key] !== undefined).map(key => [key, request[key]])));
+  }
+  async function turntablePorts() { await ready(); return http('turntable/ports'); }
+  async function turntable(request) {
+    if (!request || !['probe', 'test', 'prepare', 'stop'].includes(request.action) || !/^COM[1-9][0-9]{0,3}$/.test(request.port) ||
+        ![1, 2].includes(request.axis) || (['stop', 'test', 'prepare'].includes(request.action) && request.confirmMotion !== true) ||
+        (request.confirmRecovery !== undefined && typeof request.confirmRecovery !== 'boolean') ||
+        (request.testSeconds !== undefined && (!Number.isInteger(request.testSeconds) || request.testSeconds < 1 || request.testSeconds > 15))) throw failure('无效转盘检查/试转请求', 400);
+    const config = ['test', 'prepare'].includes(request.action) ? turntableConfig({ port: request.port, axis: request.axis,
+      speedRpm: request.speedRpm, direction: request.direction, durationSeconds: request.durationSeconds, protocol: request.protocol }) : {};
+    await ready();
+    const current = await http('status');
+    if (current.deviceBusy || (current.turntableBusy && request.action !== 'stop') || current.receiver?.running || ['starting', 'acquiring', 'stopping'].includes(current.state)) throw failure('设备正在使用，请先停止并保存', 409);
+    snapshotEpoch += 1;
+    try {
+      lastStatus = await http('turntable', 'POST', { ...config, action: request.action, port: request.port, axis: request.axis,
+        ...(request.testSeconds !== undefined ? { testSeconds: request.testSeconds } : {}),
+        confirmMotion: request.confirmMotion === true, confirmRecovery: request.confirmRecovery === true });
+      return envelope();
+    } finally { snapshotEpoch += 1; }
   }
   async function shutdown({ force = false } = {}) {
     if (opening) await opening;
@@ -412,6 +448,7 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     if (!force) {
       await stop();
       if (lastStatus.deviceWarning) throw failure(lastStatus.deviceWarning);
+      if (lastStatus.turntableWarning) throw failure(lastStatus.turntableWarning);
       if (lastStatus.recording && lastStatus.recording.status !== 'complete') throw failure('本次采集没有完整保存，请检查错误或明确保留未完成数据后退出');
     }
     await terminateChild(child);
@@ -432,6 +469,6 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     await ready();
     return http('rotation', 'POST', parameters);
   }
-  return { start, status, frame, begin, stop, recordings, simulation, exportRecording, waveform, analysis, rotation, device, shutdown, serviceInfo };
+  return { start, status, frame, begin, stop, recordings, simulation, exportRecording, waveform, analysis, rotation, device, turntable, turntablePorts, shutdown, serviceInfo };
 }
 module.exports = { createFieldService, windowsServiceEnvironment, posixServiceEnvironment, failure };

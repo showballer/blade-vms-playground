@@ -36,8 +36,10 @@ SDK 适配器源自同事项目 `damage_detection/backend/app/polytec_receiver.p
 | `GET /api/field/frame` | 状态 + 速度/RSSI 显示窗口 + `realtime`；默认取最近 2048 点，指定 `window_ms=1..1000` 时显示对应窗口：不超过 4096 点返回全部原始点，更长窗口返回最多 1000 个保留峰值的包络桶 |
 | `GET /api/field/realtime` | 状态 + 最近最多 4096 个连续原始点的时域、FFT、STFT 与指标；最多每 250 ms 计算一次 |
 | `GET /api/field/simulation` | 3 个源工作簿测点、4 个回放场景及文件/脚本 SHA-256 来源信息；不启动采集 |
-| `POST /api/field/start` | JSON：`deviceIp`、`hostIp`、`name`、`object`、`turbine`、`point`、`confirmLaser: true`；返回状态；真正启动在后台进行 |
+| `POST /api/field/start` | JSON：`deviceIp`、`hostIp`、`name`、`object`、`turbine`、`point`、`confirmLaser: true`；可附 `turntable: {port, axis, speedRpm, direction, durationSeconds}` 与 `confirmMotion: true` 启用真实连续转盘联动；返回状态，真正启动在后台进行 |
 | `POST /api/field/stop` | 无必需请求体；等待停止、关激光和本地数据收尾，最长约 20 秒；返回最终状态 |
+| `GET /api/field/turntable/ports` | 列出本机 COM 串口；不会连接或运动 |
+| `POST /api/field/turntable` | `action: "probe" | "stop"`、`port`、`axis`；`stop` 必须 `confirmMotion: true`。仅显式 `confirmRecovery: true` 才能清除上次未确认停止状态 |
 | `GET /api/field/recordings` | `{ recordings: [...] }`，最新最多 1000 条本机记录，离线可读 |
 | `GET /api/field/recordings/{id}` | `{ recording, waveform }`，仅允许服务生成的 UUID ID，读取有限预览，不接受文件路径 |
 | `GET /api/field/recordings/{id}/export` | 完整已保存原始样本的流式 CSV，首行来源 JSON；不降采样；未完成记录返回 409 |
@@ -67,6 +69,9 @@ SDK 适配器源自同事项目 `damage_detection/backend/app/polytec_receiver.p
     // additional persistence/integrity metadata may be present
   },
   indexWarning: string | null,
+  turntable: { state: 'disconnected' | 'checking' | 'checked' | 'starting' | 'awaiting_feedback' | 'running' | 'stopping' | 'stopped' | 'unknown' | 'error', feedback: object | null, error: string | null },
+  turntableBusy: boolean,
+  turntableWarning: string | null,
   // only frame / WebSocket includes waveform:
   waveform: {
     sampleRate: number | null, unit: 'm/s', rssiUnit: '%',
@@ -89,6 +94,10 @@ SDK 适配器源自同事项目 `damage_detection/backend/app/polytec_receiver.p
   }
 }
 ```
+
+启用联动时，采集服务先确认转盘静止、无报警，再等待 Polytec 数据采集 ready，随后按 `SET_SPEED → MOTOR_START` 启动连续速度模式。旧固件未返回限位状态时允许连续转动测试，状态和遥测保持 null；已返回的非零限位 flags 仍阻止启动或触发停机。停止时先发送通信停止并确认零速，再关闭采集并完成本地记录。串口超时或停止读回不确定时不会自动重发运动命令；不确定状态写入 `BLADE_DATA_DIR/turntable-state.json`，下一次联动前必须现场核查并通过同一串口/轴显式恢复。普通限位器只用于保护停机，不提供每圈键相或叶片相位同步。
+
+联合记录目录额外包含 `turntable.jsonl`，逐条保存主机观察时间、采样序号、速度/报警/限位/原始位置反馈以及事件；末尾 manifest 保存 SHA-256 摘要。`GET /api/field/recordings/{id}/turntable-export` 可在记录完整保存后导出该文件。联合记录及遥测当前只保存在本机，不自动上传 Web。主机观察时间与 Polytec 采样序号不是硬件同步时间戳，不能用于自动相位校正。
 
 时间字段 `startedAt` / `endedAt` / `sampleOrigin` 都是 **Unix 秒**，不是 JS 毫秒。样本相对时间为 `sample_index / sampleRate`；绝对估计时间为 `sampleOrigin + sample_index / sampleRate`。起点取主机启动 DAQ 的时间，只取一次，不按每批到达时间重置。它不是硬件同步时间戳；采样序号是接收侧顺序计数，不能证明 SDK/UDP 没有丢样。
 

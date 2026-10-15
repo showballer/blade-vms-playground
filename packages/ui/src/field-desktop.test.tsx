@@ -7,11 +7,26 @@ import { fieldCanStart, fieldDate, fieldIsActive, fieldSampleX, validateFieldCon
 import { FieldAccountPanel, FieldCloudSyncPanel, FieldBindAccountDialog, fieldAccountServerDefault, fieldAccountTime, fieldAccountUsesPlainHttp } from "./field-account";
 import { clampWaveRange, formatWaveTime, waveBounds, waveScaleDraft, type WaveScaleDraft } from "./field-waveform";
 import { FieldDeviceSnapshot } from "./field-device";
+import { FieldTurntableSetup } from "./field-turntable";
+import { fieldTurntableReady, type FieldTurntableConfig } from "./field-types";
 
 let checks = 0;
 function check(name: string, run: () => void) { run(); checks += 1; console.log("PASS " + name); }
 const waveform: FieldWaveform = { sampleRate: 2000, sampleStart: 100, sampleStride: 5, unit: "m/s", values: [0.001, -0.001, 0.002], rssi: [40, null, 60], rssiUnit: "%", overrange: [false, true, false] };
 const ready: FieldStatus = { service: { state: "ready", dllConfigured: true }, state: "idle" };
+check("联合转盘采集需完成当前参数设置，试转通过本身不放行", () => {
+  const config: FieldTurntableConfig = { port: "COM6", axis: 1, speedRpm: 0.2, direction: "forward", durationSeconds: 0 };
+  assert.equal(fieldTurntableReady(ready, config), false);
+  const prepared: FieldStatus = { ...ready, turntablePreparation: { ready: true, config, checkedAt: 1 } };
+  assert.equal(fieldTurntableReady(prepared, config), true);
+  for (const change of [{ axis: 2 }, { port: "COM3" }, { speedRpm: 1 }, { direction: "reverse" }, { protocol: "continuous" }, { durationSeconds: 10 }] as Partial<FieldTurntableConfig>[]) {
+    assert.equal(fieldTurntableReady(prepared, { ...config, ...change }), false);
+  }
+  assert.equal(fieldTurntableReady({ ...prepared, turntableBusy: true }, config), false);
+  assert.equal(fieldTurntableReady({ ...prepared, turntableWarning: "停止未确认" }, config), false);
+  const html = renderToStaticMarkup(<FieldTurntableSetup config={{ name: "test", deviceIp: "", hostIp: "", object: "", turbine: "", point: "", turntable: config }} onConfig={() => {}} status={ready} disabled={false} request={async <T,>() => ({} as T)} />);
+  for (const label of ["读取转盘工况", "独立试转", "自动停止", "实际输出轴转速", "试转变化量", "允许联合采集"]) assert.ok(html.includes(label));
+});
 check("抽样步长参与时间轴，不能把抽样预览误当连续样本", () => {
   assert.equal(fieldSampleX(waveform, 0), 50);
   assert.equal(fieldSampleX(waveform, 2), 55);

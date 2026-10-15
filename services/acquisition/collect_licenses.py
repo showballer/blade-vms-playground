@@ -20,6 +20,11 @@ def collect(destination: Path) -> None:
         target.mkdir(exist_ok=True)
         (target / "METADATA.txt").write_text(distribution.read_text("METADATA") or "", encoding="utf-8")
         copied = []
+        # pyserial 3.5's wheel omits the upstream license; ship the exact v3.5 text.
+        if name.lower() == "pyserial":
+            license_file = Path(__file__).resolve().parent / "licenses" / "pyserial-LICENSE.txt"
+            shutil.copy2(license_file, target / "LICENSE.txt")
+            copied.append("LICENSE.txt")
         for entry in distribution.files or []:
             if not any(word in str(entry).lower() for word in ("license", "copying", "notice")):
                 continue

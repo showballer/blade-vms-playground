@@ -149,6 +149,7 @@ function createFieldCloudSync({ file, dataDir, auth, getLive, fetchImpl = global
   }
   async function prepare(item) {
     const recording = manifest(item.recordingId);
+    if (recording.turntable) throw fail('联合转盘记录暂仅保存在本机，请分别导出波形与转盘遥测；当前 Web 不支持完整联合记录。', 409);
     if (recording.status !== 'complete') {
       if (item.recordingId === activeId && recording.status === 'incomplete') return null;
       throw fail('该记录尚未完整保存，不能上传原始数据。', 409);

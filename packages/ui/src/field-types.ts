@@ -35,7 +35,10 @@ export type FieldConfig = {
   object: string;
   turbine: string;
   point: string;
+  turntable?: FieldTurntableConfig;
 };
+export type FieldTurntableConfig = { port: string; axis: 1 | 2; speedRpm: number; direction: "forward" | "reverse"; durationSeconds: number; protocol?: "legacy_speed" | "continuous" };
+export type FieldTurntableStatus = { state: string; port?: string; axis?: number; connected?: boolean; effectiveRpm?: number; positionDelta?: number; feedback?: { outputRpm: number; motorRpm: number; runState?: number; alarmCode: number; limitFlags: number | null; positionRaw: number; observedAt?: number }; error?: string };
 export type FieldWaveform = {
   source?: string;
   sampleRate: number | null;
@@ -84,6 +87,7 @@ export type FieldDeviceRequest = {
   value?: string | number; expected?: string | number; confirmChange?: true; confirmLaser?: true;
 };
 export type FieldRecording = {
+  turntable?: FieldTurntableStatus & { config: FieldTurntableConfig; telemetry?: { events: number; file: string; sha256: string; cloudSync: string } };
   source?: string;
   simulation?: FieldSimulation & { position?: number; rpm?: number };
   id: string;
@@ -120,6 +124,11 @@ export type FieldStatus = {
   indexWarning?: string | null;
   deviceBusy?: boolean;
   deviceWarning?: string | null;
+  turntable?: FieldTurntableStatus;
+  turntableBusy?: boolean;
+  turntableWarning?: string | null;
+  turntableTest?: { passed: boolean; cancelled?: boolean; config: Omit<FieldTurntableConfig, "durationSeconds">; effectiveRpm?: number; positionDelta: number; testedAt: number; error?: string | null } | null;
+  turntablePreparation?: { ready: boolean; config: FieldTurntableConfig; checkedAt: number } | null;
   deviceSettings?: FieldDeviceSettings | null;
   receiver?: Record<string, unknown>;
   recording?: FieldRecording;
@@ -127,20 +136,30 @@ export type FieldStatus = {
   realtime?: FieldRealtime;
 };
 export type FieldRequestOptions =
-  | { action: "session" | "accountInfo" | "logout" | "status" | "stop" | "recordings" | "simulation" | "openDataDirectory" | "restartService" | "configureService" | "configureDll" | "syncStatus" | "retrySync" }
+  | { action: "session" | "accountInfo" | "logout" | "status" | "stop" | "recordings" | "simulation" | "openDataDirectory" | "restartService" | "configureService" | "configureDll" | "syncStatus" | "retrySync" | "turntablePorts" }
   | { action: "setAutoSync"; enabled: boolean }
   | { action: "syncRecording"; id: string }
   | { action: "frame"; windowMs?: number }
   | { action: "login"; username: string; password: string }
   | { action: "changePassword"; currentPassword: string; newPassword: string }
   | { action: "bindAccount"; serverUrl: string; username: string; password: string; currentPassword: string }
-  | { action: "start"; config: FieldConfig & ({ source?: "device"; confirmLaser: true } | { source: "simulation"; simulation: FieldSimulation }) }
+  | { action: "start"; config: FieldConfig & ({ source?: "device"; confirmLaser: true; confirmMotion?: true } | { source: "simulation"; simulation: FieldSimulation }) }
   | { action: "recording"; id: string }
   | { action: "exportRecording"; id: string }
   | { action: "waveform"; id: string; start?: number; end?: number }
   | { action: "analysis"; id: string; parameters: Record<string, unknown> }
   | { action: "rotation"; parameters: Record<string, unknown> }
-  | { action: "device"; request: FieldDeviceRequest };
+  | { action: "device"; request: FieldDeviceRequest }
+  | { action: "turntable"; request: { action: "probe" | "test" | "prepare" | "stop"; port: string; axis: 1 | 2; speedRpm?: number; direction?: FieldTurntableConfig["direction"]; durationSeconds?: number; protocol?: FieldTurntableConfig["protocol"]; testSeconds?: number; confirmMotion?: true; confirmRecovery?: boolean } };
+
+export function fieldTurntableMatches(a: FieldTurntableConfig | Omit<FieldTurntableConfig, "durationSeconds"> | undefined, b: FieldTurntableConfig, duration = true) {
+  return !!a && a.port === b.port && a.axis === b.axis && a.speedRpm === b.speedRpm && a.direction === b.direction &&
+    (a.protocol || "legacy_speed") === (b.protocol || "legacy_speed") && (!duration || "durationSeconds" in a && a.durationSeconds === b.durationSeconds);
+}
+export function fieldTurntableReady(status: FieldStatus | null, config?: FieldTurntableConfig) {
+  return !config || !!status?.turntablePreparation?.ready && !status.turntableWarning && !status.turntableBusy &&
+    fieldTurntableMatches(status.turntablePreparation.config, config);
+}
 export type FieldRequest = (options: FieldRequestOptions) => Promise<{ status: number; data: unknown }>;
 
 export function validateFieldConfig(config: FieldConfig): string | null {
@@ -149,6 +168,13 @@ export function validateFieldConfig(config: FieldConfig): string | null {
   if (!ipv4(config.deviceIp.trim())) return "请填写有效的设备 IPv4 地址";
   if (!ipv4(config.hostIp.trim())) return "请填写本机设备网卡的有效 IPv4 地址";
   if (config.deviceIp.trim() === config.hostIp.trim()) return "设备 IP 与本机 IP 不能相同";
+  if (config.turntable) {
+    const t = config.turntable;
+    if (t.protocol !== undefined && !["legacy_speed", "continuous"].includes(t.protocol)) return "请选择有效的转盘固件接口。";
+    if (!/^COM[1-9][0-9]{0,3}$/.test(t.port) || ![1, 2].includes(t.axis) || !["forward", "reverse"].includes(t.direction) ||
+        !Number.isFinite(t.speedRpm) || t.speedRpm < 0.02 || t.speedRpm > 100 ||
+        !Number.isFinite(t.durationSeconds) || t.durationSeconds < 0 || t.durationSeconds > 86400) return "请核对转盘串口、轴号、转速（0.02～100 rpm）与运行时长（0～86400 秒）";
+  }
   return null;
 }
 
@@ -160,7 +186,7 @@ export function fieldSampleX(waveform: FieldWaveform, index: number): number {
 }
 
 export function fieldCanStart(status: FieldStatus | null, source: FieldSource = "device"): boolean {
-  return Boolean(status?.service.state === "ready" && (source === "simulation" || status.service.dllConfigured) && !status.deviceBusy && (source === "simulation" || !status.deviceWarning) && !fieldIsActive(status) && ["idle", "error"].includes(status.state));
+  return Boolean(status?.service.state === "ready" && (source === "simulation" || status.service.dllConfigured) && !status.deviceBusy && !status.turntableBusy && (source === "simulation" || !status.deviceWarning) && !fieldIsActive(status) && ["idle", "error"].includes(status.state));
 }
 
 export function fieldIsActive(status: FieldStatus | null): boolean {
