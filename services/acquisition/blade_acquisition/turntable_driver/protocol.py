@@ -25,6 +25,10 @@ CMD_SET_MOTION_PROFILE = 0x15
 CMD_LIMIT_DEBUG = 0x16
 CMD_ROTATE_CONTINUOUS = 0x17
 CMD_ROTATE_KEEPALIVE = 0x18
+CMD_READ_FEEDBACK = 0x20
+CMD_CONFIG_GUARD = 0x21
+CMD_SET_ZERO = 0x22
+CMD_READ_GUARD = 0x24
 
 
 STATUS_TEXT = {
@@ -37,7 +41,25 @@ STATUS_TEXT = {
     0x06: "设备忙",
     0x07: "未知命令",
     0x08: "限位触发/断线或尚未确认停止，禁止启动",
+    0x09: "超出软范围或命令不允许绕过保护",
+    0x0A: "未建立可信参考位或未确认回零配置",
 }
+
+
+def validate_output_angle(axis: int, angle: float) -> None:
+    if type(axis) is not int or axis not in (1, 2):
+        raise ValueError("轴号必须为整数 1 或 2")
+    limit = 35 if axis == 1 else 180
+    if isinstance(angle, bool) or not math.isfinite(angle) or not -limit <= angle <= limit:
+        raise ValueError(f"轴{axis}坐标必须在±{limit}°内")
+
+
+def build_soft_range(axis: int, minimum: float, maximum: float) -> bytes:
+    validate_output_angle(axis, minimum)
+    validate_output_angle(axis, maximum)
+    if not minimum < maximum or not minimum <= 0 <= maximum:
+        raise ValueError("软范围须包含零点")
+    return build_request(axis, CMD_CONFIG_GUARD, struct.pack(">ii", round(minimum * 1000), round(maximum * 1000)), parameter=2)
 
 
 def crc16_modbus(data: bytes | bytearray) -> int:

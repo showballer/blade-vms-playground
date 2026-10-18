@@ -7,13 +7,80 @@ import { fieldCanStart, fieldDate, fieldIsActive, fieldSampleX, validateFieldCon
 import { FieldAccountPanel, FieldCloudSyncPanel, FieldBindAccountDialog, fieldAccountServerDefault, fieldAccountTime, fieldAccountUsesPlainHttp } from "./field-account";
 import { clampWaveRange, formatWaveTime, waveBounds, waveScaleDraft, type WaveScaleDraft } from "./field-waveform";
 import { FieldDeviceSnapshot } from "./field-device";
-import { FieldTurntableSetup } from "./field-turntable";
+import { FieldCycleProgress } from "./field-cycle-progress";
+import { FieldTurntableManual, FieldTurntableSetup, manualAngleRecordReady, manualPointRecallError } from "./field-turntable";
 import { fieldTurntableReady, type FieldTurntableConfig } from "./field-types";
 
 let checks = 0;
 function check(name: string, run: () => void) { run(); checks += 1; console.log("PASS " + name); }
 const waveform: FieldWaveform = { sampleRate: 2000, sampleStart: 100, sampleStride: 5, unit: "m/s", values: [0.001, -0.001, 0.002], rssi: [40, null, 60], rssiUnit: "%", overrange: [false, true, false] };
 const ready: FieldStatus = { service: { state: "ready", dllConfigured: true }, state: "idle" };
+check("跟随流程保留短暂进入离开状态，移动与到位动作可回看", () => {
+  const phases = ["waiting_blade", "confirming_entry", "blade_present", "confirming_exit", "blade_left", "moving", "arrived"];
+  const cycle: NonNullable<FieldStatus["pointCycle"]> = { state: "positioning", cycles: 1, cycle: 1, point: 1, pointCount: 2, dwellSeconds: 60, speedRpm: 2, completedRecords: 0, totalRecords: 2, rssiTriggerEnabled: true, processPhase: "moving", rssiSpread: 0.4, processEvents: phases.map((phase, index) => ({ sequence: index + 1, phase, at: 1792317508 + index * .01, cycle: 1, point: "m02" })) };
+  const html = renderToStaticMarkup(<FieldCycleProgress status={{ ...ready, pointCycle: cycle }} />);
+  for (const label of ["叶片跟随流程", "正在确认叶片进入", "叶片经过中", "正在确认叶片离开", "已确认离开", "正在移动到点位", "已到位", "动作日志", "m02"]) assert.ok(html.includes(label), label);
+  assert.match(html, /aria-current="step">移动到下一点/);
+  assert.match(html, /<time>\d{2}:\d{2}:\d{2}\.\d{3}<\/time>/);
+  const failed = renderToStaticMarkup(<FieldCycleProgress status={{ ...ready, pointCycle: { ...cycle, state: "error", error: "等待超时" } }} />);
+  assert.ok(failed.includes("流程异常")); assert.ok(failed.includes("等待超时"));
+  assert.equal(renderToStaticMarkup(<FieldCycleProgress status={ready} />), "");
+});
+check("独立转盘点位模块只提供单轴微调、定位和两轴记录", () => {
+  const html = renderToStaticMarkup(<FieldTurntableManual status={ready} disabled={false} request={async <T,>() => ({} as T)} />);
+  for (const label of ["转盘手动点位控制", "当前轴 −步长", "当前轴 +步长", "移动到目标点", "读取并记录两轴角度", "设当前轴为初始位", "软限位", "独立于测振仪和联合采集"]) assert.ok(html.includes(label));
+});
+check("独立点位停止按钮在本轴定位时可用，故障反馈与超界角度可见", () => {
+  const status: FieldStatus = { ...ready, turntableBusy: true, turntable: { state: "positioning", port: "COM3", axis: 1 } };
+  const render = (value: FieldStatus) => renderToStaticMarkup(<FieldTurntableManual status={value} disabled={false} request={async <T,>() => ({} as T)} />);
+  const moving = render(status);
+  assert.match(moving, /<button(?![^>]*disabled)[^>]*>停止当前轴<\/button>/);
+  assert.match(moving, /<input(?=[^>]*disabled)(?=[^>]*aria-label="手动控制转盘串口")[^>]*>/);
+  const other = render({ ...status, turntable: { ...status.turntable!, axis: 2 } });
+  assert.match(other, /<button[^>]*disabled=""[^>]*>停止当前轴<\/button>/);
+  const axis = { output_angle_deg: 36.7, motor_rpm: 0, actual_counts: 99, commanded_counts: 99, error_counts: 0, display_mode: 3, command_counts_per_rev: 10000, encoder_bits: 17, flags: 17, fault: 7, origin_counts: 0, home_phase: 8, observedAt: 1, referenceAngleDeg: 25, guard: { soft_enabled: true, hardware_enabled: true, minimum_deg: -35, maximum_deg: 35 } };
+  const failed = render({ ...status, turntableBusy: false, turntableWarning: "停止尚未确认", turntable: { ...status.turntable!, state: "error", error: "轴1停止未确认", feedback: { axes: { "1": axis }, outputRpm: 0, motorRpm: 0, alarmCode: 0, limitFlags: 0, positionRaw: 99 } } });
+  for (const text of ["36.700°", "故障码 7", "停止待确认 是", "标志 0x0011", "轴1停止未确认", "停止尚未确认", "轴1反馈角度超出 ±35°"]) assert.ok(failed.includes(text), text);
+});
+check("轴1停稳后保留故障2可读取记录，运动仍被禁止", () => {
+  const axis = { output_angle_deg: 32.927, motor_rpm: 0, actual_counts: 99, commanded_counts: 99, error_counts: 0, display_mode: 3, command_counts_per_rev: 10000, encoder_bits: 17, flags: 3, fault: 2, origin_counts: 0, home_phase: 8, observedAt: 1, referenceAngleDeg: 25, guard: { soft_enabled: true, hardware_enabled: true, minimum_deg: -35, maximum_deg: 35 } };
+  const status: FieldStatus = { ...ready, turntable: { state: "stopped", port: "COM3", axis: 1, feedback: { axes: { "1": axis }, outputRpm: 0, motorRpm: 0, alarmCode: 0, limitFlags: 0, positionRaw: 99 } } };
+  const render = (value: FieldStatus) => renderToStaticMarkup(<FieldTurntableManual status={value} disabled={false} request={async <T,>() => ({} as T)} />);
+  const html = render(status);
+  assert.match(html, /<button(?![^>]*disabled)[^>]*>读取并记录两轴角度<\/button>/);
+  for (const label of ["当前轴 −步长", "当前轴 +步长", "移动到目标点"]) assert.ok(html.includes(label) && new RegExp(`<button[^>]*disabled=""[^>]*>${label.replace("+", "\\+")}<\\/button>`).test(html), label);
+  assert.ok(html.includes("可记录 · 运动受限"));
+  assert.ok(html.includes("故障码 2"));
+  assert.equal(manualAngleRecordReady(axis), true);
+  assert.equal(manualAngleRecordReady(undefined), false);
+  for (const change of [{ motor_rpm: 1 }, { flags: 19 }, { output_angle_deg: null }, { output_angle_deg: NaN }, { output_angle_deg: Infinity }, { home_phase: 2 }]) {
+    const invalid = { ...axis, ...change };
+    assert.equal(manualAngleRecordReady(invalid), false);
+    assert.match(render({ ...status, turntable: { ...status.turntable!, feedback: { ...status.turntable!.feedback!, axes: { "1": invalid } } } }), /<button(?![^>]*disabled)[^>]*>读取并记录两轴角度<\/button>/);
+  }
+  assert.match(render({ ...status, turntableBusy: true }), /<button[^>]*disabled=""[^>]*>读取并记录两轴角度<\/button>/);
+});
+check("记录点位回位拒绝缺角度、越界和参考变化，回位轴2时停止仍可用", () => {
+  const point = { axis1AngleDeg: 25.935, axis2AngleDeg: -6.994 };
+  assert.equal(manualPointRecallError(point, undefined, "COM3"), "");
+  assert.match(manualPointRecallError({ ...point, axis1AngleDeg: 36.7 }, undefined, "COM3"), /轴1.*±35/);
+  assert.match(manualPointRecallError({ ...point, axis2AngleDeg: null }, undefined, "COM3"), /轴2有效角度/);
+  assert.match(manualPointRecallError({ ...point, axis2AngleDeg: Infinity }, undefined, "COM3"), /轴2有效角度/);
+  assert.match(manualPointRecallError({ ...point, port: "COM6" }, undefined, "COM3"), /串口/);
+  assert.match(manualPointRecallError({ ...point, references: "changed" }, {}, "COM3"), /参考位/);
+  const status: FieldStatus = { ...ready, turntableBusy: true, turntable: { state: "positioning", port: "COM3", axis: 2, recall: { state: "moving", targets: [25.935, -6.994], completedAxes: [1] } } };
+  const html = renderToStaticMarkup(<FieldTurntableManual status={status} disabled={false} request={async <T,>() => ({} as T)} />);
+  assert.match(html, /<button(?![^>]*disabled)[^>]*>停止当前轴<\/button>/);
+  assert.ok(html.includes("正在处理轴2，已完成 1/2 轴"));
+});
+check("记录表为每个点位提供独立删除操作", () => {
+  const axis = { output_angle_deg: 25, motor_rpm: 0, actual_counts: 99, commanded_counts: 99, error_counts: 0, display_mode: 3, command_counts_per_rev: 10000, encoder_bits: 17, flags: 3, fault: 0, origin_counts: 0, home_phase: 8, observedAt: 1, referenceAngleDeg: 25, guard: { soft_enabled: true, hardware_enabled: true, minimum_deg: -35, maximum_deg: 35 } };
+  const status: FieldStatus = { ...ready, turntable: { state: "stopped", port: "COM3", axis: 1, feedback: { axes: { "1": axis, "2": { ...axis, output_angle_deg: 0, referenceAngleDeg: 0, guard: { ...axis.guard, minimum_deg: -180, maximum_deg: 180 } } }, outputRpm: 0, motorRpm: 0, alarmCode: 0, limitFlags: 0, positionRaw: 99 } } };
+  const html = renderToStaticMarkup(<FieldTurntableManual status={status} disabled={false} request={async <T,>() => ({} as T)} />);
+  assert.ok(html.includes("删除上一点"));
+  // The row action is rendered once persisted points are loaded in the desktop renderer.
+  assert.match(require("node:fs").readFileSync(require("node:path").join(process.cwd(), "packages/ui/src/field-turntable.tsx"), "utf8"), /删除点位/);
+});
 check("联合转盘采集需完成当前参数设置，试转通过本身不放行", () => {
   const config: FieldTurntableConfig = { port: "COM6", axis: 1, speedRpm: 0.2, direction: "forward", durationSeconds: 0 };
   assert.equal(fieldTurntableReady(ready, config), false);
@@ -26,6 +93,11 @@ check("联合转盘采集需完成当前参数设置，试转通过本身不放�
   assert.equal(fieldTurntableReady({ ...prepared, turntableWarning: "停止未确认" }, config), false);
   const html = renderToStaticMarkup(<FieldTurntableSetup config={{ name: "test", deviceIp: "", hostIp: "", object: "", turbine: "", point: "", turntable: config }} onConfig={() => {}} status={ready} disabled={false} request={async <T,>() => ({} as T)} />);
   for (const label of ["读取转盘工况", "独立试转", "自动停止", "实际输出轴转速", "试转变化量", "允许联合采集"]) assert.ok(html.includes(label));
+});
+check("定位模式提供叶片点位标定入口和导出操作", () => {
+  const config: FieldTurntableConfig = { port: "COM6", axis: 1, speedRpm: 0.2, direction: "forward", durationSeconds: 0, protocol: "position", targetAngleDeg: 0 };
+  const html = renderToStaticMarkup(<FieldTurntableSetup config={{ name: "test", deviceIp: "", hostIp: "", object: "", turbine: "", point: "", turntable: config }} onConfig={() => {}} status={{ ...ready, turntable: { state: "checked", port: "COM6", axis: 1, feedback: { outputRpm: 0, motorRpm: 0, alarmCode: 0, limitFlags: 0, positionRaw: 0 } } }} disabled={false} request={async <T,>() => ({} as T)} />);
+  assert.ok(html.includes("叶片点位标定模式"));
 });
 check("抽样步长参与时间轴，不能把抽样预览误当连续样本", () => {
   assert.equal(fieldSampleX(waveform, 0), 50);
@@ -306,3 +378,15 @@ check("同步设置明确仅自动上传新采集，未绑定时开关不可用"
   assert.ok(connected.includes("45%")); assert.ok(connected.includes("重试同步"));
 });
 console.log(`Field desktop presentation checks: ${checks} passed (static/pure only).`);
+
+check("定位配置按轴限制角度，改目标后准备状态失效，参考姿态明确", () => {
+  const turntable: FieldTurntableConfig = { port: "COM6", axis: 1, protocol: "position", targetAngleDeg: 20, speedRpm: 0.2, direction: "forward", durationSeconds: 0 };
+  const config = { name: "test", deviceIp: "192.168.1.2", hostIp: "192.168.1.3", object: "", turbine: "", point: "", turntable };
+  assert.equal(validateFieldConfig(config), null);
+  assert.ok(validateFieldConfig({ ...config, turntable: { ...turntable, targetAngleDeg: 35.001 } }));
+  assert.equal(validateFieldConfig({ ...config, turntable: { ...turntable, axis: 2, targetAngleDeg: -180 } }), null);
+  const status: FieldStatus = { ...ready, turntablePreparation: { ready: true, config: turntable, checkedAt: 1 } };
+  assert.equal(fieldTurntableReady(status, { ...turntable, targetAngleDeg: 21 }), false);
+  const html = renderToStaticMarkup(<FieldTurntableSetup config={config} onConfig={() => {}} status={status} disabled={false} request={async <T,>() => ({} as T)} />);
+  for (const label of ["俯仰 ±35°", "水平 ±180°", "+25°", "设当前轴参考位", "目标输出轴角度", "软限位", "几何换算待提供"]) assert.ok(html.includes(label), label);
+});

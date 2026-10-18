@@ -5,6 +5,8 @@ import { Button } from "./common";
 import { CustomSelect } from "./custom-select";
 import { FieldWaveChart, FieldWaveOptions, hasWave, waveBounds, waveLimit, type TimeMode, type VelocityUnit } from "./field-waveform";
 import { FieldRealtimeAnalysis } from "./field-realtime";
+import { FieldLaserControl } from "./field-device";
+import { FieldCycleProgress } from "./field-cycle-progress";
 import { FieldTurntableSetup, FieldTurntableFeedback } from "./field-turntable";
 import { fieldCanStart, fieldIsActive, fieldTurntableReady, type FieldConfig, type FieldRequestOptions, type FieldSimulation, type FieldSimulationInfo, type FieldSource, type FieldStatus } from "./field-types";
 
@@ -119,7 +121,9 @@ export const FieldAcquisition = memo(function FieldAcquisition({ config, onConfi
         </div>
       </section>
       <aside className="field-right-column field-capture-aside">
+        {source === "device" && <FieldLaserControl deviceIp={config.deviceIp} status={status} disabled={!!busy} request={request} />}
         <FieldTurntableFeedback status={status} />
+        <FieldCycleProgress status={status} />
         <section className="field-card"><div className="field-section-heading"><h2>采集状态</h2><span className={`field-badge ${status?.service.state === "error" || status?.state === "error" ? "red" : active ? "green" : ""}`}>{status?.service.state === "error" || status?.state === "error" ? "异常" : active ? "接收中" : "待机"}</span></div><div className="field-metric-grid"><div><span>采样率</span><strong>{number(rate)}<small>Hz</small></strong></div><div><span>当前速度</span><strong>{number(velocity == null ? null : velocity * (unit === "mm/s" ? 1000 : 1))}<small>{unit}</small></strong></div><div><span>回波强度</span><strong>{number(rssi, 4)}<small>%</small></strong></div><div><span>窗口超量程</span><strong>{number(status?.waveform?.overrangeCount ?? status?.waveform?.overrange.filter(Boolean).length)}<small>点</small></strong></div></div></section>
         <section className="field-card field-active-record"><div className="field-section-heading"><h2>本次记录</h2><HardDrive size={17} /></div>{recording ? <><strong className="field-record-title">{recording.name}</strong><span className={`field-badge ${recording.source === "simulation" ? "amber" : ""}`}>{recording.source === "simulation" ? "模拟采集" : "设备采集"}</span><dl className="field-details"><div><dt>原始点数</dt><dd>{recording.samples.toLocaleString("zh-CN")}</dd></div><div><dt>采集时长</dt><dd>{number(duration)} 秒</dd></div><div><dt>保存状态</dt><dd>{recording.status === "complete" ? "已完整保存" : recording.status === "error" ? "记录异常" : "持续写入"}</dd></div></dl>{recording.error && <p className="field-error">{recording.error}</p>}</> : <p className="field-subtext">尚无采集记录。</p>}<Button variant="danger" className="full" disabled={!!busy || !active || status?.state === "stopping"} onClick={onStop}>{busy === "stop" ? <LoaderCircle size={15} className="spin" /> : <Square size={13} />}停止并保存</Button><button type="button" className="field-text-button" onClick={onRecords}>查看本机记录<ChevronRight size={14} /></button></section>
       </aside>

@@ -13,6 +13,8 @@ from .protocol import (
     CMD_MOVE_OUTPUT_RELATIVE, CMD_READ_PA, CMD_READ_SPEED, CMD_READ_POSITION,
     CMD_READ_ALARM, CMD_RESET_ALARM, CMD_STOP, CMD_SET_MOTION_PROFILE, CMD_START, CMD_SET_SPEED,
     CMD_ROTATE_CONTINUOUS, CMD_ROTATE_KEEPALIVE,
+    CMD_READ_FEEDBACK, CMD_READ_GUARD, CMD_SET_ZERO, CMD_CONFIG_GUARD,
+    build_soft_range, validate_output_angle,
     Response, ResponseParser, build_request, build_move_output_relative,
     build_motion_profile,
 )
@@ -62,6 +64,47 @@ class MotionProfile:
     accel_ms: int
     decel_ms: int
     s_curve_ms: int
+
+
+@dataclass(frozen=True)
+class PositionFeedback:
+    actual_counts: int
+    commanded_counts: int
+    error_counts: int
+    display_mode: int
+    command_counts_per_rev: int
+    encoder_bits: int
+    output_angle_deg: float | None
+    flags: int
+    raw_inputs: int
+    active_inputs: int
+    home_phase: int
+    fault: int
+    origin_counts: int
+    motor_rpm: int
+
+    @property
+    def counts_per_motor_rev(self) -> int | None:
+        if self.display_mode in (2, 3):
+            return self.command_counts_per_rev or None
+        if self.display_mode in (0, 1) and 10 <= self.encoder_bits <= 32:
+            return 1 << self.encoder_bits
+        return None
+
+
+@dataclass(frozen=True)
+class GuardConfig:
+    negative: int | None
+    positive: int | None
+    home: int | None
+    active_high: bool
+    home_direction: int
+    confirmed: bool
+    hardware_enabled: bool
+    soft_enabled: bool
+    minimum_deg: float
+    maximum_deg: float
+    home_at_end: bool
 
 
 class MotorController:
@@ -252,6 +295,81 @@ class MotorController:
         packet = self._request(build_request(motor_id, CMD_READ_POSITION))
         return struct.unpack(">i", self._data(packet, 4)[:4])[0]
 
+    def get_feedback(self, motor_id: int) -> PositionFeedback:
+        self._axis(motor_id)
+        packet = self._request(build_request(motor_id, CMD_READ_FEEDBACK))
+        values = list(struct.unpack(">iiiHHHiHBBBBih", self._data(packet, 34)[:34]))
+        # Only P3-32=3 with a nonzero PA11 has a verified output-coordinate scale.
+        values[6] = values[6] / 1000 if values[7] & 1 and values[3] == 3 and values[4] > 0 else None
+        return PositionFeedback(*values)
+
+    def get_guard_config(self, motor_id: int) -> GuardConfig:
+        self._axis(motor_id)
+        packet = self._request(build_request(motor_id,CMD_READ_GUARD))
+        neg,pos,home,high,direction,confirmed,hw,soft,lo,hi,end = struct.unpack(">BBBBbBBBiiB", self._data(packet,17)[:17])
+        return GuardConfig(None if neg==255 else neg,None if pos==255 else pos,None if home==255 else home,
+                           bool(high),direction,bool(confirmed),bool(hw),bool(soft),lo/1000,hi/1000,bool(end))
+
+    def set_soft_range(self, motor_id: int, minimum_deg: float, maximum_deg: float) -> GuardConfig:
+        frame = build_soft_range(motor_id,minimum_deg,maximum_deg)
+        self.stop(motor_id)
+        self._request(frame)
+        return self.get_guard_config(motor_id)
+
+    def set_guard_policy(self, motor_id: int, *, hardware: bool, soft: bool,
+                         home_direction: int = 0, confirmed: bool = False,
+                         home_at_end: bool = False) -> GuardConfig:
+        flags = int(hardware) | (int(soft) << 1) | (int(confirmed) << 2) | (int(home_at_end) << 3)
+        frame = build_request(motor_id, CMD_CONFIG_GUARD, bytes((flags, home_direction & 255)), parameter=3)
+        self.stop(motor_id)
+        self._request(frame)
+        return self.get_guard_config(motor_id)
+
+    def set_current_zero(self, motor_id: int) -> PositionFeedback:
+        """人工捕获参考：电机1须位于+25°传感器姿态，电机2为0°；不清编码器数据。"""
+        self._axis(motor_id)
+        self.stop(motor_id)
+        self._request(build_request(motor_id,CMD_SET_ZERO,parameter=0x5A52))
+        feedback=self.get_feedback(motor_id)
+        if feedback.output_angle_deg is None:
+            raise MotorError("零点未建立或反馈单位已变化")
+        return feedback
+
+    def set_current_reference(self, motor_id: int) -> PositionFeedback:
+        """捕获人工参考；电机1为+25°，电机2为0°。需人工确认真实姿态。"""
+        return self.set_current_zero(motor_id)
+
+    def move_to_angle(self, motor_id: int, angle_deg: float, *, speed_rpm: float = 0.2,
+                      cancel=None, stop_before: bool = True) -> MotionAccepted | None:
+        """Move to an output angle.
+
+        ``stop_before`` remains enabled for public/manual commands.  Automatic
+        point cycles can disable it after their preflight has already verified
+        that both axes are stationary; this avoids waiting for a redundant stop
+        confirmation before every point transition.
+        """
+        validate_output_angle(motor_id, angle_deg)
+        if isinstance(speed_rpm, bool) or not math.isfinite(speed_rpm) or not 0.02 <= speed_rpm <= 100:
+            raise ValueError("速度必须为0.02～100 rpm")
+        if stop_before:
+            self.stop(motor_id)
+        feedback = self.get_feedback(motor_id)
+        if feedback.output_angle_deg is None:
+            raise MotorError("未建立可信零点，禁止坐标定位")
+        delta = round((angle_deg-feedback.output_angle_deg)*1000)/1000
+        if delta == 0:
+            return MotionAccepted(motor_id,0,speed_rpm)
+        if cancel is not None and cancel.is_set():
+            return None
+        return self.move_relative(motor_id, delta, speed_rpm=speed_rpm, cancel=cancel,
+                                  stop_before=stop_before)
+
+    def move_to_angle_prechecked(self, motor_id: int, angle_deg: float, *,
+                                 speed_rpm: float = 0.2, cancel=None) -> MotionAccepted | None:
+        """Position move for callers that already verified zero speed and faults."""
+        return self.move_to_angle(motor_id, angle_deg, speed_rpm=speed_rpm,
+                                  cancel=cancel, stop_before=False)
+
     def reset_alarm(self, motor_id: int) -> int:
         """故障排除后由调用方显式调用；返回复位后报警码，不自动重启运动。"""
         self._axis(motor_id)
@@ -281,18 +399,22 @@ class MotorController:
         raise MotorError("停止确认超时；未发送后续运动，请检查机构并使用硬件急停")
 
     def move_relative(self, motor_id: int, angle_deg: float, *, speed_rpm: float = 0.2,
-                      stop_timeout: float = 10.0) -> MotionAccepted:
-        """输出轴相对转动；正角度正向，负角度反向。先停止旧运动再执行新动作。"""
+                      stop_timeout: float = 10.0, cancel=None,
+                      stop_before: bool = True) -> MotionAccepted | None:
+        """输出轴相对转动；正角度正向，负角度反向。"""
         self._axis(motor_id)
         frame = build_move_output_relative(motor_id, speed_rpm, angle_deg)
         requested_speed, requested_angle = struct.unpack(">Hi", frame[7:13])
         motor_speed = int(math.floor(requested_speed / 100.0 * self.gear_ratio + 0.5))
         if not 1 <= motor_speed <= 5000:
             raise ValueError("按减速比换算后的电机速度必须为 1～5000 rpm")
-        self.stop(motor_id, timeout=stop_timeout)
+        if stop_before:
+            self.stop(motor_id, timeout=stop_timeout)
         alarm = self.read_alarm(motor_id)
         if alarm:
             raise DriveAlarm(motor_id, alarm)
+        if cancel is not None and cancel.is_set():
+            return None
         packet = self._request(frame)
         accepted = struct.unpack(">i", self._data(packet, 4)[:4])[0]
         if accepted != requested_angle:

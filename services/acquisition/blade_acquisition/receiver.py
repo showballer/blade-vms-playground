@@ -45,6 +45,7 @@ class Batch:
 
 
 class PolytecReceiver:
+    supports_laser_persistence = True
     def __init__(self, config: ReceiverConfig):
         self.config = config
         self.api: Any = None
@@ -116,7 +117,8 @@ class PolytecReceiver:
         self._check(self.api.PolyGetInt32Data(self.acquisition.value, channel, 0, values, count.value), "GetInt32Data")
         return list(values)
 
-    def run(self, stop: threading.Event, ready: Callable, receive: Callable[[Batch], None]) -> None:
+    def run(self, stop: threading.Event, ready: Callable, receive: Callable[[Batch], None],
+            *, keep_laser_on: bool = False, abort: threading.Event | None = None) -> None:
         communication_open = acquisition_open = laser_attempted = False
         failure: Exception | None = None
         cleanup_errors: list[str] = []
@@ -220,7 +222,7 @@ class PolytecReceiver:
                     cleanup_errors.append(str(exc))
             if self.api and acquisition_open:
                 cleanup(lambda: self.api.PolyStopDataAcquisition(self.acquisition.value), "Stop acquisition")
-            if self.api and communication_open and laser_attempted:
+            if self.api and communication_open and laser_attempted and not (keep_laser_on and not failure and not cleanup_errors and not (abort and abort.is_set())):
                 cleanup(lambda: self.api.PolySendSetInt16(self.communication.value, SENSOR_HEAD, 0, LASER_ON, C.c_int16(0)), "Laser off (please verify physically)")
             if self.api and acquisition_open:
                 cleanup(lambda: self.api.PolyCloseDataAcquisition(self.acquisition.value), "Close acquisition")

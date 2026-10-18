@@ -110,6 +110,7 @@ async function dispatch(options) {
     case 'analysis': return service.analysis(options.id, options.parameters);
     case 'rotation': return service.rotation(options.parameters);
     case 'device': return service.device(options.request);
+    case 'rssiCalibration': return service.rssiCalibration(options.request);
     case 'configureService': return chooseProgram('executable');
     case 'configureDll': return chooseProgram('dll');
     case 'restartService':

@@ -448,3 +448,12 @@
 .field-turntable-test { display: grid; gap: 12px; margin-block: 14px; }
 .field-turntable-test > label:not(.field-turntable-toggle) { display: flex; align-items: center; gap: 12px; font-size: 13px; }
 .field-turntable-test > .btn { justify-self: start; }
+
+.field-cycle-progress { min-width: 0; }
+.field-cycle-steps { display: flex; flex-wrap: wrap; gap: 6px; padding: 0; list-style: none; }
+.field-cycle-steps li { padding: 5px 8px; border: 1px solid #dbe3ef; border-radius: 6px; font-size: 12px; color: #64748b; }
+.field-cycle-steps li[aria-current="step"] { color: #1d4ed8; border-color: #3b82f6; background: #eff6ff; font-weight: 600; }
+.field-cycle-log { max-height: 260px; overflow-y: auto; padding: 0; list-style: none; font-size: 12px; }
+.field-cycle-log li { display: flex; gap: 10px; padding: 6px 0; border-bottom: 1px solid #edf1f7; }
+.field-cycle-log time { flex: 0 0 auto; color: #64748b; font-variant-numeric: tabular-nums; }
+.field-cycle-log span { overflow-wrap: anywhere; }

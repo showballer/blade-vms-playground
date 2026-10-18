@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import struct
 import tempfile
 import threading
 import time
 import unittest
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -13,9 +14,9 @@ from fastapi.testclient import TestClient
 
 from blade_acquisition.receiver import Batch
 from blade_acquisition.service import Settings, create_app
-from blade_acquisition.turntable import MotionGuard, TurntableConfig
+from blade_acquisition.turntable import MotionGuard, TurntableConfig, PositionProgress, snapshot, position_reached, require_stop_confirmed, require_manual_position_ready
 from blade_acquisition.turntable_driver.motor_controller import MotorStatus
-from blade_acquisition.turntable_driver.motor_controller import MotorController, MotorError
+from blade_acquisition.turntable_driver.motor_controller import MotorController, MotorError, PositionFeedback, GuardConfig, MotionAccepted
 from blade_acquisition.turntable_driver.protocol import Response
 
 
@@ -50,6 +51,47 @@ class FakeMotor:
     moving_position: bool = True
     actual_rpm: float = 0.2
     renew_calls: int = 0
+    active_axis: int = 1
+    reference_valid: bool = True
+    soft_enabled: bool = True
+    angles: dict = field(default_factory=lambda: {1: 0.0, 2: 0.0})
+    guard_configs: dict = field(default_factory=dict)
+    references: list = field(default_factory=list)
+    origins: dict = field(default_factory=lambda: {1: 0, 2: 0})
+    stopped_axes: list = field(default_factory=list)
+
+    def get_feedback(self, axis):
+        position = self.read_position_raw(axis) if axis == self.active_axis else 0
+        rpm = round(self.actual_rpm * 50) if self.started and axis == self.active_axis else 0
+        return PositionFeedback(position, position, 0, 3, 10000, 17,
+                                self.angles[axis] if self.reference_valid else None,
+                                1 if self.reference_valid else 0, 0, 0, 0, 0, self.origins[axis], rpm)
+
+    def get_guard_config(self, axis):
+        limit = 35 if axis == 1 else 180
+        return self.guard_configs.get(axis, GuardConfig(None, None, None, True, 0, False, True,
+                                                        self.soft_enabled, -limit, limit, False))
+
+    def set_current_reference(self, axis):
+        self.references.append(axis)
+        self.reference_valid = True
+        self.angles[axis] = 25.0 if axis == 1 else 0.0
+        return self.get_feedback(axis)
+
+    def set_soft_range(self, axis, lo, hi):
+        self.guard_configs[axis] = replace(self.get_guard_config(axis), minimum_deg=lo, maximum_deg=hi)
+
+    def set_guard_policy(self, axis, *, hardware, soft, **kwargs):
+        self.guard_configs[axis] = replace(self.get_guard_config(axis), hardware_enabled=hardware, soft_enabled=soft)
+
+    def move_to_angle(self, axis, target, speed_rpm, cancel=None):
+        if cancel and cancel.is_set():
+            return None
+        self.start_calls += 1
+        self.active_axis = axis
+        delta = target - self.angles[axis]
+        self.angles[axis] = target
+        return MotionAccepted(axis, delta, speed_rpm)
 
     def connect(self):
         return self
@@ -64,6 +106,7 @@ class FakeMotor:
         return self.position
 
     def start_continuous(self, axis, rpm, cancel=None):
+        self.active_axis = axis
         self.start_calls += 1
         self.started = True
         self.actual_rpm = rpm
@@ -77,10 +120,30 @@ class FakeMotor:
 
     def stop(self, axis):
         self.stop_calls += 1
+        self.stopped_axes.append(axis)
         self.started = False
 
     def close(self, stop=False):
         return None
+
+
+class Axis2InvalidReferenceMotor(FakeMotor):
+    """Fixture for standalone axis-1 point marking: the idle axis has no reference."""
+    def get_feedback(self, axis):
+        original = self.reference_valid
+        if axis == 2:
+            self.reference_valid = False
+        try:
+            return super().get_feedback(axis)
+        finally:
+            self.reference_valid = original
+
+
+class Axis2StopPendingMotor(FakeMotor):
+    """A stale stop-pending bit on the unselected axis must not block stop."""
+    def get_feedback(self, axis):
+        feedback = super().get_feedback(axis)
+        return replace(feedback, flags=feedback.flags | 16) if axis == 2 else feedback
 
 
 class TurntableTests(unittest.TestCase):
@@ -322,6 +385,317 @@ class TurntableTests(unittest.TestCase):
         self.assertEqual(status["turntable"]["state"], "unknown")
         self.assertTrue(status["turntableWarning"])
         self.assertTrue(MotionGuard(Path(self.temp.name)).warning)
+
+    def position_config(self, axis=2, target=-15):
+        return {"port": "COM6", "axis": axis, "speedRpm": 0.2, "direction": "forward",
+                "durationSeconds": 0, "protocol": "position", "targetAngleDeg": target}
+
+    def test_feedback_34_bytes_preserves_units_and_invalid_reference(self):
+        motor = MotorController("COM6")
+        for flags, expected in ((0, None), (1, -12.345)):
+            payload = struct.pack(">iiiHHHiHBBBBih", -123, 456, 579, 3, 10000, 17,
+                                  -12345, flags, 2, 4, 0, 0, -400, -10)
+            motor._request = lambda frame: Response(2, 0x20, 0, 0, payload, frame)
+            feedback = motor.get_feedback(2)
+            self.assertEqual(feedback.output_angle_deg, expected)
+            self.assertEqual((feedback.actual_counts, feedback.origin_counts, feedback.motor_rpm), (-123, -400, -10))
+            self.assertEqual(feedback.counts_per_motor_rev, 10000)
+        payload = struct.pack(">iiiHHHiHBBBBih", 0, 0, 0, 0, 10000, 17, 0, 1, 0, 0, 0, 0, 0, 0)
+        self.assertIsNone(motor.get_feedback(2).output_angle_deg)
+        motor._request = lambda frame: Response(1, 0x20, 0, 0, b"short", frame)
+        with self.assertRaises(MotorError):
+            motor.get_feedback(1)
+
+    def test_out_of_bounds_and_invalid_reference_never_send_move(self):
+        motor = MotorController("COM6")
+        calls = []
+        motor._request = lambda frame: calls.append(frame)
+        for axis, angle in ((1, 35.001), (1, -35.001), (2, 180.001), (2, -180.001)):
+            with self.assertRaises(ValueError):
+                motor.move_to_angle(axis, angle)
+        self.assertEqual(calls, [])
+        motor.stop = lambda axis: None
+        motor.get_feedback = lambda axis: FakeMotor(reference_valid=False).get_feedback(axis)
+        with self.assertRaises(MotorError):
+            motor.move_to_angle(1, 10)
+        self.assertEqual(calls, [])
+
+    def test_reference_and_soft_limits_are_axis_specific_and_invalidate_preparation(self):
+        motor = FakeMotor(soft_enabled=False)
+        client = self.make_client(motor)
+        for axis, expected in ((1, 25), (2, 0)):
+            response = client.post("/api/field/turntable", json={"port": "COM6", "axis": axis,
+                                   "action": "reference", "confirmMotion": True})
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()["turntable"]["feedback"]["outputAngleDeg"], expected)
+            self.assertIsNone(response.json()["turntablePreparation"])
+        self.assertEqual(motor.references, [1, 2])
+        config = self.position_config()
+        self.assertEqual(client.post("/api/field/turntable", json={**config, "action": "prepare", "confirmMotion": True}).status_code, 503)
+        motor.guard_configs[2] = replace(motor.get_guard_config(2), minimum_deg=-90, maximum_deg=90)
+        response = client.post("/api/field/turntable", json={"port": "COM6", "axis": 2, "action": "limits", "confirmMotion": True})
+        self.assertEqual(response.status_code, 200, response.text)
+        guard = motor.get_guard_config(2)
+        self.assertEqual((guard.minimum_deg, guard.maximum_deg, guard.soft_enabled, guard.hardware_enabled), (-180, 180, True, True))
+        self.assertFalse(motor.get_guard_config(1).soft_enabled)
+
+    def test_invalid_reference_blocks_position_preparation_and_test(self):
+        motor = FakeMotor(reference_valid=False)
+        client = self.make_client(motor)
+        config = self.position_config()
+        prepared = client.post("/api/field/turntable", json={**config, "action": "prepare", "confirmMotion": True})
+        self.assertEqual(prepared.status_code, 503)
+        self.assertEqual(client.post("/api/field/turntable", json={**config, "action": "test", "confirmMotion": True}).status_code, 200)
+        self.assertFalse(self.wait_test(client)["turntableTest"]["passed"])
+        self.assertEqual(motor.start_calls, 0)
+
+    def test_manual_position_controls_only_selected_axis_and_stops_at_target(self):
+        motor = Axis2InvalidReferenceMotor()
+        client = self.make_client(motor)
+        config = self.position_config(axis=1, target=10)
+        response = client.post("/api/field/turntable", json={**config, "action": "manual_move", "confirmMotion": True})
+        self.assertEqual(response.status_code, 200, response.text)
+        status = self.wait_test(client)
+        self.assertFalse(status["turntableBusy"])
+        self.assertTrue(status["turntableTest"]["passed"])
+        self.assertEqual(status["turntable"]["state"], "stopped")
+        self.assertEqual(motor.start_calls, 1)
+        self.assertEqual(motor.stopped_axes, [1])
+        self.assertIsNone(status["turntablePreparation"])
+
+    def test_stop_confirmation_does_not_require_other_axis_feedback(self):
+        motor = Axis2InvalidReferenceMotor()
+        value = snapshot(motor, 1)
+        require_stop_confirmed(value, TurntableConfig(port="COM6", axis=1))
+
+    def recall_body(self, **changes):
+        return {"action": "recall", "port": "COM6", "axis": 1, "axis1AngleDeg": 25.935,
+                "axis2AngleDeg": -6.994, "speedRpm": 0.2, "confirmMotion": True, **changes}
+
+    def test_recall_moves_both_axes_in_order_and_verifies_both_targets(self):
+        motor = FakeMotor()
+        moves = []
+        original = motor.move_to_angle
+        def move(axis, target, speed_rpm, cancel=None):
+            if axis == 2:
+                self.assertEqual(motor.stopped_axes, [1])
+            moves.append((axis, target, speed_rpm))
+            return original(axis, target, speed_rpm, cancel)
+        motor.move_to_angle = move
+        client = self.make_client(motor)
+        response = client.post("/api/field/turntable", json=self.recall_body(speedRpm=2))
+        self.assertEqual(response.status_code, 200, response.text)
+        status = self.wait_test(client)
+        self.assertEqual(moves, [(1, 25.935, 2), (2, -6.994, 2)])
+        self.assertEqual(motor.stopped_axes, [1, 2])
+        self.assertEqual(status["turntable"]["recall"]["state"], "complete")
+        self.assertEqual(status["turntable"]["recall"]["completedAxes"], [1, 2])
+        self.assertTrue(status["turntableTest"]["passed"])
+        self.assertIsNone(status["turntableWarning"])
+        self.assertIsNone(status["turntablePreparation"])
+        for axis, target in (("1", 25.935), ("2", -6.994)):
+            self.assertEqual(status["turntable"]["feedback"]["axes"][axis]["output_angle_deg"], target)
+
+    def test_recall_rejects_invalid_or_missing_targets_and_confirmation_before_motion(self):
+        motor = FakeMotor()
+        client = self.make_client(motor)
+        for changes in ({"axis1AngleDeg": 36.7}, {"axis2AngleDeg": -180.001}, {"axis2AngleDeg": None},
+                        {"axis1AngleDeg": True}, {"confirmMotion": False}, {"referenceSignature": "broken"}):
+            response = client.post("/api/field/turntable", json=self.recall_body(**changes))
+            self.assertEqual(response.status_code, 422, response.text)
+        self.assertEqual(motor.start_calls, 0)
+
+    def test_recall_checks_axis2_soft_limit_before_axis1_moves(self):
+        motor = FakeMotor()
+        motor.guard_configs[2] = replace(motor.get_guard_config(2), soft_enabled=False)
+        client = self.make_client(motor)
+        client.post("/api/field/turntable", json=self.recall_body())
+        status = self.wait_test(client)
+        self.assertEqual(motor.start_calls, 0)
+        self.assertEqual(status["turntable"]["recall"]["state"], "error")
+        self.assertIn("软限位", status["turntable"]["error"])
+
+    def test_recall_rejects_changed_recorded_reference_before_motion(self):
+        motor = FakeMotor()
+        client = self.make_client(motor)
+        signature = json.dumps([[0, 3, 10000, 17], [999, 3, 10000, 17]])
+        client.post("/api/field/turntable", json=self.recall_body(referenceSignature=signature))
+        status = self.wait_test(client)
+        self.assertEqual(motor.start_calls, 0)
+        self.assertIn("记录后参考位", status["turntable"]["error"])
+
+    def test_recall_first_axis_stop_drift_prevents_second_axis(self):
+        motor = FakeMotor()
+        original = motor.stop
+        def stop(axis):
+            original(axis)
+            if axis == 1:
+                motor.angles[1] += 0.5
+        motor.stop = stop
+        client = self.make_client(motor)
+        client.post("/api/field/turntable", json=self.recall_body())
+        status = self.wait_test(client)
+        self.assertEqual(motor.start_calls, 1)
+        self.assertEqual(status["turntable"]["recall"]["state"], "error")
+        self.assertIn("停止后角度偏离目标", status["turntable"]["error"])
+
+    def test_recall_stop_accepts_either_axis_and_never_starts_next_axis(self):
+        motor = FakeMotor()
+        entered = threading.Event()
+        def move(axis, target, speed_rpm, cancel=None):
+            motor.start_calls += 1
+            entered.set()
+            cancel.wait(3)
+            return None
+        motor.move_to_angle = move
+        client = self.make_client(motor)
+        client.post("/api/field/turntable", json=self.recall_body())
+        self.assertTrue(entered.wait(2))
+        duplicate = client.post("/api/field/turntable", json=self.recall_body())
+        self.assertEqual(duplicate.status_code, 409)
+        response = client.post("/api/field/turntable", json={"port": "COM6", "axis": 2, "action": "stop", "confirmMotion": True})
+        self.assertEqual(response.status_code, 200, response.text)
+        status = response.json()
+        self.assertEqual(motor.start_calls, 1)
+        self.assertEqual(motor.stopped_axes, [1])
+        self.assertEqual(status["turntable"]["recall"]["state"], "cancelled")
+        self.assertFalse(status["turntableTest"]["passed"])
+        self.assertIsNone(status["turntableWarning"])
+
+    def test_recall_latched_fault_prevents_all_motion(self):
+        motor = FakeMotor()
+        original = motor.get_feedback
+        motor.get_feedback = lambda axis: replace(original(axis), fault=2) if axis == 1 else original(axis)
+        client = self.make_client(motor)
+        client.post("/api/field/turntable", json=self.recall_body())
+        status = self.wait_test(client)
+        self.assertEqual(motor.start_calls, 0)
+        self.assertEqual(status["turntable"]["recall"]["state"], "error")
+
+    def test_stop_clears_recovery_guard_when_only_other_axis_reports_stop_pending(self):
+        motor = Axis2StopPendingMotor()
+        client = self.make_client(motor)
+        guard = client.app.state.controller.motion_guard
+        guard.mark(TurntableConfig(port="COM6", axis=1), True, "转盘停止尚未确认")
+        response = client.post("/api/field/turntable", json={"port": "COM6", "axis": 1,
+                                      "action": "stop", "confirmMotion": True})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIsNone(response.json()["turntableWarning"])
+        self.assertEqual(motor.stopped_axes, [1])
+
+    def test_stop_confirmation_rejects_stop_pending_on_selected_axis(self):
+        motor = Axis2StopPendingMotor()
+        value = snapshot(motor, 2)
+        with self.assertRaises(MotorError):
+            require_stop_confirmed(value, TurntableConfig(port="COM6", axis=2))
+
+    def test_stop_failure_preserves_feedback_and_recovery_warning(self):
+        motor = Axis2StopPendingMotor()
+        client = self.make_client(motor)
+        response = client.post("/api/field/turntable", json={"port": "COM6", "axis": 2,
+                                      "action": "stop", "confirmMotion": True})
+        self.assertEqual(response.status_code, 503, response.text)
+        self.assertIn("轴2", response.json()["detail"])
+        self.assertIn("0x0011", response.json()["detail"])
+        status = client.get("/api/field/status").json()
+        self.assertTrue(status["turntableWarning"])
+        self.assertFalse(status["turntable"]["stopConfirmed"])
+        self.assertEqual(status["turntable"]["feedback"]["axes"]["2"]["flags"], 17)
+        self.assertEqual(motor.stopped_axes, [2])
+
+    def test_stationary_fault_is_visible_after_stop_and_still_blocks_motion(self):
+        motor = FakeMotor(alarm_code=3, limit_flags=1)
+        get_feedback = motor.get_feedback
+        motor.get_feedback = lambda axis: replace(get_feedback(axis), fault=7) if axis == 1 else get_feedback(axis)
+        client = self.make_client(motor)
+        response = client.post("/api/field/turntable", json={"port": "COM6", "axis": 1,
+                                      "action": "stop", "confirmMotion": True})
+        self.assertEqual(response.status_code, 200, response.text)
+        status = response.json()
+        self.assertEqual(status["turntable"]["state"], "stopped")
+        self.assertTrue(status["turntable"]["stopConfirmed"])
+        self.assertIsNone(status["turntableWarning"])
+        feedback = status["turntable"]["feedback"]
+        self.assertEqual(feedback["axes"]["1"]["fault"], 7)
+        self.assertEqual(feedback["alarmCode"], 3)
+        self.assertEqual(feedback["limitFlags"], 1)
+        with self.assertRaises(MotorError):
+            require_manual_position_ready(feedback, TurntableConfig(**self.position_config(axis=1)))
+
+    def test_stop_timeout_leaves_motion_uncertain_and_never_starts(self):
+        motor = FakeMotor()
+        def timeout(axis):
+            raise MotorError("fixture stop timeout")
+        motor.stop = timeout
+        client = self.make_client(motor)
+        response = client.post("/api/field/turntable", json={"port": "COM6", "axis": 1,
+                                      "action": "stop", "confirmMotion": True})
+        self.assertEqual(response.status_code, 503)
+        status = client.get("/api/field/status").json()
+        self.assertFalse(status["turntable"]["stopConfirmed"])
+        self.assertTrue(status["turntableWarning"])
+        self.assertTrue(MotionGuard(Path(self.temp.name)).warning)
+        self.assertEqual(motor.start_calls, 0)
+
+    def test_position_joint_holds_and_records_both_axes_with_actual_angles(self):
+        motor = FakeMotor()
+        client = self.make_client(motor)
+        config = self.position_config()
+        prepared = client.post("/api/field/turntable", json={**config, "action": "prepare", "confirmMotion": True})
+        self.assertEqual(prepared.status_code, 200, prepared.text)
+        changed = {**config, "targetAngleDeg": -16}
+        self.assertEqual(client.post("/api/field/start", json=self.start_body(changed)).status_code, 409)
+        self.assertEqual(client.post("/api/field/start", json=self.start_body(config)).status_code, 200)
+        self.wait_state(client, "holding")
+        for action in ("reference", "limits", "probe"):
+            denied = client.post("/api/field/turntable", json={"port": "COM6", "axis": 1, "action": action, "confirmMotion": True})
+            self.assertEqual(denied.status_code, 409)
+        stopped = client.post("/api/field/stop")
+        self.assertEqual(stopped.status_code, 200, stopped.text)
+        value = stopped.json()
+        self.assertEqual(value["recording"]["status"], "complete")
+        self.assertEqual(motor.stopped_axes, [2])
+        rows = client.get(f'/api/field/recordings/{value["recording"]["id"]}/turntable-export').text.splitlines()
+        reached = next(json.loads(row) for row in rows if json.loads(row)["event"] == "position_reached")
+        self.assertEqual(reached["feedback"]["axes"]["2"]["output_angle_deg"], -15)
+        self.assertEqual(reached["feedback"]["axes"]["1"]["output_angle_deg"], 0)
+        self.assertIn("receivedSamples", reached)
+        self.assertIn("not hardware synchronized", value["recording"]["turntable"]["telemetry"]["timestampBasis"])
+
+    def test_reference_changed_after_preparation_never_starts_motion(self):
+        motor = FakeMotor()
+        client = self.make_client(motor)
+        config = self.position_config()
+        prepared = client.post("/api/field/turntable", json={**config, "action": "prepare", "confirmMotion": True})
+        self.assertEqual(prepared.status_code, 200)
+        motor.origins[2] += 100
+        self.assertEqual(client.post("/api/field/start", json=self.start_body(config)).status_code, 200)
+        self.wait_state(client, "error")
+        self.assertEqual(motor.start_calls, 0)
+        value = client.get("/api/field/status").json()
+        self.assertIn("参考位", value["recording"]["error"])
+
+    def test_position_progress_detects_stall_and_allows_long_hold(self):
+        motor = FakeMotor()
+        config = TurntableConfig(**self.position_config())
+        feedback = snapshot(motor, 2)
+        with patch("blade_acquisition.turntable.time.monotonic", return_value=0):
+            progress = PositionProgress(feedback, config)
+        with patch("blade_acquisition.turntable.time.monotonic", return_value=11):
+            with self.assertRaises(MotorError):
+                progress.check(feedback, config)
+        motor.angles[2] = config.targetAngleDeg
+        at_target = snapshot(motor, 2)
+        with patch("blade_acquisition.turntable.time.monotonic", return_value=10000):
+            progress.check(at_target, config)
+        self.assertTrue(position_reached(at_target, config))
+        motor.angles[1] = 0.2
+        with self.assertRaises(MotorError):
+            progress.check(snapshot(motor, 2), config)
+        motor.angles[1] = 0
+        motor.origins[2] = 1
+        with self.assertRaises(MotorError):
+            progress.check(snapshot(motor, 2), config)
 
     def test_new_protocol_converts_rpm_to_degrees_and_renews_without_start_retry(self):
         motor = MotorController("COM6")

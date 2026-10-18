@@ -22,3 +22,11 @@ apps/desktop/resources/prerequisites/
 apps/desktop/build/payload.generated.nsh
 apps/desktop/resources/.acquisition-stage-*/
 apps/desktop/resources/.acquisition-previous-*/
+/build/
+/outputs/
+/release-turntable/
+apps/desktop/build/app-unpacked-*/
+apps/desktop/build/staging-*/
+services/acquisition/build-*/
+services/acquisition/dist-*/
+services/acquisition/build-*.log

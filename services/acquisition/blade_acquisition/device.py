@@ -118,6 +118,18 @@ class DevicePanel(PolytecReceiver):
                 verified = self.read_field(key)
                 if verified.get("value") != value:
                     raise RuntimeError("设备读回与目标值不一致；配置可能已部分改变，请重新读取，勿直接开始采集。")
+            elif action == "laser_on":
+                if not self.has(SENSOR_HEAD, 46):
+                    raise ValueError("设备不支持激光控制。")
+                self.set_integer(SENSOR_HEAD, 46, 1)
+                if self.integer(SENSOR_HEAD, 46) != 1:
+                    raise RuntimeError("激光开启读回未确认。")
+            elif action == "laser_off":
+                if not self.has(SENSOR_HEAD, 46):
+                    raise ValueError("设备不支持激光控制。")
+                self.set_integer(SENSOR_HEAD, 46, 0)
+                if self.integer(SENSOR_HEAD, 46) != 0:
+                    raise RuntimeError("激光关闭读回未确认。")
             elif action == "autofocus":
                 self.autofocus()
             elif action != "read":

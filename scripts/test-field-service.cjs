@@ -37,6 +37,19 @@ function deferred() {
   const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
   return { promise, resolve, reject };
 }
+test("manual laser commands and RSSI calibration reach the desktop service", async t => {
+  const f = fixture(t);
+  for (const action of ['laser_on', 'laser_off']) {
+    await f.service.device({ deviceIp: '192.168.104.50', action, confirmLaser: true });
+    assert.equal(f.requests.at(-1).route, 'device');
+    assert.equal(JSON.parse(f.requests.at(-1).options.body).action, action);
+  }
+  const request = { deviceIp: '192.168.104.50', hostIp: '192.168.104.10', state: 'background', durationSeconds: 2, confirmLaser: true };
+  await f.service.rssiCalibration(request);
+  assert.equal(f.requests.at(-1).route, 'rssi-calibration');
+  assert.deepEqual(JSON.parse(f.requests.at(-1).options.body), request);
+  await assert.rejects(f.service.rssiCalibration({ ...request, confirmLaser: false }), { status: 400 });
+});
 const response = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, text: async () => JSON.stringify(data) });
 
 function fixture(t, overrides = {}) {
@@ -273,6 +286,26 @@ test("laser and acquisition require complete explicit confirmation before any st
   assert.equal(f.requests.length, 0);
   await f.service.begin({ ...config, confirmLaser: true });
   assert.equal(f.requests.filter(request => request.route === "start").length, 1);
+});
+
+test("point cycle forwards entry and exit RSSI controls through the desktop bridge", async t => {
+  const f = fixture(t);
+  const config = { deviceIp: "192.168.0.10", hostIp: "192.168.0.2", name: "回波换点", object: "", turbine: "", point: "",
+    confirmLaser: true, confirmMotion: true, pointCycle: { port: "COM6", cycles: 1, dwellSeconds: 60, speedRpm: 2,
+      points: [{ name: "M01", axis1AngleDeg: 2, axis2AngleDeg: 6 }], rssiTriggerEnabled: true,
+      rssiThresholdMode: "adaptive", rssiBaselineRatio: .9, rssiConfirmMs: 25, rssiSmoothingMs: 10,
+      rssiMinimumSeconds: .5, rssiMotionMarginMs: 200,
+      rssiEnterSpread: 9, rssiExitSpread: 2, rssiEnterConfirmMs: 40 } };
+  for (const change of [{ rssiConfirmMs: 0 }, { rssiBaselineRatio: NaN }, { rssiTriggerEnabled: "true" },
+    { rssiThresholdMode: "absolute" }, { rssiMinimumSeconds: 61 }, { rssiEnterSpread: 2 },
+    { rssiEnterSpread: true }, { rssiExitSpread: NaN }, { rssiExitSpread: 9 },
+    { rssiEnterConfirmMs: 0 }]) {
+    await assert.rejects(f.service.begin({ ...config, pointCycle: { ...config.pointCycle, ...change } }), { status: 400 });
+  }
+  assert.equal(f.children.length, 0);
+  await f.service.begin(config);
+  const sent = JSON.parse(f.requests.find(request => request.route === "start").options.body);
+  assert.deepEqual(sent.pointCycle, config.pointCycle);
 });
 
 test("simulation needs an explicit source and rejects invalid point/scenario before launching or requesting", async (t) => {
@@ -578,4 +611,39 @@ test("a pre-start idle status cannot overwrite a successful acquisition start", 
   assert.equal((await f.service.begin({ confirmLaser: true, deviceIp: "192.168.0.10", hostIp: "192.168.0.2", name: "任务", object: "叶片", turbine: "机组", point: "测点" })).state, "acquiring");
   pending.resolve(response(idle()));
   assert.notEqual((await oldStatus).state, "idle");
+});
+
+
+test("position bridge preserves independent axis targets and rejects unsafe angles before I/O", async t => {
+  const f = fixture(t);
+  const config = { port: 'COM6', axis: 1, speedRpm: 0.2, direction: 'forward', durationSeconds: 0, protocol: 'position', targetAngleDeg: 12 };
+  for (const changes of [{ targetAngleDeg: undefined }, { targetAngleDeg: true }, { targetAngleDeg: NaN }, { targetAngleDeg: 35.001 }, { axis: 2, targetAngleDeg: -180.001 }]) {
+    await assert.rejects(f.service.turntable({ ...config, action: 'prepare', confirmMotion: true, ...changes }), { status: 400 });
+  }
+  assert.equal(f.requests.length, 0);
+  await f.service.turntable({ ...config, action: 'prepare', confirmMotion: true });
+  assert.equal(JSON.parse(f.requests.find(row => row.route === 'turntable').options.body).targetAngleDeg, 12);
+  for (const action of ['reference', 'limits']) {
+    await assert.rejects(f.service.turntable({ port: 'COM6', axis: 2, action }), { status: 400 });
+    await f.service.turntable({ port: 'COM6', axis: 2, action, confirmMotion: true });
+    const body = JSON.parse(f.requests.filter(row => row.route === 'turntable').at(-1).options.body);
+    assert.equal(body.axis, 2);
+    assert.equal(body.action, action);
+  }
+});
+
+test("recorded point recall validates both targets and forwards both angles and reference signature", async t => {
+  const f = fixture(t);
+  const request = { action: 'recall', port: 'COM6', axis: 1, speedRpm: 0.2, axis1AngleDeg: 25.935, axis2AngleDeg: -6.994, confirmMotion: true,
+    referenceSignature: '[[0,3,10000,17],[0,3,10000,17]]' };
+  for (const changes of [{ confirmMotion: false }, { axis1AngleDeg: 36.7 }, { axis2AngleDeg: -180.001 }, { axis1AngleDeg: true }, { axis2AngleDeg: undefined }]) {
+    await assert.rejects(f.service.turntable({ ...request, ...changes }), { status: 400 });
+  }
+  assert.equal(f.requests.length, 0);
+  await f.service.turntable(request);
+  const body = JSON.parse(f.requests.find(row => row.route === 'turntable').options.body);
+  assert.equal(body.action, 'recall');
+  assert.equal(body.axis1AngleDeg, 25.935);
+  assert.equal(body.axis2AngleDeg, -6.994);
+  assert.equal(body.referenceSignature, request.referenceSignature);
 });

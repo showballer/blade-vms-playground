@@ -118,6 +118,17 @@ class DeviceTests(unittest.TestCase):
         self.assertEqual(result["fields"]["laser"]["value"], 0)
         self.assertTrue(self.api.closed)
 
+    def test_observation_laser_can_stay_on_until_explicitly_closed(self):
+        result = self.panel.run_command("laser_on")
+        self.assertEqual(self.api.writes, [(46, 1)])
+        self.assertEqual(result["fields"]["laser"]["value"], 1)
+        self.assertTrue(self.api.closed)
+        self.api.closed = False
+        result = self.panel.run_command("laser_off")
+        self.assertEqual(self.api.writes, [(46, 1), (46, 0)])
+        self.assertEqual(result["fields"]["laser"]["value"], 0)
+        self.assertTrue(self.api.closed)
+
     @patch("blade_acquisition.device.time.sleep")
     def test_uncertain_start_still_attempts_laser_off(self, _sleep):
         self.api.fail_command = 64

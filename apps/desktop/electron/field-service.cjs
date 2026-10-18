@@ -12,14 +12,63 @@ function failure(message, status = 503) {
 }
 function turntableConfig(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value) ||
-      Object.keys(value).some(key => !['port', 'axis', 'speedRpm', 'direction', 'durationSeconds', 'protocol'].includes(key)) ||
+      Object.keys(value).some(key => !['port', 'axis', 'speedRpm', 'direction', 'durationSeconds', 'protocol', 'targetAngleDeg'].includes(key)) ||
       !/^COM[1-9][0-9]{0,3}$/.test(value.port) || ![1, 2].includes(value.axis) ||
       typeof value.speedRpm !== 'number' || !Number.isFinite(value.speedRpm) || value.speedRpm < 0.02 || value.speedRpm > 100 ||
       !['forward', 'reverse'].includes(value.direction) || typeof value.durationSeconds !== 'number' ||
       !Number.isFinite(value.durationSeconds) || value.durationSeconds < 0 || value.durationSeconds > 86400 ||
-      (value.protocol !== undefined && !['legacy_speed', 'continuous'].includes(value.protocol))) throw failure('无效转盘参数：输出轴 0.02～100 rpm，运行时长 0～86400 秒', 400);
-  return { port: value.port, axis: value.axis, speedRpm: value.speedRpm, direction: value.direction, durationSeconds: value.durationSeconds,
+      (value.protocol !== undefined && !['legacy_speed', 'continuous', 'position'].includes(value.protocol))) throw failure('无效转盘参数：输出轴 0.02～100 rpm，运行时长 0～86400 秒', 400);
+  if ((value.targetAngleDeg !== undefined && (typeof value.targetAngleDeg !== 'number' || !Number.isFinite(value.targetAngleDeg) || Math.abs(value.targetAngleDeg) > (value.axis === 1 ? 35 : 180))) ||
+      (value.protocol === 'position' && value.targetAngleDeg === undefined)) throw failure('目标角度须在轴1±35°、轴2±180°内', 400);
+  return { ...(value.targetAngleDeg !== undefined ? { targetAngleDeg: value.targetAngleDeg } : {}), port: value.port, axis: value.axis, speedRpm: value.speedRpm, direction: value.direction, durationSeconds: value.durationSeconds,
     protocol: value.protocol || 'legacy_speed' };
+}
+function pointCycleConfig(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) ||
+      !/^COM[1-9][0-9]{0,3}$/.test(value.port) || !Array.isArray(value.points) ||
+      value.points.length < 1 || value.points.length > 200 ||
+      !Number.isInteger(value.cycles) || value.cycles < 1 || value.cycles > 100 ||
+      value.points.length * value.cycles > 2000 || typeof value.dwellSeconds !== 'number' ||
+      !Number.isFinite(value.dwellSeconds) || value.dwellSeconds < 1 || value.dwellSeconds > 3600 ||
+      typeof value.speedRpm !== 'number' || !Number.isFinite(value.speedRpm) || value.speedRpm < 0.02 || value.speedRpm > 10)
+    throw failure('无效多点循环参数：点位、圈数、停留时间或回位速度超出范围', 400);
+  const points = value.points.map(point => {
+    if (!point || (point.pointId !== undefined && (typeof point.pointId !== 'string' || !point.pointId.trim() || point.pointId.length > 120)) ||
+        typeof point.name !== 'string' || !point.name.trim() || point.name.length > 120 ||
+        typeof point.axis1AngleDeg !== 'number' || !Number.isFinite(point.axis1AngleDeg) || Math.abs(point.axis1AngleDeg) > 35 ||
+        typeof point.axis2AngleDeg !== 'number' || !Number.isFinite(point.axis2AngleDeg) || Math.abs(point.axis2AngleDeg) > 180 ||
+        (point.referenceSignature !== undefined && (typeof point.referenceSignature !== 'string' || point.referenceSignature.length > 512)))
+      throw failure('无效多点循环点位：需要名称及轴1±35°、轴2±180°角度', 400);
+    return { ...(point.pointId !== undefined ? { pointId: point.pointId.trim() } : {}), name: point.name.trim(), axis1AngleDeg: point.axis1AngleDeg, axis2AngleDeg: point.axis2AngleDeg,
+      ...(point.referenceSignature !== undefined ? { referenceSignature: point.referenceSignature } : {}) };
+  });
+  const echo = {};
+  if (value.rssiTriggerEnabled !== undefined) {
+    if (typeof value.rssiTriggerEnabled !== 'boolean') throw failure('RSSI 开关必须为布尔值', 400);
+    echo.rssiTriggerEnabled = value.rssiTriggerEnabled;
+  }
+  if (value.rssiThresholdMode !== undefined) {
+    if (!['adaptive', 'absolute'].includes(value.rssiThresholdMode)) throw failure('无效 RSSI 阈值模式', 400);
+    echo.rssiThresholdMode = value.rssiThresholdMode;
+  }
+  for (const [key, min, max] of [['rssiLeaveThresholdPercent', 0, 100], ['rssiBaselineRatio', 0.5, 0.99],
+    ['rssiSmoothingMs', 2, 100], ['rssiConfirmMs', 10, 1000], ['rssiMotionMarginMs', 0, 5000],
+    ['rssiMinimumSeconds', 0, value.dwellSeconds], ['rssiEnterSpread', 0, 100],
+    ['rssiExitSpread', 0, 100], ['rssiEnterConfirmMs', 10, 1000]]) {
+    if (value[key] === undefined) continue;
+    if (typeof value[key] !== 'number' || !Number.isFinite(value[key]) || value[key] < min || value[key] > max)
+      throw failure(`无效 RSSI 参数 ${key}`, 400);
+    echo[key] = value[key];
+  }
+  if ((echo.rssiEnterSpread ?? 8) <= (echo.rssiExitSpread ?? 3))
+    throw failure('离开波动阈值必须小于进入波动阈值', 400);
+  if (value.keepLaserOnBetweenPoints !== undefined) {
+    if (typeof value.keepLaserOnBetweenPoints !== 'boolean') throw failure('激光持续状态必须为布尔值', 400);
+    echo.keepLaserOnBetweenPoints = value.keepLaserOnBetweenPoints;
+  }
+  if (echo.rssiTriggerEnabled && echo.rssiThresholdMode === 'absolute' && echo.rssiLeaveThresholdPercent === undefined)
+    throw failure('绝对阈值模式需要填写 RSSI 离开阈值', 400);
+  return { port: value.port, points, cycles: value.cycles, dwellSeconds: value.dwellSeconds, speedRpm: value.speedRpm, ...echo };
 }
 function freePort() {
   return new Promise((resolve, reject) => {
@@ -157,7 +206,7 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     const requestGeneration = generation, requestChild = child;
     const response = await fetchImpl(`http://127.0.0.1:${port}/api/field/${route}`, {
       method, redirect: 'error', signal: AbortSignal.timeout(route.endsWith('/analysis') || route === 'rotation' || route.endsWith('/waveform') || route.includes('/waveform?') ? 120000 :
-        route === 'device' ? 90000 : route === 'stop' || route === 'turntable' ? Math.max(75000, requestTimeoutMs) : requestTimeoutMs),
+        route === 'device' || route === 'rssi-calibration' ? 90000 : route === 'stop' || route === 'turntable' ? Math.max(75000, requestTimeoutMs) : requestTimeoutMs),
       headers: { Authorization: `Bearer ${secret}`, 'Content-Type': 'application/json' },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
@@ -330,7 +379,11 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     if (!config || (config.source !== undefined && !['device', 'simulation'].includes(config.source))) throw failure('无效采集来源', 400);
     const simulated = config.source === 'simulation';
     const body = {};
-    if (config.turntable !== undefined) {
+    if (config.pointCycle !== undefined) {
+      if (simulated || config.confirmMotion !== true) throw failure('多点循环任务必须使用真实采集并确认转盘运动', 400);
+      body.pointCycle = pointCycleConfig(config.pointCycle);
+      body.confirmMotion = true;
+    } else if (config.turntable !== undefined) {
       if (simulated || config.confirmMotion !== true) throw failure('联合转盘任务必须使用真实采集并确认转盘运动', 400);
       body.turntable = turntableConfig(config.turntable);
       body.confirmMotion = true;
@@ -407,9 +460,9 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     return result;
   }
   async function device(request) {
-    if (!request || net.isIP(request.deviceIp) !== 4 || !['read', 'set', 'autofocus'].includes(request.action)) throw failure('无效设备配置请求', 400);
+    if (!request || net.isIP(request.deviceIp) !== 4 || !['read', 'set', 'autofocus', 'laser_on', 'laser_off'].includes(request.action)) throw failure('无效设备配置请求', 400);
     if (request.action === 'set' && (request.confirmChange !== true || !['velocityRange', 'bandwidth', 'highPass', 'ase'].includes(request.key))) throw failure('请确认修改支持的配置项', 400);
-    if (request.action === 'autofocus' && request.confirmLaser !== true) throw failure('请确认自动聚焦激光安全', 400);
+    if (['autofocus', 'laser_on', 'laser_off'].includes(request.action) && request.confirmLaser !== true) throw failure('请确认现场激光安全', 400);
     for (const value of [request.value, request.expected]) if (value !== undefined &&
       !(typeof value === 'string' && value.length <= 120 && !value.includes('\0')) && !(Number.isInteger(value) && [0, 1].includes(value))) throw failure('无效设备配置值', 400);
     await ready();
@@ -418,20 +471,38 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     return http('device', 'POST', Object.fromEntries(['deviceIp', 'action', 'key', 'value', 'expected', 'confirmChange', 'confirmLaser']
       .filter(key => request[key] !== undefined).map(key => [key, request[key]])));
   }
+  async function rssiCalibration(request) {
+    if (!request || net.isIP(request.deviceIp) !== 4 || net.isIP(request.hostIp) !== 4 || request.deviceIp === request.hostIp ||
+        !['background', 'blade_on', 'blade_pass'].includes(request.state) || request.confirmLaser !== true ||
+        typeof request.durationSeconds !== 'number' || !Number.isFinite(request.durationSeconds) || request.durationSeconds < 0.5 || request.durationSeconds > 10)
+      throw failure('无效 RSSI 三状态标定请求', 400);
+    await ready();
+    const current = await http('status');
+    if (current.deviceBusy || current.turntableBusy || current.receiver?.running || ['starting', 'acquiring', 'stopping'].includes(current.state)) throw failure('设备正在使用，请先停止采集或转盘动作', 409);
+    return http('rssi-calibration', 'POST', { deviceIp: request.deviceIp, hostIp: request.hostIp, state: request.state, durationSeconds: request.durationSeconds, confirmLaser: true });
+  }
   async function turntablePorts() { await ready(); return http('turntable/ports'); }
   async function turntable(request) {
-    if (!request || !['probe', 'test', 'prepare', 'stop'].includes(request.action) || !/^COM[1-9][0-9]{0,3}$/.test(request.port) ||
-        ![1, 2].includes(request.axis) || (['stop', 'test', 'prepare'].includes(request.action) && request.confirmMotion !== true) ||
+    if (!request || !['probe', 'test', 'manual_move', 'recall', 'prepare', 'stop', 'reference', 'limits'].includes(request.action) || !/^COM[1-9][0-9]{0,3}$/.test(request.port) ||
+        ![1, 2].includes(request.axis) || (['stop', 'test', 'manual_move', 'recall', 'prepare', 'reference', 'limits'].includes(request.action) && request.confirmMotion !== true) ||
         (request.confirmRecovery !== undefined && typeof request.confirmRecovery !== 'boolean') ||
         (request.testSeconds !== undefined && (!Number.isInteger(request.testSeconds) || request.testSeconds < 1 || request.testSeconds > 15))) throw failure('无效转盘检查/试转请求', 400);
-    const config = ['test', 'prepare'].includes(request.action) ? turntableConfig({ port: request.port, axis: request.axis,
-      speedRpm: request.speedRpm, direction: request.direction, durationSeconds: request.durationSeconds, protocol: request.protocol }) : {};
+    const config = ['test', 'manual_move', 'prepare'].includes(request.action) ? turntableConfig({ port: request.port, axis: request.axis,
+      speedRpm: request.speedRpm, direction: request.direction, durationSeconds: request.durationSeconds, protocol: request.protocol, targetAngleDeg: request.targetAngleDeg }) : {};
+    const recall = request.action === 'recall' ? (() => {
+      if (!Number.isFinite(request.axis1AngleDeg) || Math.abs(request.axis1AngleDeg) > 35 ||
+          !Number.isFinite(request.axis2AngleDeg) || Math.abs(request.axis2AngleDeg) > 180) throw failure('点位需要两轴有效角度，轴1限±35°，轴2限±180°', 400);
+      if (request.referenceSignature !== undefined && (typeof request.referenceSignature !== 'string' || request.referenceSignature.length > 512)) throw failure('点位参考位签名无效', 400);
+      return { axis1AngleDeg: request.axis1AngleDeg, axis2AngleDeg: request.axis2AngleDeg,
+        ...(request.referenceSignature !== undefined ? { referenceSignature: request.referenceSignature } : {}),
+        speedRpm: turntableConfig({ port: request.port, axis: 1, speedRpm: request.speedRpm, direction: 'forward', durationSeconds: 0, protocol: 'position', targetAngleDeg: request.axis1AngleDeg }).speedRpm };
+    })() : {};
     await ready();
     const current = await http('status');
     if (current.deviceBusy || (current.turntableBusy && request.action !== 'stop') || current.receiver?.running || ['starting', 'acquiring', 'stopping'].includes(current.state)) throw failure('设备正在使用，请先停止并保存', 409);
     snapshotEpoch += 1;
     try {
-      lastStatus = await http('turntable', 'POST', { ...config, action: request.action, port: request.port, axis: request.axis,
+      lastStatus = await http('turntable', 'POST', { ...config, ...recall, action: request.action, port: request.port, axis: request.axis,
         ...(request.testSeconds !== undefined ? { testSeconds: request.testSeconds } : {}),
         confirmMotion: request.confirmMotion === true, confirmRecovery: request.confirmRecovery === true });
       return envelope();
@@ -469,6 +540,6 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     await ready();
     return http('rotation', 'POST', parameters);
   }
-  return { start, status, frame, begin, stop, recordings, simulation, exportRecording, waveform, analysis, rotation, device, turntable, turntablePorts, shutdown, serviceInfo };
+  return { start, status, frame, begin, stop, recordings, simulation, exportRecording, waveform, analysis, rotation, device, rssiCalibration, turntable, turntablePorts, shutdown, serviceInfo };
 }
 module.exports = { createFieldService, windowsServiceEnvironment, posixServiceEnvironment, failure };
