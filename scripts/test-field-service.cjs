@@ -396,13 +396,14 @@ test("simulation needs an explicit source and rejects invalid point/scenario bef
 test('automatic stations preserve physical geometry and multi-point classification without accepting fabricated run identity', async t => {
   const f = fixture(t);
   const pointCycle = { mode: 'automatic_stations', port: 'COM6', cycles: 2, dwellSeconds: 60, speedRpm: .52,
+    collectionId: 'c'.repeat(32),
     nominalPeriodSeconds: 30, maxMoveRpm: .6, rssiTriggerEnabled: true,
     geometry: { distanceM: 2.86, hubHeightDeltaM: 1.46, rotationDirection: 'clockwise', axis1Sign: 1, axis2Sign: 1,
       anchorRadiusM: .31, anchorAxis1AngleDeg: 10, anchorAxis2AngleDeg: 0 },
     points: [{ pointId: 'p1-s1', name: 'P1 · 0°', port: 'COM6', referenceSignature: '[[0,3,10000,17],[0,3,10000,17]]',
       axis1AngleDeg: 10, axis2AngleDeg: 0, bladeId: '2', radialPointId: 'p1', radialPointName: 'P1', radiusM: .31, azimuthDeg: 0 }] };
   const config = { source: 'device', deviceIp: '192.168.106.90', hostIp: '192.168.106.10', name: '分站采集', object: '', turbine: '', point: '', confirmLaser: true, confirmMotion: true, pointCycle };
-  for (const change of [{ mode: 'unknown' }, { rssiTriggerEnabled: false }, { nominalPeriodSeconds: 0 }, { maxMoveRpm: .2 }, { speedRpm: .231, maxMoveRpm: .231 },
+  for (const change of [{ mode: 'unknown' }, { mode: 'legacy' }, { collectionId: '' }, { collectionId: 'c'.repeat(32) + '\n' }, { collectionId: true }, { collectionId: null }, { collectionId: 'C'.repeat(32) }, { rssiTriggerEnabled: false }, { nominalPeriodSeconds: 0 }, { maxMoveRpm: .2 }, { speedRpm: .231, maxMoveRpm: .231 },
     { geometry: { ...pointCycle.geometry, axis1Sign: true } }, { geometry: { ...pointCycle.geometry, calibrated: true } },
     { points: [{ ...pointCycle.points[0], radialPointId: '' }] }, { points: [{ ...pointCycle.points[0], azimuthDeg: 360 }] }]) {
     await assert.rejects(f.service.begin({ ...config, pointCycle: { ...pointCycle, ...change } }), { status: 400 });

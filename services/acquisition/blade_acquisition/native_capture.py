@@ -248,6 +248,7 @@ def import_capture(store: RecordingStore, value):
                     raise
                 shutil.copyfile(original, temporary / name)
         imported = {**manifest, "id": target_id, "cloudCaptureId": capture_id,
+                    "sourceRecordingId": manifest.get("sourceRecordingId") or manifest["id"],
                     "sourceDataPreserved": True, "sourceQuantity": "velocity", "sourceUnit": "m/s",
                     "conversion": "原生采集样本，未重采样或修改数值"}
         atomic_json(temporary / "manifest.json", imported)

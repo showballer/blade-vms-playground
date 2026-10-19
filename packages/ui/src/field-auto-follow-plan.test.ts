@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { autoFollowDefaults, planAutoFollow, stationOpticalAngles, type AutoFollowAnchor } from "./field-auto-follow-plan";
 
 const signature = JSON.stringify([[0, 1, 10000, 17], [0, 1, 10000, 17]]);
-const anchor: AutoFollowAnchor = { port: "COM3", referenceSignature: signature, radiusM: 0.31, axis1AngleDeg: 10, axis2AngleDeg: 0 };
+const anchor: AutoFollowAnchor = { port: "COM3", referenceSignature: signature, radiusM: 0.31, pointId: "p1", axis1AngleDeg: 10, axis2AngleDeg: 0 };
 const draft = () => structuredClone(autoFollowDefaults);
 const near = (actual: number, expected: number, tolerance = 1e-6) => assert.ok(Math.abs(actual - expected) < tolerance, `${actual} != ${expected}`);
 const model = planAutoFollow(draft(), anchor);
@@ -28,11 +28,21 @@ const flipped = planAutoFollow({ ...draft(), axis1Sign: -1, axis2Sign: -1 }, anc
 near(flipped.points[2].axis1AngleDeg, 20 - model.points[2].axis1AngleDeg);
 near(flipped.points[1].axis2AngleDeg, -model.points[1].axis2AngleDeg);
 const multiple = planAutoFollow({ ...draft(), cycles: 2, points: [...draft().points, { id: "p2", name: "叶尖", radiusM: 0.5 }] }, anchor);
-assert.equal(multiple.points.length, 8);
-assert.equal(multiple.totalRecords, 16);
-assert.deepEqual(multiple.points.map(p => p.radialPointId), ["p1", "p1", "p1", "p1", "p2", "p2", "p2", "p2"]);
-assert.equal(new Set(multiple.points.map(p => p.pointId)).size, 8);
-assert.ok(multiple.points[4].axis1AngleDeg < model.points[0].axis1AngleDeg, "Larger radius six-o'clock point needs lower pitch from same anchor");
+assert.equal(multiple.points.length, 4);
+assert.equal(multiple.totalRecords, 8);
+assert.deepEqual(multiple.points.map(p => p.radialPointId), ["p1", "p1", "p1", "p1"]);
+assert.equal(new Set(multiple.points.map(p => p.pointId)).size, 4);
+const selectedSecond = { ...draft(), activePointId: "p2", points: [...draft().points, { id: "p2", name: "叶尖", radiusM: .5 }] };
+assert.ok(planAutoFollow(selectedSecond, anchor).errors.length, "Selecting another point requires a new anchor");
+const second = planAutoFollow(selectedSecond, { ...anchor, pointId: "p2", radiusM: .5 });
+assert.equal(second.points.length, 4);
+assert.ok(second.points.every(point => point.radialPointId === "p2" && point.radiusM === .5));
+near(second.points[0].axis1AngleDeg, 10);
+const unfinishedOther = planAutoFollow({ ...draft(), points: [...draft().points, { id: "p2", name: "", radiusM: NaN }] }, anchor);
+assert.deepEqual(unfinishedOther.errors, []);
+assert.equal(unfinishedOther.totalRecords, 4);
+const sameRadiusOther = { ...draft(), activePointId: "p2", points: [...draft().points, { id: "p2", name: "P2", radiusM: .31 }] };
+assert.ok(planAutoFollow(sameRadiusOther, anchor).errors.length, "Same-radius point still needs its own calibration");
 const slower = planAutoFollow({ ...draft(), periodSeconds: 60 }, anchor);
 assert.deepEqual(slower.points, model.points);
 assert.ok(slower.requiredRpm < model.requiredRpm);
@@ -50,7 +60,7 @@ for (const invalid of [
   { stepDeg: 0 }, { stepDeg: 70 }, { periodSeconds: NaN }, { points: [] }, { distanceM: 0 }, { maxMoveRpm: 0 },
   { cycles: 1.5 }, { rssiExitSpread: 9 }, { rssiConfirmMs: 0 }, { waitRevolutions: 0 },
   { points: [{ id: "p", name: "P", radiusM: 0.31 }, { id: "p", name: "P2", radiusM: 0.5 }] },
-  { stepDeg: 5, points: Array.from({ length: 4 }, (_, i) => ({ id: `p${i}`, name: `P${i}`, radiusM: 0.31 })) },
+  { stepDeg: 5, cycles: 100 }, { activePointId: "missing" },
 ]) {
   const value = planAutoFollow({ ...draft(), ...invalid }, anchor);
   assert.ok(value.errors.length); assert.equal(value.pointCycle, undefined);

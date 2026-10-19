@@ -20,12 +20,13 @@ async function handle(request: Request, context: Context) {
       await audit(user, "导入旋转分析数据", `${result.filename} · ${result.recordings.length} 个测点`);
       return json(result, 201);
     }
-    if (route === "analyze") {
+    if (route === "analyze" || route === "blade-passes") {
       const text = await limitedBody(request, 64 * 1024);
       let parameters: unknown;
       try { parameters = JSON.parse(text.toString("utf8")); } catch { throw new HttpError(400, "分析参数必须为 JSON。"); }
-      const result = await rotationWorker(user, { action: "rotation", parameters });
-      await audit(user, "执行旋转分析", `${result.rpm} RPM · ${result.modeShape.points.length} 个测点`);
+      const result = await rotationWorker(user, { action: route === "blade-passes" ? "blade-passes" : "rotation", parameters });
+      if (route === "blade-passes") await audit(user, "分析叶片有效片段", `${result.points.length} 个测点 · ${result.coverage.validSamples} 个有效样本`);
+      else await audit(user, "执行旋转分析", `${result.rpm} RPM · ${result.modeShape.points.length} 个测点`);
       return json(result);
     }
     throw new HttpError(404, "旋转分析接口不存在。");

@@ -50,7 +50,7 @@ export type FieldPointCyclePoint = { pointId?: string; name: string; axis1AngleD
   bladeId?: string; radialPointId?: string; radialPointName?: string; radiusM?: number; azimuthDeg?: number };
 export type FieldPlannedStation = { pointId: string; bladeId: string; radialPointId: string; radialPointName: string; radiusM: number; azimuthDeg: number; stationIndex: number; stationCount: number };
 export type FieldAutomaticRecord = {
-  mode?: "automatic_stations" | "legacy"; sessionId?: string; bladeId?: string; radialPointId?: string; radialPointName?: string;
+  mode?: "automatic_stations" | "legacy"; collectionId?: string; sessionId?: string; bladeId?: string; radialPointId?: string; radialPointName?: string;
   radiusM?: number; azimuthDeg?: number; stationIndex?: number; stationCount?: number; lapIndex?: number;
   identitySource?: "operator_assigned"; identityVerified?: false; coverageKind?: "sparse_station_passes";
   completion?: "confirmed_pass" | "missing_entry" | "missing_exit" | "signal_gap" | "cancelled" | "device_error";
@@ -58,7 +58,7 @@ export type FieldAutomaticRecord = {
 };
 export type FieldPointCycleConfig = {
   port: string; points: FieldPointCyclePoint[]; cycles: number; dwellSeconds: number; speedRpm: number;
-  mode?: "automatic_stations" | "legacy"; nominalPeriodSeconds?: number; maxMoveRpm?: number; geometry?: FieldAutoFollowGeometry;
+  mode?: "automatic_stations" | "legacy"; collectionId?: string; nominalPeriodSeconds?: number; maxMoveRpm?: number; geometry?: FieldAutoFollowGeometry;
   rssiTriggerEnabled?: boolean; rssiThresholdMode?: "adaptive" | "absolute"; rssiLeaveThresholdPercent?: number;
   rssiBaselineRatio?: number; rssiSmoothingMs?: number; rssiConfirmMs?: number; rssiMotionMarginMs?: number; rssiMinimumSeconds?: number;
   rssiEnterSpread?: number; rssiExitSpread?: number; rssiEnterConfirmMs?: number;

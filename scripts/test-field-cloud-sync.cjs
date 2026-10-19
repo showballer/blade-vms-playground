@@ -303,7 +303,7 @@ test('turntable telemetry and point metadata upload unchanged and resume after a
   current.manifest.turntable = { config: { port: 'COM6', axis: 1 }, preparedReferences: { '1': { origin_counts: 500 } },
     telemetry: { file: 'turntable.jsonl', events: 1, sha256: sha(telemetry) } };
   current.manifest.pointCycle = { cycle: 1, pointIndex: 2, actualAngles: { '1': 5, '2': 20 },
-    mode: 'automatic_stations', sessionId: 'a'.repeat(32), bladeId: '2', radialPointId: 'p1', radialPointName: 'P1',
+    mode: 'automatic_stations', collectionId: 'c'.repeat(32), sessionId: 'a'.repeat(32), bladeId: '2', radialPointId: 'p1', radialPointName: 'P1',
     radiusM: .31, azimuthDeg: 90, stationIndex: 2, stationCount: 4, lapIndex: 1, cycles: 1,
     identitySource: 'operator_assigned', identityVerified: false, coverageKind: 'sparse_station_passes', completion: 'confirmed_pass',
     plannedStations: [0, 90, 180, 270].map((azimuthDeg, index) => ({ pointId: `p1-s${index + 1}`, bladeId: '2',

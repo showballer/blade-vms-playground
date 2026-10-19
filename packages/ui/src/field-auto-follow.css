@@ -8,7 +8,7 @@
 .field-auto-core, .field-auto-grid { display: grid; gap: var(--field-ui-space-4); grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .field-auto-core { grid-template-columns: 1.5fr .7fr 1fr 1fr; }
 .field-auto-follow label { display: flex; flex-direction: column; min-width: 0; gap: var(--field-ui-space-2); font-size: var(--field-ui-label); color: var(--field-ui-secondary); }
-.field-app .field-auto-follow input:not([type=checkbox]), .field-app .field-auto-follow .custom-select-trigger { width: 100%; min-height: var(--field-ui-control-height); height: auto; border-radius: var(--field-ui-control-radius); border-color: var(--field-ui-input-line); font-size: var(--field-ui-body); color: var(--field-ui-text); margin: 0; background: var(--field-ui-panel); }
+.field-app .field-auto-follow input:not([type=checkbox]):not([type=radio]), .field-app .field-auto-follow .custom-select-trigger { width: 100%; min-height: var(--field-ui-control-height); height: auto; border-radius: var(--field-ui-control-radius); border-color: var(--field-ui-input-line); font-size: var(--field-ui-body); color: var(--field-ui-text); margin: 0; background: var(--field-ui-panel); }
 .field-app .field-auto-follow .custom-select-trigger { padding-right: var(--field-ui-space-8); }
 .field-auto-points-heading, .field-auto-anchor-read, .field-auto-actions { display: flex; align-items: center; gap: var(--field-ui-space-3); flex-wrap: wrap; }
 .field-auto-points-heading { justify-content: space-between; margin: var(--field-ui-space-6) 0 var(--field-ui-space-3); }
@@ -38,3 +38,7 @@
 .field-auto-label-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--field-ui-space-2); }
 .field-auto-label-line small { color: var(--field-ui-muted); font-size: var(--field-ui-caption); }
 .field-auto-start-note { flex-basis: 100%; margin: 0; color: var(--field-ui-secondary); font-size: var(--field-ui-label); }
+
+.field-auto-point[data-selected="true"] { border-color: var(--field-ui-primary); background: var(--field-ui-primary-soft); }
+.field-app .field-auto-follow .field-auto-point-choice { width: 18px; height: 18px; min-height: 18px; margin: 0; accent-color: var(--field-ui-primary); cursor: pointer; }
+@media (max-width: 640px) { .field-auto-point-choice { grid-column: 1; grid-row: 1; align-self: center; } }

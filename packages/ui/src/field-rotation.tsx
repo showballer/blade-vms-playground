@@ -5,6 +5,7 @@ import { Chart } from "./charts";
 import { Button } from "./common";
 import type { FieldRecording, FieldRequestOptions } from "./field-types";
 import { FieldBending, type BendingMatch } from "./field-bending";
+import { hasBladePassMetadata } from "./web-blade-capture-selection";
 
 type RotationPoint = {
   recordingId: string; name: string; position: number; amplitude: number; normalizedAmplitude: number;
@@ -48,7 +49,7 @@ export function FieldRotation({ request, onError, refreshKey = 0, preferredIds =
     try {
       const response = await request<{ recordings: RotationRecording[] }>({ action: "recordings" });
       if (!alive.current) return;
-      const complete = response.recordings.filter(record => record.status === "complete");
+      const complete = response.recordings.filter(record => record.status === "complete" && !hasBladePassMetadata(record));
       setRecords(complete);
       setLoaded(true);
       setPositions(previous => Object.fromEntries(complete.map((record, index) => {

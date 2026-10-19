@@ -6,22 +6,28 @@ export type BladeStationSummary = {
   state: BladeStationState; records: FieldRecording[]; samples: number;
 };
 export type BladeRecordGroup = {
-  key: string; sessionId: string; bladeId: string; radialPointId: string; radialPointName: string;
+  key: string; sessionId: string; collectionId: string | null; taskName: string; bladeId: string; radialPointId: string; radialPointName: string;
   radiusM: number | null; lapIndex: number; plannedCount: number | null; stations: BladeStationSummary[];
   observedCount: number; gapCount: number; failedCount: number; incompleteCount: number; pendingCount: number;
   recordCount: number; samples: number; uploadedCount: number; pendingUploadCount: number; failedUploadCount: number;
   unknownUploadCount: number; planConflict: boolean; hasSimulation: boolean; latestAt: number;
 };
-export type BladeRecordSummary = { groups: BladeRecordGroup[]; ungroupedCount: number };
+export type BladeCollectionSummary = {
+  key: string; collectionId: string | null; bladeId: string; taskName: string;
+  groups: BladeRecordGroup[]; pointCount: number; sessionCount: number; latestAt: number;
+};
+export type BladeRecordSummary = { groups: BladeRecordGroup[]; collections: BladeCollectionSummary[]; ungroupedCount: number };
 type AutomaticRecord = FieldRecording & { pointCycle: NonNullable<FieldRecording["pointCycle"]> & Required<Pick<FieldAutomaticRecord,
   "sessionId" | "bladeId" | "radialPointId" | "lapIndex" | "stationIndex" | "stationCount">> & { pointId: string } };
-type Session = { records: AutomaticRecord[]; plan: FieldPlannedStation[] | null; cycles: number; conflict: boolean; latestAt: number };
+type Session = { records: AutomaticRecord[]; plan: FieldPlannedStation[] | null; cycles: number; conflict: boolean; latestAt: number;
+  collectionId: string | null; collectionConflict: boolean; taskName: string };
 
 const id = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0 && value.length <= 180;
 const integer = (value: unknown, max: number): value is number => Number.isSafeInteger(value) && Number(value) > 0 && Number(value) <= max;
 const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
 const sampleCount = (value: unknown) => Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : 0;
 const key = (...parts: (string | number)[]) => JSON.stringify(parts);
+const collectionId = (value: unknown): string | null => typeof value === "string" && value.length === 32 && /^[a-f0-9]{32}$/.test(value) ? value : null;
 // Acquisition manifests use Unix seconds; imported ISO dates use milliseconds.
 const timestamp = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? value * 1000 : typeof value === "string" ? Date.parse(value) || 0 : 0;
 const recordTime = (record: FieldRecording) => timestamp(record.endedAt) || timestamp(record.startedAt);
@@ -65,10 +71,11 @@ function state(record: FieldRecording): BladeStationState {
 }
 
 function emptyGroup(sessionId: string, bladeId: string, radialPointId: string, radialPointName: string, radiusM: number | null, lapIndex: number, session: Session): BladeRecordGroup {
-  return { key: key(sessionId, bladeId, radialPointId, lapIndex), sessionId, bladeId, radialPointId, radialPointName, radiusM, lapIndex,
+  return { key: key(sessionId, bladeId, radialPointId, lapIndex), sessionId, collectionId: session.collectionConflict ? null : session.collectionId,
+    taskName: session.taskName, bladeId, radialPointId, radialPointName, radiusM, lapIndex,
     plannedCount: null, stations: [], observedCount: 0, gapCount: 0, failedCount: 0, incompleteCount: 0, pendingCount: 0,
     recordCount: 0, samples: 0, uploadedCount: 0, pendingUploadCount: 0, failedUploadCount: 0, unknownUploadCount: 0,
-    planConflict: session.conflict, hasSimulation: false, latestAt: session.latestAt };
+    planConflict: session.conflict || session.collectionConflict, hasSimulation: false, latestAt: session.latestAt };
 }
 
 /** Groups saved station observations; never reconstructs identity or missing waveforms. */
@@ -86,8 +93,13 @@ export function summarizeBladeRecords(recordings: readonly FieldRecording[], syn
     if (!record.pointCycle) continue;
     if (!automatic(record)) { ungroupedCount++; continue; }
     const meta = record.pointCycle;
+    const taskId = collectionId(meta.collectionId);
     let session = sessions.get(meta.sessionId);
-    if (!session) { session = { records: [], plan: null, cycles: meta.cycles, conflict: false, latestAt: 0 }; sessions.set(meta.sessionId, session); }
+    if (!session) { session = { records: [], plan: null, cycles: meta.cycles, conflict: false, latestAt: 0,
+      collectionId: taskId, collectionConflict: meta.collectionId !== undefined && taskId === null,
+      taskName: typeof record.name === "string" && record.name.trim() || "未命名采集任务" }; sessions.set(meta.sessionId, session); }
+    // A malformed or contradictory task identity must never join another run.
+    if (session.collectionId !== taskId || meta.collectionId !== undefined && taskId === null) session.collectionConflict = true;
     session.records.push(record);
     session.latestAt = Math.max(session.latestAt, recordTime(record));
     if (session.cycles !== meta.cycles) session.conflict = true;
@@ -153,7 +165,22 @@ export function summarizeBladeRecords(recordings: readonly FieldRecording[], syn
       }
     }
   }
-  return { groups: [...groups.values()].sort((a, b) => b.latestAt - a.latestAt || a.sessionId.localeCompare(b.sessionId) || a.bladeId.localeCompare(b.bladeId, "zh-CN", { numeric: true }) || a.radialPointId.localeCompare(b.radialPointId, "zh-CN", { numeric: true }) || a.lapIndex - b.lapIndex), ungroupedCount };
+  const ordered = [...groups.values()].sort((a, b) => b.latestAt - a.latestAt || a.sessionId.localeCompare(b.sessionId) || a.bladeId.localeCompare(b.bladeId, "zh-CN", { numeric: true }) || a.radialPointId.localeCompare(b.radialPointId, "zh-CN", { numeric: true }) || a.lapIndex - b.lapIndex);
+  const collections = new Map<string, BladeCollectionSummary>();
+  for (const group of ordered) {
+    // Names are labels only. Legacy sessions and explicitly identified tasks use
+    // separate namespaces, even when their UUID text happens to match.
+    const collectionKey = key(group.collectionId ? "collection" : "session", group.collectionId || group.sessionId, group.bladeId);
+    let collection = collections.get(collectionKey);
+    if (!collection) { collection = { key: collectionKey, collectionId: group.collectionId, bladeId: group.bladeId,
+      taskName: group.taskName, groups: [], pointCount: 0, sessionCount: 0, latestAt: group.latestAt }; collections.set(collectionKey, collection); }
+    collection.groups.push(group);
+  }
+  for (const collection of collections.values()) {
+    collection.pointCount = new Set(collection.groups.map(group => group.radialPointId)).size;
+    collection.sessionCount = new Set(collection.groups.map(group => group.sessionId)).size;
+  }
+  return { groups: ordered, collections: [...collections.values()], ungroupedCount };
 }
 
 export const bladeStationLabel = (value: BladeStationState) => ({ observed: "已观测回波通过", missing_entry: "未确认进入", missing_exit: "未确认离开", signal_gap: "信号中断", cancelled: "已取消", failed: "采集失败", incomplete: "记录未完成", unrecorded: "未收到记录" })[value];

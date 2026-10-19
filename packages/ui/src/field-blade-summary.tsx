@@ -32,8 +32,8 @@ export function FieldBladeSummary({ recordings, syncItems = [], onOpenRecording 
     gaps: sum.gaps + group.gapCount, pending: sum.pending + group.pendingCount,
     failures: sum.failures + group.failedCount + group.incompleteCount }), { observed: 0, gaps: 0, pending: 0, failures: 0 });
   return <section className="field-card field-servo-ui field-blade-summary" aria-label="叶片采集汇总">
-    <div className="field-section-heading"><div><h2>叶片采集汇总</h2><p>按采集批次、叶片、径向测点和计划轮次整理站点记录。</p></div>
-      <span className="field-badge">{number(summary.groups.length)} 组</span></div>
+    <div className="field-section-heading"><div><h2>叶片采集汇总</h2><p>同一任务的测点集中查看，每次采集保留独立记录。</p></div>
+      <span className="field-badge">{number(summary.collections.length)} 个任务</span></div>
     {!summary.groups.length ? <div className="field-blade-empty">暂无可汇总的自动跟随记录。采集并保存站点数据后会显示在这里。</div> : <>
       <dl className="field-blade-totals">
         <div><dt>已观测站点</dt><dd>{number(totals.observed)}</dd></div>
@@ -41,7 +41,9 @@ export function FieldBladeSummary({ recordings, syncItems = [], onOpenRecording 
         <div><dt>失败或未完成</dt><dd>{number(totals.failures)}</dd></div>
         <div><dt>未收到记录</dt><dd>{number(totals.pending)}</dd></div>
       </dl>
-      <div className="field-blade-groups">{summary.groups.slice(0, visible).map(group => <details className="field-blade-group" key={group.key}>
+      <div className="field-blade-tasks">{summary.collections.slice(0, visible).map(collection => <section className="field-blade-task" key={collection.key} aria-label={`${collection.taskName} · 叶片 ${collection.bladeId}`}>
+        <div className="field-blade-task-heading"><div><h3>{collection.taskName} · 叶片 {collection.bladeId}</h3><p>{collection.pointCount} 个测点 · {collection.sessionCount} 次采集{collection.collectionId ? ` · 任务 ${collection.collectionId.slice(0, 8)}` : " · 历史采集批次"}</p></div></div>
+        <div className="field-blade-groups">{collection.groups.map(group => <details className="field-blade-group" key={group.key}>
         <summary>
           <div className="field-blade-identity"><strong>叶片 {group.bladeId} · {group.radialPointName}</strong><span>{group.radiusM === null ? "半径未记录" : `半径 ${(group.radiusM * 100).toLocaleString("zh-CN", { maximumFractionDigits: 1 })} cm`} · 第 {group.lapIndex} 轮 · 批次 {group.sessionId.slice(0, 8)}</span></div>
           <div className="field-blade-count"><strong>{group.observedCount}<span> / {group.plannedCount ?? "—"}</span></strong><span>观测 / 计划站点</span></div>
@@ -66,8 +68,8 @@ export function FieldBladeSummary({ recordings, syncItems = [], onOpenRecording 
           {group.stations.some(station => station.records.length > 1) && <p className="field-blade-note">同一站点保留全部记录；观测结果按最近一条记录显示，样本数为记录合计。</p>}
           {group.pendingCount > 0 && <p className="field-blade-note">未收到记录的站点可能尚未采集、采集中断或尚未同步，不能仅据此判断设备故障。</p>}
         </div>
-      </details>)}</div>
-      {visible < summary.groups.length && <button type="button" className="btn outline field-blade-more" onClick={() => setVisible(value => value + 12)}>显示更多（剩余 {summary.groups.length - visible} 组）</button>}
+      </details>)}</div></section>)}</div>
+      {visible < summary.collections.length && <button type="button" className="btn outline field-blade-more" onClick={() => setVisible(value => value + 12)}>显示更多（剩余 {summary.collections.length - visible} 个任务）</button>}
       <p className="field-blade-note">RSSI 用于识别回波进入和离开，叶片编号由人工指定。站点记录不代表连续整圈测量，也不等于已核实叶片身份。</p>
     </>}
     {summary.ungroupedCount > 0 && <p className="field-blade-note">{summary.ungroupedCount} 条点位记录缺少有效的批次或测点信息，仍可在原始记录列表查看。</p>}

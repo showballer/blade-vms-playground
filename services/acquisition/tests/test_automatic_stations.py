@@ -53,6 +53,15 @@ class PassReceiver:
 
 
 class AutomaticConfigTests(unittest.TestCase):
+    def test_collection_id_is_optional_strict_and_does_not_replace_run_identity(self):
+        self.assertIsNone(PointCycleConfig(**automatic_config()).collectionId)
+        self.assertEqual(PointCycleConfig(**automatic_config(collectionId="c" * 32)).collectionId, "c" * 32)
+        for value in ("", "C" * 32, "c" * 32 + "\n", True, 12, "../record"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                PointCycleConfig(**automatic_config(collectionId=value))
+        with self.assertRaises(ValueError):
+            PointCycleConfig(**automatic_config(mode="legacy", collectionId="c" * 32))
+
     def test_geometry_zero_is_actual_six_oclock_and_clockwise_is_left(self):
         geometry = PointCycleGeometry(**GEOMETRY)
         self.assertEqual(geometry.angles(.5, 0), (0, 0))
@@ -106,6 +115,28 @@ class AutomaticStationTests(unittest.TestCase):
         self.controller.thread.join(8)
         self.assertFalse(self.controller.thread.is_alive())
         return self.controller.status()
+
+    def test_manual_radial_runs_share_task_but_keep_separate_sessions_plans_and_files(self):
+        collection_id = "c" * 32
+        first = self.run_cycle(automatic_config(collectionId=collection_id))
+        original = self.controller.store.list()
+        original_files = {r["id"]: (self.controller.store.directory(r["id"]) / "manifest.json").read_bytes()
+                          for r in original}
+        second = self.run_cycle(automatic_config(radial_points=(("tip", .8),), collectionId=collection_id))
+        self.assertEqual(first["pointCycle"]["collectionId"], collection_id)
+        self.assertEqual(second["pointCycle"]["collectionId"], collection_id)
+        self.assertNotEqual(first["pointCycle"]["sessionId"], second["pointCycle"]["sessionId"])
+        records = self.controller.store.list()
+        self.assertEqual(len(records), 8)
+        for record in records:
+            meta = record["pointCycle"]
+            self.assertEqual(meta["collectionId"], collection_id)
+            self.assertEqual(len(meta["plannedStations"]), 4)
+            self.assertTrue(all(p["radialPointId"] == meta["radialPointId"] for p in meta["plannedStations"]))
+            self.assertEqual(meta["stationCount"], 4)
+            self.assertEqual(meta["sessionId"], (first if meta["radialPointId"] == "root" else second)["pointCycle"]["sessionId"])
+        for record_id, data in original_files.items():
+            self.assertEqual((self.controller.store.directory(record_id) / "manifest.json").read_bytes(), data)
 
     def test_configured_order_radial_laps_session_identity_and_no_final_return(self):
         config = automatic_config(radial_points=(("root", .5), ("tip", .8)), cycles=2)

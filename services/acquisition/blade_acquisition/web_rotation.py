@@ -22,7 +22,7 @@ import numpy as np
 
 from .receiver import Batch
 from .rotation import RotationRequest, calculate_rotation
-from .storage import RecordingStore, atomic_json
+from .storage import RecordingStore, atomic_json, recording_rssi_stride
 
 MAX_FILE = 16 * 1024 * 1024
 MAX_SAMPLES = 1_000_000
@@ -143,6 +143,165 @@ def finite(value, label: str) -> float:
     return number
 
 
+def imported_record_metadata(metadata: dict, samples: int, sample_rate: float, first_time: float) -> dict:
+    """Restore exported identity without inventing a capture clock or sample alignment."""
+    if not isinstance(metadata, dict):
+        raise ValueError("CSV 导出元数据必须是对象。")
+
+    def number(value, label, lower=None, upper=None, integer=False):
+        if (isinstance(value, bool) or not isinstance(value, (int, float)) or
+                not math.isfinite(value) or (integer and not isinstance(value, int)) or
+                (lower is not None and value < lower) or (upper is not None and value > upper)):
+            raise ValueError(f"{label}无效。")
+        return value
+
+    def text(value, label, length=120):
+        if not isinstance(value, str) or not value.strip() or len(value) > length:
+            raise ValueError(f"{label}无效。")
+        return value
+
+    def bounded(value, depth=0):
+        if depth > 12:
+            raise ValueError("点位元数据嵌套过深。")
+        if value is None or isinstance(value, bool):
+            return
+        if isinstance(value, (int, float)) and math.isfinite(value):
+            return
+        if isinstance(value, str) and len(value) <= 8192:
+            return
+        if isinstance(value, list) and len(value) <= 2048:
+            for item in value:
+                bounded(item, depth + 1)
+            return
+        if isinstance(value, dict) and len(value) <= 128:
+            for key, item in value.items():
+                if key in ("__proto__", "prototype", "constructor"):
+                    raise ValueError("点位元数据字段无效。")
+                bounded(item, depth + 1)
+            return
+        raise ValueError("点位元数据包含无效值或超出大小限制。")
+
+    bounded(metadata)
+    result = {}
+    for key in ("object", "turbine"):
+        if key in metadata:
+            if not isinstance(metadata[key], str) or len(metadata[key]) > 180:
+                raise ValueError(f"{key} 无效。")
+            result[key] = metadata[key]
+    for key in ("sampleOrigin", "sourceSampleOrigin"):
+        if key in metadata:
+            number(metadata[key], "原采集时间起点")
+    source_origin = metadata.get("sourceSampleOrigin", metadata.get("sampleOrigin"))
+    if source_origin is not None:
+        result["sourceSampleOrigin"] = source_origin
+    if "sourceTimeStart" in metadata:
+        number(metadata["sourceTimeStart"], "原始时间偏移", 0)
+    for key in ("recordingId", "sourceRecordingId"):
+        if key in metadata and (not isinstance(metadata[key], str) or not re.fullmatch(r"[a-f0-9]{32}", metadata[key])):
+            raise ValueError("原采集记录编号无效。")
+    if "recordingId" in metadata:
+        result["sourceRecordingId"] = metadata.get("sourceRecordingId", metadata["recordingId"])
+    for key in ("startedAt", "endedAt"):
+        source_key = "source" + key[0].upper() + key[1:]
+        if key in metadata:
+            number(metadata[key], "原采集时间")
+            result[source_key] = metadata[key]
+        if source_key in metadata:
+            result[source_key] = number(metadata[source_key], "原采集时间")
+    for key in ("turntable", "deviceSettings"):
+        if key in metadata:
+            if not isinstance(metadata[key], dict):
+                raise ValueError(f"{key} 元数据必须是对象。")
+            result[key] = json.loads(json.dumps(metadata[key], allow_nan=False))
+    stride = recording_rssi_stride({**metadata, "sampleRate": sample_rate})
+    if "rssiSampleStride" in metadata or "rssiSampleRate" in metadata:
+        result.update(rssiSampleStride=stride, rssiSampleRate=sample_rate / stride)
+    if "pointCycle" not in metadata:
+        return result
+    cycle = metadata["pointCycle"]
+    if not isinstance(cycle, dict) or not cycle:
+        raise ValueError("点位元数据 pointCycle 必须是对象。")
+    # Gates reference the original full record, never a cropped or shifted CSV.
+    if (number(metadata.get("samples"), "原始样本数量", 1, integer=True) != samples or
+            not math.isclose(number(metadata.get("sampleRate"), "原始采样率", 1e-12), sample_rate, rel_tol=1e-4) or
+            abs(first_time) > 1e-12 or abs(metadata.get("sourceTimeStart", 0)) > 1e-12):
+        raise ValueError("带点位边界的 CSV 必须保留从 0 开始的完整原始样本。")
+    mode = cycle.get("mode", "legacy")
+    if mode not in ("automatic_stations", "legacy"):
+        raise ValueError("点位采集模式无效。")
+    if mode == "legacy" and any(key not in cycle for key in ("cycle", "pointIndex", "pointName")):
+        raise ValueError("旧版点位记录缺少采集轮次或点位信息。")
+    for key in ("collectionId", "sessionId"):
+        if key in cycle and (not isinstance(cycle[key], str) or not re.fullmatch(r"[a-f0-9]{32}", cycle[key])):
+            raise ValueError(f"点位 {key} 无效。")
+    for key in ("bladeId", "radialPointId", "radialPointName", "pointId", "stationId", "pointName"):
+        if key in cycle:
+            text(cycle[key], f"点位 {key}")
+    if "stationId" in cycle and "pointId" in cycle and cycle["stationId"] != cycle["pointId"]:
+        raise ValueError("点位编号与站位编号不一致。")
+    for key in ("stationIndex", "stationCount", "lapIndex", "cycle", "pointIndex", "cycles"):
+        if key in cycle:
+            number(cycle[key], f"点位 {key}", 1, 1_000_000, integer=True)
+    if "stationIndex" in cycle and "stationCount" in cycle and cycle["stationIndex"] > cycle["stationCount"]:
+        raise ValueError("站位序号超出站位总数。")
+    if "radiusM" in cycle:
+        number(cycle["radiusM"], "测点半径", 1e-12, 1000)
+    if "azimuthDeg" in cycle:
+        number(cycle["azimuthDeg"], "站位角", 0, 360)
+        if cycle["azimuthDeg"] == 360:
+            raise ValueError("站位角必须小于 360 度。")
+    if "nominalPeriodSeconds" in cycle and cycle["nominalPeriodSeconds"] is not None:
+        number(cycle["nominalPeriodSeconds"], "叶轮周期", 1e-12)
+    if mode == "automatic_stations":
+        for key in ("sessionId", "bladeId", "radialPointId", "radiusM", "azimuthDeg", "stationIndex", "stationCount", "lapIndex"):
+            if key not in cycle:
+                raise ValueError(f"自动跟随记录缺少 {key}。")
+        if cycle.get("identityVerified", False) is not False:
+            raise ValueError("导入记录不能声明未经验证的叶片身份。")
+    completion = cycle.get("completion")
+    if completion is not None and completion not in ("confirmed_pass", "missing_entry", "missing_exit", "signal_gap", "cancelled", "device_error"):
+        raise ValueError("点位完成状态无效。")
+    for key in ("entrySampleIndex", "exitSampleIndex"):
+        if key in cycle:
+            number(cycle[key], f"点位 {key}", 0, samples - 1, integer=True)
+    handoff = cycle.get("handoff")
+    if handoff is not None:
+        if not isinstance(handoff, dict):
+            raise ValueError("叶片进入离开边界无效。")
+        keys = ("entrySampleIndex", "entryConfirmedSampleIndex", "exitSampleIndex", "exitConfirmedSampleIndex")
+        for key in keys:
+            if key in handoff:
+                number(handoff[key], f"叶片边界 {key}", 0, samples - 1, integer=True)
+        if all(key in handoff for key in keys):
+            a, b, c, d = (handoff[key] for key in keys)
+            if not a <= b < c <= d:
+                raise ValueError("叶片进入离开样本边界顺序无效。")
+        elif completion == "confirmed_pass":
+            raise ValueError("已确认通过的记录缺少完整进入离开边界。")
+    elif completion == "confirmed_pass":
+        raise ValueError("已确认通过的记录缺少进入离开边界。")
+    result["pointCycle"] = json.loads(json.dumps(cycle, allow_nan=False))
+    return result
+
+
+def write_import_rows(writer, rows, rate, origin, stride=1):
+    """Keep sparse RSSI slots sparse, including missing expected observations."""
+    if (writer.manifest["samples"] % stride or
+            any(row[1] is not None for index, row in enumerate(rows) if index % stride)):
+        raise ValueError("RSSI 样本位置与原采样间隔不一致。")
+    offset = 0
+    while offset < len(rows):
+        present = rows[offset][1] is not None
+        end = min(offset + stride, len(rows))
+        while end < len(rows) and (rows[end][1] is not None) == present:
+            end = min(end + stride, len(rows))
+        values = [row[0] for row in rows[offset:end]]
+        rssi = [row[1] for row in rows[offset:end:stride]] if present else []
+        writer.write(Batch(writer.manifest["samples"], rate, origin, [0] * len(values), values,
+                           [0] * len(rssi), rssi, [row[2] for row in rows[offset:end]], stride))
+        offset = end
+
+
 def parse_table(name: str, rows: list, options: dict):
     header_index = next((i for i, row in enumerate(rows[:20]) if "time_s" in [str(v).strip().lower() for v in row] or "time" in [str(v).strip().lower() for v in row]), None)
     if header_index is None:
@@ -181,8 +340,11 @@ def parse_table(name: str, rows: list, options: dict):
     dt = float(np.median(intervals))
     if dt <= 0 or not np.all(np.abs(intervals - dt) <= max(dt * 1e-4, 1e-10)):
         raise ValueError(f"{name} 时间轴不连续或非等间隔；请先检查缺失样本。")
-    if metadata.get("sampleRate") is not None and not math.isclose(finite(metadata["sampleRate"], "元数据采样率"), 1 / dt, rel_tol=1e-4):
-        raise ValueError(f"{name} 时间轴与元数据采样率不一致。")
+    if metadata.get("sampleRate") is not None:
+        source_rate = finite(metadata["sampleRate"], "元数据采样率")
+        if source_rate <= 0 or not math.isclose(source_rate, 1 / dt, rel_tol=1e-4):
+            raise ValueError(f"{name} 时间轴与元数据采样率不一致。")
+        dt = 1 / source_rate
     values = np.array([finite(get(row, value_key), f"{name} 第 {i + header_index + 2} 行信号") * factor for i, row in enumerate(body)])
     if quantity == "displacement":
         values = np.gradient(values, dt, edge_order=2)
@@ -197,6 +359,10 @@ def parse_table(name: str, rows: list, options: dict):
     rssi = [None if v is None or str(v).strip() == "" else finite(v, "RSSI") for v in auxiliary.get("rssi_percent", [])]
     if any(v is not None and not 0 <= v <= 100 for v in rssi):
         raise ValueError(f"{name} RSSI_percent 必须在 0～100 之间。")
+    record_metadata = imported_record_metadata(metadata, len(body), 1 / dt, float(times[0]))
+    stride = record_metadata.get("rssiSampleStride", 1)
+    if any(value is not None for index, value in enumerate(rssi) if index % stride):
+        raise ValueError("RSSI 样本位置与原采样间隔不一致。")
     rpms = [finite(v, "RPM") for v in auxiliary.get("rpm", [])]
     if any(v <= 0 for v in rpms):
         raise ValueError(f"{name} RPM 必须为正数。")
@@ -210,7 +376,7 @@ def parse_table(name: str, rows: list, options: dict):
     summary = " ".join(str(v or "") for row in rows[:header_index] for v in row).lower()
     simulated = options.get("source") == "simulation" or "simulation" in summary or "模拟" in summary or metadata.get("source") == "simulation" or bool(metadata.get("simulation"))
     device_source = metadata.get("source") in ("device", "polytec_ivs500", "measured")
-    return {"name": str(metadata.get("name") or name)[:180], "point": str(metadata.get("point") or name)[:120], "values": values, "rssi": rssi, "sampleRate": 1 / dt,
+    return {**record_metadata, "name": str(metadata.get("name") or name)[:180], "point": str(metadata.get("point") or name)[:120], "values": values, "rssi": rssi, "sampleRate": 1 / dt,
             "source": "simulation" if simulated else "measured" if device_source else options.get("source", "offline"), "position": position,
             "sourceMetadata": metadata, "simulation": metadata.get("simulation"),
             "rpm": float(np.median(rpms)) if rpms else metadata.get("rpm"),
@@ -287,6 +453,7 @@ def import_csv_stream(store: RecordingStore, input_file: Path, filename: str, op
         if position is not None and not 0 <= position <= 1:
             raise ValueError("测点位置 x/L 必须在 0～1 之间。")
         count, written, first_time, dt, rate = 0, 0, None, None, None
+        record_metadata, stride, batch_limit = {}, 1, 16384
         origin = time.time()
         pending, batch = deque(maxlen=3), []
         quality, rpms = Counter(), [None, None]
@@ -294,26 +461,15 @@ def import_csv_stream(store: RecordingStore, input_file: Path, filename: str, op
 
         def flush():
             nonlocal written
-            offset = 0
-            while offset < len(batch):
-                present = batch[offset][1] is not None
-                end = offset + 1
-                while end < len(batch) and (batch[end][1] is not None) == present:
-                    end += 1
-                rows = batch[offset:end]
-                values = [row[0] for row in rows]
-                rssi = [row[1] for row in rows] if present else []
-                writer.write(Batch(written, rate, origin, [0] * len(rows), values,
-                                   [0] * len(rssi), rssi, [row[2] for row in rows]))
-                written += len(rows)
-                offset = end
+            write_import_rows(writer, batch, rate, origin, stride)
+            written += len(batch)
             batch.clear()
 
         def emit(row, value):
             if not math.isfinite(value):
                 raise ValueError("单位换算后出现无效数值。")
             batch.append((value, row[1], row[2]))
-            if len(batch) >= 16384:
+            if len(batch) >= batch_limit:
                 flush()
 
         try:
@@ -358,12 +514,16 @@ def import_csv_stream(store: RecordingStore, input_file: Path, filename: str, op
                         if actual <= 0 or not math.isclose(actual, rate, rel_tol=1e-4):
                             raise ValueError("时间轴与元数据采样率不一致。")
                         rate, dt = actual, 1 / actual
-                    writer = store.create({"name": str(metadata.get("name") or source_name)[:180], "point": str(metadata.get("point") or source_name)[:120],
+                    # Validate declared sample-index gates before creating any record, then recheck the final count.
+                    record_metadata = imported_record_metadata(metadata, metadata.get("samples", 2), rate, first_time)
+                    stride = record_metadata.get("rssiSampleStride", 1)
+                    batch_limit = max(stride, (16384 // stride) * stride)
+                    writer = store.create({**record_metadata, "name": str(metadata.get("name") or source_name)[:180], "point": str(metadata.get("point") or source_name)[:120],
                         "source": source, "sourceFile": filename, "sourceSha256": source_hash, "sourceDataPreserved": True,
                         "sourceQuantity": quantity, "sourceUnit": unit, "sourceTimeStart": first_time, "sourceMetadata": metadata,
                         "simulation": metadata.get("simulation"), "position": position, "rpm": metadata.get("rpm"),
                         "conversion": "位移经二阶边界差分转换为速度（中心差分内点）" if quantity == "displacement" else f"{unit} 换算为 m/s",
-                        "object": "", "turbine": ""})
+                        "object": record_metadata.get("object", ""), "turbine": record_metadata.get("turbine", "")})
                     writer.ready(rate, origin)
                 if dt is not None and abs(timestamp - (first_time + count * dt)) > max(dt * 1e-4, 1e-9):
                     raise ValueError(f"第 {count + 1} 个样本时间轴不连续或非等间隔。")
@@ -387,6 +547,7 @@ def import_csv_stream(store: RecordingStore, input_file: Path, filename: str, op
                 raise ValueError("CSV 至少需要 64 个连续样本。")
             if metadata.get("samples") is not None and metadata["samples"] != count:
                 raise ValueError("样本数与导出元数据不符，文件可能未完整导出。")
+            imported_record_metadata(metadata, count, rate, first_time)
             if quantity == "displacement":
                 a, b, c = pending
                 emit(c, (3 * c[0] - 4 * b[0] + a[0]) / (2 * dt))
@@ -466,20 +627,17 @@ def import_file(store: RecordingStore, payload: dict):
         auxiliary, overrange = point.pop("auxiliary"), point.pop("overrange")
         count = len(values)
         writer = store.create({**point, "sourceFile": filename, "sourceSha256": source_hash,
-                               "sourceDataPreserved": True, "object": "", "turbine": ""})
+                               "sourceDataPreserved": True, "object": point.get("object", ""), "turbine": point.get("turbine", "")})
         try:
             origin = time.time()
             writer.ready(point["sampleRate"], origin)
+            stride = point.get("rssiSampleStride", 1)
+            batch_limit = max(stride, (16384 // stride) * stride)
             start = 0
             while start < count:
-                present = bool(rssi) and rssi[start] is not None
-                end = start + 1
-                while end < min(start + 16384, count) and (bool(rssi) and rssi[end] is not None) == present:
-                    end += 1
-                data = values[start:end].tolist()
-                signal = rssi[start:end] if present else []
-                writer.write(Batch(start, point["sampleRate"], origin, [0] * len(data), data,
-                                   [0] * len(signal), signal, overrange[start:start + len(data)]))
+                end = min(start + batch_limit, count)
+                rows = [(float(values[index]), rssi[index] if rssi else None, overrange[index]) for index in range(start, end)]
+                write_import_rows(writer, rows, point["sampleRate"], origin, stride)
                 start = end
             atomic_json(writer.directory / "source-columns.json", {"sourceTimeStart": point["sourceTimeStart"], "columns": auxiliary})
             writer.finish(None)
@@ -492,7 +650,7 @@ def import_file(store: RecordingStore, payload: dict):
 
 def dispatch(root: Path, payload: dict):
     action = payload.get("action")
-    if action not in ("recordings", "import", "rotation", "capture-validate", "capture-waveform", "capture-import"):
+    if action not in ("recordings", "import", "rotation", "blade-passes", "capture-validate", "capture-waveform", "capture-import"):
         raise ValueError("不支持的 Web 分析操作。")
     if action.startswith("capture-"):
         from .native_capture import validate_capture, capture_waveform, import_capture
@@ -506,6 +664,9 @@ def dispatch(root: Path, payload: dict):
         return {"recordings": store.list()}
     if action == "import":
         return import_file(store, payload)
+    if action == "blade-passes":
+        from .blade_passes import analyze_blade_passes
+        return analyze_blade_passes(store, payload.get("parameters"))
     config = RotationRequest.model_validate(payload.get("parameters"))
     manifests = [store._read_manifest(store.directory(record_id)) for record_id in config.recordingIds]
     rates = [record.get("sampleRate") for record in manifests]

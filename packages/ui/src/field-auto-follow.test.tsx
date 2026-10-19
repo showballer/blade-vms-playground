@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { FieldAutoFollow, FieldTurntableWorkspace, autoFollowAnchorFromStatus, autoFollowAnchorKey, autoFollowBlockers, readAutoFollowDraft } from "./field-auto-follow";
+import { FieldAutoFollow, FieldTurntableWorkspace, autoFollowAnchorFromStatus, autoFollowAnchorKey, autoFollowBlockers, autoFollowCollection, autoFollowCollectionContext, readAutoFollowDraft } from "./field-auto-follow";
 import { autoFollowDefaults, planAutoFollow } from "./field-auto-follow-plan";
 import type { FieldAxisFeedback, FieldConfig, FieldStatus } from "./field-types";
 
@@ -37,27 +37,30 @@ check("默认30秒模型只生成输入，没有参考位与隐式开机请求",
 });
 check("仅恢复草稿字段，丢弃伪造参考和安全确认，保留用户旧周期", () => {
   const restored = readAutoFollowDraft(JSON.stringify({ port: "com3", anchor: { axis1AngleDeg: 1 }, confirmLaser: true, draft: { ...autoFollowDefaults, periodSeconds: 5, signsConfirmed: true, points: [{ id: "p2", name: "叶尖", radiusM: .6, reference: true }] } }));
+  assert.equal(restored.draft.activePointId, "p2");
   assert.equal(restored.port, "COM3"); assert.equal(restored.draft.periodSeconds, 5);
   assert.ok(!("anchor" in restored)); assert.ok(!("signsConfirmed" in restored.draft)); assert.ok(!("reference" in restored.draft.points[0]));
   assert.deepEqual(readAutoFollowDraft("corrupted"), readAutoFollowDraft(null));
+  const legacy = { ...autoFollowDefaults, points: [{ id: "p2", name: "P2", radiusM: .5 }, ...autoFollowDefaults.points] } as Partial<typeof autoFollowDefaults>; delete legacy.activePointId;
+  assert.equal(readAutoFollowDraft(JSON.stringify({ draft: legacy })).draft.activePointId, "p2");
 });
-check("首点或安装变化必须废弃参考，周期和后续测点变化可保留参考", () => {
+check("当前测点或安装变化必须废弃参考，周期和其它测点变化可保留参考", () => {
   const key = autoFollowAnchorKey(autoFollowDefaults, "COM3");
-  for (const patch of [{ distanceM: 3 }, { hubHeightDeltaM: 2 }, { direction: "counterclockwise" as const }, { axis1Sign: -1 as const }, { axis2Sign: -1 as const }, { points: [{ id: "p2", name: "P2", radiusM: .31 }] }, { points: [{ id: "p1", name: "P1", radiusM: .4 }] }]) assert.notEqual(autoFollowAnchorKey({ ...autoFollowDefaults, ...patch }, "COM3"), key);
+  for (const patch of [{ distanceM: 3 }, { hubHeightDeltaM: 2 }, { direction: "counterclockwise" as const }, { axis1Sign: -1 as const }, { axis2Sign: -1 as const }, { activePointId: "p2", points: [{ id: "p2", name: "P2", radiusM: .31 }] }, { points: [{ id: "p1", name: "P1", radiusM: .4 }] }]) assert.notEqual(autoFollowAnchorKey({ ...autoFollowDefaults, ...patch }, "COM3"), key);
   assert.notEqual(autoFollowAnchorKey(autoFollowDefaults, "COM4"), key);
   assert.equal(autoFollowAnchorKey({ ...autoFollowDefaults, periodSeconds: 20, points: [...autoFollowDefaults.points, { id: "p2", name: "P2", radiusM: .5 }] }, "COM3"), key);
 });
 check("读取锚点必须匹配串口、真实两轴参考、静止和软限位", () => {
-  const anchor = autoFollowAnchorFromStatus(ready, "COM3", .31);
+  const anchor = autoFollowAnchorFromStatus(ready, "COM3", .31, "p1");
   assert.equal(anchor.axis1AngleDeg, 10); assert.equal(anchor.axis2AngleDeg, 0); assert.ok(anchor.referenceSignature);
-  assert.throws(() => autoFollowAnchorFromStatus(ready, "COM4", .31));
+  assert.throws(() => autoFollowAnchorFromStatus(ready, "COM4", .31, "p1"));
   for (const patch of [{ fault: 1 }, { motor_rpm: 1 }, { motor_rpm: .01 }, { flags: 16 }, { output_angle_deg: 36 }, { output_angle_deg: null }, { guard: { soft_enabled: false, hardware_enabled: false, minimum_deg: -35, maximum_deg: 35 } }, { guard: { soft_enabled: true, hardware_enabled: false, minimum_deg: -36, maximum_deg: 35 } }]) {
     const next = structuredClone(ready); Object.assign(next.turntable!.feedback!.axes!["1"], patch);
-    assert.throws(() => autoFollowAnchorFromStatus(next, "COM3", .31));
+    assert.throws(() => autoFollowAnchorFromStatus(next, "COM3", .31, "p1"));
   }
 });
 check("计划需有效参考、全部目标在当前软限位内且设备就绪", () => {
-  const anchor = autoFollowAnchorFromStatus(ready, "COM3", .31), plan = planAutoFollow(autoFollowDefaults, anchor);
+  const anchor = autoFollowAnchorFromStatus(ready, "COM3", .31, "p1"), plan = planAutoFollow(autoFollowDefaults, anchor);
   assert.deepEqual(autoFollowBlockers(config, ready, plan, anchor, "COM3"), []);
   const missingGuard = structuredClone(ready); missingGuard.turntable!.feedback!.axes!["2"].guard.soft_enabled = false;
   assert.ok(autoFollowBlockers(config, missingGuard, plan, anchor, "COM3").some(x => x.includes("软限位")));
@@ -71,5 +74,25 @@ check("采集中禁用模式切换，停止不受外部忙状态阻塞", () => {
   assert.match(html, /role="tab"[^>]*disabled=""/);
   const button = html.match(/<button\b[^>]*>.*?<\/button>/gs)?.find(value => value.includes("停止并保存"));
   assert.ok(button && !button.includes("disabled"));
+});
+check("当前测点单选且转盘安装参数默认独立折叠", () => {
+  const html = renderToStaticMarkup(<FieldAutoFollow {...props} />);
+  assert.ok(html.includes('role="radiogroup"')); assert.ok(html.includes('aria-label="选择测点1"'));
+  assert.ok(html.includes("本次采集测点")); assert.ok(html.includes("添加下一测点"));
+  assert.ok(html.includes("两轴换点转速上限 · rpm")); assert.ok(html.includes("自动换点转速（两轴）"));
+  assert.match(html, /<details class="field-auto-setup field-auto-turntable-setup">/);
+});
+check("同任务跨测点复用采集编号，改变任务归属新建，拒绝损坏编号", () => {
+  const context = autoFollowCollectionContext(config, "2"), id = "1".repeat(32);
+  const first = autoFollowCollection({ collectionId: "", collectionContext: "" }, context, () => id);
+  assert.equal(first.collectionId, id);
+  assert.strictEqual(autoFollowCollection(first, autoFollowCollectionContext({ ...config, name: ` ${config.name} ` }, "2"), () => { throw Error("No new ID"); }), first);
+  for (const next of [autoFollowCollectionContext({ ...config, name: "新任务" }, "2"), autoFollowCollectionContext({ ...config, object: "新对象" }, "2"), autoFollowCollectionContext({ ...config, turbine: "新机组" }, "2"), autoFollowCollectionContext(config, "3")]) {
+    assert.equal(autoFollowCollection(first, next, () => "2".repeat(32)).collectionId, "2".repeat(32));
+  }
+  assert.equal(autoFollowCollection({ ...first, collectionId: id + "\n" }, context, () => "3".repeat(32)).collectionId, "3".repeat(32));
+  const stored = readAutoFollowDraft(JSON.stringify({ draft: autoFollowDefaults, ...first }));
+  assert.equal(stored.collectionId, id); assert.equal(stored.collectionContext, context);
+  assert.equal(readAutoFollowDraft(JSON.stringify({ draft: autoFollowDefaults, ...first, collectionId: id + "\n" })).collectionId, "");
 });
 console.log(`PASS ${checks} automatic-follow UI checks; hardware not used`);

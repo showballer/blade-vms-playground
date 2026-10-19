@@ -175,6 +175,8 @@ class PointCycleConfig(BaseModel):
     port: SerialPort
     points: list[PointCyclePoint] = Field(min_length=1, max_length=200)
     mode: Literal["legacy", "automatic_stations"] = "legacy"
+    # Associates separately started radial points without reusing a run/session ID.
+    collectionId: str | None = Field(default=None, min_length=32, max_length=32, pattern=r"^[a-f0-9]{32}$")
     nominalPeriodSeconds: float = Field(default=30, ge=0.5, le=3600, allow_inf_nan=False)
     maxMoveRpm: float = Field(default=0.6, ge=0.02, le=10, allow_inf_nan=False)
     geometry: PointCycleGeometry | None = None
@@ -213,6 +215,8 @@ class PointCycleConfig(BaseModel):
 
     @model_validator(mode="after")
     def bounded_total(self):
+        if self.collectionId is not None and self.mode != "automatic_stations":
+            raise ValueError("叶片采集任务编号仅用于自动站位记录")
         if any(point.port != self.port for point in self.points):
             raise ValueError("点位记录串口与当前循环串口不同，请重新标定")
         if len(self.points) * self.cycles > 2000:

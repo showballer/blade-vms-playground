@@ -50,6 +50,7 @@ class NativeTurntableCaptureTests(unittest.TestCase):
         store = RecordingStore(self.root / "analysis")
         imported = import_capture(store, self.directory)["recording"]
         self.assertEqual(imported["pointCycle"], self.manifest["pointCycle"])
+        self.assertEqual(imported["sourceRecordingId"], self.manifest["id"])
         self.assertEqual(imported["turntable"], self.manifest["turntable"])
         self.assertEqual((store.directory(imported["id"]) / "turntable.jsonl").read_bytes(), (self.directory / "turntable.jsonl").read_bytes())
         self.assertEqual(import_capture(store, self.directory)["recording"]["id"], imported["id"])

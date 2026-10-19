@@ -115,4 +115,75 @@ check("记录内容按文本转义，不在汇总中执行或触发采集", () =
   assert.ok(html.includes("&lt;script&gt;unsafe&lt;/script&gt;")); assert.ok(!html.includes("<script>"));
   assert.ok(html.includes("查看记录"));
 });
+const task = "c".repeat(32);
+function pointRecord(point: string, run: string, index = 1, collection: string | undefined = task, blade = "2") {
+  const pointPlan = plan.map(station => ({ ...station, bladeId: blade, pointId: `${point}-s${station.stationIndex}`,
+    radialPointId: point, radialPointName: point, radiusM: point === "P1" ? .31 : .5 }));
+  return recording(index, { id: `${run}-${point}-${index}`, name: "叶片检测任务" }, { ...pointPlan[index - 1],
+    collectionId: collection, sessionId: run, plannedStations: pointPlan });
+}
+
+check("同任务分别启动的P1和P2集中展示，仍保留各自批次计划", () => {
+  const records = [pointRecord("P1", "a".repeat(32)), pointRecord("P2", "b".repeat(32))];
+  const summary = summarizeBladeRecords(records);
+  assert.equal(summary.collections.length, 1);
+  const collection = summary.collections[0];
+  assert.equal(collection.taskName, "叶片检测任务"); assert.equal(collection.collectionId, task);
+  assert.equal(collection.pointCount, 2); assert.equal(collection.sessionCount, 2); assert.equal(collection.groups.length, 2);
+  assert.deepEqual(new Set(collection.groups.map(group => group.radialPointId)), new Set(["P1", "P2"]));
+  assert.ok(collection.groups.every(group => group.plannedCount === 4 && group.pendingCount === 3));
+  assert.ok(collection.groups.every(group => group.stations.every(station => station.id.startsWith(group.radialPointId))));
+  const html = renderToStaticMarkup(<FieldBladeSummary recordings={records} />);
+  assert.equal((html.match(/class="field-blade-task"/g) || []).length, 1);
+  assert.ok(html.includes("叶片检测任务 · 叶片 2")); assert.ok(html.includes("2 个测点 · 2 次采集"));
+  assert.ok(html.includes("叶片 2 · P1")); assert.ok(html.includes("叶片 2 · P2"));
+});
+
+check("同测点重采另建批次，完整重采不覆盖原批次缺口", () => {
+  const original = pointRecord("P1", "a".repeat(32)); original.pointCycle!.completion = "missing_exit";
+  const retried = [1, 2, 3, 4].map(index => pointRecord("P1", "b".repeat(32), index));
+  const collection = summarizeBladeRecords([original, ...retried]).collections[0];
+  assert.equal(collection.pointCount, 1); assert.equal(collection.sessionCount, 2); assert.equal(collection.groups.length, 2);
+  const first = collection.groups.find(group => group.sessionId === "a".repeat(32))!;
+  assert.equal(first.gapCount, 1); assert.equal(first.pendingCount, 3); assert.equal(first.observedCount, 0);
+  const second = collection.groups.find(group => group.sessionId === "b".repeat(32))!;
+  assert.equal(second.observedCount, 4); assert.equal(second.pendingCount, 0);
+  assert.equal(collection.groups.reduce((sum, group) => sum + group.recordCount, 0), 5);
+});
+
+check("历史记录按各自批次展示，不按同名任务或UUID文本混合", () => {
+  const oldA = pointRecord("P1", task); delete oldA.pointCycle!.collectionId;
+  const oldB = pointRecord("P2", "b".repeat(32)); delete oldB.pointCycle!.collectionId;
+  const current = pointRecord("P1", "d".repeat(32));
+  const summary = summarizeBladeRecords([oldA, oldB, current]);
+  assert.equal(summary.collections.length, 3); assert.equal(new Set(summary.collections.map(collection => collection.key)).size, 3);
+  assert.equal(summary.collections.filter(collection => collection.collectionId === null).length, 2);
+  assert.ok(summary.groups.every(group => !group.planConflict));
+});
+
+check("不合法或相互矛盾的任务编号隔离，不与其他采集批次合并", () => {
+  for (const invalid of ["same-name", "A".repeat(32), "a".repeat(31), "a".repeat(33), "a".repeat(32) + "\n", "g".repeat(32), "", null, 123]) {
+    const records = [pointRecord("P1", "a".repeat(32)), pointRecord("P2", "b".repeat(32))];
+    for (const record of records) (record.pointCycle as any).collectionId = invalid;
+    const summary = summarizeBladeRecords(records);
+    assert.equal(summary.collections.length, 2, String(invalid));
+    assert.ok(summary.groups.every(group => group.collectionId === null && group.planConflict));
+  }
+  const first = pointRecord("P1", "a".repeat(32));
+  const contradictory = pointRecord("P1", "a".repeat(32), 2, "d".repeat(32));
+  const other = pointRecord("P2", "b".repeat(32));
+  const summary = summarizeBladeRecords([first, contradictory, other]);
+  assert.equal(summary.collections.length, 2);
+  assert.ok(summary.groups.find(group => group.sessionId === "a".repeat(32))!.planConflict);
+});
+
+check("同名的不同任务以及不同叶片始终分开", () => {
+  const records = [pointRecord("P1", "a".repeat(32)), pointRecord("P2", "b".repeat(32), 1, "d".repeat(32)),
+    pointRecord("P1", "e".repeat(32), 1, task, "3")];
+  const summary = summarizeBladeRecords(records);
+  assert.equal(new Set(summary.collections.map(collection => collection.taskName)).size, 1);
+  assert.equal(summary.collections.length, 3); assert.equal(new Set(summary.collections.map(collection => collection.key)).size, 3);
+  assert.equal(summary.collections.filter(collection => collection.collectionId === task).length, 2);
+});
+
 console.log(`PASS ${checks} blade record summary checks; no hardware used`);

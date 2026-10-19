@@ -1,5 +1,6 @@
 """Web import regressions: units, source identity, full samples, and rotation output."""
 import base64
+import copy
 import gzip
 import json
 import math
@@ -10,6 +11,8 @@ from pathlib import Path
 import numpy as np
 
 from blade_acquisition.analysis import read_raw
+from blade_acquisition.csv_export import prepare_export, stream_csv
+from blade_acquisition.receiver import Batch
 from blade_acquisition.storage import RecordingStore
 from blade_acquisition.web_rotation import dispatch, parse_table
 
@@ -52,6 +55,128 @@ class WebRotationTest(unittest.TestCase):
         self.assertEqual(record["source"], "measured")
         with self.assertRaisesRegex(ValueError, "样本数"):
             self.csv({"format": "blade-vms-csv-1", "source": "simulation", "samples": 1002})
+
+    def station_export(self):
+        store = RecordingStore(self.root / "source-recordings")
+        cycle = {"mode": "automatic_stations", "collectionId": "c" * 32, "sessionId": "a" * 32,
+                 "bladeId": "2", "radialPointId": "p1", "radialPointName": "P1", "radiusM": .31,
+                 "azimuthDeg": 90, "stationIndex": 2, "stationCount": 4, "lapIndex": 1,
+                 "pointId": "p1-s2", "stationId": "p1-s2", "pointName": "P1 · 90°", "cycle": 1, "pointIndex": 2,
+                 "completion": "confirmed_pass", "identityVerified": False, "nominalPeriodSeconds": 30,
+                 "entrySampleIndex": 20, "exitSampleIndex": 199,
+                 "handoff": {"entrySampleIndex": 20, "entryConfirmedSampleIndex": 24,
+                             "exitSampleIndex": 180, "exitConfirmedSampleIndex": 199}}
+        writer = store.create({"name": "叶片检测", "object": "模型", "turbine": "风机A", "point": "P1 · 90°",
+                               "source": "polytec_ivs500", "pointCycle": cycle})
+        writer.ready(1000, 1700000000.25)
+        for start in range(0, 256, 4):
+            rssi = [] if start == 40 else [75.0]
+            writer.write(Batch(start, 1000, 1700000000.25, [0] * 4, [index * .001 for index in range(start, start + 4)],
+                               [0] * len(rssi), rssi, [False] * 4, 4))
+        writer.finish(None)
+        manifest, chunks = prepare_export(store, writer.manifest["id"])
+        text = "".join(stream_csv(manifest, chunks))
+        return manifest, text
+
+    def test_full_export_and_csv_import_keep_station_identity_gates_and_sparse_rssi(self):
+        original, text = self.station_export()
+        exported = json.loads(text.splitlines()[0][len("# BladeVMS "):])
+        self.assertEqual(exported["pointCycle"], original["pointCycle"])
+        self.assertEqual(exported["sampleOrigin"], original["sampleOrigin"])
+        for streamed in (False, True):
+            with self.subTest(streamed=streamed):
+                root = self.root / ("stream" if streamed else "inline")
+                root.mkdir()
+                payload = {"action": "import", "filename": "P1.csv.gz" if streamed else "P1.csv"}
+                if streamed:
+                    uploaded = root / ".upload-point"
+                    uploaded.write_bytes(gzip.compress(text.encode()))
+                    payload["inputFile"] = str(uploaded)
+                else:
+                    payload["bytes"] = base64.b64encode(text.encode()).decode()
+                imported = dispatch(root, payload)["recordings"][0]
+                self.assertEqual(imported["pointCycle"], original["pointCycle"])
+                self.assertEqual((imported["object"], imported["turbine"]), ("模型", "风机A"))
+                self.assertEqual(imported["sourceRecordingId"], original["id"])
+                self.assertEqual(imported["sourceSampleOrigin"], 1700000000.25)
+                self.assertNotEqual(imported["sampleOrigin"], imported["sourceSampleOrigin"])
+                self.assertEqual(imported["sourceTimeStart"], 0)
+                for field in ("rssiSampleStride", "rssiSampleRate", "rssiNotSampledVelocitySamples", "rssiMissingExpectedSamples", "missingRssiSamples"):
+                    self.assertEqual(imported[field], original[field], field)
+                imported_store = RecordingStore(root / "recordings")
+                values, rate, _ = read_raw(imported_store, imported["id"], 0, 256)
+                np.testing.assert_allclose(values, np.arange(256) * .001, atol=0)
+                self.assertEqual(rate, 1000)
+                second_export = "".join(stream_csv(*prepare_export(imported_store, imported["id"])))
+                second_root = root / "roundtrip"
+                second = dispatch(second_root, {"action": "import", "filename": "P1.csv", "bytes": base64.b64encode(second_export.encode()).decode()})["recordings"][0]
+                self.assertEqual(second["pointCycle"], original["pointCycle"])
+                self.assertEqual(second["sourceRecordingId"], original["id"])
+                self.assertEqual(second["sourceSampleOrigin"], original["sampleOrigin"])
+                self.assertEqual(second["sourceStartedAt"], original["startedAt"])
+
+    def test_invalid_or_shifted_station_metadata_never_falls_back_to_continuous_import(self):
+        _, text = self.station_export()
+        first, body = text.split("\n", 1)
+        baseline = json.loads(first[len("# BladeVMS "):])
+        mutations = [
+            lambda m: m.update(pointCycle=None),
+            lambda m: m.update(pointCycle={}),
+            lambda m: m.update(sourceTimeStart=1),
+            lambda m: m.update(sampleOrigin=float("nan")),
+            lambda m: m.update(rssiSampleStride=True),
+            lambda m: m.update(rssiSampleRate=1000),
+            lambda m: m["pointCycle"].update(collectionId="C" * 32),
+            lambda m: m["pointCycle"].update(sessionId="a" * 32 + "\n"),
+            lambda m: m["pointCycle"].update(bladeId=" "),
+            lambda m: m["pointCycle"].update(radiusM=True),
+            lambda m: m["pointCycle"].update(identityVerified=True),
+            lambda m: m["pointCycle"].update(stationId="different"),
+            lambda m: m["pointCycle"]["handoff"].update(exitSampleIndex=20),
+            lambda m: m["pointCycle"]["handoff"].update(exitConfirmedSampleIndex=256),
+            lambda m: m["pointCycle"].pop("handoff"),
+            lambda m: m.pop("samples"),
+        ]
+        for index, mutate in enumerate(mutations):
+            metadata = copy.deepcopy(baseline)
+            mutate(metadata)
+            content = "# BladeVMS " + json.dumps(metadata) + "\n" + body
+            for streamed in (False, True):
+                with self.subTest(mutation=index, streamed=streamed), self.assertRaises(ValueError):
+                    payload = {"action": "import", "filename": "P1.csv"}
+                    if streamed:
+                        uploaded = self.root / ".upload-invalid"
+                        uploaded.write_text(content)
+                        payload["inputFile"] = str(uploaded)
+                    else:
+                        payload["bytes"] = base64.b64encode(content.encode()).decode()
+                    dispatch(self.root, payload)
+        shifted = body.splitlines()
+        shifted[1:] = [f"{float(row.split(',')[0]) + 1:.6f}," + row.split(',', 1)[1] for row in shifted[1:]]
+        with self.assertRaisesRegex(ValueError, "从 0"):
+            self.csv(baseline, header=shifted[0], rows=shifted[1:])
+
+    def test_plain_csv_does_not_infer_blade_or_collection_identity(self):
+        imported = self.csv()
+        for field in ("pointCycle", "collectionId", "sourceSampleOrigin", "sourceRecordingId"):
+            self.assertNotIn(field, imported)
+
+    def test_sparse_rssi_survives_stream_buffer_boundary_and_rejects_off_grid_values(self):
+        samples, stride = 17003, 3
+        metadata = {"format": "blade-vms-csv-1", "samples": samples, "sampleRate": 900,
+                    "rssiSampleStride": stride, "rssiSampleRate": 300}
+        rows = [f"{index / 900:.17g},0.1,{75 if index % stride == 0 and index != 16380 else ''},0" for index in range(samples)]
+        uploaded = self.root / ".upload-sparse"
+        uploaded.write_text("# BladeVMS " + json.dumps(metadata) + "\ntime_s,velocity_m_s,RSSI_percent,overrange\n" + "\n".join(rows))
+        imported = dispatch(self.root, {"action": "import", "filename": "P1.csv", "inputFile": str(uploaded)})["recordings"][0]
+        self.assertEqual(imported["samples"], samples)
+        self.assertEqual(imported["rssiSampleStride"], stride)
+        self.assertEqual(imported["rssiSampleRate"], 300)
+        self.assertEqual(imported["rssiMissingExpectedSamples"], 1)
+        self.assertEqual(imported["rssiNotSampledVelocitySamples"], samples - math.ceil(samples / stride))
+        rows[1] = f"{1 / 900:.17g},0.1,75,0"
+        with self.assertRaisesRegex(ValueError, "RSSI 样本位置"):
+            self.csv(metadata, rows=rows)
 
     def test_unknown_value_unit_requires_choice(self):
         rows = [["time_s", "value"]] + [[i / 1000, i] for i in range(64)]

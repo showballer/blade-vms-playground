@@ -7,6 +7,7 @@ import { CustomSelect } from "./custom-select";
 import { FieldRecordingViewer, FieldWaveChart } from "./field-waveform";
 import { FieldRealtimeAnalysis } from "./field-realtime";
 import { readCaptureHistory } from "./web-capture-history";
+import { bladeCaptureSelection, prepareBladeCaptures } from "./web-blade-capture-selection";
 import { captureLiveLabel, captureProgress, captureUploadLabel, type CaptureDetail, type CaptureFrame, type CaptureSummary } from "./capture-types";
 import type { FieldRecording, FieldRecordingDetail, FieldRequestOptions } from "./field-types";
 import "./web-captures.css";
@@ -20,7 +21,7 @@ const time = (value: number | string | null | undefined) => {
 };
 type View = "waveform" | "analysis" | "recording";
 
-export function WebCaptures({ canAnalyze, onAnalyze }: { canAnalyze: boolean; onAnalyze: (recording: FieldRecording) => void }) {
+export function WebCaptures({ canAnalyze, onAnalyze, onAnalyzeBatch }: { canAnalyze: boolean; onAnalyze: (recording: FieldRecording) => void; onAnalyzeBatch?: (recordings: FieldRecording[]) => void }) {
   const [captures, setCaptures] = useState<CaptureSummary[]>([]);
   const [selectedId, setSelectedId] = useState("");
   const [detail, setDetail] = useState<CaptureDetail | null>(null);
@@ -32,6 +33,8 @@ export function WebCaptures({ canAnalyze, onAnalyze }: { canAnalyze: boolean; on
   const [refreshKey, setRefreshKey] = useState(0), [history, setHistory] = useState<FieldRecordingDetail | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false), [analysisError, setAnalysisError] = useState("");
   const [historyFailed, setHistoryFailed] = useState(false), [historyRevision, setHistoryRevision] = useState(0);
+  const mounted = useRef(true), preparationTicket = useRef(0);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; preparationTicket.current++; }; }, []);
   const historyError = useCallback((cause: unknown) => setAnalysisError(cause instanceof Error ? cause.message : "波形读取失败"), []);
   const selectedRef = useRef(""), viewRef = useRef(view);
   useEffect(() => { viewRef.current = view; }, [view]);
@@ -54,6 +57,7 @@ export function WebCaptures({ canAnalyze, onAnalyze }: { canAnalyze: boolean; on
   }, [refreshKey]);
   useEffect(() => {
     selectedRef.current = selectedId;
+    preparationTicket.current++; setBusy(false);
     setDetail(null); setDisplayed(null); setHistory(null); setError(""); setAnalysisError(""); setHistoryFailed(false);
     setPaused(false); pausedRef.current = false; setView("waveform");
     if (!selectedId) return;
@@ -77,6 +81,8 @@ export function WebCaptures({ canAnalyze, onAnalyze }: { canAnalyze: boolean; on
 
   const capture = detail?.capture || captures.find(item => item.id === selectedId);
   const complete = capture?.uploadState === "complete";
+  const selection = capture ? bladeCaptureSelection(captures, capture) : null;
+  const prepareCurrentOnly = Boolean(selection?.automatic && selection.captures.length > 64);
   useEffect(() => {
     if (view !== "recording" || !complete || !selectedId) return;
     let canceled = false;
@@ -99,11 +105,16 @@ export function WebCaptures({ canAnalyze, onAnalyze }: { canAnalyze: boolean; on
   async function useForAnalysis() {
     if (!selectedId || !complete || !canAnalyze || busy) return;
     const id = selectedId; setBusy(true); setAnalysisError("");
+    const ticket = ++preparationTicket.current;
+    const active = () => mounted.current && ticket === preparationTicket.current && selectedRef.current === id;
     try {
-      const result = await api<{ recording: FieldRecording }>(`captures/${encodeURIComponent(id)}/prepare-analysis`, "POST", {});
-      if (selectedRef.current === id) onAnalyze(result.recording);
-    } catch (cause) { if (selectedRef.current === id) setAnalysisError(cause instanceof Error ? cause.message : "准备分析失败"); }
-    finally { setBusy(false); }
+      const batch = selection?.automatic && onAnalyzeBatch && !prepareCurrentOnly ? selection.captures : capture ? [capture] : [];
+      const prepared = await prepareBladeCaptures(batch, async captureId => (await api<{ recording: FieldRecording }>(`captures/${encodeURIComponent(captureId)}/prepare-analysis`, "POST", {})).recording, active);
+      if (active() && prepared?.length) {
+        if (onAnalyzeBatch) onAnalyzeBatch(prepared); else onAnalyze(prepared[0]);
+      }
+    } catch (cause) { if (active()) setAnalysisError(cause instanceof Error ? cause.message : "准备分析失败"); }
+    finally { if (active()) setBusy(false); }
   }
   async function downloadAttachment(name: "manifest.json" | "turntable.jsonl") {
     if (!selectedId || !complete || busy) return;
@@ -119,9 +130,11 @@ export function WebCaptures({ canAnalyze, onAnalyze }: { canAnalyze: boolean; on
       <div className="field-section-heading"><div><h2><Radio size={18} /> 桌面采集</h2><p>查看实时信号，选择已上传的完整记录进行分析。</p></div><Button variant="ghost" onClick={() => setRefreshKey(value => value + 1)}><RefreshCw size={15} />刷新</Button></div>
       {listError && <p className="field-error" role="alert">{listError}</p>}
       {loading ? <p className="field-subtext" role="status">正在读取采集记录…</p> : !captures.length ? <div className="capture-empty"><Cloud size={26} /><div><strong>等待客户端采集</strong><p>客户端绑定此 Web 的账号后，开启自动同步并开始采集。采集中可看实时波形，停止保存后自动上传原始记录。</p></div></div> : <>
-        <div className="capture-selection-row"><label>采集任务<CustomSelect aria-label="桌面采集任务" value={selectedId} onChange={event => setSelectedId(event.target.value)}>{captures.map(item => <option key={item.id} value={item.id}>{item.recording.name || "未命名采集"} · {item.ownerName} · {captureLiveLabel(item.liveState)} · {time(item.recording.startedAt)}</option>)}</CustomSelect></label>
-          <Button variant="primary" disabled={!complete || !canAnalyze || busy} onClick={() => void useForAnalysis()} title={!canAnalyze ? "管理员或分析员可执行分析" : !complete ? "完整原始记录上传完成后可分析" : undefined}><ArrowDownToLine size={16} />{busy ? "正在准备…" : "选择用于旋转分析"}</Button>
+        <div className="capture-selection-row"><label>采集任务<CustomSelect aria-label="桌面采集任务" value={selectedId} onChange={event => setSelectedId(event.target.value)}>{captures.map(item => <option key={item.id} value={item.id}>{item.recording.name || "未命名采集"}{item.recording.pointCycle?.radialPointName ? ` · ${item.recording.pointCycle.radialPointName} / ${item.recording.pointCycle.azimuthDeg}°` : ""} · {item.ownerName} · {captureLiveLabel(item.liveState)} · {time(item.recording.startedAt)}</option>)}</CustomSelect></label>
+          <Button variant="primary" disabled={!complete || !canAnalyze || busy} onClick={() => void useForAnalysis()} title={!canAnalyze ? "管理员或分析员可执行分析" : !complete ? "完整原始记录上传完成后可分析" : undefined}><ArrowDownToLine size={16} />{busy ? "正在准备…" : prepareCurrentOnly ? "选择当前记录用于分析" : selection?.automatic ? "选择同叶片记录" : "选择用于旋转分析"}</Button>
         </div>
+        {selection?.automatic && <p className="field-subtext">本任务 · 叶片 {capture?.recording.pointCycle?.bladeId} · {selection.captures.length} 条完整站位记录{selection.pending ? ` · ${selection.pending} 条尚未上传完成` : ""}。下方可按测点、批次和站位选择分析范围。</p>}
+        {prepareCurrentOnly && <p className="field-subtext">当前任务超过 64 条记录，请在上方逐条选择并加入分析工作区，再在下方分批分析。</p>}
         {capture && <div className="capture-info-grid"><div><span>采集端</span><strong>{capture.ownerName}</strong><small>{capture.tenant}</small></div><div><span>原始样本 / 采样率</span><strong>{count(capture.recording.samples)} 点</strong><small>{count(capture.recording.sampleRate)} Hz</small></div><div><span>实时连接</span><strong className={disconnected ? "capture-warning" : ""}>{error ? "连接中断" : captureLiveLabel(capture.liveState)}</strong><small>最后接收 {time(capture.lastSeenAt)}</small></div><div><span>原始记录</span><strong>{captureUploadLabel(capture.uploadState)}</strong><small>{capture.totalBytes ? `${captureProgress(capture)}% · ${(capture.receivedBytes / 1048576).toFixed(1)} / ${(capture.totalBytes / 1048576).toFixed(1)} MB` : "停止并保存后上传"}</small></div></div>}
       </>}
       {analysisError && <p className="field-error" role="alert">{analysisError}{historyFailed && view === "recording" && <Button disabled={historyLoading} onClick={() => setHistoryRevision(value => value + 1)}>重试读取</Button>}</p>}

@@ -46,6 +46,11 @@ function pointCycleConfig(value) {
   if (value.mode !== undefined && !['legacy', 'automatic_stations'].includes(value.mode)) throw failure('无效自动跟随模式', 400);
   const automatic = value.mode === 'automatic_stations';
   const follow = {};
+  if (value.collectionId !== undefined) {
+    if (!automatic || typeof value.collectionId !== 'string' || value.collectionId.length !== 32 || !/^[a-f0-9]{32}$/.test(value.collectionId))
+      throw failure('无效叶片采集任务编号', 400);
+    follow.collectionId = value.collectionId;
+  }
   if (automatic) {
     const number = (v, min, max) => typeof v === 'number' && Number.isFinite(v) && v >= min && v <= max;
     const geometry = value.geometry;

@@ -4,19 +4,19 @@ import { pointReferenceSignature } from "./field-turntable-points";
 
 export type AutoFollowDraft = {
   bladeId: string; periodSeconds: number; stepDeg: number;
-  points: { id: string; name: string; radiusM: number }[];
+  points: { id: string; name: string; radiusM: number }[]; activePointId: string;
   distanceM: number; hubHeightDeltaM: number;
   direction: "clockwise" | "counterclockwise"; axis1Sign: 1 | -1; axis2Sign: 1 | -1;
   maxMoveRpm: number; cycles: number; waitRevolutions: number;
   rssiEnterSpread: number; rssiExitSpread: number; rssiEnterConfirmMs: number; rssiConfirmMs: number;
 };
 export type AutoFollowAnchor = {
-  port: string; referenceSignature: string; radiusM: number;
+  port: string; referenceSignature: string; radiusM: number; pointId: string;
   axis1AngleDeg: number; axis2AngleDeg: number;
 };
 export const autoFollowDefaults: AutoFollowDraft = {
   bladeId: "2", periodSeconds: 30, stepDeg: 90,
-  points: [{ id: "p1", name: "P1", radiusM: 0.31 }],
+  points: [{ id: "p1", name: "P1", radiusM: 0.31 }], activePointId: "p1",
   distanceM: 2.86, hubHeightDeltaM: 1.46, direction: "clockwise", axis1Sign: 1, axis2Sign: 1,
   maxMoveRpm: 0.6, cycles: 1, waitRevolutions: 2,
   rssiEnterSpread: 8, rssiExitSpread: 3, rssiEnterConfirmMs: 20, rssiConfirmMs: 30,
@@ -54,26 +54,26 @@ export function planAutoFollow(draft: AutoFollowDraft, anchor: AutoFollowAnchor 
   if (!finite(draft.waitRevolutions, 1, 10) || draft.waitRevolutions * draft.periodSeconds > 3600) errors.push("单站等待时间应为1～10个周期且不超过3600秒");
   if (!finite(draft.rssiEnterSpread, 0.1, 100) || !finite(draft.rssiExitSpread, 0, 99.9) || draft.rssiExitSpread >= draft.rssiEnterSpread) errors.push("进入阈值必须大于离开阈值");
   if (!finite(draft.rssiEnterConfirmMs, 10, 1000) || !finite(draft.rssiConfirmMs, 10, 1000)) errors.push("回波确认时间应为10～1000毫秒");
-  const ids = new Set<string>();
-  if (!draft.points.length) errors.push("请至少添加一个叶片测点");
-  for (const point of draft.points) {
-    if (!point.id || ids.has(point.id) || point.id.length > 80) errors.push("测点编号须唯一且不超过80字");
-    ids.add(point.id);
-    if (!point.name.trim() || point.name.trim().length > 80 || !finite(point.radiusM, 0.001, 1000)) errors.push("每个测点须填写名称和有效半径");
+  const selected = draft.points.filter(point => point.id === draft.activePointId);
+  const radial = selected.length === 1 ? selected[0] : undefined;
+  if (!radial) errors.push("请选择本次采集测点");
+  else {
+    if (!radial.id || radial.id.length > 80) errors.push("当前测点编号无效");
+    if (!radial.name.trim() || radial.name.trim().length > 80 || !finite(radial.radiusM, 0.001, 1000)) errors.push("请填写当前测点名称和有效半径");
   }
-  if (count * draft.points.length > 200 || count * draft.points.length * draft.cycles > 2000) errors.push("每轮最多200个站位、每次任务最多2000条记录");
+  if (count > 200 || count * draft.cycles > 2000) errors.push("每轮最多200个站位、每次任务最多2000条记录");
   const result: AutoFollowPlan = { errors, points: [], nominalRpm: 60 / draft.periodSeconds,
-    stationsPerPoint: Number.isInteger(count) ? count : 0, totalRecords: count * draft.points.length * draft.cycles,
+    stationsPerPoint: Number.isInteger(count) ? count : 0, totalRecords: radial ? count * draft.cycles : 0,
     speedRpm: 0, requiredRpm: 0, maxTravelLowerBoundSeconds: 0,
     intervalSeconds: draft.periodSeconds * draft.stepDeg / 360, mayMissNextPass: false };
-  if (errors.length) return result;
+  if (errors.length || !radial) return result;
   if (!anchor || !isTurntablePort(anchor.port) || !pointReferenceSignature(anchor) ||
       !finite(anchor.radiusM, 0.001, 1000) || !finite(anchor.axis1AngleDeg, -35, 35) || !finite(anchor.axis2AngleDeg, -180, 180)) {
-    errors.push("请先将首个测点置于6点方向，完成瞄准后读取两轴参考"); return result;
+    errors.push("请先将当前测点置于6点方向，完成瞄准后校准起点"); return result;
   }
-  if (Math.abs(anchor.radiusM - draft.points[0].radiusM) > 1e-9) { errors.push("首测点半径已变化，请重新读取瞄准参考"); return result; }
+  if (anchor.pointId !== radial.id || Math.abs(anchor.radiusM - radial.radiusM) > 1e-9) { errors.push("当前测点已变化，请重新校准起点"); return result; }
   const origin = stationOpticalAngles(draft.distanceM, draft.hubHeightDeltaM, anchor.radiusM, 0, draft.direction);
-  for (const radial of draft.points) for (let station = 0; station < count; station++) {
+  for (let station = 0; station < count; station++) {
     const azimuthDeg = station * draft.stepDeg;
     const optical = stationOpticalAngles(draft.distanceM, draft.hubHeightDeltaM, radial.radiusM, azimuthDeg, draft.direction);
     const axis1AngleDeg = round(anchor.axis1AngleDeg + draft.axis1Sign * (optical.pitch - origin.pitch));

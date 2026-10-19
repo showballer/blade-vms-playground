@@ -1,4 +1,9 @@
 .field-blade-summary { min-width: 0; }
+.field-blade-tasks { display: grid; gap: var(--field-ui-space-4); }
+.field-blade-task { min-width: 0; }
+.field-blade-task-heading { margin-bottom: var(--field-ui-space-2); }
+.field-blade-task-heading h3 { margin: 0; color: var(--field-ui-text); font-size: var(--field-ui-body); font-weight: 600; overflow-wrap: anywhere; }
+.field-blade-task-heading p { margin: var(--field-ui-space-1) 0 0; color: var(--field-ui-secondary); font-size: var(--field-ui-caption); }
 .field-blade-totals {
   display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: var(--field-ui-space-3); margin: 0 0 var(--field-ui-space-4);

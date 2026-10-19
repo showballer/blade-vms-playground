@@ -45,8 +45,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Single-point and motion-trial UI tests failed' }
           npm run test:auto-follow
           if ($LASTEXITCODE -ne 0) { throw 'Automatic station planning, production UI and blade summary tests failed' }
+          npx tsx scripts/test-web-blade-capture-selection.ts
+          if ($LASTEXITCODE -ne 0) { throw 'Blade record selection and preparation cancellation tests failed' }
           node scripts/test-field-capture-main.cjs
           if ($LASTEXITCODE -ne 0) { throw 'Single-point capture bridge tests failed' }
+          node --test scripts/test-windows-blade-passes-gate.cjs
+          if ($LASTEXITCODE -ne 0) { throw 'Blade pass package gate contract tests failed' }
           node --test scripts/test-windows-motion-trial-gate.cjs
           if ($LASTEXITCODE -ne 0) { throw 'Frozen motion-trial gate contract tests failed' }
           node --test scripts/test-windows-packaged-bridge.cjs
@@ -73,6 +77,14 @@ jobs:
         run: |
           node scripts/test-windows-motion-trial.cjs --resources apps/desktop/release/win-unpacked/resources
           if ($LASTEXITCODE -ne 0) { throw 'Frozen motion-trial preview and arm-rejection verification failed' }
+      - name: Verify packaged blade point records, CSV export and Web pass analysis without hardware
+        run: |
+          node scripts/test-windows-blade-passes.cjs --resources apps/desktop/release/win-unpacked/resources
+          if ($LASTEXITCODE -ne 0) { throw 'Frozen blade point export and synchronization verification failed' }
+      - name: Verify current-point selection and manual next-point workflow
+        run: |
+          npx electron scripts/auto-follow-ui-smoke.cjs
+          if ($LASTEXITCODE -ne 0) { throw 'Automatic following UI interaction checks failed' }
       - name: Verify waveform and device configuration UI without hardware
         run: npm run test:field-waveform
       - name: Verify frozen runtime, install, login, coexistence and uninstall
@@ -101,7 +113,7 @@ jobs:
           This private draft does not update the production download endpoint.
           "@
           $notes | Set-Content -Encoding utf8NoBOM apps/desktop/release/BUILD_NOTES.md
-          $evidence = @('artifacts/windows-bundle-smoke', 'artifacts/windows-simulation-smoke', 'artifacts/windows-motion-trial-smoke', 'artifacts/field-waveform-smoke')
+          $evidence = @('artifacts/windows-bundle-smoke', 'artifacts/windows-simulation-smoke', 'artifacts/windows-motion-trial-smoke', 'artifacts/field-waveform-smoke', 'artifacts/windows-blade-passes-smoke', 'artifacts/auto-follow-ui-review')
           Compress-Archive -Path $evidence -DestinationPath apps/desktop/release/windows-verification-evidence.zip
           $assets = @(
             "apps/desktop/release/BladeVMS-Setup-$env:RELEASE_VERSION-x64.exe",

@@ -193,7 +193,7 @@ async function main() {
       turntable: { config: { port: "COM6", axis: 1 }, preparedReferences: { "1": { origin_counts: 123 } },
         telemetry: { file: "turntable.jsonl", events: 2, sha256: digest(telemetry), timestampBasis: "sequential host observations; not hardware synchronized" } },
       pointCycle: { cycle: 2, pointIndex: 1, pointName: "B1-P2", actualAngles: { "1": 2, "2": 30 },
-        mode: "automatic_stations", sessionId: "a".repeat(32), bladeId: "2", radialPointId: "p2", radialPointName: "叶尖",
+        mode: "automatic_stations", collectionId: "c".repeat(32), sessionId: "a".repeat(32), bladeId: "2", radialPointId: "p2", radialPointName: "叶尖",
         radiusM: .5, azimuthDeg: 90, stationIndex: 2, stationCount: 4, lapIndex: 2, cycles: 2,
         identitySource: "operator_assigned", identityVerified: false, coverageKind: "sparse_station_passes", completion: "confirmed_pass",
         plannedStations: [0, 90, 180, 270].map((azimuthDeg, index) => ({ pointId: `p2-s${index + 1}`, bladeId: "2",

@@ -1021,6 +1021,7 @@ class AcquisitionController:
         self.stop_event.clear()
         self.state, self.error = "starting", None
         self.point_cycle = {"state": "checking", "port": cycle.port, "cycles": cycle.cycles,
+                            **({"collectionId": cycle.collectionId} if cycle.collectionId else {}),
                             "sessionId": uuid.uuid4().hex, "mode": cycle.mode,
                             "sessionState": "running",
                             "plannedStations": self._cycle_station_plan(cycle),
@@ -1491,6 +1492,7 @@ class AcquisitionController:
         station = next(item for item in plan if item["pointId"] == point.pointId) if point.pointId else next(
             item for item in plan if item["name"] == point.name)
         metadata["pointCycle"].update(
+            **({"collectionId": cycle.collectionId} if cycle.collectionId else {}),
             **{key: station[key] for key in ("bladeId", "radialPointId", "radialPointName", "radiusM",
                                              "azimuthDeg", "stationIndex", "stationCount")},
             sessionId=self.point_cycle["sessionId"], mode=cycle.mode, lapIndex=cycle_index,
