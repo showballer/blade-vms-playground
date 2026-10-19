@@ -1,4 +1,4 @@
-import type { FieldPointCycleConfig, FieldPointCyclePoint } from "./field-types";
+import type { FieldMotionMode, FieldPointCycleConfig, FieldPointCyclePoint } from "./field-types";
 import { isTurntablePort } from "./field-turntable-port";
 import { pointReferenceSignature } from "./field-turntable-points";
 
@@ -25,6 +25,7 @@ export type AutoFollowPlan = {
   errors: string[]; points: FieldPointCyclePoint[]; pointCycle?: FieldPointCycleConfig;
   nominalRpm: number; stationsPerPoint: number; totalRecords: number;
   speedRpm: number; requiredRpm: number; maxTravelLowerBoundSeconds: number;
+  motionMode: FieldMotionMode | "unknown"; plannedMoveSeconds: number;
   intervalSeconds: number; mayMissNextPass: boolean;
 };
 const finite = (value: number, min: number, max: number) => Number.isFinite(value) && value >= min && value <= max;
@@ -41,7 +42,7 @@ export function stationOpticalAngles(distanceM: number, heightM: number, radiusM
 }
 
 /** Planning has no I/O and cannot establish reference validity, identity or arrival timing. */
-export function planAutoFollow(draft: AutoFollowDraft, anchor: AutoFollowAnchor | null): AutoFollowPlan {
+export function planAutoFollow(draft: AutoFollowDraft, anchor: AutoFollowAnchor | null, motionMode: FieldMotionMode | "unknown" = "unknown"): AutoFollowPlan {
   const errors: string[] = [];
   const count = 360 / draft.stepDeg;
   if (!draft.bladeId.trim() || draft.bladeId.trim().length > 80) errors.push("请填写叶片编号（最多80字）");
@@ -64,7 +65,7 @@ export function planAutoFollow(draft: AutoFollowDraft, anchor: AutoFollowAnchor 
   if (count > 200 || count * draft.cycles > 2000) errors.push("每轮最多200个站位、每次任务最多2000条记录");
   const result: AutoFollowPlan = { errors, points: [], nominalRpm: 60 / draft.periodSeconds,
     stationsPerPoint: Number.isInteger(count) ? count : 0, totalRecords: radial ? count * draft.cycles : 0,
-    speedRpm: 0, requiredRpm: 0, maxTravelLowerBoundSeconds: 0,
+    speedRpm: 0, requiredRpm: 0, maxTravelLowerBoundSeconds: 0, motionMode, plannedMoveSeconds: 0,
     intervalSeconds: draft.periodSeconds * draft.stepDeg / 360, mayMissNextPass: false };
   if (errors.length || !radial) return result;
   if (!anchor || !isTurntablePort(anchor.port) || !pointReferenceSignature(anchor) ||
@@ -83,19 +84,26 @@ export function planAutoFollow(draft: AutoFollowDraft, anchor: AutoFollowAnchor 
       port: anchor.port, referenceSignature: anchor.referenceSignature, axis1AngleDeg, axis2AngleDeg,
       bladeId: draft.bladeId.trim(), radialPointId: radial.id, radialPointName: radial.name.trim(), radiusM: radial.radiusM, azimuthDeg });
   }
-  // Sequential-axis motion uses the SUM of angular travel. This excludes acceleration,
-  // feedback round trips and DAQ startup, and therefore is explicitly only a lower bound.
+  // The controller's confirmed timed mode uses a rest-to-rest cubic profile.
+  // Unknown capability keeps the conservative sequential budget until the device is read.
   let maxTravel = 0;
   for (let i = 0; i < result.points.length; i++) {
     const from = result.points[i], to = result.points[(i + 1) % result.points.length];
-    maxTravel = Math.max(maxTravel, Math.abs(to.axis1AngleDeg - from.axis1AngleDeg) + Math.abs(to.axis2AngleDeg - from.axis2AngleDeg));
+    const one = Math.abs(to.axis1AngleDeg - from.axis1AngleDeg), two = Math.abs(to.axis2AngleDeg - from.axis2AngleDeg);
+    maxTravel = Math.max(maxTravel, motionMode === "dual_axis_timed" ? Math.max(one, two) : one + two);
   }
-  const needed = maxTravel / (6 * result.intervalSeconds * 0.5);
+  const needed = maxTravel * (motionMode === "dual_axis_timed" ? 1.5 * 1.05 : 1) / (6 * result.intervalSeconds * 0.5);
   result.requiredRpm = Math.max(0.02, Math.ceil((needed - 1e-10) / 0.02) * 0.02);
   const cap = Math.floor((draft.maxMoveRpm + 1e-10) / 0.02) * 0.02;
   result.speedRpm = round(Math.min(cap, result.requiredRpm));
   result.maxTravelLowerBoundSeconds = maxTravel / (6 * result.speedRpm);
-  result.mayMissNextPass = result.requiredRpm > result.speedRpm + 1e-9;
+  // s(u)=3u²−2u³: peak speed=1.5Δ/T; peak acceleration=6Δ/T².
+  // Baseline estimate only: backend checks wire-quantized points and may extend duration.
+  // Include its 3°/s² acceleration cap, 1s minimum and initial 5% timing margin.
+  result.plannedMoveSeconds = motionMode === "dual_axis_timed"
+    ? Math.ceil(Math.max(1, 1.5 * maxTravel / (6 * result.speedRpm), Math.sqrt(6 * maxTravel / 3)) * 1.05 * 1000) / 1000
+    : result.maxTravelLowerBoundSeconds;
+  result.mayMissNextPass = result.plannedMoveSeconds > result.intervalSeconds * 0.5 + 1e-9;
   if (!errors.length) result.pointCycle = {
     mode: "automatic_stations", port: anchor.port, points: result.points,
     nominalPeriodSeconds: draft.periodSeconds, maxMoveRpm: draft.maxMoveRpm,

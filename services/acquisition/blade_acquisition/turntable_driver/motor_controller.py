@@ -19,7 +19,11 @@ from .protocol import (
     build_soft_range, validate_output_angle,
     Response, ResponseParser, build_request, build_move_output_relative,
     build_motion_profile,
+    CMD_TRAJECTORY_BEGIN, CMD_TRAJECTORY_POINT, CMD_TRAJECTORY_SEAL, CMD_TRAJECTORY_START,
+    CMD_TRAJECTORY_STATUS, CMD_TRAJECTORY_STOP, CMD_TRAJECTORY_KEEPALIVE,
+    build_trajectory_begin, build_trajectory_point, validate_trajectory_session,
 )
+from .trajectory import TrajectoryPoint, TrajectoryStatus, decode_status, validate_points
 
 
 class MotorError(RuntimeError):
@@ -131,6 +135,9 @@ class MotorController:
         self._parser = ResponseParser()
         self._lock = threading.RLock()
         self._faulted = False
+        self._trajectory_session: int | None = None
+        self._trajectory_prepared = None
+        self._trajectory_started = False
 
     @staticmethod
     def _axis(motor_id: int) -> None:
@@ -178,6 +185,11 @@ class MotorController:
                 raise CommunicationError("串口未连接，请先 connect()")
             if self._faulted:
                 raise CommunicationError("上次通信结果不确定，请关闭并重连；不要自动重发运动")
+            read_commands = (CMD_READ_PA, CMD_READ_SPEED, CMD_READ_POSITION, CMD_READ_ALARM,
+                             CMD_READ_FEEDBACK, CMD_READ_GUARD)
+            if (self._trajectory_session is not None and frame[4] not in read_commands and
+                    not CMD_TRAJECTORY_BEGIN <= frame[4] <= CMD_TRAJECTORY_KEEPALIVE and frame[4] != CMD_STOP):
+                raise MotorError("两轴轨迹已准备或运行，请先停止轨迹后再发送其他运动或配置")
             expected = (frame[3], frame[4], struct.unpack(">H", frame[5:7])[0])
             try:
                 self._port.reset_input_buffer()
@@ -387,6 +399,9 @@ class MotorController:
         self._axis(motor_id)
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("停止确认 timeout 必须为正数")
+        if self._trajectory_session is not None:
+            self.stop_trajectory(wait=wait, timeout=timeout)
+            return
         if self._faulted and self._port is not None:
             # A stop is the only permitted best-effort write after uncertain
             # communication. It is never represented as a confirmed stop.
@@ -452,6 +467,240 @@ class MotorController:
             raise MotorError(f"加减速参数读回不一致: {actual}")
         return actual
 
+    @staticmethod
+    def _trajectory_cancelled(cancel):
+        if cancel is not None and cancel.is_set():
+            raise MotorError("两轴轨迹已取消，未继续发送运动")
+
+    def _trajectory_data(self, packet: Response) -> TrajectoryStatus:
+        try:
+            return decode_status(packet.data)
+        except ValueError as exc:
+            self._faulted = True
+            raise CommunicationError(str(exc)) from exc
+
+    def get_trajectory_status(self) -> TrajectoryStatus:
+        """Read MCU cached state; never use this as a live angle before sampling."""
+        return self._trajectory_data(self._request(build_request(1, CMD_TRAJECTORY_STATUS)))
+
+    def probe_trajectory(self) -> TrajectoryStatus | None:
+        """Only an explicit UNKNOWN_COMMAND proves legacy firmware. No write fallback."""
+        try:
+            return self.get_trajectory_status()
+        except CommandRejected as exc:
+            if exc.status == 7:
+                return None
+            raise
+
+    def _trajectory_axes(self, points, *, expected=None, target=None, tolerance=0.1, cancel=None):
+        references = []
+        for axis in (1, 2):
+            self._trajectory_cancelled(cancel)
+            status, feedback, guard = self.get_status(axis), self.get_feedback(axis), self.get_guard_config(axis)
+            if (status.motor_rpm or feedback.motor_rpm or status.alarm_code or
+                    status.limit_flags not in (None, 0) or feedback.fault or feedback.flags & 16 or
+                    feedback.home_phase not in (0, 7, 8)):
+                raise MotorError(f"轴{axis}未停稳、存在报警或保护状态异常")
+            if feedback.output_angle_deg is None or not feedback.flags & 1:
+                raise MotorError(f"轴{axis}没有可信参考位，不能执行两轴轨迹")
+            limit = 35 if axis == 1 else 180
+            if (not guard.soft_enabled or not feedback.flags & 2 or not
+                    -limit <= guard.minimum_deg < guard.maximum_deg <= limit):
+                raise MotorError(f"轴{axis}软范围未开启或超出机械范围")
+            channels = (guard.negative, guard.positive, guard.home) if guard.home_at_end else (guard.negative, guard.positive)
+            if any(ch is not None and not 0 <= ch <= 5 for ch in channels):
+                raise MotorError(f"轴{axis}限位输入配置无效")
+            if guard.hardware_enabled and any(ch is not None and feedback.active_inputs & (1 << ch) for ch in channels):
+                raise MotorError(f"轴{axis}端点限位已触发")
+            angles = [feedback.output_angle_deg, *(getattr(p, f"axis{axis}_deg") for p in points)]
+            if any(not guard.minimum_deg <= angle <= guard.maximum_deg for angle in angles):
+                raise MotorError(f"轴{axis}当前位置或轨迹目标超出实际软范围")
+            if target is not None and abs(feedback.output_angle_deg - getattr(target, f"axis{axis}_deg")) > tolerance + 1e-9:
+                raise MotorError(f"轴{axis}未到轨迹要求位置，禁止自动补移或继续")
+            references.append((feedback.origin_counts, feedback.display_mode, feedback.command_counts_per_rev,
+                               feedback.encoder_bits, guard))
+        if expected is not None and tuple(references) != expected:
+            raise MotorError("两轴参考位、反馈单位或保护配置已变化，请重新准备轨迹")
+        self._trajectory_cancelled(cancel)
+        return tuple(references)
+
+    def prepare_trajectory(self, points, *, session: int | None = None, cycle_ms: int = 250,
+                           max_speed: float = 3.6, max_accel: float = 3,
+                           max_error: float = 0.75, tolerance: float = 0.1, cancel=None) -> TrajectoryStatus:
+        """Validate/read first, upload and seal without moving. Never stop another active task."""
+        points = validate_points(points)
+        if session is None:
+            session = (time.monotonic_ns() & 65535) or 1
+        header = build_trajectory_begin(session, len(points), cycle_ms=cycle_ms, max_speed=max_speed,
+                                        max_accel=max_accel, max_error=max_error, tolerance=tolerance)
+        frames = [build_trajectory_point(session, i, round(p.time_s * 1000), p.axis1_deg, p.axis2_deg)
+                  for i, p in enumerate(points)]
+        wire_speed = round(max_speed * 1000) / 1000
+        wire_tolerance = round(tolerance * 1000) / 1000
+        for a, b in zip(points, points[1:]):
+            if max(abs(b.axis1_deg - a.axis1_deg), abs(b.axis2_deg - a.axis2_deg)) / (b.time_s - a.time_s) > wire_speed + 1e-9:
+                raise ValueError("轨迹段速度超过设置上限")
+        with self._lock:
+            # Even a cancelled replacement must never leave an earlier local START armed.
+            self._trajectory_prepared = None
+            self._trajectory_cancelled(cancel)
+            current = self.probe_trajectory()
+            if current is None:
+                raise MotorError("当前转盘固件不支持两轴缓冲轨迹")
+            if current.active:
+                raise MotorError("转盘已有运行任务，请先停止并核查，不会覆盖原任务")
+            references = self._trajectory_axes(points, cancel=cancel)
+            self._trajectory_cancelled(cancel)
+            self._trajectory_session = session  # Lost BEGIN/START replies still require group cancellation.
+            self._trajectory_prepared = None
+            self._trajectory_started = False
+            try:
+                result = self._trajectory_data(self._request(header))
+                if result.session != session or result.state != 1 or result.point_count != len(points) or result.uploaded_count != 0 or result.fault:
+                    raise MotorError("轨迹缓存建立应答不匹配，禁止继续上传")
+                for index, frame in enumerate(frames):
+                    self._trajectory_cancelled(cancel)
+                    result = self._trajectory_data(self._request(frame))
+                    if (result.session != session or result.state != 1 or result.point_count != len(points) or
+                            result.uploaded_count != index + 1 or result.fault):
+                        raise MotorError("轨迹点上传应答不匹配，禁止继续上传")
+                self._trajectory_cancelled(cancel)
+                result = self._trajectory_data(self._request(build_request(1, CMD_TRAJECTORY_SEAL, parameter=session)))
+                self._trajectory_cancelled(cancel)
+                if (result.state != 2 or result.fault or result.session != session or
+                        result.point_count != len(points) or result.uploaded_count != len(points)):
+                    raise MotorError("轨迹未完整校验，禁止启动")
+                self._trajectory_prepared = (points, references, wire_tolerance)
+                return result
+            except Exception:
+                self._trajectory_abort()
+                raise
+
+    def start_trajectory(self, session: int, *, cancel=None) -> TrajectoryStatus:
+        validate_trajectory_session(session)
+        with self._lock:
+            if session != self._trajectory_session or self._trajectory_prepared is None or self._trajectory_started:
+                raise MotorError("没有匹配且尚未执行的预载轨迹，请重新准备")
+            try:
+                self._trajectory_cancelled(cancel)
+                points, references, tolerance = self._trajectory_prepared
+                result = self.get_trajectory_status()
+                if (result.session != session or result.state != 2 or result.fault or
+                        result.point_count != len(points) or result.uploaded_count != len(points)):
+                    raise MotorError("下位机轨迹会话已变化或未就绪，禁止启动")
+                self._trajectory_axes(points, expected=references, target=points[0], tolerance=tolerance, cancel=cancel)
+                self._trajectory_cancelled(cancel)
+                self._trajectory_started = True
+                result = self._trajectory_data(self._request(build_request(1, CMD_TRAJECTORY_START, parameter=session)))
+                if result.session != session or result.state not in (3, 4) or result.fault:
+                    raise MotorError("轨迹未确认启动，请核查实际状态")
+                self._trajectory_cancelled(cancel)
+                return result
+            except Exception:
+                self._trajectory_abort()
+                raise
+
+    def renew_trajectory(self, session: int) -> TrajectoryStatus:
+        validate_trajectory_session(session)
+        with self._lock:
+            if session != self._trajectory_session or not self._trajectory_started:
+                raise MotorError("轨迹会话不匹配或未运行，不会续期或重新启动")
+            try:
+                result = self._trajectory_data(self._request(build_request(1, CMD_TRAJECTORY_KEEPALIVE, parameter=session)))
+            except CommandRejected as exc:
+                # Completion can race a heartbeat. Resolve only a definitive busy
+                # reply by reading state; never resend START or the heartbeat.
+                if exc.status != 6:
+                    raise
+                result = self.get_trajectory_status()
+                if result.session != session or result.state not in (5, 6, 7, 8):
+                    raise exc
+            if result.session != session:
+                raise MotorError("轨迹会话已变化，停止续期")
+            return result
+
+    def _trajectory_abort(self):
+        """Preserve the initiating error; a failed stop leaves the session uncertain."""
+        try:
+            self.stop_trajectory()
+        except Exception:
+            self._trajectory_prepared = None
+            self._trajectory_started = False
+
+    def stop_trajectory(self, *, wait: bool = True, timeout: float = 10) -> TrajectoryStatus:
+        if isinstance(timeout, bool) or not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("停止等待时间须为正数")
+        with self._lock:
+            session = self._trajectory_session or 0
+            self._trajectory_prepared = None
+            self._trajectory_started = False
+            if self._faulted and self._port is not None:
+                for axis, command in ((1, CMD_TRAJECTORY_STOP), (1, CMD_STOP), (2, CMD_STOP)):
+                    try:
+                        self._port.write(build_request(axis, command, parameter=session if command == CMD_TRAJECTORY_STOP else 0))
+                    except Exception:
+                        pass
+                raise CommunicationError("已尝试停止两轴，但通信结果不确定，无法确认停稳")
+            result = self._trajectory_data(self._request(build_request(1, CMD_TRAJECTORY_STOP, parameter=session)))
+        if not wait:
+            return result
+        deadline = time.monotonic() + timeout
+        zero_samples = 0
+        while time.monotonic() < deadline:
+            if not result.active:
+                stopped = True
+                for axis in (1, 2):
+                    status, feedback = self.get_status(axis), self.get_feedback(axis)
+                    stopped = stopped and not (status.motor_rpm or feedback.motor_rpm or
+                        status.limit_flags is not None and status.limit_flags & 2 or feedback.flags & 16 or
+                        feedback.home_phase not in (0, 7, 8))
+                zero_samples = zero_samples + 1 if stopped else 0
+                if zero_samples >= 2:
+                    self._trajectory_session = None
+                    return result
+            time.sleep(0.1)
+            result = self.get_trajectory_status()
+        raise MotorError("两轴停止确认超时，实际状态未知；请核查机构")
+
+    def wait_trajectory(self, session: int, *, timeout: float = 30, cancel=None, on_status=None) -> TrajectoryStatus:
+        validate_trajectory_session(session)
+        if isinstance(timeout, bool) or not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("轨迹等待时间须为正数")
+        if session != self._trajectory_session or not self._trajectory_started or self._trajectory_prepared is None:
+            raise MotorError("轨迹未由当前控制器启动")
+        points, references, tolerance = self._trajectory_prepared
+        deadline, next_renew = time.monotonic() + timeout, time.monotonic()
+        try:
+            while time.monotonic() < deadline:
+                self._trajectory_cancelled(cancel)
+                result = self.get_trajectory_status()
+                if result.session != session:
+                    raise MotorError("轨迹会话已变化，不能等待其他任务")
+                if result.state in (3, 4) and not result.fault and time.monotonic() >= next_renew:
+                    result = self.renew_trajectory(session)
+                    next_renew = time.monotonic() + 0.75
+                if result.session != session:
+                    raise MotorError("轨迹会话已变化，不能等待其他任务")
+                if on_status is not None:
+                    on_status(result)
+                self._trajectory_cancelled(cancel)
+                if result.state == 6 and not result.fault:
+                    self._trajectory_axes(points, expected=references, target=points[-1], tolerance=tolerance, cancel=cancel)
+                    self._trajectory_session = None
+                    self._trajectory_prepared = None
+                    self._trajectory_started = False
+                    return result
+                if result.fault or result.state in (7, 8) or not result.active:
+                    raise MotorError(f"轨迹{result.state_text}：{result.fault_text}")
+                if cancel is not None:
+                    cancel.wait(0.1)
+                else:
+                    time.sleep(0.1)
+            raise MotorError("轨迹等待超时，已请求停止两轴")
+        except Exception:
+            self._trajectory_abort()
+            raise
+
     def close(self, *, stop: bool = True) -> None:
         """默认向两轴发送停止后关闭；失败仍关闭端口，但抛出异常报告不确定状态。"""
         with self._lock:
@@ -460,6 +709,11 @@ class MotorController:
             failures = []
             try:
                 if stop:
+                    if self._trajectory_session is not None:
+                        try:
+                            self.stop_trajectory()
+                        except Exception as exc:
+                            failures.append(f"两轴轨迹: {exc}")
                     for axis in (1, 2):
                         try:
                             if self._faulted:
@@ -476,6 +730,9 @@ class MotorController:
                 finally:
                     self._port = None
                     self._parser.reset()
+                    self._trajectory_session = None
+                    self._trajectory_prepared = None
+                    self._trajectory_started = False
             if failures:
                 raise CommunicationError("端口已关闭，但停止未确认：" + "; ".join(failures))
 

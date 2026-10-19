@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, field_
 from .serial_ports import SerialPort
 from .turntable_driver import MotorController, MotorError
 from .turntable_driver.protocol import validate_output_angle
+from .turntable_driver.trajectory import TrajectoryPoint
 
 
 class TurntableConfig(BaseModel):
@@ -262,6 +263,68 @@ class PointCycleConfig(BaseModel):
 
 def test_key(config):
     return config.model_dump(exclude={"durationSeconds"})
+
+
+def probe_motion_capability(motor):
+    """Read-only detection; a failed query must never be mistaken for old firmware."""
+    if not hasattr(motor, "probe_trajectory"):
+        # Older injected controller adapters retain their original single-axis API.
+        return {"supported": False, "mode": "sequential", "protocol": None,
+                "probe": "driver-unavailable", "status": None}
+    status = motor.probe_trajectory()
+    return {"supported": status is not None,
+            "mode": "dual_axis_timed" if status is not None else "sequential",
+            "protocol": "0x30-0x36" if status is not None else None,
+            "probe": "confirmed" if status is not None else "legacy-command-unsupported",
+            "status": asdict(status) if status is not None else None}
+
+
+def station_move_plan(start, target, speed_rpm, *, acceleration=3.0):
+    """A stopped-to-stopped joint move, not optical tracking of a moving blade.
+
+    A cubic blend bounds each axis by the same output-speed ceiling. Both axes
+    finish together; duration depends on the larger distance, not their sum.
+    Extra time covers millisecond/millidegree command quantization.
+    """
+    values = (*start, *target, speed_rpm, acceleration)
+    if not all(math.isfinite(value) for value in values) or speed_rpm <= 0 or acceleration <= 0:
+        raise ValueError("双轴换点参数必须为有限正速度及有效角度")
+    distance = max(abs(b - a) for a, b in zip(start, target))
+    duration = math.ceil(max(1.0, 1.5 * distance / (6 * speed_rpm),
+                             math.sqrt(6 * distance / acceleration)) * 1.05 * 1000) / 1000
+    while True:
+        if duration > 600:
+            raise ValueError("当前距离和转速需要超过600秒，请分段设置点位")
+        # Approximately one point per controller cycle avoids excessive angular
+        # rounding noise. Validate the actual wire values, not only the cubic.
+        segments = min(32, max(2, int(duration / .25)))
+        points = []
+        for index in range(segments + 1):
+            fraction = index / segments
+            blend = 3 * fraction ** 2 - 2 * fraction ** 3
+            points.append(TrajectoryPoint(round(duration * fraction, 3),
+                                          round(start[0] + (target[0] - start[0]) * blend, 3),
+                                          round(start[1] + (target[1] - start[1]) * blend, 3)))
+        valid = True
+        for field in ("axis1_deg", "axis2_deg"):
+            velocity, midpoint = 0.0, 0.0
+            for before, after in zip(points, points[1:]):
+                dt = after.time_s - before.time_s
+                next_velocity = (getattr(after, field) - getattr(before, field)) / dt
+                next_midpoint = (after.time_s + before.time_s) / 2
+                if (abs(next_velocity) > speed_rpm * 6 + 1e-9 or
+                        abs(next_velocity - velocity) / (next_midpoint - midpoint) > acceleration + 1e-9):
+                    valid = False
+                velocity, midpoint = next_velocity, next_midpoint
+            if abs(velocity) / (duration - midpoint) > acceleration + 1e-9:
+                valid = False
+        if valid:
+            break
+        duration = math.ceil(duration * 1.05 * 1000) / 1000
+    return points, {"mode": "dual_axis_timed", "plannedSeconds": duration,
+                    "speedLimitRpm": speed_rpm, "accelerationLimitDegS2": acceleration,
+                    "targets": list(target), "pointCount": len(points),
+                    "timingBasis": "controller_timed_joint_move", "measurementDuringMotion": False}
 
 
 def start_motor(motor, config, cancel, *, prechecked_position: bool = False):

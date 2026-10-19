@@ -56,6 +56,24 @@ const maxTravel = Math.max(...model.points.map((p, i) => {
   return Math.abs(p.axis1AngleDeg - q.axis1AngleDeg) + Math.abs(p.axis2AngleDeg - q.axis2AngleDeg);
 }));
 near(model.maxTravelLowerBoundSeconds, maxTravel / (6 * model.speedRpm));
+const dual = planAutoFollow(draft(), anchor, "dual_axis_timed");
+assert.equal(dual.motionMode, "dual_axis_timed");
+assert.deepEqual(dual.points, model.points, "Controller capability does not change calibrated station targets");
+const jointDelta = Math.max(...dual.points.map((p, i) => {
+  const q = dual.points[(i + 1) % dual.points.length];
+  return Math.max(Math.abs(p.axis1AngleDeg - q.axis1AngleDeg), Math.abs(p.axis2AngleDeg - q.axis2AngleDeg));
+}));
+const cubicSeconds = Math.ceil(Math.max(1, 1.5 * jointDelta / (6 * dual.speedRpm), Math.sqrt(2 * jointDelta)) * 1.05 * 1000) / 1000;
+near(dual.plannedMoveSeconds, cubicSeconds);
+assert.ok(dual.plannedMoveSeconds > jointDelta / (6 * dual.speedRpm), "Parallel motion must include acceleration, not only max(delta)/speed");
+assert.ok(1.5 * jointDelta / dual.plannedMoveSeconds <= 6 * dual.speedRpm);
+assert.ok(6 * jointDelta / dual.plannedMoveSeconds ** 2 <= 3);
+const accelerationLimited = planAutoFollow({ ...draft(), periodSeconds: 5, maxMoveRpm: 10 }, anchor, "dual_axis_timed");
+assert.ok(accelerationLimited.speedRpm < 10);
+assert.equal(accelerationLimited.mayMissNextPass, true, "More speed cannot remove the acceleration-limited time floor");
+const dualCapped = planAutoFollow({ ...draft(), maxMoveRpm: .231 }, anchor, "dual_axis_timed");
+assert.equal(dualCapped.speedRpm, .22);
+assert.equal(planAutoFollow(draft(), anchor).motionMode, "unknown", "Unprobed controller must not claim dual-axis support");
 for (const invalid of [
   { stepDeg: 0 }, { stepDeg: 70 }, { periodSeconds: NaN }, { points: [] }, { distanceM: 0 }, { maxMoveRpm: 0 },
   { cycles: 1.5 }, { rssiExitSpread: 9 }, { rssiConfirmMs: 0 }, { waitRevolutions: 0 },
@@ -72,4 +90,4 @@ for (const invalidAnchor of [null, { ...anchor, referenceSignature: "[]" }, { ..
 }
 near(stationOpticalAngles(2.86, 1.46, 0.31, 360, "clockwise").pitch,
   stationOpticalAngles(2.86, 1.46, 0.31, 0, "clockwise").pitch);
-console.log("Automatic follow geometry, grouping, sequential timing and invalid-input checks passed");
+console.log("Automatic follow geometry, grouping, sequential and cubic dual-axis timing, and invalid-input checks passed");

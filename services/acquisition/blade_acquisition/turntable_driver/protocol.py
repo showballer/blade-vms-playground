@@ -29,6 +29,13 @@ CMD_READ_FEEDBACK = 0x20
 CMD_CONFIG_GUARD = 0x21
 CMD_SET_ZERO = 0x22
 CMD_READ_GUARD = 0x24
+CMD_TRAJECTORY_BEGIN = 0x30
+CMD_TRAJECTORY_POINT = 0x31
+CMD_TRAJECTORY_SEAL = 0x32
+CMD_TRAJECTORY_START = 0x33
+CMD_TRAJECTORY_STATUS = 0x34
+CMD_TRAJECTORY_STOP = 0x35
+CMD_TRAJECTORY_KEEPALIVE = 0x36
 
 
 STATUS_TEXT = {
@@ -91,6 +98,36 @@ def build_request(device_id: int, command: int, data: bytes = b"", parameter: in
     if len(payload) + 5 > MAX_FRAME_SIZE:
         raise ValueError("协议帧过长")
     return append_crc(HEADER + bytes((len(payload) + 2,)) + payload)
+
+
+def validate_trajectory_session(session: int) -> None:
+    if type(session) is not int or not 1 <= session <= 65535:
+        raise ValueError("轨迹会话号必须为1～65535")
+
+
+def build_trajectory_begin(session: int, count: int, *, cycle_ms: int = 250,
+                           max_speed: float = 3.6, max_accel: float = 3,
+                           max_error: float = 0.75, tolerance: float = 0.1) -> bytes:
+    validate_trajectory_session(session)
+    if type(count) is not int or not 2 <= count <= 128 or type(cycle_ms) is not int or not 250 <= cycle_ms <= 500:
+        raise ValueError("轨迹须为2～128点，控制周期250～500ms")
+    values = (max_speed, max_accel, max_error, tolerance)
+    if any(isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(x) for x in values):
+        raise ValueError("轨迹约束必须为有限数字")
+    v, a, e, tol = (round(x * 1000) for x in values)
+    if not 1 <= v <= 60000 or not 1 <= a <= 120000 or not 500 <= e <= 10000 or not 50 <= tol <= 1000 or tol >= e:
+        raise ValueError("轨迹速度≤60°/秒，加速度≤120°/秒²，误差0.5～10°，容差0.05～1°且小于误差限")
+    return build_request(1, CMD_TRAJECTORY_BEGIN, struct.pack(">HHiiii", count, cycle_ms, v, a, e, tol), parameter=session)
+
+
+def build_trajectory_point(session: int, index: int, time_ms: int, axis1: float, axis2: float) -> bytes:
+    validate_trajectory_session(session)
+    if type(index) is not int or not 0 <= index < 128 or type(time_ms) is not int or not 0 <= time_ms <= 600000:
+        raise ValueError("轨迹序号须为0～127，时间须为0～600000ms")
+    validate_output_angle(1, axis1)
+    validate_output_angle(2, axis2)
+    return build_request(1, CMD_TRAJECTORY_POINT, struct.pack(">HIii", index, time_ms,
+                         round(axis1 * 1000), round(axis2 * 1000)), parameter=session)
 
 
 def build_limit_debug(device_id: int, action: int) -> bytes:

@@ -80,7 +80,7 @@ check("记录点位回位拒绝缺角度、越界和参考变化，回位轴2时
   assert.match(manualPointRecallError({ ...point, references: "changed" }, {}, "COM3"), /参考位/);
   const status: FieldStatus = { ...ready, turntableBusy: true, turntable: { state: "positioning", port: "COM3", axis: 2, recall: { state: "moving", targets: [25.935, -6.994], completedAxes: [1] } } };
   const html = renderToStaticMarkup(<FieldTurntableManual status={status} disabled={false} request={async <T,>() => ({} as T)} />);
-  assert.match(html, /<button(?![^>]*disabled)[^>]*>停止当前轴<\/button>/);
+  assert.match(html, /<button(?![^>]*disabled)[^>]*>停止两轴回位<\/button>/);
   assert.ok(html.includes("正在处理轴2，已完成 1/2 轴"));
 });
 check("记录表为每个点位提供独立删除操作", () => {

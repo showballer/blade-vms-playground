@@ -5,7 +5,8 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { FieldAutoFollow, FieldTurntableWorkspace, autoFollowAnchorFromStatus, autoFollowAnchorKey, autoFollowBlockers, autoFollowCollection, autoFollowCollectionContext, readAutoFollowDraft } from "./field-auto-follow";
 import { autoFollowDefaults, planAutoFollow } from "./field-auto-follow-plan";
-import type { FieldAxisFeedback, FieldConfig, FieldStatus } from "./field-types";
+import { fieldTurntableMotionMode, type FieldAxisFeedback, type FieldConfig, type FieldStatus } from "./field-types";
+import { FieldTurntableManual } from "./field-turntable";
 
 let checks = 0;
 function check(name: string, run: () => void) { run(); checks++; console.log(`PASS ${name}`); }
@@ -79,8 +80,36 @@ check("当前测点单选且转盘安装参数默认独立折叠", () => {
   const html = renderToStaticMarkup(<FieldAutoFollow {...props} />);
   assert.ok(html.includes('role="radiogroup"')); assert.ok(html.includes('aria-label="选择测点1"'));
   assert.ok(html.includes("本次采集测点")); assert.ok(html.includes("添加下一测点"));
-  assert.ok(html.includes("两轴换点转速上限 · rpm")); assert.ok(html.includes("自动换点转速（两轴）"));
+  assert.ok(html.includes("两轴换点转速上限 · rpm")); assert.ok(html.includes("自动换点速度上限（每轴）"));
   assert.match(html, /<details class="field-auto-setup field-auto-turntable-setup">/);
+});
+check("双轴能力须经当前串口探测确认，释放串口不抹去已确认能力", () => {
+  const next = structuredClone(ready);
+  next.turntable!.connected = false;
+  next.turntable!.motionCapability = { supported: true, mode: "dual_axis_timed", protocol: "0x30-0x36", probe: "confirmed", status: {} };
+  assert.equal(fieldTurntableMotionMode(next.turntable, "COM3"), "dual_axis_timed");
+  assert.equal(fieldTurntableMotionMode(next.turntable, "COM4"), "unknown");
+  assert.equal(fieldTurntableMotionMode(ready.turntable, "COM3"), "unknown");
+  const html = renderToStaticMarkup(<FieldTurntableManual status={next} disabled={false} request={props.request} />);
+  assert.ok(html.includes("已识别双轴联动")); assert.ok(html.includes("两轴同时启动并按同一时长到位"));
+  assert.ok(!html.includes("两轴角度差绝对值之和"));
+  next.turntable!.motionCapability = { supported: false, mode: "sequential", protocol: null, probe: "driver-unavailable", status: null };
+  assert.equal(fieldTurntableMotionMode(next.turntable, "COM3"), "unknown");
+  next.turntable!.motionCapability.probe = "legacy-command-unsupported";
+  assert.equal(fieldTurntableMotionMode(next.turntable, "COM3"), "sequential");
+  const unknown = renderToStaticMarkup(<FieldAutoFollow {...props} />);
+  assert.ok(unknown.includes("运动方式待检测")); assert.ok(!unknown.includes("已识别双轴联动"));
+});
+check("双轴回位提供整次停止，运动反馈使用实际执行方式", () => {
+  const next = structuredClone(ready);
+  next.turntableBusy = true;
+  next.turntable!.motionMode = "dual_axis_timed";
+  next.turntable!.recall = { state: "moving", targets: [10.1, .1], completedAxes: [] };
+  next.turntable!.lastMove = { mode: "dual_axis_timed", plannedSeconds: 1.05, measurementDuringMotion: false };
+  const html = renderToStaticMarkup(<FieldTurntableManual status={next} disabled={false} request={props.request} />);
+  assert.ok(html.includes("两轴同步定位")); assert.ok(html.includes("运动计划 1.05 s"));
+  const stop = html.match(/<button\b[^>]*>.*?<\/button>/gs)?.find(button => button.includes("停止两轴回位"));
+  assert.ok(stop && !stop.includes("disabled"));
 });
 check("同任务跨测点复用采集编号，改变任务归属新建，拒绝损坏编号", () => {
   const context = autoFollowCollectionContext(config, "2"), id = "1".repeat(32);

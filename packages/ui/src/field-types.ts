@@ -87,7 +87,27 @@ export type FieldAxisFeedback = {
   flags: number; fault: number; origin_counts: number; home_phase: number; observedAt: number;
   referenceAngleDeg: number; guard: { soft_enabled: boolean; hardware_enabled: boolean; minimum_deg: number; maximum_deg: number };
 };
-export type FieldTurntableStatus = { state: string; port?: string; axis?: number; connected?: boolean; effectiveRpm?: number; positionDelta?: number; recall?: { state: "moving" | "complete" | "cancelled" | "error"; targets: [number, number]; completedAxes: number[] }; feedback?: { outputRpm: number; motorRpm: number; runState?: number; alarmCode: number; limitFlags: number | null; positionRaw: number; outputAngleDeg?: number | null; axes?: Record<string, FieldAxisFeedback>; observedAt?: number }; error?: string };
+export type FieldMotionMode = "dual_axis_timed" | "sequential";
+export type FieldTurntableMotionCapability = {
+  supported: boolean; mode: FieldMotionMode; protocol: "0x30-0x36" | null;
+  probe: "confirmed" | "legacy-command-unsupported" | "driver-unavailable";
+  status: Record<string, unknown> | null;
+};
+export type FieldTurntableMove = {
+  mode: FieldMotionMode; plannedSeconds?: number; actualSeconds?: number; speedLimitRpm?: number;
+  accelerationLimitDegS2?: number; targets?: [number, number]; pointCount?: number;
+  timingBasis?: "controller_timed_joint_move"; measurementDuringMotion?: false;
+  session?: number; status?: Record<string, unknown>; state?: string; error?: string; stopError?: string;
+};
+export type FieldTurntableStatus = { state: string; port?: string; axis?: number; connected?: boolean; effectiveRpm?: number; positionDelta?: number; motionCapability?: FieldTurntableMotionCapability; motionMode?: FieldMotionMode; lastMove?: FieldTurntableMove; recall?: { state: "moving" | "complete" | "cancelled" | "error"; targets: [number, number]; completedAxes: number[]; motionMode?: FieldMotionMode; lastMove?: FieldTurntableMove }; feedback?: { outputRpm: number; motorRpm: number; runState?: number; alarmCode: number; limitFlags: number | null; positionRaw: number; outputAngleDeg?: number | null; axes?: Record<string, FieldAxisFeedback>; observedAt?: number }; error?: string };
+/** A probe releases the serial port afterwards; capability is not a live connection indicator. */
+export function fieldTurntableMotionMode(turntable: FieldTurntableStatus | undefined, port: string): FieldMotionMode | "unknown" {
+  if (!port || turntable?.port !== port) return "unknown";
+  const capability = turntable.motionCapability;
+  if (capability?.supported && capability.mode === "dual_axis_timed" && capability.protocol === "0x30-0x36" && capability.probe === "confirmed") return "dual_axis_timed";
+  if (capability?.supported === false && capability.mode === "sequential" && capability.probe === "legacy-command-unsupported") return "sequential";
+  return "unknown";
+}
 export type FieldWaveform = {
   source?: string;
   sampleRate: number | null;
@@ -188,7 +208,7 @@ export type FieldStatus = {
   turntableWarning?: string | null;
   turntableTest?: { passed: boolean; cancelled?: boolean; config: Omit<FieldTurntableConfig, "durationSeconds">; effectiveRpm?: number; positionDelta: number; testedAt: number; error?: string | null } | null;
   turntablePreparation?: { ready: boolean; config: FieldTurntableConfig; checkedAt: number } | null;
-  pointCycle?: { state: "checking" | "ready" | "positioning" | "holding" | "capturing" | "complete" | "cancelled" | "error"; port?: string; cycles: number; dwellSeconds: number; speedRpm: number; pointCount: number; cycle: number; point: number; currentPoint?: string | null; completedRecords: number; totalRecords: number; routeStrategy?: string; plannedOrder?: string[]; error?: string | null; rssiTriggerEnabled?: boolean; rssiLeaveThresholdPercent?: number | null; rssiConfirmSamples?: number; rssiMinimumSeconds?: number; latestRssi?: number | null; rssiSamples?: number; rssiBelowSamples?: number; rssiThresholdMode?: "adaptive" | "absolute"; rssiBaselineRatio?: number; rssiConfirmMs?: number; rssiBaseline?: number | null; rssiThreshold?: number | null; rssiPhase?: "waiting_blade" | "confirming_entry" | "blade_present" | "confirming_exit" | "blade_left" | null; rssiSpread?: number | null; rssiEntryMs?: number; rssiEnterSpread?: number; rssiExitSpread?: number; rssiEnterConfirmMs?: number; processPhase?: string; processEvents?: FieldCycleProcessEvent[]; rssiBelowMs?: number; rssiSlope?: number | null; predictedLeaveSeconds?: number | null; requiredLeadSeconds?: number; nextPoint?: string | null; rssiTrigger?: "blade_left" | null } | null;
+  pointCycle?: { state: "checking" | "ready" | "positioning" | "holding" | "capturing" | "complete" | "cancelled" | "error"; port?: string; cycles: number; dwellSeconds: number; speedRpm: number; pointCount: number; cycle: number; point: number; currentPoint?: string | null; completedRecords: number; totalRecords: number; routeStrategy?: string; motionMode?: FieldMotionMode; lastMove?: FieldTurntableMove; plannedOrder?: string[]; error?: string | null; rssiTriggerEnabled?: boolean; rssiLeaveThresholdPercent?: number | null; rssiConfirmSamples?: number; rssiMinimumSeconds?: number; latestRssi?: number | null; rssiSamples?: number; rssiBelowSamples?: number; rssiThresholdMode?: "adaptive" | "absolute"; rssiBaselineRatio?: number; rssiConfirmMs?: number; rssiBaseline?: number | null; rssiThreshold?: number | null; rssiPhase?: "waiting_blade" | "confirming_entry" | "blade_present" | "confirming_exit" | "blade_left" | null; rssiSpread?: number | null; rssiEntryMs?: number; rssiEnterSpread?: number; rssiExitSpread?: number; rssiEnterConfirmMs?: number; processPhase?: string; processEvents?: FieldCycleProcessEvent[]; rssiBelowMs?: number; rssiSlope?: number | null; predictedLeaveSeconds?: number | null; requiredLeadSeconds?: number; nextPoint?: string | null; rssiTrigger?: "blade_left" | null } | null;
   deviceSettings?: FieldDeviceSettings | null;
   receiver?: Record<string, unknown>;
   recording?: FieldRecording;

@@ -3,3 +3,4 @@
 No imports open a port, enable SON, or bypass firmware limits.
 """
 from .motor_controller import MotorController, MotorError, CommunicationError, PositionFeedback, GuardConfig
+from .trajectory import TrajectoryPoint, TrajectoryStatus
