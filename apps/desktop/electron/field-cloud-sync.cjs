@@ -256,10 +256,23 @@ function createFieldCloudSync({ file, dataDir, auth, getLive, fetchImpl = global
     if (!plain(value) || !Array.isArray(value.values) || !value.values.length) return undefined;
     const stride = Math.max(1, Math.ceil(value.values.length / 2048));
     const indexes = value.values.map((_, index) => index).filter(index => index % stride === 0);
-    return { source: value.source, sampleRate: value.sampleRate, unit: 'm/s', sampleStart: value.sampleStart,
+    const waveform = { source: value.source, sampleRate: value.sampleRate, unit: 'm/s', sampleStart: value.sampleStart,
       sampleStride: (value.sampleStride || 1) * stride, sampleOrigin: value.sampleOrigin,
       values: indexes.map(i => value.values[i]), rssi: indexes.map(i => value.rssi?.[i] ?? null),
       overrange: indexes.map(i => Boolean(value.overrange?.[i])), rssiUnit: '%' };
+    // RSSI timing describes the original acquisition, not display decimation.
+    // Keep only a complete, consistent pair; malformed optional metadata must
+    // not change samples or prevent a legacy-compatible live preview.
+    const rssiStride = value.rssiSampleStride, rssiRate = value.rssiSampleRate;
+    if (Number.isSafeInteger(rssiStride) && rssiStride >= 1 && rssiStride <= 100000 &&
+        typeof rssiRate === 'number' && Number.isFinite(rssiRate) && rssiRate > 0 &&
+        typeof value.sampleRate === 'number' && Number.isFinite(value.sampleRate) && value.sampleRate > 0 &&
+        rssiRate <= value.sampleRate && Number.isFinite(rssiRate * rssiStride) &&
+        Math.abs(rssiRate * rssiStride - value.sampleRate) <= value.sampleRate * 1e-9) {
+      waveform.rssiSampleStride = rssiStride;
+      waveform.rssiSampleRate = rssiRate;
+    }
+    return waveform;
   }
   function live() {
     if (liveWork || !activeId || !context() || typeof getLive !== 'function') return;

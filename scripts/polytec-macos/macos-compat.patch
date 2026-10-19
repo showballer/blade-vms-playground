@@ -1,0 +1,213 @@
+--- a/src/DataAcquisition/RealTimePriorityGuard.cpp
++++ b/src/DataAcquisition/RealTimePriorityGuard.cpp
+@@ -68,6 +68,44 @@
+ 	return THREAD_PRIORITY_TIME_CRITICAL;
+ }
+ 
++#elif defined(__APPLE__)
++// macOS compatibility: use per-thread QoS; do not require privileged process priority changes.
++#include <pthread.h>
++#include <pthread/qos.h>
++
++RealTimePriorityGuard::NativePriorityValue RealTimePriorityGuard::GetProcessPriority()
++{
++    return 0;
++}
++
++RealTimePriorityGuard::NativePriorityValue RealTimePriorityGuard::GetThreadPriority()
++{
++    const auto qos = ::qos_class_self();
++    return qos == QOS_CLASS_UNSPECIFIED ? QOS_CLASS_DEFAULT : qos;
++}
++
++void RealTimePriorityGuard::SetProcessPriority(NativePriorityValue)
++{
++    // Process scheduling is managed by macOS; only the acquisition thread opts into QoS.
++}
++
++void RealTimePriorityGuard::SetThreadPriority(NativePriorityValue priority)
++{
++    const int result = ::pthread_set_qos_class_self_np(static_cast<qos_class_t>(priority), 0);
++    if (result != 0)
++        std::wcerr << L"Thread QoS could not be set. " << std::strerror(result) << std::endl;
++}
++
++RealTimePriorityGuard::NativePriorityValue RealTimePriorityGuard::HighProcessPriority()
++{
++    return 0;
++}
++
++RealTimePriorityGuard::NativePriorityValue RealTimePriorityGuard::RealTimeThreadPriority()
++{
++    return QOS_CLASS_USER_INITIATED;
++}
++
+ #elif defined(unix) || defined(__unix) || defined(__unix__)
+ 
+ #include <pthread.h>
+--- a/src/DataAcquisition/TcpDataAcquisition.cpp
++++ b/src/DataAcquisition/TcpDataAcquisition.cpp
+@@ -63,7 +63,7 @@
+ 	try
+ 	{
+ 		tcp::resolver resolver(m_ioService);
+-		m_deviceEndpoint = *resolver.resolve({tcp::v4(), hostname, std::to_string(c_tcpDaqPort)});
++		m_deviceEndpoint = resolver.resolve(tcp::v4(), hostname, std::to_string(c_tcpDaqPort)).begin()->endpoint();
+ 	}
+ 	catch (const boost::system::system_error& e)
+ 	{
+--- a/src/DeviceCommunication/DeadlineTimer.cpp
++++ b/src/DeviceCommunication/DeadlineTimer.cpp
+@@ -13,7 +13,7 @@
+ 	/// <param name="ioService">[in,out] The io-service.</param>
+ 	/// <param name="onDeadlineExpired">The deadline-expired callback. This callback should be used
+ 	/// to cancel the IO operation.</param>
+-	DeadlineTimer::DeadlineTimer(boost::asio::io_service& ioService, std::function<void()> onDeadlineExpired)
++	DeadlineTimer::DeadlineTimer(boost::asio::io_context& ioService, std::function<void()> onDeadlineExpired)
+ 		: m_ioService(ioService)
+ 		, m_deadlineTimer(m_ioService)
+ 		, m_onDeadlineExpired(std::move(onDeadlineExpired))
+--- a/src/DeviceCommunication/SerialCommunication.cpp
++++ b/src/DeviceCommunication/SerialCommunication.cpp
+@@ -130,8 +130,9 @@
+ 	::PurgeComm(portHandle, PURGE_RXABORT | PURGE_TXABORT | PURGE_RXCLEAR | PURGE_TXCLEAR);
+ 	::ClearCommError(portHandle, nullptr, nullptr);
+ }
+-#elif defined(unix) || defined(__unix) || defined(__unix__)
++#elif defined(__APPLE__) || defined(unix) || defined(__unix) || defined(__unix__)
+ #include <unistd.h>
++#include <termios.h>
+ void SerialCommunication::ClearDeviceSerialPortBuffer()
+ {
+ 	const auto portHandle = m_serialPort.lowest_layer().native_handle();
+--- a/include/IO/DataAcquisition/Detail/ChannelDetector.h
++++ b/include/IO/DataAcquisition/Detail/ChannelDetector.h
+@@ -65,7 +65,7 @@
+ 	{
+ 		static constexpr bool HasChannel() { return HasMemberImpl<TSampleFormat>(int{}); }
+ 		static constexpr auto GetChannelData(const TSampleFormat& sample) { return sample.RSSI; }
+-		static constexpr int GetChannelOverrange(const TSampleFormat&) { throw std::logic_error("No overrange for non-signal channel"); }
++		static int GetChannelOverrange(const TSampleFormat&) { throw std::logic_error("No overrange for non-signal channel"); }
+ 	private:
+ 		template <typename U>
+ 		static constexpr decltype(std::declval<U>().RSSI, bool()) HasMemberImpl(int) { return true; }
+@@ -78,7 +78,7 @@
+ 	{
+ 		static constexpr bool HasChannel() { return HasMemberImpl<TSampleFormat>(int{}); }
+ 		static constexpr auto GetChannelData(const TSampleFormat& sample) { return sample.Trigger; }
+-		static constexpr int GetChannelOverrange(const TSampleFormat&) { throw std::logic_error("No overrange for non-signal channel"); }
++		static int GetChannelOverrange(const TSampleFormat&) { throw std::logic_error("No overrange for non-signal channel"); }
+ 	private:
+ 		template <typename U>
+ 		static constexpr decltype(std::declval<U>().Trigger, bool()) HasMemberImpl(int) { return true; }
+@@ -91,7 +91,7 @@
+ 	{
+ 		static constexpr bool HasChannel() { return HasMemberImpl<TSampleFormat>(int{}); }
+ 		static constexpr auto GetChannelData(const TSampleFormat& sample) { return sample.DataValidity; }
+-		static constexpr int GetChannelOverrange(const TSampleFormat&) { throw std::logic_error("No overrange for non-signal channel"); }
++		static int GetChannelOverrange(const TSampleFormat&) { throw std::logic_error("No overrange for non-signal channel"); }
+ 	private:
+ 		template <typename U>
+ 		static constexpr decltype(std::declval<U>().DataValidity, bool()) HasMemberImpl(int) { return true; }
+--- a/include/IO/DataAcquisition/Detail/TcpDataAcquisition.h
++++ b/include/IO/DataAcquisition/Detail/TcpDataAcquisition.h
+@@ -46,7 +46,7 @@
+ 		std::vector<std::byte> m_buffer;
+ 		std::unique_ptr<INetworkPacketFormat> m_packetFormat;
+ 		std::wstring m_address;
+-		boost::asio::io_service m_ioService;
++		boost::asio::io_context m_ioService;
+ 		boost::asio::ip::tcp::socket m_socket;
+ 		boost::asio::ip::tcp::endpoint m_deviceEndpoint;
+ 		DataAvailableSignal m_dataAvailableSignal;
+--- a/include/IO/DataAcquisition/Detail/UdpDataAcquisition.h
++++ b/include/IO/DataAcquisition/Detail/UdpDataAcquisition.h
+@@ -38,7 +38,7 @@
+ 
+ 	private:
+ 		std::vector<std::byte> m_buffer;
+-		boost::asio::io_service m_ioService;
++		boost::asio::io_context m_ioService;
+ 		boost::asio::ip::udp::socket m_socket;
+ 		boost::asio::ip::udp::endpoint m_deviceEndpoint;
+ 		DataAvailableSignal m_dataAvailableSignal;
+--- a/include/IO/DeviceCommunication/CommunicationException.h
++++ b/include/IO/DeviceCommunication/CommunicationException.h
+@@ -10,6 +10,7 @@
+ 
+ 
+ #include <stdexcept>
++#include <string>
+ 
+ namespace Polytec::IO
+ {
+--- a/include/IO/DeviceCommunication/Detail/DeadlineTimer.h
++++ b/include/IO/DeviceCommunication/Detail/DeadlineTimer.h
+@@ -5,6 +5,7 @@
+ 
+ 
+ #include <boost/asio.hpp>
++#include <boost/asio/deadline_timer.hpp>
+ 
+ #include <chrono>
+ #include <functional>
+@@ -25,13 +26,13 @@
+ 		/// <summary>Asynchronous read function type</summary>
+ 		using AsyncReadFunction = std::function<void(const ReadHandler&)>;
+ 
+-		explicit DeadlineTimer(boost::asio::io_service& ioService, std::function<void()> onDeadlineExpired);
++		explicit DeadlineTimer(boost::asio::io_context& ioService, std::function<void()> onDeadlineExpired);
+ 		[[nodiscard]] std::size_t ReadUntilDeadLine(const std::chrono::duration<float>& timeout, const AsyncReadFunction& asyncRead);
+ 
+ 	private:
+ 		void CheckDeadline();
+ 
+-		boost::asio::io_service& m_ioService;
++		boost::asio::io_context& m_ioService;
+ 		boost::asio::deadline_timer m_deadlineTimer;
+ 		std::function<void()> m_onDeadlineExpired;
+ 	};
+--- a/include/IO/DeviceCommunication/Detail/NetworkUtils.h
++++ b/include/IO/DeviceCommunication/Detail/NetworkUtils.h
+@@ -52,7 +52,7 @@
+ 		try
+ 		{
+ 			typename TProtocol::resolver resolver(ioContext);
+-			return *resolver.resolve({TProtocol::v4(), hostname, std::to_string(port)});
++			return resolver.resolve(TProtocol::v4(), hostname, std::to_string(port)).begin()->endpoint();
+ 		}
+ 		catch (const boost::system::system_error& e)
+ 		{
+--- a/include/IO/DeviceCommunication/Detail/SerialCommunication.h
++++ b/include/IO/DeviceCommunication/Detail/SerialCommunication.h
+@@ -38,7 +38,7 @@
+ 
+ 		// The member variables m_ioService and m_deadline are also used by EthernetCommunication.
+ 		// They are placed in the concrete classes because they are an implementation detail.
+-		boost::asio::io_service m_ioService;
++		boost::asio::io_context m_ioService;
+ 		boost::asio::serial_port m_serialPort;
+ 		DeadlineTimer m_deadlineTimer;
+ 		std::chrono::duration<float> m_timeout = std::chrono::seconds(2);
+--- a/include/IO/DeviceCommunication/Detail/TcpEthernetCommunication.h
++++ b/include/IO/DeviceCommunication/Detail/TcpEthernetCommunication.h
+@@ -26,7 +26,7 @@
+ 		void SetTimeout(const std::chrono::duration<float>& timeout) override { m_timeout = timeout; }
+ 		std::chrono::duration<float> GetTimeout() const override { return m_timeout; }
+ 
+-		boost::asio::io_service m_ioService;
++		boost::asio::io_context m_ioService;
+ 		boost::asio::ip::tcp::socket m_socket;
+ 		boost::asio::ip::tcp::endpoint m_deviceEndpoint;
+ 		std::vector<std::byte> m_buffer;
+--- a/include/IO/DeviceCommunication/Detail/UdpEthernetCommunication.h
++++ b/include/IO/DeviceCommunication/Detail/UdpEthernetCommunication.h
+@@ -33,7 +33,7 @@
+ 
+ 		// The member variables m_ioService and m_deadline are also used by SerialCommunication.
+ 		// They are placed in the concrete classes because they are an implementation detail.
+-		boost::asio::io_service m_ioService;
++		boost::asio::io_context m_ioService;
+ 		std::vector<std::byte> m_buffer;
+ 		boost::asio::ip::udp::socket m_socket;
+ 		boost::asio::ip::udp::endpoint m_deviceEndpoint;

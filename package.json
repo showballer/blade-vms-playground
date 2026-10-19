@@ -12,7 +12,9 @@
     "packages/*"
   ],
   "scripts": {
-    "test:field": "node scripts/test-local-auth.cjs && node scripts/test-field-service.cjs && node scripts/test-field-window.cjs && tsx packages/ui/src/field-desktop.test.tsx && tsx packages/ui/src/field-turntable-points.test.ts && tsx --tsconfig apps/desktop/tsconfig.json packages/ui/src/field-bending.test.tsx",
+    "test:field": "node scripts/test-local-auth.cjs && node scripts/test-field-service.cjs && node scripts/test-field-sdk.cjs && node scripts/test-field-window.cjs && tsx packages/ui/src/field-desktop.test.tsx && tsx packages/ui/src/field-turntable-points.test.ts && tsx --tsconfig apps/desktop/tsconfig.json packages/ui/src/field-bending.test.tsx",
+    "test:single-point": "npm run test:single-point:ui && node scripts/test-field-service.cjs && node scripts/test-field-capture-main.cjs",
+    "test:single-point:ui": "tsx --tsconfig apps/desktop/tsconfig.json packages/ui/src/field-single-point.test.tsx && tsx --tsconfig apps/desktop/tsconfig.json packages/ui/src/field-motion-trial.test.tsx",
     "test:unified-auth": "node scripts/test-unified-auth.cjs && node scripts/test-field-account-bridge.cjs",
     "test:unified-account-e2e": "node --env-file=apps/web/.env.local scripts/test-unified-account-e2e.mjs",
     "test:web-account": "node --env-file=apps/web/.env.local --import tsx scripts/test-web-account.ts",
@@ -62,7 +64,8 @@
     "test:captures": "tsx scripts/test-capture-permissions.ts && tsx scripts/test-captures.ts",
     "test:capture-flow-e2e": "node --env-file=apps/web/.env.local scripts/test-capture-flow-e2e.mjs",
     "db:migrate-captures": "node --env-file=apps/web/.env.local scripts/migrate-captures.mjs",
-    "test:capture-main-e2e": "node --env-file=apps/web/.env.local scripts/test-field-main-capture-e2e.mjs"
+    "test:capture-main-e2e": "node --env-file=apps/web/.env.local scripts/test-field-main-capture-e2e.mjs",
+    "test:auto-follow": "tsx packages/ui/src/field-auto-follow-plan.test.ts && tsx --tsconfig apps/desktop/tsconfig.json packages/ui/src/field-auto-follow.test.tsx && tsx --tsconfig apps/desktop/tsconfig.json packages/ui/src/field-blade-summary.test.tsx"
   },
   "devDependencies": {
     "@types/node": "^22.19.0",

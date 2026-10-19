@@ -26,6 +26,40 @@ const report = { startedAt: new Date().toISOString(), platform: process.platform
     'An actual clean Windows OS, installed Conda distribution and 32-bit Python are not provisioned by this script.'], checks: [] };
 const liveChildren = new Set();
 
+// Receiver + device-panel binding contract. Additional SDK bindings are allowed,
+// but every operation used by the shipped capture/configuration adapters is required.
+const REQUIRED_SDK_SYMBOLS = Object.freeze([
+  'PolyOpenUdpEthernetCommunication', 'PolyCloseCommunication', 'PolyLastCommunicationStatus',
+  'PolySendGetString', 'PolySendGetFloat', 'PolySendSetString', 'PolyItemListGetCurrentItem',
+  'PolySendSetInt16', 'PolyOpenDataAcquisition', 'PolyCloseDataAcquisition',
+  'PolyStartDataAcquisition', 'PolyStopDataAcquisition', 'PolyReadData',
+  'PolyExtractedSampleCount', 'PolyGetInt32Data', 'PolyGetOverrange',
+  'PolyBaseSampleRateInHz', 'PolyChannelMaxValue', 'PolyHasCommand',
+  'PolySendGetInt16', 'PolySendGetInt32', 'PolyItemListGetAvailableItems',
+  'PolyItemListSetCurrentItem', 'PolyChannelActivationIsChannelAvailable',
+  'PolyChannelActivationIsChannelEnabled', 'PolyChannelActivationEnableChannel',
+  'PolySendGetWithTag', 'PolyGetInt16FromPayload', 'PolyFreePayload', 'PolySendGetDevInfoRange',
+]);
+
+function assertSdkBindings(diagnostic) {
+  assert.ok(Array.isArray(diagnostic.sdkSymbolNames), 'Frozen self-check must list its SDK bindings');
+  assert.ok(diagnostic.sdkSymbolNames.every(name => typeof name === 'string' && name.startsWith('Poly')),
+    'Frozen self-check contains invalid SDK binding names');
+  assert.equal(diagnostic.sdkSymbols, diagnostic.sdkSymbolNames.length, 'SDK binding count must match named bindings');
+  const names = new Set(diagnostic.sdkSymbolNames);
+  assert.equal(names.size, diagnostic.sdkSymbolNames.length, 'SDK binding names must be unique');
+  for (const symbol of REQUIRED_SDK_SYMBOLS) {
+    assert.ok(names.has(symbol), `Missing required capture/configuration SDK binding: ${symbol}`);
+  }
+}
+
+function assertIdleWaveformUi(value) {
+  assert.equal(value.emptyCount, 2, 'Both velocity and RSSI plots must show their empty state');
+  assert.equal(value.waveformCount, 0, 'Idle plots must not draw invented waveforms');
+  assert.equal(value.velocityTitle, '振动速度');
+  assert.equal(value.rssiTitle, 'RSSI 回波强度');
+}
+
 async function deadline(promise, milliseconds, message) {
   let timer;
   try {
@@ -172,10 +206,7 @@ async function validateService(resources, environment, caseDirectory) {
   assert.equal(diagnostic.frozen, true, 'Must use bundled Python, not system Python');
   assert.equal(path.resolve(diagnostic.executable).toLowerCase(), executable.toLowerCase());
   assert.equal(diagnostic.dllLoaded, true);
-  assert.equal(diagnostic.sdkSymbols, 23);
-  for (const symbol of ['PolyHasCommand', 'PolyItemListGetAvailableItems', 'PolyItemListSetCurrentItem', 'PolySendGetDevInfoRange', 'PolySendGetInt16']) {
-    assert.ok(diagnostic.sdkSymbolNames.includes(symbol), `Missing device configuration binding: ${symbol}`);
-  }
+  assertSdkBindings(diagnostic);
   assert.equal(diagnostic.hardwareTouched, false);
   assert.match(diagnostic.pythonVersion, /^3\./);
 
@@ -286,6 +317,97 @@ async function connectCdp(url) {
   } };
 }
 
+async function validateInstalledAutoFollow(cdp, field, output) {
+  // Exercise the installed renderer, not a source fixture. Only navigate and edit
+  // its disposable draft: never probe, calibrate, start, or send device commands.
+  const click = async (selector, text) => {
+    await cdp.evaluate(`(() => {
+      const button = [...document.querySelectorAll(${JSON.stringify(selector)})]
+        .find(item => item.textContent.trim() === ${JSON.stringify(text)} && !item.closest('[hidden]'));
+      if (!button || button.disabled) throw Error('Unavailable UI control');
+      button.click();
+    })()`);
+  };
+  const snapshot = () => cdp.evaluate(`(() => {
+    const panel = document.querySelector('.field-auto-follow');
+    if (!panel) return null;
+    const rows = [...panel.querySelectorAll('.field-auto-point')];
+    const start = [...panel.querySelectorAll('button')].find(button => button.textContent.trim() === '开始自动采集');
+    return { text: panel.innerText, pointCount: rows.length,
+      selected: rows.map((row, index) => row.querySelector('input[type=radio]').checked ? index : -1).filter(index => index >= 0),
+      names: rows.map(row => row.querySelector('input[aria-label$="名称"]').value),
+      radii: rows.map(row => row.querySelector('input[aria-label$="半径"]').value),
+      metrics: [...panel.querySelectorAll('.field-auto-metrics strong')].map(item => item.textContent.trim()),
+      installationOpen: panel.querySelector('.field-auto-turntable-setup')?.open,
+      installationLabels: [...panel.querySelectorAll('.field-auto-turntable-setup [aria-label]')].map(item => item.getAttribute('aria-label')),
+      calibrated: panel.querySelector('.field-auto-anchor .field-badge')?.textContent.trim(),
+      targetRows: panel.querySelectorAll('.field-auto-route tbody tr').length,
+      startDisabled: start?.disabled, simulationControls: [...panel.querySelectorAll('button,input,[role=switch]')]
+        .filter(item => /模拟|演示/.test(item.textContent + ' ' + item.getAttribute('aria-label'))).length };
+  })()`);
+  await click('.field-sidebar button', '转盘点位');
+  await waitFor(() => cdp.evaluate(`Array.from(document.querySelectorAll('[role=tab]')).some(item => item.textContent.trim() === '自动跟随' && !item.closest('[hidden]'))`),
+    'installed turntable work-mode tabs');
+  await click('[role=tab]', '自动跟随');
+  const initial = await waitFor(async () => { const value = await snapshot(); return value?.pointCount === 1 && value; },
+    'installed automatic-follow page and current measurement point');
+  for (const label of ['叶片逐点采集', '本次采集测点', '添加下一测点', '校准起点', '自动换点转速（两轴）']) {
+    assert.ok(initial.text.includes(label), `Installed automatic-follow UI lacks ${label}`);
+  }
+  assert.equal(initial.installationOpen, false, 'Installation calibration must start collapsed');
+  for (const label of ['俯仰轴方向', '水平轴方向', '两轴换点转速上限 · rpm']) {
+    assert.ok(initial.installationLabels.includes(label), `Missing installation parameter ${label}`);
+  }
+  assert.deepEqual(initial.selected, [0]);
+  assert.deepEqual(initial.names, ['P1']);
+  assert.equal(initial.metrics[0], 'P1 / 4');
+  assert.equal(initial.metrics[1], '4 条');
+  assert.equal(initial.calibrated, '待校准');
+  assert.equal(initial.targetRows, 0, 'Installed UI must not invent a reference or target-angle route');
+  assert.equal(initial.startDisabled, true, 'Uncalibrated installed UI must block acquisition');
+  assert.equal(initial.simulationControls, 0, 'Automatic-follow production page must not offer simulation controls');
+
+  await click('.field-auto-follow button', '添加下一测点');
+  const added = await waitFor(async () => { const value = await snapshot(); return value?.pointCount === 2 && value; },
+    'next radial point added to installed renderer');
+  assert.deepEqual(added.selected, [1], 'Adding P2 must select P2 alone');
+  assert.deepEqual(added.names, ['P1', 'P2']);
+  assert.equal(added.radii[1], '', 'P2 must require its own measured radius');
+  assert.equal(added.metrics[0], 'P2 / 4');
+  assert.equal(added.metrics[1], '4 条', 'Two configured radial points must not plan eight records in one run');
+  assert.equal(added.startDisabled, true);
+  await cdp.evaluate(`(() => {
+    const input = document.querySelector('.field-auto-follow input[aria-label="测点2半径"]');
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '0.5');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
+  await waitFor(async () => (await snapshot()).radii[1] === '0.5', 'installed P2 radius draft');
+  await cdp.evaluate('document.querySelector(\'.field-auto-follow input[aria-label="选择测点1"]\').click()');
+  const selected = await waitFor(async () => { const value = await snapshot(); return value?.metrics[0] === 'P1 / 4' && value; },
+    'manual radial-point selection in installed renderer');
+  assert.deepEqual(selected.selected, [0]);
+  assert.equal(selected.metrics[1], '4 条');
+  assert.equal(selected.radii[1], '0.5', 'Selecting P1 must preserve the separately configured P2');
+  assert.equal(selected.startDisabled, true, 'Editing point drafts cannot establish device calibration');
+  const saved = await waitFor(async () => {
+    const value = await cdp.evaluate('JSON.parse(localStorage.getItem("blade-auto-follow-draft-v1"))');
+    return value?.draft?.points.length === 2 && value.draft.activePointId === value.draft.points[0].id && value;
+  }, 'installed current-point draft persistence');
+  assert.equal(saved.draft.activePointId, saved.draft.points[0].id);
+  assert.equal(saved.draft.points.length, 2);
+  assert.ok(!('anchor' in saved), 'A draft must not persist a fabricated hardware reference');
+  assert.equal(saved.collectionId, '', 'Editing alone must not create an acquisition task');
+  assertIdle((await field({ action: 'status' })).data);
+  assert.deepEqual((await field({ action: 'recordings' })).data.recordings, []);
+  await cdp.evaluate('document.querySelector(".field-content").scrollTop = 0');
+  const shot = await cdp.send('Page.captureScreenshot', { format: 'png' });
+  fs.writeFileSync(path.join(output, 'installed-windows-auto-follow-current-point.png'), Buffer.from(shot.data, 'base64'));
+  return { installedRenderer: true, oneSelectedRadialPoint: true, separatePointDrafts: true,
+    fourStationsPerSelectedPoint: true, installationCollapsed: true, uncalibratedStartBlocked: true,
+    noSimulationControls: true, collectionNotCreatedByEditing: true, deviceControlsInvoked: false,
+    screenshot: 'installed-windows-auto-follow-current-point.png' };
+}
+
 async function validateInstalledDesktop(directory, environment, temporary, output) {
   const executable = path.join(directory, 'BladeVMS.exe');
   const serviceExe = path.join(directory, 'resources', 'acquisition', 'BladeAcquisition.exe');
@@ -340,10 +462,16 @@ async function validateInstalledDesktop(directory, environment, temporary, outpu
     const frame = await field({ action: 'frame' });
     assert.equal(frame.status, 200); assert.deepEqual(frame.data.waveform.values, []);
     assert.deepEqual((await field({ action: 'recordings' })).data.recordings, []);
-    await waitFor(async () => (await body()).includes('等待振动数据'), 'empty live waveform UI');
+    const idleWaveformUi = () => cdp.evaluate(`(() => {
+      const panel = document.querySelector('.field-capture-chart [role="tabpanel"]:not([hidden])');
+      return { emptyCount: panel?.querySelectorAll('.field-chart-empty').length ?? 0,
+        waveformCount: panel?.querySelectorAll('.field-wave-svg').length ?? 0,
+        velocityTitle: panel?.querySelector('.field-capture-wave-heading h2')?.textContent.trim(),
+        rssiTitle: panel?.querySelector('.field-rssi-heading h3')?.textContent.trim() };
+    })()`);
+    await waitFor(async () => (await idleWaveformUi()).emptyCount === 2, 'empty velocity and RSSI waveform UI');
+    assertIdleWaveformUi(await idleWaveformUi());
     const text = await body();
-    assert.ok(text.includes('等待振动数据'));
-    assert.ok(text.includes('等待 RSSI 数据'));
     assert.ok(!text.includes('离线演示工作区'));
     // The current form uses native required validation, rather than disabling
     // its button for missing task/IP fields. Prove both validation states
@@ -379,6 +507,7 @@ async function validateInstalledDesktop(directory, environment, temporary, outpu
     assert.deepEqual((await field({ action: 'recordings' })).data.recordings, []);
     const screenshot = await cdp.send('Page.captureScreenshot', { format: 'png' });
     fs.writeFileSync(path.join(output, 'installed-windows-acquisition-idle.png'), Buffer.from(screenshot.data, 'base64'));
+    const automaticFollowUi = await validateInstalledAutoFollow(cdp, field, output);
     const viewports = [[1366, 768, 1], [1280, 720, 1], [1024, 600, 1], [853, 480, 1.5]];
     for (const [width, height, scale] of viewports) {
       await cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: scale, mobile: false });
@@ -417,7 +546,7 @@ async function validateInstalledDesktop(directory, environment, temporary, outpu
       serviceReady: true, dllAvailable: true, emptyConfigurationBlockedByFormValidation: true,
       startControlEnabledAfterValidConfiguration: true, displayedSamples: 0,
       hardwareTouched: false, safeAppClose: true, noServiceOrphan: true,
-      responsiveViewports: viewports, responsiveScreens: 3 };
+      responsiveViewports: viewports, responsiveScreens: 3, automaticFollowUi };
   } finally {
     cdp?.close();
     if (!safelyClosed) {
@@ -524,4 +653,4 @@ async function main() {
 }
 
 if (require.main === module) main().catch(error => { console.error(error.message); process.exitCode = 1; });
-module.exports = { optionsFrom, isolatedEnvironment, assertIdle };
+module.exports = { optionsFrom, isolatedEnvironment, assertIdle, assertSdkBindings, REQUIRED_SDK_SYMBOLS, assertIdleWaveformUi };

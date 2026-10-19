@@ -8,7 +8,8 @@ import unittest
 from unittest.mock import patch
 
 from blade_acquisition.native_capture import validate_capture, import_capture
-from blade_acquisition.storage import HEADER, MAGIC, RECORD, RecordingStore
+from blade_acquisition.blade_passes import analyze_blade_passes
+from blade_acquisition.storage import HEADER, MAGIC, RECORD, RecordingStore, atomic_json
 
 
 class NativeTurntableCaptureTests(unittest.TestCase):
@@ -50,6 +51,7 @@ class NativeTurntableCaptureTests(unittest.TestCase):
         store = RecordingStore(self.root / "analysis")
         imported = import_capture(store, self.directory)["recording"]
         self.assertEqual(imported["pointCycle"], self.manifest["pointCycle"])
+        self.assertEqual(imported["sourceRecordingId"], self.manifest["id"])
         self.assertEqual(imported["turntable"], self.manifest["turntable"])
         self.assertEqual((store.directory(imported["id"]) / "turntable.jsonl").read_bytes(), (self.directory / "turntable.jsonl").read_bytes())
         self.assertEqual(import_capture(store, self.directory)["recording"]["id"], imported["id"])
@@ -63,6 +65,71 @@ class NativeTurntableCaptureTests(unittest.TestCase):
         self.save_manifest()
         with self.assertRaises(ValueError):
             validate_capture(self.directory)
+
+    def test_http_cloud_id_preserves_local_origin_and_blocks_offline_duplicate(self):
+        local_id = "b" * 32
+        self.manifest["sourceLocalId"] = local_id
+        self.manifest["pointCycle"] = {"mode": "automatic_stations", "collectionId": "c" * 32,
+            "bladeId": "2", "sessionId": "d" * 32, "radialPointId": "p1", "radialPointName": "P1",
+            "radiusM": .31, "azimuthDeg": 0, "stationId": "p1-0", "stationIndex": 1,
+            "stationCount": 4, "lapIndex": 1, "completion": "missing_entry", "outcome": "missed"}
+        self.save_manifest()
+        validate_capture(self.directory)
+        source_manifest = (self.directory / "manifest.json").read_bytes()
+        source_raw = (self.directory / "chunk-00000000.bin").read_bytes()
+        store = RecordingStore(self.root / "analysis")
+        imported = import_capture(store, self.directory)["recording"]
+        self.assertNotEqual(imported["id"], self.manifest["id"])
+        self.assertNotEqual(self.manifest["id"], local_id)
+        self.assertEqual(imported["sourceRecordingId"], local_id)
+        # Offline CSV import stores the original recording ID in this same
+        # provenance field. Vary the session so only origin-ID detection can
+        # reject the duplicate, rather than the separate station-pass guard.
+        duplicate = {**imported, "id": "e" * 32, "cloudCaptureId": None,
+            "sourceMetadata": {"recordingId": local_id},
+            "pointCycle": {**imported["pointCycle"], "sessionId": "f" * 32}}
+        duplicate_dir = store.directory(duplicate["id"])
+        duplicate_dir.mkdir()
+        atomic_json(duplicate_dir / "manifest.json", duplicate)
+        (duplicate_dir / "chunk-00000000.bin").write_bytes(source_raw)
+        with self.assertRaisesRegex(ValueError, "副本"):
+            analyze_blade_passes(store, {"recordingIds": [imported["id"], duplicate["id"]]})
+        self.assertEqual((self.directory / "manifest.json").read_bytes(), source_manifest)
+        self.assertEqual((self.directory / "chunk-00000000.bin").read_bytes(), source_raw)
+
+    def test_valid_origin_priority_and_invalid_candidates_do_not_replace_real_ids(self):
+        candidates = [
+            ({"sourceRecordingId": "b" * 32, "sourceLocalId": "c" * 32}, "b" * 32),
+            ({"sourceRecordingId": "invalid", "sourceLocalId": "c" * 32}, "c" * 32),
+            ({"sourceRecordingId": True, "sourceLocalId": "c" * 32 + "\n"}, self.manifest["id"]),
+        ]
+        for index, (values, expected) in enumerate(candidates):
+            with self.subTest(values=values):
+                self.manifest.update(values)
+                self.save_manifest()
+                store = RecordingStore(self.root / f"analysis-{index}")
+                self.assertEqual(import_capture(store, self.directory)["recording"]["sourceRecordingId"], expected)
+        self.manifest.update(id="invalid", sourceRecordingId=None, sourceLocalId=False)
+        self.save_manifest()
+        with self.assertRaisesRegex(ValueError, "记录编号"):
+            import_capture(RecordingStore(self.root / "invalid-analysis"), self.directory)
+
+    def test_previously_imported_cloud_origin_is_repaired_without_changing_raw_data(self):
+        self.manifest["sourceLocalId"] = "b" * 32
+        self.save_manifest()
+        store = RecordingStore(self.root / "analysis")
+        imported = import_capture(store, self.directory)["recording"]
+        destination = store.directory(imported["id"])
+        imported["sourceRecordingId"] = self.manifest["id"]
+        atomic_json(destination / "manifest.json", imported)
+        store.update_index(imported)
+        before = (destination / "chunk-00000000.bin").read_bytes()
+        corrected = import_capture(store, self.directory)["recording"]
+        self.assertEqual(corrected["sourceRecordingId"], "b" * 32)
+        self.assertEqual(store.list()[0]["sourceRecordingId"], "b" * 32)
+        self.assertEqual((destination / "chunk-00000000.bin").read_bytes(), before)
+        self.assertEqual(json.loads((self.directory / "manifest.json").read_text())["id"], self.manifest["id"])
+        self.assertEqual(import_capture(store, self.directory)["recording"], corrected)
 
     def test_missing_undeclared_or_mismatched_telemetry_is_rejected(self):
         original = dict(self.manifest["turntable"]["telemetry"])

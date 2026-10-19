@@ -28,6 +28,20 @@ def empty_waveform() -> dict:
             "sampleStride": 1, "values": [], "rssi": [], "overrange": []}
 
 
+def recording_rssi_stride(manifest: dict) -> int:
+    stride = manifest.get("rssiSampleStride", 1)
+    if isinstance(stride, bool) or not isinstance(stride, int) or not 1 <= stride <= 100_000:
+        raise ValueError("记录的 RSSI 采样间隔无效。")
+    rssi_rate = manifest.get("rssiSampleRate")
+    rate = manifest.get("sampleRate")
+    if stride > 1 or rssi_rate is not None:
+        if (not isinstance(rssi_rate, (int, float)) or isinstance(rssi_rate, bool) or
+                not math.isfinite(rssi_rate) or rssi_rate <= 0 or not isinstance(rate, (int, float)) or
+                not math.isfinite(rate) or not math.isclose(rssi_rate * stride, rate, rel_tol=1e-9)):
+            raise ValueError("记录的 RSSI 采样率与速度采样率不一致。")
+    return stride
+
+
 def atomic_json(path: Path, value: dict) -> None:
     temporary = path.with_suffix(".json.tmp")
     with temporary.open("w", encoding="utf-8") as stream:
@@ -166,6 +180,9 @@ class RecordingStore:
                             overrange=[bool(row[5] & 1) for row in rows])
                 break
         wave.update(source=manifest.get("source", "polytec_ivs500"), simulation=manifest.get("simulation"))
+        stride = recording_rssi_stride(manifest)
+        if stride > 1:
+            wave.update(rssiSampleStride=stride, rssiSampleRate=manifest["rssiSampleRate"])
         return {"recording": manifest, "waveform": wave}
 
     def create(self, metadata: dict) -> "RecordingWriter":
@@ -187,7 +204,7 @@ class RecordingWriter:
             "format": "BLADEV01/<QidifB", "overrangeSamples": 0, "missingRssiSamples": 0, "unpairedRssiSamples": 0,
             "dataLossAssessment": "not_applicable_simulation" if metadata.get("source") == "simulation" else "unverified",
             "timestampBasis": ("host epoch at simulation start + continuous sample index / source workbook sample rate"
-                               if metadata.get("source") == "simulation" else "host epoch at DAQ start + sample index / SDK base rate"),
+                               if metadata.get("source") == "simulation" else "host epoch at DAQ start + velocity sample index / SDK velocity sample rate"),
         }
         self.stream = None
         self.chunk_samples = 0
@@ -217,12 +234,20 @@ class RecordingWriter:
 
     def write(self, batch: Batch) -> None:
         count = len(batch.values)
+        stride = batch.rssi_sample_stride
+        if isinstance(stride, bool) or not isinstance(stride, int) or not 1 <= stride <= 100_000:
+            raise ValueError("RSSI 采样间隔无效。")
+        if batch.sample_start % stride or self.manifest.get("rssiSampleStride", stride) != stride:
+            raise ValueError("RSSI 采样间隔或起点在采集中发生变化。")
+        if len(batch.rssi) != len(batch.rssi_raw):
+            raise ValueError("RSSI 原始值与换算值数量不一致。")
         if count != len(batch.velocity_raw) or count != len(batch.overrange) or batch.sample_start != self.manifest["samples"]:
             raise ValueError("SDK 批次样本结构或序号不连续。")
         if batch.sample_rate != self.manifest["sampleRate"] or batch.started_at != self.manifest["sampleOrigin"]:
             raise ValueError("采集过程中采样率或时间起点发生变化。")
         if not count:
             return
+        self.manifest.update(rssiSampleStride=stride, rssiSampleRate=batch.sample_rate / stride)
         if self.stream is None or self.chunk_samples >= self.CHUNK_SAMPLES:
             self._close_chunk()
             chunk_number = self.manifest["chunks"]
@@ -232,26 +257,29 @@ class RecordingWriter:
             self.manifest["chunks"] += 1
             self.chunk_samples = 0
         data = bytearray(count * RECORD.size)
-        missing = 0
+        missing = not_sampled = 0
         for index, value in enumerate(batch.values):
-            has_rssi = index < len(batch.rssi) and index < len(batch.rssi_raw)
+            rssi_index = index // stride
+            has_rssi = index % stride == 0 and rssi_index < len(batch.rssi)
+            not_sampled += index % stride != 0
             missing += not has_rssi
             RECORD.pack_into(data, index * RECORD.size, batch.sample_start + index, batch.velocity_raw[index], value,
-                             batch.rssi_raw[index] if has_rssi else 0,
-                             batch.rssi[index] if has_rssi else 0.0,
+                             batch.rssi_raw[rssi_index] if has_rssi else 0,
+                             batch.rssi[rssi_index] if has_rssi else 0.0,
                              int(batch.overrange[index]) | (2 if has_rssi else 0))
         # The raw batch reaches the file before any display buffer is updated.
         written = self.stream.write(data)
         if written != len(data):
             raise OSError("原始数据写入不完整；采集已停止。")
-        if len(batch.rssi_raw) > count:
+        paired_rssi = (count + stride - 1) // stride
+        if len(batch.rssi_raw) > paired_rssi:
             # Retain unexpected surplus RSSI without claiming that it is a second channel
             # or inventing correspondence to velocity samples that weren't received.
-            extra_count = len(batch.rssi_raw) - count
+            extra_count = len(batch.rssi_raw) - paired_rssi
             with (self.directory / "unpaired-rssi.bin").open("ab", buffering=0) as extra:
                 payload = struct.pack("<QQ", batch.sample_start, extra_count)
                 payload += b"".join(struct.pack("<if", batch.rssi_raw[index], batch.rssi[index])
-                                    for index in range(count, len(batch.rssi_raw)))
+                                    for index in range(paired_rssi, len(batch.rssi_raw)))
                 if extra.write(payload) != len(payload):
                     raise OSError("未配对 RSSI 原始数据写入不完整。")
                 os.fsync(extra.fileno())
@@ -260,6 +288,10 @@ class RecordingWriter:
         self.manifest["samples"] += count
         self.manifest["overrangeSamples"] += sum(batch.overrange)
         self.manifest["missingRssiSamples"] += missing
+        # Preserve BLADEV01's existing absent-flag count for old readers while
+        # distinguishing unsampled velocity positions from an actual RSSI loss.
+        self.manifest["rssiNotSampledVelocitySamples"] = self.manifest.get("rssiNotSampledVelocitySamples", 0) + not_sampled
+        self.manifest["rssiMissingExpectedSamples"] = self.manifest.get("rssiMissingExpectedSamples", 0) + missing - not_sampled
         if time.monotonic() - self.last_commit >= 1.0:
             self.persist()
 

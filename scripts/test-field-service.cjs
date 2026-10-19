@@ -13,6 +13,74 @@ const idle = () => ({ state: "idle", error: null, receiver: { connected: false }
 const acquiring = () => ({ state: "acquiring", error: null, receiver: { connected: true }, recording: { id: "recording-1", state: "acquiring" } });
 const waveform = values => ({ sampleRate: 1000, unit: "m/s", values, rssi: [], overrange: [] });
 
+const singlePointConfig = { materialMark: 'A/P1 marked region', distanceM: 2, hubHeightDeltaM: 0.2, radiusM: 0.4 };
+const motionTrialConfig = { distanceM: 2.86, hubHeightDeltaM: 1.46, radiusM: 0.31,
+  periodSeconds: 5, rotationDirection: 'clockwise', axis1Sign: 1, axis2Sign: 1 };
+
+test('motion trial cannot turn a preview into hardware access or accept invented feedback', async t => {
+  const f = fixture(t);
+  for (const request of [
+    { action: 'arm', config: motionTrialConfig, confirmMotion: true },
+    { action: 'prepare', config: motionTrialConfig, port: 'COM3' },
+    { action: 'preview', config: motionTrialConfig, anchor: { axis1AngleDeg: 10, axis2AngleDeg: 0 } },
+    { action: 'preview', config: { ...motionTrialConfig, supported: true } },
+    { action: 'preview', config: { ...motionTrialConfig, periodSeconds: 0 } },
+    { action: 'preview', config: { ...motionTrialConfig, axis1Sign: true } },
+  ]) await assert.rejects(f.service.motionTrial(request), { status: 400 });
+  assert.equal(f.requests.length, 0);
+  await f.service.motionTrial({ action: 'preview', config: motionTrialConfig });
+  assert.equal(f.requests.at(-1).route, 'motion-trial');
+  assert.deepEqual(JSON.parse(f.requests.at(-1).options.body), { action: 'preview', config: motionTrialConfig });
+  assert.ok(f.requests.every(item => !['turntable', 'start', 'device', 'single-point'].includes(item.route)));
+});
+const singlePointPrepare = () => ({ action: 'prepare', sessionId: 'session-0001', commandId: 'prepare-0001', config: singlePointConfig,
+  capture: { name: 'single-point-test', deviceIp: '192.168.106.90', hostIp: '192.168.106.10', port: 'COM6' },
+  confirmLaser: true, confirmStaticPoint: true, confirmGeometry: true });
+
+test('single-point bridge rejects fabricated authority and invalid motion before transport', async t => {
+  const f = fixture(t);
+  const request = singlePointPrepare();
+  for (const change of [{ confirmLaser: false }, { confirmStaticPoint: false }, { confirmGeometry: false },
+    { commandId: '' }, { config: { ...singlePointConfig, axis1Sign: true } },
+    { config: { ...singlePointConfig, radiusM: Infinity } }, { config: { ...singlePointConfig, arcDegrees: 31 } },
+    { anchor: { axis1AngleDeg: 0, axis2AngleDeg: 0 } }, { timestamp: 1 }, { source: 'simulation' }])
+    await assert.rejects(f.service.singlePoint({ ...request, ...change }), { status: 400 });
+  await assert.rejects(f.service.singlePoint({ action: 'arm', sessionId: 'session-0001', commandId: 'arm-0001' }), { status: 400 });
+  assert.equal(f.requests.length, 0);
+});
+
+test('single-point real preparation strips renderer upload IDs and forwards a trusted run ID', async t => {
+  const f = fixture(t);
+  const request = singlePointPrepare(); request.capture.captureSessionId = 'f'.repeat(32);
+  await f.service.singlePoint(request);
+  assert.equal(JSON.parse(f.requests.at(-1).options.body).capture.captureSessionId, undefined);
+  await f.service.singlePoint(request, { captureSessionId: 'a'.repeat(32) });
+  const body = JSON.parse(f.requests.at(-1).options.body);
+  assert.equal(f.requests.at(-1).route, 'single-point');
+  assert.equal(body.capture.captureSessionId, 'a'.repeat(32));
+  assert.equal(body.capture.port, 'COM6');
+  await f.service.singlePoint({ action: 'mark', sessionId: request.sessionId, commandId: 'mark-0001' });
+  assert.equal(JSON.parse(f.requests.at(-1).options.body).action, 'mark');
+});
+
+test('single-point cancellation is not queued behind pending prepare and stale responses refresh status', async t => {
+  const pending = deferred(); let latest = idle();
+  const f = fixture(t, { fetch: ({ route, options }) => {
+    if (route !== 'single-point') return response(latest);
+    const body = JSON.parse(options.body);
+    if (body.action === 'prepare') return pending.promise;
+    latest = { ...idle(), singlePoint: { sessionId: body.sessionId, state: 'cancelled' } };
+    return response(latest);
+  } });
+  await f.service.start();
+  const preparing = f.service.singlePoint(singlePointPrepare());
+  await new Promise(resolve => setImmediate(resolve));
+  const cancelled = await f.service.singlePoint({ action: 'cancel', sessionId: 'session-0001', commandId: 'cancel-0001' });
+  assert.equal(cancelled.singlePoint.state, 'cancelled');
+  pending.resolve(response({ ...acquiring(), singlePoint: { state: 'preparing' } }));
+  assert.equal((await preparing).singlePoint.state, 'cancelled');
+});
+
 test("waveform bridge permits only bounded sample ranges and no arbitrary paths", async t => {
   const f = fixture(t, { fetch: ({ route }) => response(route.includes('/waveform') ? { waveform: waveform([1]) } : idle()) });
   for (const id of ['../secret', 'http://remote', 'x'.repeat(32), 'record?file=1']) await assert.rejects(f.service.waveform(id), { status: 400 });
@@ -260,7 +328,7 @@ test("non-Windows platform spawns python -m blade_acquisition with a scrubbed en
   assert.equal(child.options.env.DATABASE_URL, "mysql://should-not-leak");
   assert.equal(child.options.env.BLADE_DATA_DIR, path.join(f.directory, "data"));
   assert.match(child.options.env.BLADE_SERVICE_TOKEN, /^[a-f0-9]{64}$/);
-  assert.equal(child.options.env.BLADE_POLYTEC_DLL, "");
+  assert.equal(child.options.env.BLADE_POLYTEC_DLL, path.join(servicesRoot, "vendor", "libDeviceCommunication.dylib"));
   fs.rmSync(servicesRoot, { recursive: true, force: true });
 });
 
@@ -323,6 +391,26 @@ test("simulation needs an explicit source and rejects invalid point/scenario bef
   await assert.rejects(f.service.begin({ ...config, name: "  " }), { status: 400 });
   assert.equal(f.children.length, 0);
   assert.equal(f.requests.length, 0);
+});
+
+test('automatic stations preserve physical geometry and multi-point classification without accepting fabricated run identity', async t => {
+  const f = fixture(t);
+  const pointCycle = { mode: 'automatic_stations', port: 'COM6', cycles: 2, dwellSeconds: 60, speedRpm: .52,
+    collectionId: 'c'.repeat(32),
+    nominalPeriodSeconds: 30, maxMoveRpm: .6, rssiTriggerEnabled: true,
+    geometry: { distanceM: 2.86, hubHeightDeltaM: 1.46, rotationDirection: 'clockwise', axis1Sign: 1, axis2Sign: 1,
+      anchorRadiusM: .31, anchorAxis1AngleDeg: 10, anchorAxis2AngleDeg: 0 },
+    points: [{ pointId: 'p1-s1', name: 'P1 · 0°', port: 'COM6', referenceSignature: '[[0,3,10000,17],[0,3,10000,17]]',
+      axis1AngleDeg: 10, axis2AngleDeg: 0, bladeId: '2', radialPointId: 'p1', radialPointName: 'P1', radiusM: .31, azimuthDeg: 0 }] };
+  const config = { source: 'device', deviceIp: '192.168.106.90', hostIp: '192.168.106.10', name: '分站采集', object: '', turbine: '', point: '', confirmLaser: true, confirmMotion: true, pointCycle };
+  for (const change of [{ mode: 'unknown' }, { mode: 'legacy' }, { collectionId: '' }, { collectionId: 'c'.repeat(32) + '\n' }, { collectionId: true }, { collectionId: null }, { collectionId: 'C'.repeat(32) }, { rssiTriggerEnabled: false }, { nominalPeriodSeconds: 0 }, { maxMoveRpm: .2 }, { speedRpm: .231, maxMoveRpm: .231 },
+    { geometry: { ...pointCycle.geometry, axis1Sign: true } }, { geometry: { ...pointCycle.geometry, calibrated: true } },
+    { points: [{ ...pointCycle.points[0], radialPointId: '' }] }, { points: [{ ...pointCycle.points[0], azimuthDeg: 360 }] }]) {
+    await assert.rejects(f.service.begin({ ...config, pointCycle: { ...pointCycle, ...change } }), { status: 400 });
+  }
+  assert.equal(f.requests.length, 0);
+  await f.service.begin({ ...config, pointCycle: { ...pointCycle, sessionId: 'invented', identityVerified: true } });
+  assert.deepEqual(JSON.parse(f.requests.find(request => request.route === 'start').options.body).pointCycle, pointCycle);
 });
 
 test("explicit simulation starts without DLL, device addresses or laser consent and forwards only simulation controls", async (t) => {
@@ -416,6 +504,38 @@ test("turntable standalone test validates consent, limits and protocol before an
   const call = f.requests.find(item => item.route === 'turntable');
   assert.deepEqual(JSON.parse(call.options.body), { ...config, action: 'test', testSeconds: 3, confirmMotion: true, confirmRecovery: false });
   assert.equal(f.requests.some(item => ['start', 'device'].includes(item.route)), false);
+});
+
+test("Mac serial bridge preserves path case for probe, stop, recall and point cycles", async t => {
+  const servicesRoot = pythonServiceFixture();
+  t.after(() => fs.rmSync(servicesRoot, { recursive: true, force: true }));
+  const f = fixture(t, { options: { platform: "darwin", servicesRoot } });
+  const port = "/dev/cu.SLAB_USBtoUART", referenceSignature = "[[0,3,10000,17],[0,3,10000,17]]";
+  for (const action of ["probe", "stop"]) {
+    await f.service.turntable({ port, axis: 1, action, ...(action === "stop" ? { confirmMotion: true } : {}) });
+    assert.equal(JSON.parse(f.requests.filter(row => row.route === "turntable").at(-1).options.body).port, port);
+  }
+  const recall = { port, recordedPort: port, axis: 1, action: "recall", axis1AngleDeg: 25, axis2AngleDeg: 0,
+    speedRpm: 0.2, confirmMotion: true, referenceSignature };
+  await f.service.turntable(recall);
+  const body = JSON.parse(f.requests.filter(row => row.route === "turntable").at(-1).options.body);
+  assert.equal(body.port, port); assert.equal(body.recordedPort, port); assert.equal(body.referenceSignature, referenceSignature);
+  for (const changes of [{ recordedPort: port.toLowerCase() }, { referenceSignature: undefined }, { confirmMotion: false }, { axis1AngleDeg: 36 }]) {
+    await assert.rejects(f.service.turntable({ ...recall, ...changes }), { status: 400 });
+  }
+  const points = [{ name: "M01", port, referenceSignature, axis1AngleDeg: 25, axis2AngleDeg: 0 }];
+  await f.service.begin({ name: "Mac cycle", object: "", turbine: "", point: "", deviceIp: "192.168.106.90", hostIp: "192.168.106.10",
+    confirmLaser: true, confirmMotion: true, pointCycle: { port, points, cycles: 1, dwellSeconds: 1, speedRpm: 0.2 } });
+  assert.deepEqual(JSON.parse(f.requests.find(row => row.route === "start").options.body).pointCycle.points, points);
+});
+
+test("serial bridge rejects URLs, traversal, non-cu paths and control characters before I/O", async t => {
+  const f = fixture(t);
+  const cases = require("./fixtures/turntable-ports.json");
+  for (const port of [...cases.invalid, `/dev/cu.${"a".repeat(129)}`]) {
+    await assert.rejects(f.service.turntable({ port, axis: 1, action: "probe" }), { status: 400 });
+  }
+  assert.equal(f.requests.length, 0); assert.equal(f.children.length, 0);
 });
 
 test("busy turntable allows a stop request but blocks probes and setting confirmation", async t => {

@@ -2,6 +2,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Button } from "./common";
 import { CustomSelect } from "./custom-select";
+import { isTurntablePort, normalizeTurntablePort } from "./field-turntable-port";
 import { FieldCycleProgress } from "./field-cycle-progress";
 import { loadSharedTurntablePoints, saveSharedTurntablePoints, newTurntablePointId as newPointId,
   pointReferenceSignature, turntableReferenceSignature, turntablePointMotionError } from "./field-turntable-points";
@@ -16,8 +17,9 @@ function axisDrafts(): Partial<Record<1 | 2, FieldTurntableConfig>> {
     return Object.fromEntries(([1, 2] as const).filter(axis => saved?.[axis]?.axis === axis && saved[axis].protocol === "position").map(axis => [axis, saved[axis]]));
   } catch { return {}; }
 }
-export function FieldTurntableSetup({ config, onConfig, status, disabled, request }: {
+export function FieldTurntableSetup({ config, onConfig, status, disabled, request, showPointCycle = true }: {
   config: FieldConfig; onConfig: React.Dispatch<React.SetStateAction<FieldConfig>>; status: FieldStatus | null; disabled: boolean;
+  showPointCycle?: boolean;
   request: <T>(options: FieldRequestOptions) => Promise<T>;
 }) {
   const [ports, setPorts] = useState<{ port: string; description: string }[]>([]);
@@ -41,7 +43,7 @@ export function FieldTurntableSetup({ config, onConfig, status, disabled, reques
   const axes = status?.turntable?.port === value.port ? status.turntable.feedback?.axes : undefined;
   const axisFeedback = axes?.[String(value.axis)];
   const locked = disabled || busy || fieldIsActive(status) || !!status?.turntableBusy;
-  const valid = /^COM[1-9][0-9]{0,3}$/.test(value.port) && value.speedRpm >= 0.02 && value.speedRpm <= 100 && value.durationSeconds >= 0 && value.durationSeconds <= 86400 && (!positionMode || value.targetAngleDeg !== undefined && Number.isFinite(value.targetAngleDeg) && Math.abs(value.targetAngleDeg) <= axisLimit);
+  const valid = isTurntablePort(value.port) && value.speedRpm >= 0.02 && value.speedRpm <= 100 && value.durationSeconds >= 0 && value.durationSeconds <= 86400 && (!positionMode || value.targetAngleDeg !== undefined && Number.isFinite(value.targetAngleDeg) && Math.abs(value.targetAngleDeg) <= axisLimit);
   const current = status?.turntable?.port === value.port && status.turntable.axis === value.axis;
   const feedback = current ? status?.turntable?.feedback : undefined;
   const feedbackAxes = feedback?.axes;
@@ -76,7 +78,7 @@ export function FieldTurntableSetup({ config, onConfig, status, disabled, reques
   }, [points, pointsLoaded]);
   useEffect(() => { setConsent(false); setObserved(false); setReferenceConfirmed(false); }, [value.port, value.axis, value.speedRpm, value.direction, value.protocol, value.targetAngleDeg, test?.testedAt]);
   useEffect(() => { setManualMotionConsent(false); }, [value.port, value.axis, value.protocol]);
-  const stopLocked = disabled || busy || fieldIsActive(status) || !/^COM[1-9][0-9]{0,3}$/.test(value.port);
+  const stopLocked = disabled || busy || fieldIsActive(status) || !isTurntablePort(value.port);
   const change = (next: Partial<FieldTurntableConfig>) => onConfig(previous => ({ ...previous, turntable: { ...(previous.turntable || value), ...next } }));
   const selectAxis = (axis: 1 | 2) => {
     if (locked || axis === value.axis) return;
@@ -102,7 +104,7 @@ export function FieldTurntableSetup({ config, onConfig, status, disabled, reques
   };
   const recordPoint = async () => {
     setError("");
-    if (!/^COM[1-9][0-9]{0,3}$/.test(value.port)) { setError("请先填写有效转盘串口"); return; }
+    if (!isTurntablePort(value.port)) { setError("请先填写有效转盘串口"); return; }
     setBusy(true);
     try {
       const result = await request<FieldStatus>({ action: "turntable", request: { action: "probe", port: value.port, axis: value.axis } });
@@ -146,7 +148,7 @@ export function FieldTurntableSetup({ config, onConfig, status, disabled, reques
     {config.turntable && <>
       <p className="field-subtext">两轴分别设置：轴1俯仰±35°，轴2水平±180°。先建立参考位、读取反馈并应用软限位，再定位或联合采集。单独定位不打开激光。</p>
       <fieldset disabled={locked} className="field-config-grid">
-        <label>转盘串口<input required aria-label="转盘串口" list="field-turntable-ports" placeholder="例如 COM6" value={value.port} onChange={event => change({ port: event.target.value.trim().toUpperCase() })} /><datalist id="field-turntable-ports">{ports.map(port => <option key={port.port} value={port.port}>{port.description}</option>)}</datalist></label>
+        <label>转盘串口<input required aria-label="转盘串口" list="field-turntable-ports" placeholder="COM6 或 /dev/cu.usbserial-…" value={value.port} onChange={event => change({ port: normalizeTurntablePort(event.target.value) })} /><datalist id="field-turntable-ports">{ports.map(port => <option key={port.port} value={port.port}>{port.description}</option>)}</datalist></label>
         <div className="field-turntable-actions field-axis-choice" role="group" aria-label="转盘控制轴">
           <Button type="button" aria-pressed={value.axis === 1} variant={value.axis === 1 ? "primary" : undefined} onClick={() => selectAxis(1)}>轴1 · 俯仰 ±35°</Button>
           <Button type="button" aria-pressed={value.axis === 2} variant={value.axis === 2 ? "primary" : undefined} onClick={() => selectAxis(2)}>轴2 · 水平 ±180°</Button>
@@ -158,7 +160,7 @@ export function FieldTurntableSetup({ config, onConfig, status, disabled, reques
       </fieldset>
       <div className="field-turntable-actions">
         <Button type="button" disabled={locked} onClick={() => void run({ action: "turntablePorts" })}>刷新串口</Button>
-        <Button type="button" disabled={locked || !/^COM[1-9][0-9]{0,3}$/.test(value.port) || !!status?.turntableWarning && !recovery} onClick={() => void run({ action: "turntable", request: { action: "probe", port: value.port, axis: value.axis, confirmRecovery: recovery } })}>1. 读取转盘工况</Button>
+        <Button type="button" disabled={locked || !isTurntablePort(value.port) || !!status?.turntableWarning && !recovery} onClick={() => void run({ action: "turntable", request: { action: "probe", port: value.port, axis: value.axis, confirmRecovery: recovery } })}>1. 读取转盘工况</Button>
         <Button type="button" variant="danger" disabled={stopLocked} onClick={() => void run({ action: "turntable", request: { action: "stop", port: value.port, axis: value.axis, confirmMotion: true } })}>停止试转 / 核查停稳</Button>
       </div>
       {positionMode && <div className="field-turntable-test">
@@ -231,10 +233,10 @@ export function FieldTurntableSetup({ config, onConfig, status, disabled, reques
           <div className="field-table-scroll" role="region" aria-label="已记录叶片点位" tabIndex={0}><table className="field-table"><thead><tr><th>叶片 / 点位</th><th>圆周序号</th><th>轴1俯仰</th><th>轴2水平</th><th>原始计数</th><th>记录时间</th></tr></thead><tbody>{points.map((point, index) => <tr key={`${point.recordedAt}-${index}`}><td>{point.name}<small>叶片 {point.bladeIndex} · 点位 {point.bladePointIndex}</small></td><td>{point.circleIndex} / {point.circleStepDeg}°</td><td>{point.axis1AngleDeg == null ? "—" : `${point.axis1AngleDeg.toFixed(3)}°`}</td><td>{point.axis2AngleDeg == null ? "—" : `${point.axis2AngleDeg.toFixed(3)}°`}</td><td className="mono">{point.axis1RawCounts ?? "—"} / {point.axis2RawCounts ?? "—"}</td><td>{new Date(point.recordedAt).toLocaleTimeString("zh-CN", { hour12: false })}</td></tr>)}</tbody></table></div>
         </>}
       </section>}
-      {positionMode && <section className="field-turntable-test field-turntable-block" aria-label="自动多点循环采集">
+      {positionMode && showPointCycle && <section className="field-turntable-test field-turntable-block" aria-label="自动多点循环采集">
         <div className="field-section-heading"><div><h3>自动多点循环采集</h3><p>使用转盘点位库；每圈以首个点位为起点，按两轴最短安全移动距离规划顺序，采集完成后回到首点，每个点独立保存一条测振记录。</p></div><span className={`field-badge ${cycle?.state === "complete" ? "green" : cycle ? "amber" : ""}`}>{cycle ? `${cycle.completedRecords}/${cycle.totalRecords} 条` : "待开始"}</span></div>
         <div className="field-config-grid"><label>循环圈数<input aria-label="自动循环圈数" type="number" min={1} max={100} step={1} disabled={locked} value={cycleCount} onChange={event => setCycleCount(Math.max(1, Math.min(100, Math.trunc(Number(event.target.value) || 1))))} /></label><label>{rssiTriggerEnabled ? "每点最长等候（秒）" : "每点采集（秒）"}<input aria-label="每点采集秒数" type="number" min={1} max={3600} step={1} disabled={locked} value={dwellSeconds} onChange={event => setDwellSeconds(Math.max(1, Math.min(3600, Number(event.target.value) || 1)))} /></label><label>换点速度（rpm）<CustomSelect aria-label="自动循环换点速度" disabled={locked} value={cycleSpeedRpm} onChange={event => { const speed = Number(event.target.value); if ([0.5, 1, 2, 5, 10].includes(speed)) setCycleSpeedRpm(speed); }}><option value={0.5}>0.5 rpm</option><option value={1}>1 rpm</option><option value={2}>2 rpm</option><option value={5}>5 rpm</option><option value={10}>10 rpm</option></CustomSelect></label></div>
-        <p className="field-subtext">有效点位 {cyclePoints.length} 个，预计保存 {cyclePoints.length * cycleCount} 条独立记录。两轴并行运动，{rssiTriggerEnabled ? `到位后等待叶片进入并离开，最长 ${dwellSeconds} 秒；超时停止，不强制换点` : `到位后采集 ${dwellSeconds} 秒`}；每圈结束回到首个点位。轴2按 ±180° 有效范围直达，不跨边界绕行。</p>
+        <p className="field-subtext">有效点位 {cyclePoints.length} 个，预计保存 {cyclePoints.length * cycleCount} 条独立记录。两轴依次定位并确认停稳，{rssiTriggerEnabled ? `到位后等待叶片进入并离开，最长 ${dwellSeconds} 秒；超时停止，不强制换点` : `到位后采集 ${dwellSeconds} 秒`}；每圈结束回到首个点位。轴2按 ±180° 有效范围直达，不跨边界绕行。</p>
         <div className="field-config-grid">
           <label className="field-turntable-toggle"><input type="checkbox" disabled={locked} checked={rssiTriggerEnabled} onChange={event => { setRssiTriggerEnabled(event.target.checked); if (event.target.checked) setDwellSeconds(previous => Math.max(60, previous)); }} />确认叶片离开后换点</label>
           <label>进入波动阈值（百分点）<input aria-label="RSSI 进入波动阈值" type="number" min={0.1} max={100} step={0.5} disabled={locked || !rssiTriggerEnabled} value={rssiEnterSpread} onChange={event => setRssiEnterSpread(Math.max(0.1, Math.min(100, Number(event.target.value) || 8)))} /></label>
@@ -307,7 +309,7 @@ export function FieldTurntableManual({ status, disabled, request }: { status: Fi
   const recalling = !!recall && !!status?.turntableBusy;
   const stopAxis = recalling ? (status?.turntable?.axis === 2 ? 2 : 1) : axis;
   const locked = disabled || busy || !!status?.turntableBusy || fieldIsActive(status);
-  const stopLocked = disabled || busy || fieldIsActive(status) || !/^COM[1-9][0-9]{0,3}$/.test(port) ||
+  const stopLocked = disabled || busy || fieldIsActive(status) || !isTurntablePort(port) ||
     !!status?.turntableBusy && (status.turntable?.port !== port || !recalling && status.turntable?.axis !== axis);
   const recallBlocked = status?.turntableWarning || ([1, 2] as const).map(item => {
     const value = axes?.[String(item)], limit = item === 1 ? 35 : 180;
@@ -395,8 +397,8 @@ export function FieldTurntableManual({ status, disabled, request }: { status: Fi
   return <section className="field-card field-turntable-manual field-servo-ui"><div className="field-section-heading"><div><h2>转盘手动点位控制</h2><p>独立于测振仪和联合采集；手动定位控制所选轴，记录点位回位控制两轴。</p></div><span className={`field-badge ${axisReady ? "green" : recordReady ? "amber" : ""}`}>{status?.turntableBusy ? "运动中" : axisReady ? "当前轴可操作" : recordReady ? "可记录 · 运动受限" : "待读取有效静止反馈"}</span></div>
     <div className="field-manual-layout">
       <section className="field-turntable-block field-motion-block" aria-label="连接与定位"><h3>连接与定位</h3>
-<div className="field-config-grid"><label>转盘串口<input disabled={locked} aria-label="手动控制转盘串口" list="manual-turntable-ports" placeholder="例如 COM6" value={port} onChange={event => setPort(event.target.value.trim().toUpperCase())} /><datalist id="manual-turntable-ports">{ports.map(item => <option key={item.port} value={item.port}>{item.description}</option>)}</datalist></label><label>微调步长（°）<input aria-label="手动控制微调步长" type="number" min={0.001} max={35} step={0.001} value={step} onChange={event => setStep(Math.max(0.001, Number(event.target.value) || 0.001))} /></label><label>目标角度（°）<input aria-label="手动控制目标角度" type="number" min={axis === 1 ? -35 : -180} max={axis === 1 ? 35 : 180} step={0.001} value={target ?? ""} onChange={event => setTarget(event.target.value === "" ? undefined : Number(event.target.value))} /></label></div>
-    <div className="field-turntable-actions"><Button type="button" disabled={locked} onClick={() => void call<{ ports?: { port: string; description: string }[] }>({ action: "turntablePorts" }).then(result => { if (result?.ports) setPorts(result.ports); })}>刷新串口</Button><Button type="button" disabled={locked || !/^COM[1-9][0-9]{0,3}$/.test(port)} onClick={read}>读取反馈</Button><Button type="button" variant="danger" disabled={stopLocked} onClick={stop}>停止当前轴</Button><Button type="button" disabled={locked || !/^COM[1-9][0-9]{0,3}$/.test(port) || !axisFeedback} onClick={() => void call<FieldStatus>({ action: "turntable", request: { action: "reference", port, axis, confirmMotion: true } })}>设当前轴为初始位</Button><Button type="button" disabled={locked || !/^COM[1-9][0-9]{0,3}$/.test(port) || !axisFeedback} onClick={() => void call<FieldStatus>({ action: "turntable", request: { action: "limits", port, axis, confirmMotion: true } })}>应用当前轴 ±{axis === 1 ? 35 : 180}°软限位</Button></div>
+<div className="field-config-grid"><label>转盘串口<input disabled={locked} aria-label="手动控制转盘串口" list="manual-turntable-ports" placeholder="COM6 或 /dev/cu.usbserial-…" value={port} onChange={event => setPort(normalizeTurntablePort(event.target.value))} /><datalist id="manual-turntable-ports">{ports.map(item => <option key={item.port} value={item.port}>{item.description}</option>)}</datalist></label><label>微调步长（°）<input aria-label="手动控制微调步长" type="number" min={0.001} max={35} step={0.001} value={step} onChange={event => setStep(Math.max(0.001, Number(event.target.value) || 0.001))} /></label><label>目标角度（°）<input aria-label="手动控制目标角度" type="number" min={axis === 1 ? -35 : -180} max={axis === 1 ? 35 : 180} step={0.001} value={target ?? ""} onChange={event => setTarget(event.target.value === "" ? undefined : Number(event.target.value))} /></label></div>
+    <div className="field-turntable-actions"><Button type="button" disabled={locked} onClick={() => void call<{ ports?: { port: string; description: string }[] }>({ action: "turntablePorts" }).then(result => { if (result?.ports) setPorts(result.ports); })}>刷新串口</Button><Button type="button" disabled={locked || !isTurntablePort(port)} onClick={read}>读取反馈</Button><Button type="button" variant="danger" disabled={stopLocked} onClick={stop}>停止当前轴</Button><Button type="button" disabled={locked || !isTurntablePort(port) || !axisFeedback} onClick={() => void call<FieldStatus>({ action: "turntable", request: { action: "reference", port, axis, confirmMotion: true } })}>设当前轴为初始位</Button><Button type="button" disabled={locked || !isTurntablePort(port) || !axisFeedback} onClick={() => void call<FieldStatus>({ action: "turntable", request: { action: "limits", port, axis, confirmMotion: true } })}>应用当前轴 ±{axis === 1 ? 35 : 180}°软限位</Button></div>
     <div className="field-turntable-actions" role="group" aria-label="独立单轴微调"><Button type="button" disabled={locked} aria-pressed={axis === 1} variant={axis === 1 ? "primary" : undefined} onClick={() => setAxis(1)}>轴1 · 俯仰</Button><Button type="button" disabled={locked} aria-pressed={axis === 2} variant={axis === 2 ? "primary" : undefined} onClick={() => setAxis(2)}>轴2 · 水平</Button><Button type="button" disabled={locked || !axisReady} onClick={() => adjust(axis, -1)}>当前轴 −步长</Button><Button type="button" disabled={locked || !axisReady} onClick={() => adjust(axis, 1)}>当前轴 +步长</Button></div>
     <label className="field-turntable-toggle"><input type="checkbox" disabled={locked} checked={motionConsent} onChange={event => setMotionConsent(event.target.checked)} />允许当前选中轴移动到目标角度，另一轴保持不动</label>
 <div className="field-turntable-actions"><Button type="button" variant="primary" disabled={locked || !axisReady || target == null || !motionConsent} onClick={move}>移动到目标点</Button></div>
@@ -415,14 +417,14 @@ export function FieldTurntableManual({ status, disabled, request }: { status: Fi
     </div>
     <section className="field-turntable-block field-points-block" aria-label="点位记录与回位"><div className="field-section-heading"><h3>点位记录与回位</h3><span className="field-badge">{points.length} 个点位</span></div>
 <div className="field-config-grid"><label>记录名称<input aria-label="手动点位记录名称" value={pointName} maxLength={40} onChange={event => setPointName(event.target.value)} /></label><label>记录轴1角度（°）<input disabled={locked} aria-label="记录轴1角度" type="number" min={-35} max={35} step={0.001} placeholder="读取反馈后可修改" value={axis1RecordAngle} onChange={event => setAxis1RecordAngle(event.target.value)} /></label><label>记录轴2角度（°）<input disabled={locked} aria-label="记录轴2角度" type="number" min={-180} max={180} step={0.001} placeholder="读取反馈后可修改" value={axis2RecordAngle} onChange={event => setAxis2RecordAngle(event.target.value)} /></label></div>
-<div className="field-turntable-actions field-point-actions"><Button type="button" disabled={locked || !/^COM[1-9][0-9]{0,3}$/.test(port)} onClick={() => void record()}>读取并记录两轴角度</Button><Button type="button" disabled={locked || !points.length} onClick={() => setPoints(previous => previous.slice(0, -1))}>删除上一点</Button><Button type="button" disabled={locked || !points.length} onClick={() => setPoints([])}>清空记录</Button><Button type="button" disabled={locked || !points.length} onClick={() => exportPoints("csv")}>导出 CSV</Button><Button type="button" disabled={locked || !points.length} onClick={() => exportPoints("json")}>导出 JSON</Button></div>
+<div className="field-turntable-actions field-point-actions"><Button type="button" disabled={locked || !isTurntablePort(port)} onClick={() => void record()}>读取并记录两轴角度</Button><Button type="button" disabled={locked || !points.length} onClick={() => setPoints(previous => previous.slice(0, -1))}>删除上一点</Button><Button type="button" disabled={locked || !points.length} onClick={() => setPoints([])}>清空记录</Button><Button type="button" disabled={locked || !points.length} onClick={() => exportPoints("csv")}>导出 CSV</Button><Button type="button" disabled={locked || !points.length} onClick={() => exportPoints("json")}>导出 JSON</Button></div>
     <div className="field-config-grid field-recall-speed"><label>点位回位速度<CustomSelect aria-label="点位回位速度" disabled={locked} value={recallSpeedRpm} onChange={event => { const speed = Number(event.target.value); if ([0.2, 0.5, 1, 2].includes(speed)) setRecallSpeedRpm(speed); }}><option value={0.2}>0.2 rpm · 1.2°/秒</option><option value={0.5}>0.5 rpm · 3°/秒</option><option value={1}>1 rpm · 6°/秒</option><option value={2}>2 rpm · 12°/秒</option></CustomSelect></label></div>
     <p className="field-subtext">此速度用于记录表的“移动到此点”。建议先以 0.5 rpm 验证平稳后再提高；上方手动单轴定位仍为 0.2 rpm。两轴纯运动时间约为两轴角度差绝对值之和 ÷ {Number((recallSpeedRpm * 6).toFixed(1))}，另加加减速、通讯和停稳确认时间。</p>
     {points.length > 0 && <>
       <p className="field-subtext">点击记录旁的“移动到此点”，将以所选回位速度先移动轴1，确认停稳后再移动轴2；两轴均到位后显示完成。运动中不能更改速度，下一次回位使用新选择。回位期间可点击“停止当前轴”取消整个回位。点位须与记录时的串口及参考位一致；历史记录缺少这些信息时，请重新读取并标定，原记录可保留查看或导出。</p>
       <div className="field-table-scroll" role="region" aria-label="手动记录的转盘点位" tabIndex={0}><table className="field-table"><thead><tr><th>名称</th><th>轴1角度</th><th>轴2角度</th><th>原始计数</th><th>时间</th><th>操作</th></tr></thead><tbody>{points.map((point, index) => {
         const reason = manualPointRecallError(point, axes, port);
-        return <tr key={`${point.recordedAt}-${index}`}><td>{point.name}</td><td>{point.axis1AngleDeg == null ? "—" : `${point.axis1AngleDeg.toFixed(3)}°`}</td><td>{point.axis2AngleDeg == null ? "—" : `${point.axis2AngleDeg.toFixed(3)}°`}</td><td className="mono">{point.axis1RawCounts ?? "—"} / {point.axis2RawCounts ?? "—"}</td><td>{new Date(point.recordedAt).toLocaleTimeString("zh-CN", { hour12: false })}</td><td><div className="field-point-row-actions"><Button type="button" disabled={locked || !!reason || !!recallBlocked || !/^COM[1-9][0-9]{0,3}$/.test(port)} title={reason || recallBlocked || `移动至 ${point.name} 的两轴记录角度`} aria-label={`移动到点位 ${point.name}，第${index + 1}条记录`} onClick={() => recallPoint(point)}>移动到此点</Button><Button type="button" variant="ghost" disabled={locked} aria-label={`删除点位 ${point.name}，第${index + 1}条记录`} title={`删除点位 ${point.name}`} onClick={() => removePoint(index)}>删除</Button></div>{reason && <small>{reason}</small>}</td></tr>;
+        return <tr key={`${point.recordedAt}-${index}`}><td>{point.name}</td><td>{point.axis1AngleDeg == null ? "—" : `${point.axis1AngleDeg.toFixed(3)}°`}</td><td>{point.axis2AngleDeg == null ? "—" : `${point.axis2AngleDeg.toFixed(3)}°`}</td><td className="mono">{point.axis1RawCounts ?? "—"} / {point.axis2RawCounts ?? "—"}</td><td>{new Date(point.recordedAt).toLocaleTimeString("zh-CN", { hour12: false })}</td><td><div className="field-point-row-actions"><Button type="button" disabled={locked || !!reason || !!recallBlocked || !isTurntablePort(port)} title={reason || recallBlocked || `移动至 ${point.name} 的两轴记录角度`} aria-label={`移动到点位 ${point.name}，第${index + 1}条记录`} onClick={() => recallPoint(point)}>移动到此点</Button><Button type="button" variant="ghost" disabled={locked} aria-label={`删除点位 ${point.name}，第${index + 1}条记录`} title={`删除点位 ${point.name}`} onClick={() => removePoint(index)}>删除</Button></div>{reason && <small>{reason}</small>}</td></tr>;
       })}</tbody></table></div>
     </>}
     {recall && <p className={recall.state === "complete" ? "field-success" : recall.state === "error" ? "field-error" : "field-notice"} role="status">点位回位：轴1 {recall.targets[0].toFixed(3)}° / 轴2 {recall.targets[1].toFixed(3)}° · {recall.state === "complete" ? "两轴已到达记录点" : recall.state === "cancelled" ? "已取消，后续轴不再启动" : recall.state === "error" ? "回位失败，后续轴不再启动" : `正在处理轴${status?.turntable?.axis}，已完成 ${recall.completedAxes.length}/2 轴`}。</p>}

@@ -96,6 +96,20 @@ async function main() {
     await service.live(owner, id, { ...frame, sequence: 2, realtime });
     assert.equal((await service.detail(viewer, id)).frame.realtime.spectrum.frequencies.length, 2049);
     await assert.rejects(service.live(owner, id, { ...frame, sequence: 3, realtime: { ...realtime, spectrum: { frequencies: Array(4097).fill(0), amplitudes: [] } } }), rejected(400));
+    const sparseWaveform = { ...frame.waveform, sampleRate: 51200, sampleStride: 2, rssi: [80, null], rssiSampleStride: 32, rssiSampleRate: 1600 };
+    await service.live(owner, id, { ...frame, sequence: 3, waveform: sparseWaveform });
+    assert.deepEqual((await service.detail(viewer, id)).frame.waveform, sparseWaveform);
+    const invalidRssiTiming = [
+      ...[0, -1, 1.5, 100001, '32', true, null].map(rssiSampleStride => ({ rssiSampleStride, rssiSampleRate: 1600 })),
+      ...[0, -1, '1600', true, null, 1601, 102400, Number.MIN_VALUE].map(rssiSampleRate => ({ rssiSampleStride: 32, rssiSampleRate })),
+      { rssiSampleStride: 32, rssiSampleRate: undefined }, { rssiSampleStride: undefined, rssiSampleRate: 1600 },
+    ];
+    for (const metadata of invalidRssiTiming) {
+      await assert.rejects(service.live(owner, id, { ...frame, sequence: 4,
+        waveform: { ...sparseWaveform, ...metadata } }), rejected(400));
+    }
+    assert.deepEqual((await service.detail(viewer, id)).frame.waveform, sparseWaveform, "Rejected RSSI metadata cannot alter the last accepted live waveform");
+    passed.push("Sparse RSSI acquisition timing survives preview storage; invalid or incomplete timing is rejected");
     await assert.rejects(service.live(teammate, id, frame), rejected(403));
     await assert.rejects(service.prepareAnalysis(owner, id), rejected(403));
     await assert.rejects(service.prepareAnalysis(analyst, id), rejected(409));
@@ -178,7 +192,12 @@ async function main() {
     const servoRecording = { ...servo.recording, source: "polytec_ivs500", simulation: null,
       turntable: { config: { port: "COM6", axis: 1 }, preparedReferences: { "1": { origin_counts: 123 } },
         telemetry: { file: "turntable.jsonl", events: 2, sha256: digest(telemetry), timestampBasis: "sequential host observations; not hardware synchronized" } },
-      pointCycle: { cycle: 2, pointIndex: 1, pointName: "B1-P2", actualAngles: { "1": 2, "2": 30 } } };
+      pointCycle: { cycle: 2, pointIndex: 1, pointName: "B1-P2", actualAngles: { "1": 2, "2": 30 },
+        mode: "automatic_stations", collectionId: "c".repeat(32), sessionId: "a".repeat(32), bladeId: "2", radialPointId: "p2", radialPointName: "叶尖",
+        radiusM: .5, azimuthDeg: 90, stationIndex: 2, stationCount: 4, lapIndex: 2, cycles: 2,
+        identitySource: "operator_assigned", identityVerified: false, coverageKind: "sparse_station_passes", completion: "confirmed_pass",
+        plannedStations: [0, 90, 180, 270].map((azimuthDeg, index) => ({ pointId: `p2-s${index + 1}`, bladeId: "2",
+          radialPointId: "p2", radialPointName: "叶尖", radiusM: .5, azimuthDeg, stationIndex: index + 1, stationCount: 4 })) } };
     const servoFiles = [...servo.files, { name: "turntable.jsonl", bytes: telemetry.length, sha256: digest(telemetry) }];
     const servoId = (await service.create(owner, { clientId: "desktop-servo", recording: servoRecording })).capture.id;
     await assert.rejects(service.attachment(viewer, servoId, "manifest.json"), rejected(409));

@@ -11,7 +11,7 @@ import scipy
 from scipy import signal, integrate
 from pydantic import BaseModel, ConfigDict, Field
 
-from .storage import HEADER, MAGIC, RECORD
+from .storage import HEADER, MAGIC, RECORD, recording_rssi_stride
 
 VERSION = "signal-1.0.0"
 MAX_SAMPLES = 8_000_000
@@ -98,6 +98,7 @@ def read_raw(store, recording_id, start, end):
     if not isinstance(rate, (int, float)) or not math.isfinite(rate) or rate <= 0:
         raise ValueError("记录采样率无效。")
     values = np.empty(end - start, dtype=np.float64)
+    rssi_stride = recording_rssi_stride(manifest)
     covered, origin = start, manifest.get("sampleOrigin")
     overrange = missing = 0
     digest = hashlib.sha256()
@@ -134,7 +135,7 @@ def read_raw(store, recording_id, start, end):
                     raise ValueError("原始速度包含非有限值。")
                 values[lo - start:finish - start] = rows["value"]
                 overrange += int(np.count_nonzero(rows["flags"] & 1))
-                missing += int(np.count_nonzero((rows["flags"] & 2) == 0))
+                missing += int(np.count_nonzero(((rows["flags"] & 2) == 0) & (rows["index"] % rssi_stride == 0)))
                 digest.update(payload)
                 lo = finish
             covered = hi

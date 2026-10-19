@@ -8,10 +8,13 @@ const { createFieldService, failure } = require('./field-service.cjs');
 const { initialWindowBounds } = require('./field-window.cjs');
 const { createFieldCloudSync } = require('./field-cloud-sync.cjs');
 const { createCaptureTracker } = require('./field-capture-tracker.cjs');
+const { sdkExtension, isSdkFile } = require('./field-sdk.cjs');
+const { singlePointRequest } = require('./field-single-point.cjs');
 
 let win, auth, service, cloudSync, captureTracker, config = {}, quitting = false, closing = false;
 let settingsFile, dataDir, entryUrl;
 let mutation = Promise.resolve();
+const singlePointRuns = new Map();
 const serial = fn => {
   const work = mutation.then(fn, fn);
   mutation = work.catch(() => {});
@@ -35,15 +38,17 @@ async function idleRequired() {
 }
 async function chooseProgram(kind) {
   await idleRequired();
-  if (process.platform !== 'win32') throw failure('设备程序选择仅用于 Windows 实机；当前系统使用项目内 Python 采集服务。', 400);
   const isDll = kind === 'dll';
+  if (!isDll && process.platform !== 'win32') throw failure('当前系统使用项目内 Python 采集服务，无需选择 Windows EXE。', 400);
+  const extension = isDll ? sdkExtension(process.platform) : 'exe';
+  if (!extension) throw failure('当前操作系统尚不支持厂商 SDK。', 400);
   const selected = await dialog.showOpenDialog(win, {
-    title: isDll ? '选择厂商 Windows x64 DeviceCommunication.dll' : '选择已联调的 Windows x64 BladeAcquisition.exe（保留其完整依赖目录）',
-    properties: ['openFile'], filters: [{ name: isDll ? '设备 SDK' : 'Python 采集服务', extensions: [isDll ? 'dll' : 'exe'] }],
+    title: isDll ? `选择本机 Polytec SDK 动态库（.${extension}）` : '选择已联调的 Windows x64 BladeAcquisition.exe（保留其完整依赖目录）',
+    properties: ['openFile'], filters: [{ name: isDll ? '设备 SDK' : 'Python 采集服务', extensions: [extension] }],
   });
   if (selected.canceled || selected.filePaths.length !== 1) return { canceled: true };
   const file = selected.filePaths[0];
-  if (!path.isAbsolute(file) || path.extname(file).toLowerCase() !== (isDll ? '.dll' : '.exe') || !fs.statSync(file).isFile()) throw failure('所选文件类型无效', 400);
+  if (!path.isAbsolute(file) || path.extname(file).toLowerCase() !== `.${extension}` || !fs.statSync(file).isFile() || (isDll && !isSdkFile(file, process.platform))) throw failure('所选文件类型无效', 400);
   if (!isDll) {
     const consent = await dialog.showMessageBox(win, { type: 'warning', buttons: ['取消', '信任并使用'], defaultId: 0, cancelId: 0,
       message: '此操作会在本机运行所选采集服务', detail: `只选择项目同事交付且已验证来源的服务程序。\n${file}` });
@@ -80,6 +85,27 @@ async function dispatch(options) {
     case 'status': return service.status();
     case 'turntable': return service.turntable(options.request);
     case 'turntablePorts': return service.turntablePorts();
+    case 'motionTrial': return service.motionTrial(options.request);
+    case 'singlePoint': {
+      // Validate before enrolling an upload; cache IDs across ambiguous retries.
+      const request = singlePointRequest(options.request);
+      if (request.action === 'prepare') {
+        const key = `${request.sessionId}:${request.commandId}`;
+        if (!singlePointRuns.has(key)) {
+          let id;
+          try { id = captureTracker.prepare(); }
+          catch (error) { captureTracker.warning(error.message); }
+          singlePointRuns.set(key, id);
+          if (singlePointRuns.size > 128) singlePointRuns.delete(singlePointRuns.keys().next().value);
+        }
+        const captureSessionId = singlePointRuns.get(key);
+        try { return await service.singlePoint(request, captureSessionId ? { captureSessionId } : undefined); }
+        finally { captureTracker.activate(captureSessionId); void captureTracker.scan(); }
+      }
+      const result = await service.singlePoint(request);
+      if (request.action === 'cancel') await captureTracker.flush(result);
+      return result;
+    }
     case 'frame': return service.frame(options.windowMs);
     case 'syncStatus': {
       const status = cloudSync.status(), warning = captureTracker.status().error;
@@ -215,7 +241,11 @@ else {
       try {
         trusted(event);
         const execute = () => dispatch(options);
-        const result = ['session', 'accountInfo', 'status', 'frame', 'recordings', 'simulation', 'recording', 'waveform', 'analysis', 'rotation', 'syncStatus'].includes(options?.action)
+        // Preparation remains serialized with account/service changes. Timing
+        // marks and cancellation go straight to server-side session ownership,
+        // so a slow preparation cannot postpone a stop or synchronization mark.
+        const directSinglePoint = options?.action === 'singlePoint' && options.request?.action !== 'prepare';
+        const result = directSinglePoint || ['session', 'accountInfo', 'status', 'frame', 'recordings', 'simulation', 'recording', 'waveform', 'analysis', 'rotation', 'syncStatus'].includes(options?.action)
           ? await execute() : await serial(execute);
         return { status: 200, data: result };
       } catch (error) { return { status: error.status || 500, data: { error: error.message || '本机操作失败' } }; }

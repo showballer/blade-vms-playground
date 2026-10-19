@@ -30,6 +30,16 @@ check("独立转盘点位模块只提供单轴微调、定位和两轴记录", (
   const html = renderToStaticMarkup(<FieldTurntableManual status={ready} disabled={false} request={async <T,>() => ({} as T)} />);
   for (const label of ["转盘手动点位控制", "当前轴 −步长", "当前轴 +步长", "移动到目标点", "读取并记录两轴角度", "设当前轴为初始位", "软限位", "独立于测振仪和联合采集"]) assert.ok(html.includes(label));
 });
+check("Mac 串口可读取反馈，未建立参考位时运动仍禁用", () => {
+  const port = "/dev/cu.SLAB_USBtoUART";
+  const status: FieldStatus = { ...ready, turntable: { state: "checked", port, axis: 1 } };
+  const html = renderToStaticMarkup(<FieldTurntableManual status={status} disabled={false} request={async <T,>() => ({} as T)} />);
+  assert.ok(html.includes(`value="${port}"`));
+  assert.match(html, /<button(?![^>]*disabled)[^>]*>读取反馈<\/button>/);
+  assert.match(html, /<button[^>]*disabled=""[^>]*>移动到目标点<\/button>/);
+  assert.equal(validateFieldConfig({ name: "Mac", object: "", turbine: "", point: "", deviceIp: "192.168.106.90", hostIp: "192.168.106.10",
+    turntable: { port, axis: 1, speedRpm: 0.2, direction: "forward", durationSeconds: 0 } }), null);
+});
 check("独立点位停止按钮在本轴定位时可用，故障反馈与超界角度可见", () => {
   const status: FieldStatus = { ...ready, turntableBusy: true, turntable: { state: "positioning", port: "COM3", axis: 1 } };
   const render = (value: FieldStatus) => renderToStaticMarkup(<FieldTurntableManual status={value} disabled={false} request={async <T,>() => ({} as T)} />);
@@ -112,7 +122,7 @@ check("未知采样率只能显示样本序号", () => {
 check("空波形等待显式设备或模拟输入，不自行绘制数据", () => {
   const html = renderToStaticMarkup(<FieldWaveChart />);
   assert.ok(html.includes("等待振动数据"));
-  assert.ok(html.includes("开始设备采集或模拟采集后显示输入波形"));
+  assert.ok(html.includes("开始采集后显示输入波形"));
   assert.ok(!html.includes('class="field-wave-svg"'));
 });
 check("真实速度曲线标注单位和时间轴", () => {
@@ -128,6 +138,33 @@ check("缺失 RSSI 不补零或伪造第二通道", () => {
   const actual = renderToStaticMarkup(<FieldWaveChart waveform={waveform} kind="rssi" />);
   assert.ok(!actual.includes("NaN"));
   assert.ok(actual.includes("单位百分比"));
+});
+check("稀疏 RSSI 显示真实孤立点，保留速度样本时间轴且不连接空位", () => {
+  const sparse: FieldWaveform = { sampleRate: 51200, sampleStart: 64, rangeStart: 64, rangeEnd: 130,
+    rssiSampleStride: 32, rssiSampleRate: 1600, values: Array(66).fill(0.01), unit: "m/s", overrange: [],
+    rssi: Array.from({ length: 66 }, (_, index) => index % 32 === 0 ? 30 + index / 32 * 20 : null) };
+  const before = JSON.stringify(sparse);
+  const html = renderToStaticMarkup(<FieldWaveChart waveform={sparse} kind="rssi" />);
+  const circles = [...html.matchAll(/<circle cx="([^"]+)" cy="([^"]+)"/g)].map(match => [Number(match[1]), Number(match[2])]);
+  assert.equal(circles.length, 3, "每个真实RSSI样本可见，空位不生成圆点");
+  assert.deepEqual(circles.map(point => point[0]), [76, 428, 780], "按64/96/128速度样本定位，不能压缩成连续3点");
+  assert.equal(fieldSampleX(sparse, 32), 1.875);
+  assert.equal(/<path d="[^"]*L/.test(html), false, "原始空位之间不能补连续曲线");
+  assert.equal(JSON.stringify(sparse), before, "绘图不改原始数组");
+  const missing = renderToStaticMarkup(<FieldWaveChart waveform={{ ...sparse, rssi: sparse.rssi.map((value, index) => index === 32 ? null : value) }} kind="rssi" />);
+  assert.equal((missing.match(/<circle /g) || []).length, 2, "应采样边界缺失不补零或沿用旧值");
+});
+check("单个 RSSI 零值正常可见，包络和连续线不重复生成原始采样点", () => {
+  const single: FieldWaveform = { sampleRate: 1000, sampleStart: 0, values: [0.01], rssi: [0], unit: "m/s", overrange: [] };
+  const html = renderToStaticMarkup(<FieldWaveChart waveform={single} kind="rssi" />);
+  assert.equal((html.match(/<circle /g) || []).length, 1);
+  assert.ok(!html.includes("等待 RSSI"));
+  const continuous = renderToStaticMarkup(<FieldWaveChart waveform={{ ...single, values: [1, 2, 3], rssi: [30, 40, 50] }} kind="rssi" />);
+  assert.equal((continuous.match(/<circle /g) || []).length, 0);
+  assert.match(continuous, /<path d="[^"]*L/);
+  const envelope = renderToStaticMarkup(<FieldWaveChart waveform={{ ...single, values: [], rssi: [], representation: "envelope", rangeEnd: 51200,
+    envelope: [{ start: 0, end: 51200, min: 0.01, max: 0.02, rssiMin: 20, rssiMax: 80, missing: 0, overrange: 0 }] }} kind="rssi" />);
+  assert.equal((envelope.match(/<circle /g) || []).length, 0, "聚合范围保持包络，不宣称是原始点");
 });
 check("采集启用必须同时满足服务和 DLL 就绪", () => {
   assert.equal(fieldCanStart(ready), true);
@@ -272,7 +309,7 @@ check("统一密码页保留三项输入和 12–128 位校验，说明联网与
 check("记录空态不预置数据", () => {
   const html = renderToStaticMarkup(<FieldRecordingList recordings={[]} busy={false} onSelect={() => {}} />);
   assert.ok(html.includes("还没有采集记录"));
-  assert.ok(html.includes("完成设备或模拟采集后"));
+  assert.ok(html.includes("完成采集后"));
   assert.ok(!html.includes("<table"));
 });
 check("模拟记录必须展示来源且不会因模拟来源掩盖异常状态", () => {

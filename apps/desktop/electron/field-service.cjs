@@ -6,6 +6,10 @@ const { Readable } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
 const { createGzip } = require('node:zlib');
 const { randomBytes } = require('node:crypto');
+const { isTurntablePort } = require('./field-turntable-port.cjs');
+const { isSdkFile, resolveSdkPath } = require('./field-sdk.cjs');
+const { singlePointRequest } = require('./field-single-point.cjs');
+const { motionTrialRequest } = require('./field-motion-trial.cjs');
 
 function failure(message, status = 503) {
   return Object.assign(new Error(message), { status });
@@ -20,7 +24,7 @@ function validPointReference(value) {
 function turntableConfig(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value) ||
       Object.keys(value).some(key => !['port', 'axis', 'speedRpm', 'direction', 'durationSeconds', 'protocol', 'targetAngleDeg'].includes(key)) ||
-      !/^COM[1-9][0-9]{0,3}$/.test(value.port) || ![1, 2].includes(value.axis) ||
+      !isTurntablePort(value.port) || ![1, 2].includes(value.axis) ||
       typeof value.speedRpm !== 'number' || !Number.isFinite(value.speedRpm) || value.speedRpm < 0.02 || value.speedRpm > 100 ||
       !['forward', 'reverse'].includes(value.direction) || typeof value.durationSeconds !== 'number' ||
       !Number.isFinite(value.durationSeconds) || value.durationSeconds < 0 || value.durationSeconds > 86400 ||
@@ -32,13 +36,35 @@ function turntableConfig(value) {
 }
 function pointCycleConfig(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value) ||
-      !/^COM[1-9][0-9]{0,3}$/.test(value.port) || !Array.isArray(value.points) ||
+      !isTurntablePort(value.port) || !Array.isArray(value.points) ||
       value.points.length < 1 || value.points.length > 200 ||
       !Number.isInteger(value.cycles) || value.cycles < 1 || value.cycles > 100 ||
       value.points.length * value.cycles > 2000 || typeof value.dwellSeconds !== 'number' ||
       !Number.isFinite(value.dwellSeconds) || value.dwellSeconds < 1 || value.dwellSeconds > 3600 ||
       typeof value.speedRpm !== 'number' || !Number.isFinite(value.speedRpm) || value.speedRpm < 0.02 || value.speedRpm > 10)
     throw failure('无效多点循环参数：点位、圈数、停留时间或回位速度超出范围', 400);
+  if (value.mode !== undefined && !['legacy', 'automatic_stations'].includes(value.mode)) throw failure('无效自动跟随模式', 400);
+  const automatic = value.mode === 'automatic_stations';
+  const follow = {};
+  if (value.collectionId !== undefined) {
+    if (!automatic || typeof value.collectionId !== 'string' || value.collectionId.length !== 32 || !/^[a-f0-9]{32}$/.test(value.collectionId))
+      throw failure('无效叶片采集任务编号', 400);
+    follow.collectionId = value.collectionId;
+  }
+  if (automatic) {
+    const number = (v, min, max) => typeof v === 'number' && Number.isFinite(v) && v >= min && v <= max;
+    const geometry = value.geometry;
+    const fields = ['distanceM', 'hubHeightDeltaM', 'rotationDirection', 'axis1Sign', 'axis2Sign', 'anchorRadiusM', 'anchorAxis1AngleDeg', 'anchorAxis2AngleDeg'];
+    if (value.rssiTriggerEnabled !== true || !number(value.nominalPeriodSeconds, 0.5, 3600) ||
+        !number(value.maxMoveRpm, 0.02, 10) || value.speedRpm > value.maxMoveRpm || Math.abs(value.speedRpm / 0.02 - Math.round(value.speedRpm / 0.02)) > 1e-7 ||
+        !geometry || typeof geometry !== 'object' || Array.isArray(geometry) || Object.keys(geometry).some(key => !fields.includes(key)) ||
+        !number(geometry.distanceM, 0.001, 10000) || !number(geometry.hubHeightDeltaM, -10000, 10000) ||
+        !number(geometry.anchorRadiusM, 0.001, 1000) || !number(geometry.anchorAxis1AngleDeg, -35, 35) || !number(geometry.anchorAxis2AngleDeg, -180, 180) ||
+        !['clockwise', 'counterclockwise'].includes(geometry.rotationDirection) || ![-1, 1].includes(geometry.axis1Sign) || ![-1, 1].includes(geometry.axis2Sign))
+      throw failure('自动跟随需要有效安装几何、周期、速度上限及进入离开判定', 400);
+    Object.assign(follow, { mode: 'automatic_stations', nominalPeriodSeconds: value.nominalPeriodSeconds,
+      maxMoveRpm: value.maxMoveRpm, geometry: Object.fromEntries(fields.map(key => [key, geometry[key]])) });
+  }
   const points = value.points.map(point => {
     if (!point || (point.pointId !== undefined && (typeof point.pointId !== 'string' || !point.pointId.trim() || point.pointId.length > 120)) ||
         typeof point.name !== 'string' || !point.name.trim() || point.name.length > 120 ||
@@ -46,7 +72,18 @@ function pointCycleConfig(value) {
         typeof point.axis2AngleDeg !== 'number' || !Number.isFinite(point.axis2AngleDeg) || Math.abs(point.axis2AngleDeg) > 180 ||
         point.port !== value.port || !validPointReference(point.referenceSignature))
       throw failure('无效多点循环点位：需要名称、有效角度、原串口和两轴参考位；历史点位请重新标定', 400);
-    return { ...(point.pointId !== undefined ? { pointId: point.pointId.trim() } : {}), name: point.name.trim(), axis1AngleDeg: point.axis1AngleDeg, axis2AngleDeg: point.axis2AngleDeg,
+    const identity = {};
+    if (automatic) {
+      for (const field of ['bladeId', 'radialPointId', 'radialPointName']) {
+        if (typeof point[field] !== 'string' || !point[field].trim() || point[field].length > 80) throw failure('自动跟随需要叶片编号和测点信息', 400);
+        identity[field] = point[field].trim();
+      }
+      if (!point.pointId || typeof point.radiusM !== 'number' || !Number.isFinite(point.radiusM) || point.radiusM < 0.001 || point.radiusM > 1000 ||
+          typeof point.azimuthDeg !== 'number' || !Number.isFinite(point.azimuthDeg) || point.azimuthDeg < 0 || point.azimuthDeg >= 360)
+        throw failure('自动跟随测点半径和圆周位置无效', 400);
+      Object.assign(identity, { radiusM: point.radiusM, azimuthDeg: point.azimuthDeg });
+    }
+    return { ...identity, ...(point.pointId !== undefined ? { pointId: point.pointId.trim() } : {}), name: point.name.trim(), axis1AngleDeg: point.axis1AngleDeg, axis2AngleDeg: point.axis2AngleDeg,
       port: point.port, referenceSignature: point.referenceSignature };
   });
   const echo = {};
@@ -75,7 +112,7 @@ function pointCycleConfig(value) {
   }
   if (echo.rssiTriggerEnabled && echo.rssiThresholdMode === 'absolute' && echo.rssiLeaveThresholdPercent === undefined)
     throw failure('绝对阈值模式需要填写 RSSI 离开阈值', 400);
-  return { port: value.port, points, cycles: value.cycles, dwellSeconds: value.dwellSeconds, speedRpm: value.speedRpm, ...echo };
+  return { port: value.port, points, cycles: value.cycles, dwellSeconds: value.dwellSeconds, speedRpm: value.speedRpm, ...echo, ...follow };
 }
 function freePort() {
   return new Promise((resolve, reject) => {
@@ -125,8 +162,8 @@ function windowsServiceEnvironment({ file, dataDir, dll, port, secret, source = 
 }
 
 // Non-Windows platforms run the same acquisition service from source through the
-// project virtualenv (services/acquisition/.venv). Real device I/O still needs
-// the Windows-only vendor SDK; playback, waveform and analysis work everywhere.
+// project virtualenv (services/acquisition/.venv). Real device I/O loads a native
+// vendor library built for the same OS and architecture as that interpreter.
 function posixServiceEnvironment({ dataDir, dll, port, secret, source = process.env }) {
   // Mirror the Windows hardening: never inherit Python/Conda/venv variables that
   // could redirect module resolution away from the project virtualenv.
@@ -171,11 +208,12 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     return getConfig().executable || path.join(resourcesDir, 'acquisition', 'BladeAcquisition.exe');
   }
   function dllPath() {
-    return getConfig().dll || path.join(path.dirname(executable()), 'vendor', 'DeviceCommunication.dll');
+    return resolveSdkPath({ configured: getConfig().dll, environment, platform,
+      executable: executable(), resourcesDir, servicesRoot });
   }
   function serviceInfo() {
-    return { state, error, executable: executable(),
-      dllConfigured: fs.existsSync(dllPath()),
+    return { state, error, generation, executable: executable(),
+      dllConfigured: isSdkFile(dllPath(), platform), sdkPath: dllPath(),
       launcher: platform === 'win32' ? 'windows-bundle' : 'python-module' };
   }
   function launchSpec() {
@@ -196,7 +234,7 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
       return { state: 'missing', error: '未找到采集服务源码 blade_acquisition，请确认 services/acquisition 目录完整。' };
     }
     return { file: resolved.python, args: ['-m', 'blade_acquisition'], cwd: resolved.root,
-      environment: ({ port, secret }) => posixServiceEnvironment({ dataDir, dll: getConfig().dll || '', port, secret, source: environment }) };
+      environment: ({ port, secret }) => posixServiceEnvironment({ dataDir, dll: dllPath(), port, secret, source: environment }) };
   }
   function envelope(data = lastStatus) {
     // A failed child cannot be presented as healthy acquisition. Keep unknown
@@ -213,7 +251,7 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     const requestGeneration = generation, requestChild = child;
     const response = await fetchImpl(`http://127.0.0.1:${port}/api/field/${route}`, {
       method, redirect: 'error', signal: AbortSignal.timeout(route.endsWith('/analysis') || route === 'rotation' || route.endsWith('/waveform') || route.includes('/waveform?') ? 120000 :
-        route === 'device' || route === 'rssi-calibration' ? 90000 : route === 'stop' || route === 'turntable' ? Math.max(75000, requestTimeoutMs) : requestTimeoutMs),
+        route === 'device' || route === 'rssi-calibration' ? 90000 : route === 'stop' || route === 'turntable' || route === 'single-point' && body?.action === 'cancel' ? Math.max(75000, requestTimeoutMs) : requestTimeoutMs),
       headers: { Authorization: `Bearer ${secret}`, 'Content-Type': 'application/json' },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
@@ -493,8 +531,26 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     return http('rssi-calibration', 'POST', { deviceIp: request.deviceIp, hostIp: request.hostIp, state: request.state, durationSeconds: request.durationSeconds, confirmLaser: true });
   }
   async function turntablePorts() { await ready(); return http('turntable/ports'); }
+  async function motionTrial(request) {
+    const body = motionTrialRequest(request);
+    await ready();
+    return envelope(await http('motion-trial', 'POST', body));
+  }
+  async function singlePoint(request, trustedCapture) {
+    const body = singlePointRequest(request, trustedCapture);
+    await ready();
+    if (body.action === 'preview') return envelope(await http('single-point', 'POST', body));
+    const epoch = ++snapshotEpoch;
+    try {
+      const result = await http('single-point', 'POST', body);
+      // A delayed prepare/mark response must not revive the UI after cancel.
+      lastStatus = epoch === snapshotEpoch ? result : await http('status');
+      if (body.action === 'prepare') { closeSocket(); stream(); }
+      return envelope();
+    } finally { snapshotEpoch += 1; }
+  }
   async function turntable(request) {
-    if (!request || !['probe', 'test', 'manual_move', 'recall', 'prepare', 'stop', 'reference', 'limits'].includes(request.action) || !/^COM[1-9][0-9]{0,3}$/.test(request.port) ||
+    if (!request || !['probe', 'test', 'manual_move', 'recall', 'prepare', 'stop', 'reference', 'limits'].includes(request.action) || !isTurntablePort(request.port) ||
         ![1, 2].includes(request.axis) || (['stop', 'test', 'manual_move', 'recall', 'prepare', 'reference', 'limits'].includes(request.action) && request.confirmMotion !== true) ||
         (request.confirmRecovery !== undefined && typeof request.confirmRecovery !== 'boolean') ||
         (request.testSeconds !== undefined && (!Number.isInteger(request.testSeconds) || request.testSeconds < 1 || request.testSeconds > 15))) throw failure('无效转盘检查/试转请求', 400);
@@ -551,6 +607,6 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     await ready();
     return http('rotation', 'POST', parameters);
   }
-  return { start, status, frame, begin, stop, recordings, simulation, exportRecording, waveform, analysis, rotation, device, rssiCalibration, turntable, turntablePorts, shutdown, serviceInfo };
+  return { start, status, frame, begin, stop, recordings, simulation, exportRecording, waveform, analysis, rotation, device, rssiCalibration, turntable, turntablePorts, singlePoint, motionTrial, shutdown, serviceInfo };
 }
 module.exports = { createFieldService, windowsServiceEnvironment, posixServiceEnvironment, failure };

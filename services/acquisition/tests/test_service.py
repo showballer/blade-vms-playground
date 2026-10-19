@@ -638,6 +638,22 @@ class FakeSdk:
     def PolyLastCommunicationStatus(self, buffer, *_):
         buffer.value = b"fixture status"
 
+    def PolyHasCommand(self, _, device, __, command, pointer):
+        pointer._obj.value = command in (46, 90, 592)
+        return 0
+
+    def PolySendGetInt16(self, _, device, __, command, pointer):
+        pointer._obj.value = (self.laser_commands[-1] if self.laser_commands else 0) if command == 46 else 3
+        return 0
+
+    def PolyChannelActivationIsChannelAvailable(self, _, channel, __, pointer):
+        pointer._obj.value = True
+        return 0
+
+    def PolyChannelActivationIsChannelEnabled(self, _, channel, __, pointer):
+        pointer._obj.value = True
+        return 0
+
     def PolySendGetString(self, *arguments):
         arguments[-2].value = b"192.168.104.10"
         return 0

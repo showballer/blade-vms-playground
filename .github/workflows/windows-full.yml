@@ -60,6 +60,20 @@ jobs:
         run: |
           npm run test:field
           if ($LASTEXITCODE -ne 0) { throw 'Field unit tests failed' }
+          npm run test:single-point:ui
+          if ($LASTEXITCODE -ne 0) { throw 'Single-point and motion-trial UI tests failed' }
+          npm run test:auto-follow
+          if ($LASTEXITCODE -ne 0) { throw 'Automatic station planning, production UI and blade summary tests failed' }
+          npx tsx scripts/test-web-blade-capture-selection.ts
+          if ($LASTEXITCODE -ne 0) { throw 'Blade record selection and preparation cancellation tests failed' }
+          node scripts/test-field-capture-main.cjs
+          if ($LASTEXITCODE -ne 0) { throw 'Single-point capture bridge tests failed' }
+          node --test scripts/test-windows-blade-passes-gate.cjs
+          if ($LASTEXITCODE -ne 0) { throw 'Blade pass package gate contract tests failed' }
+          node --test scripts/test-windows-motion-trial-gate.cjs
+          if ($LASTEXITCODE -ne 0) { throw 'Frozen motion-trial gate contract tests failed' }
+          node --test scripts/test-windows-packaged-bridge.cjs
+          if ($LASTEXITCODE -ne 0) { throw 'Packaged bridge integrity tests failed' }
           npm run test:unified-auth
           if ($LASTEXITCODE -ne 0) { throw 'Unified account tests failed' }
           npm run test:field-cloud-sync
@@ -78,6 +92,18 @@ jobs:
         run: |
           node scripts/test-windows-simulation.cjs --resources apps/desktop/release/win-unpacked/resources
           if ($LASTEXITCODE -ne 0) { throw 'Frozen simulation and export verification failed' }
+      - name: Verify frozen full-circle planner without hardware and reject unavailable execution
+        run: |
+          node scripts/test-windows-motion-trial.cjs --resources apps/desktop/release/win-unpacked/resources
+          if ($LASTEXITCODE -ne 0) { throw 'Frozen motion-trial preview and arm-rejection verification failed' }
+      - name: Verify packaged blade point records, CSV export and Web pass analysis without hardware
+        run: |
+          node scripts/test-windows-blade-passes.cjs --resources apps/desktop/release/win-unpacked/resources
+          if ($LASTEXITCODE -ne 0) { throw 'Frozen blade point export and synchronization verification failed' }
+      - name: Verify current-point selection and manual next-point workflow
+        run: |
+          npx electron scripts/auto-follow-ui-smoke.cjs
+          if ($LASTEXITCODE -ne 0) { throw 'Automatic following UI interaction checks failed' }
       - name: Verify waveform and device configuration UI without hardware
         run: npm run test:field-waveform
       - name: Verify frozen runtime, install, login, coexistence and uninstall
@@ -89,6 +115,7 @@ jobs:
           } | Set-Content -Encoding utf8NoBOM apps/desktop/release/SHA256SUMS.txt
           Copy-Item WINDOWS_TEST_GUIDE.md apps/desktop/release/
           Copy-Item CLOUD_CAPTURE_FLOW.md apps/desktop/release/
+          Copy-Item docs/AUTOMATIC_FOLLOWING.md apps/desktop/release/
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: BladeVMS-${{ steps.desktop.outputs.version }}-windows-x64-full
@@ -98,6 +125,7 @@ jobs:
             apps/desktop/release/SHA256SUMS.txt
             apps/desktop/release/WINDOWS_TEST_GUIDE.md
             apps/desktop/release/CLOUD_CAPTURE_FLOW.md
+            apps/desktop/release/AUTOMATIC_FOLLOWING.md
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
@@ -109,6 +137,10 @@ jobs:
           path: |
             artifacts/windows-bundle-smoke/
             artifacts/windows-simulation-smoke/report.json
+            artifacts/windows-motion-trial-smoke/report.json
             artifacts/field-waveform-smoke/
+            artifacts/windows-blade-passes-smoke/
+            artifacts/auto-follow-ui-review/result.json
+            artifacts/auto-follow-ui-review/*.png
           if-no-files-found: warn
           retention-days: 30

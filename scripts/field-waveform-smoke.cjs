@@ -128,10 +128,15 @@ app.on('browser-window-created', (_event, win) => {
         await click('恢复显示');
         await click('停止并保存', 'document.querySelector(".field-live-controls")');
         await waitFor(() => fixture.stops === 1, 'stop');
+        // Receiving stop is not UI completion: the handler still flushes the
+        // capture and refreshes records before clearing stoppingCapture. Its
+        // operation guard intentionally ignores record actions during cleanup.
+        await waitFor(() => js('!document.querySelector(".field-live-controls")'), 'stop/save UI cleanup');
       });
       await click('本机记录'); await waitFor(async () => (await body()).includes('查看波形'), 'records'); await click('查看波形');
       await check('history opens the entire recording, not just its tail', async () => {
-        await waitFor(async () => (await body()).includes('区间最小/最大值包络'), 'overview');
+        await waitFor(() => js('!!document.querySelector(".field-recording-preview")'), 'record preview opened');
+        await waitFor(() => js(`document.querySelector('.field-recording-preview [data-testid="wave-representation"]')?.textContent.includes('区间最小/最大值包络')`), 'overview');
         assert.deepEqual(fixture.waveRequests.at(-1), { id: record.id, start: 0, end: 500000 });
         await js('document.querySelector(".field-recording-preview").scrollIntoView({block:"start"})');
         await capture('02-full-record');

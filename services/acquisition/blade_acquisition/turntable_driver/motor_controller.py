@@ -9,6 +9,8 @@ import threading
 import time
 import warnings
 
+from ..serial_ports import validate_local_serial_port
+
 from .protocol import (
     CMD_MOVE_OUTPUT_RELATIVE, CMD_READ_PA, CMD_READ_SPEED, CMD_READ_POSITION,
     CMD_READ_ALARM, CMD_RESET_ALARM, CMD_STOP, CMD_SET_MOTION_PROFILE, CMD_START, CMD_SET_SPEED,
@@ -144,6 +146,10 @@ class MotorController:
                 return self
             factory = self._factory
             if factory is None:
+                try:
+                    validate_local_serial_port(self.port_name)
+                except ValueError as exc:
+                    raise CommunicationError(str(exc)) from exc
                 try:
                     from serial import Serial
                 except ImportError as exc:

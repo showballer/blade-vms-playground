@@ -119,6 +119,13 @@ function validatePreview(waveform: unknown, realtime: unknown) {
       (waveform.overrange !== undefined && (!Array.isArray(waveform.overrange) || waveform.overrange.length > 2048 || waveform.overrange.some((item: unknown) => typeof item !== "boolean"))) ||
       (waveform.unit !== undefined && waveform.unit !== "m/s") ||
       (waveform.values.length && (!Number.isFinite(waveform.sampleRate) || waveform.sampleRate <= 0))) throw invalid("实时波形结构、单位或数值无效。");
+  if (waveform.rssiSampleStride !== undefined || waveform.rssiSampleRate !== undefined) {
+    const stride = waveform.rssiSampleStride, rate = waveform.rssiSampleRate;
+    if (!integer(stride, 1, 100000) || typeof rate !== "number" || !Number.isFinite(rate) || rate <= 0 ||
+        !Number.isFinite(waveform.sampleRate) || waveform.sampleRate <= 0 || rate > waveform.sampleRate ||
+        !Number.isFinite(rate * stride) || Math.abs(rate * stride - waveform.sampleRate) > waveform.sampleRate * 1e-9)
+      throw invalid("RSSI 采样间隔或采样率无效，或与振动采样率不一致。");
+  }
   if (realtime === undefined || realtime === null) return;
   object(realtime);
   if (typeof realtime.available !== "boolean") throw invalid("实时分析状态无效。");

@@ -87,6 +87,51 @@ test('only new tracked captures auto-sync; live preview is bounded and raw files
   assert.equal(fs.readFileSync(f.file, 'utf8').includes(f.token), false);
 });
 
+test('live RSSI acquisition timing survives display decimation without changing existing waveform samples', async t => {
+  const f = fixture(t), current = f.recording('a'.repeat(32), 4096, 'incomplete');
+  const queue = f.create(); queue.resume(); queue.started(current.manifest); await queue.settled();
+  const waveform = { sampleRate: 51200, sampleStart: 32, sampleStride: 2, sampleOrigin: 1800000000,
+    values: Array.from({ length: 4096 }, (_, i) => i / 1000),
+    rssi: Array.from({ length: 4096 }, (_, i) => i % 32 === 0 ? 80 : null),
+    overrange: Array.from({ length: 4096 }, (_, i) => i % 7 === 0) };
+  const original = structuredClone(waveform);
+  async function preview(metadata) {
+    f.setFrame({ state: 'acquiring', recording: current.manifest, waveform: { ...waveform, ...metadata } });
+    queue.resume(); await queue.settled();
+    return f.captures.get(current.manifest.id).live.at(-1).waveform;
+  }
+  const legacy = await preview({});
+  for (const [rssiSampleStride, rssiSampleRate] of [[1, 51200], [32, 1600], [100000, 0.512], [3, 51200 / 3]]) {
+    const result = await preview({ rssiSampleStride, rssiSampleRate });
+    assert.equal(result.rssiSampleStride, rssiSampleStride);
+    assert.equal(result.rssiSampleRate, rssiSampleRate);
+    const { rssiSampleStride: omittedStride, rssiSampleRate: omittedRate, ...unchanged } = result;
+    assert.deepEqual(unchanged, legacy);
+  }
+  assert.equal(legacy.values.length, 2048); assert.equal(legacy.sampleStride, 4);
+  assert.equal(legacy.rssiSampleStride, undefined); assert.equal(legacy.rssiSampleRate, undefined);
+  assert.deepEqual(waveform, original);
+});
+
+test('invalid or incomplete RSSI timing is omitted while legacy live waveform remains unchanged', async t => {
+  const f = fixture(t), current = f.recording('a'.repeat(32), 100, 'incomplete');
+  const queue = f.create(); queue.resume(); queue.started(current.manifest); await queue.settled();
+  const waveform = { sampleRate: 51200, sampleStart: 0, values: [0, 0.01, -0.01], rssi: [80, null, 70], overrange: [false, true, false] };
+  async function preview(metadata) {
+    f.setFrame({ state: 'acquiring', recording: current.manifest, waveform: { ...waveform, ...metadata } });
+    queue.resume(); await queue.settled();
+    return f.captures.get(current.manifest.id).live.at(-1).waveform;
+  }
+  const legacy = await preview({});
+  const invalid = [
+    ...[0, -1, 1.5, 100001, Number.MAX_SAFE_INTEGER + 1, '32', true, null, NaN, Infinity].map(rssiSampleStride => ({ rssiSampleStride, rssiSampleRate: 1600 })),
+    ...[0, -1, '1600', true, null, NaN, Infinity, 1601, 102400, Number.MIN_VALUE].map(rssiSampleRate => ({ rssiSampleStride: 32, rssiSampleRate })),
+    { rssiSampleStride: 32 }, { rssiSampleRate: 1600 },
+  ];
+  for (const metadata of invalid) assert.deepEqual(await preview(metadata), legacy);
+  assert.equal(queue.status().items[0].error, undefined);
+});
+
 test('lost chunk response resumes at persisted server offset after application restart without uploading duplicate bytes', async t => {
   const f = fixture(t), current = f.recording('a'.repeat(32), 160000);
   let interrupted = false;
@@ -257,7 +302,12 @@ test('turntable telemetry and point metadata upload unchanged and resume after a
   const telemetry = Buffer.from('{"event":"status","hostTime":1800000000,"elapsedSeconds":0,"axis":1}\n');
   current.manifest.turntable = { config: { port: 'COM6', axis: 1 }, preparedReferences: { '1': { origin_counts: 500 } },
     telemetry: { file: 'turntable.jsonl', events: 1, sha256: sha(telemetry) } };
-  current.manifest.pointCycle = { cycle: 1, pointIndex: 2, actualAngles: { '1': 5, '2': 20 } };
+  current.manifest.pointCycle = { cycle: 1, pointIndex: 2, actualAngles: { '1': 5, '2': 20 },
+    mode: 'automatic_stations', collectionId: 'c'.repeat(32), sessionId: 'a'.repeat(32), bladeId: '2', radialPointId: 'p1', radialPointName: 'P1',
+    radiusM: .31, azimuthDeg: 90, stationIndex: 2, stationCount: 4, lapIndex: 1, cycles: 1,
+    identitySource: 'operator_assigned', identityVerified: false, coverageKind: 'sparse_station_passes', completion: 'confirmed_pass',
+    plannedStations: [0, 90, 180, 270].map((azimuthDeg, index) => ({ pointId: `p1-s${index + 1}`, bladeId: '2',
+      radialPointId: 'p1', radialPointName: 'P1', radiusM: .31, azimuthDeg, stationIndex: index + 1, stationCount: 4 })) };
   fs.writeFileSync(path.join(current.dir, 'manifest.json'), JSON.stringify(current.manifest));
   fs.writeFileSync(path.join(current.dir, 'turntable.jsonl'), telemetry);
   let lost = false;

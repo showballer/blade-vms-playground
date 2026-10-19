@@ -6,7 +6,7 @@ import io
 import json
 import math
 
-from .storage import HEADER, MAGIC, RECORD
+from .storage import HEADER, MAGIC, RECORD, recording_rssi_stride
 
 
 def prepare_export(store, recording_id):
@@ -17,6 +17,7 @@ def prepare_export(store, recording_id):
     rate = manifest.get("sampleRate")
     if not isinstance(rate, (int, float)) or not math.isfinite(rate) or rate <= 0:
         raise ValueError("记录采样率无效。")
+    recording_rssi_stride(manifest)
     chunks, expected = [], 0
     for path in store.chunks(directory):
         if path.name.endswith(".part"):
@@ -44,8 +45,16 @@ def stream_csv(manifest, chunks):
                 "sampleRate": manifest["sampleRate"], "samples": manifest["samples"], "unit": "m/s",
                 "point": manifest.get("point", ""), "position": simulation.get("position"),
                 "rpm": simulation.get("rpm"), "dataLossAssessment": manifest.get("dataLossAssessment", "unverified")}
-    if manifest.get("turntable"):
-        metadata["turntable"] = manifest["turntable"]
+    # Full exports retain task/point identity and sample-index gates, not only the display name.
+    for key in ("object", "turbine", "pointCycle", "turntable", "sampleOrigin", "sourceSampleOrigin",
+                "sourceRecordingId", "sourceTimeStart", "rssiSampleStride", "rssiSampleRate",
+                "startedAt", "endedAt", "sourceStartedAt", "sourceEndedAt", "deviceSettings"):
+        if manifest.get(key) is not None:
+            metadata[key] = manifest[key]
+    if manifest.get("position") is not None:
+        metadata["position"] = manifest["position"]
+    if manifest.get("rpm") is not None:
+        metadata["rpm"] = manifest["rpm"]
     yield "# BladeVMS " + json.dumps(metadata, ensure_ascii=False, allow_nan=False, separators=(",", ":")) + "\n"
     yield "time_s,velocity_m_s,RSSI_percent,overrange\n"
     expected = 0

@@ -3,6 +3,19 @@ import { test } from "node:test";
 import { loadSharedTurntablePoints, saveSharedTurntablePoints, sharedTurntablePointKey,
   normalizeSharedTurntablePoints, pointReferenceSignature, turntableReferenceSignature, turntablePointMotionError } from "./field-turntable-points";
 import type { FieldAxisFeedback } from "./field-types";
+import { isTurntablePort, normalizeTurntablePort } from "./field-turntable-port";
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+
+test("renderer and Electron share strict Windows/macOS serial-name boundaries", () => {
+  const cases = JSON.parse(readFileSync("scripts/fixtures/turntable-ports.json", "utf8"));
+  const require = createRequire(`${process.cwd()}/package.json`);
+  const bridge = require("./apps/desktop/electron/field-turntable-port.cjs");
+  for (const port of cases.valid) { assert.equal(isTurntablePort(port), true, port); assert.equal(bridge.isTurntablePort(port), true, port); }
+  for (const port of [...cases.invalid, `/dev/cu.${"a".repeat(129)}`]) { assert.equal(isTurntablePort(port), false, String(port)); assert.equal(bridge.isTurntablePort(port), false, String(port)); }
+  assert.equal(normalizeTurntablePort(" com6 "), "COM6");
+  assert.equal(normalizeTurntablePort(" /dev/cu.SLAB_USBtoUART "), "/dev/cu.SLAB_USBtoUART");
+});
 
 const axis: FieldAxisFeedback = { output_angle_deg: 0, motor_rpm: 0, actual_counts: 99, commanded_counts: 99,
   error_counts: 0, display_mode: 3, command_counts_per_rev: 10000, encoder_bits: 17, flags: 1, fault: 0,
@@ -16,6 +29,19 @@ function storage(initial: Record<string, string> = {}) {
   const values = new Map(Object.entries(initial));
   return { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } };
 }
+
+test("Mac 点位跨页写回保留大小写，换设备或参考位仍禁止回位", () => {
+  const port = "/dev/cu.SLAB_USBtoUART";
+  const local = storage({ [sharedTurntablePointKey]: JSON.stringify([{ ...point, port, references: signature }]) });
+  const acquired = loadSharedTurntablePoints(local);
+  saveSharedTurntablePoints(local, acquired);
+  const manual = loadSharedTurntablePoints(local)[0];
+  assert.equal(manual.port, port);
+  assert.equal(manual.referenceSignature, signature);
+  assert.equal(turntablePointMotionError(manual, axes, port), "");
+  assert.match(turntablePointMotionError(manual, axes, port.toLowerCase()), /串口/);
+  assert.match(turntablePointMotionError(manual, { ...axes, "2": { ...axes["2"], origin_counts: 1 } }, port), /参考位/);
+});
 
 test("旧独立点位经采集页再回独立页，串口/参考/原始计数/自定义字段都保留", () => {
   const local = storage({ [sharedTurntablePointKey]: JSON.stringify([{ ...point, references: signature, note: "现场点位", port: " com6 " }]) });

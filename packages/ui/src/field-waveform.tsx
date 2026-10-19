@@ -74,6 +74,7 @@ export const FieldWaveChart = memo(function FieldWaveChart({ waveform, kind = "v
     const pointX = (sample: number) => left + (sample - start) / Math.max(1, end - start) * (width - left - right);
     const pointY = (value: number) => top + (maximum - value * factor) / (maximum - minimum) * (height - top - bottom);
     let lastValid = false;
+    const isolated: { sample: number; value: number }[] = [];
     const path = envelope.length ? envelope.map(bucket => {
       const lo = kind === "rssi" ? bucket.rssiMin : bucket.min, hi = kind === "rssi" ? bucket.rssiMax : bucket.max;
       if (lo === null || hi === null || !Number.isFinite(lo) || !Number.isFinite(hi)) return "";
@@ -82,14 +83,18 @@ export const FieldWaveChart = memo(function FieldWaveChart({ waveform, kind = "v
     }).join(" ") : data.map((value, index) => {
       if (typeof value !== "number" || !Number.isFinite(value)) { lastValid = false; return ""; }
       const command = lastValid ? "L" : "M";
-      lastValid = true;
       const sample = waveform.sampleStart + index * (waveform.sampleStride || 1);
+      const next = data[index + 1];
+      // An isolated M command has no visible stroke. Show the actual sample
+      // without interpolating across nulls (including lower-rate RSSI gaps).
+      if (!lastValid && (typeof next !== "number" || !Number.isFinite(next))) isolated.push({ sample, value });
+      lastValid = true;
       return `${command}${pointX(sample).toFixed(2)},${pointY(value).toFixed(2)}`;
     }).join(" ");
-    return { width, height, left, right, top, bottom, minimum, maximum, pointX, pointY, path, start, end,
+    return { width, height, left, right, top, bottom, minimum, maximum, pointX, pointY, path, isolated, start, end,
       clipped: kind === "velocity" && largest > limit };
   }, [waveform, kind, yLimit, unit, compact, plotWidth]);
-  if (!chart || !waveform) return <div className={`field-chart-empty ${kind === "rssi" || compact ? "compact" : ""}`}><AudioLines size={28} /><strong>{kind === "rssi" ? "等待 RSSI 数据" : "等待振动数据"}</strong><span>开始设备采集或模拟采集后显示输入波形。</span></div>;
+  if (!chart || !waveform) return <div className={`field-chart-empty ${kind === "rssi" || compact ? "compact" : ""}`}><AudioLines size={28} /><strong>{kind === "rssi" ? "等待 RSSI 数据" : "等待振动数据"}</strong><span>开始采集后显示输入波形。</span></div>;
   const { width, height, left, right, top, bottom, minimum, maximum, pointY, pointX, path, start, end } = chart;
   const format = (value: number) => Math.abs(value) > 0 && Math.abs(value) < 0.001 ? value.toExponential(1) : Number(value.toPrecision(5)).toLocaleString("zh-CN");
   const endpointLabels = [start, end].map(sample => formatWaveTime(sample, waveform, timeMode));
@@ -113,7 +118,7 @@ export const FieldWaveChart = memo(function FieldWaveChart({ waveform, kind = "v
       return <g key={index}><line x1={pointX(sample)} y1={height - bottom} x2={pointX(sample)} y2={height - bottom + 4} stroke="#d9e3ef" /><text style={{ fontSize: 12 }} x={labelX} y={height - bottom + 20} textAnchor="middle">{label}</text></g>;
     })}
     <g clipPath={`url(#${clip})`}><path d={path} fill="none" stroke={kind === "rssi" ? "#17976d" : "#2d6cc0"} strokeWidth="1.2" vectorEffect="non-scaling-stroke" />
-      {waveform.values.length === 1 && <circle cx={pointX(waveform.sampleStart)} cy={pointY((kind === "rssi" ? waveform.rssi[0] : waveform.values[0]) || 0)} r="2.5" fill="#2d6cc0" />}</g>
+      {chart.isolated.map(point => <circle key={point.sample} cx={pointX(point.sample)} cy={pointY(point.value)} r="2" fill={kind === "rssi" ? "#17976d" : "#2d6cc0"} />)}</g>
     <text style={{ fontSize: 12 }} x={left} y={top - 7}>{kind === "rssi" ? "%" : unit}</text>
     <text className="field-wave-axis-label" style={{ fontSize: 12 }} x={(left + width - right) / 2} y={height - 8} textAnchor="middle">{waveform.sampleRate ? timeMode === "clock" && waveform.sampleOrigin != null ? "本机时间" : "相对时间 / ms" : "样本序号"}</text>
   </svg>{chart.clipped && <small className="field-plot-warning">部分信号超出当前显示纵轴，请调大范围；这不等于设备超量程。</small>}</div>;

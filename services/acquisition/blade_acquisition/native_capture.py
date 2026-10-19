@@ -13,7 +13,7 @@ import uuid
 
 import numpy as np
 
-from .storage import HEADER, MAGIC, RECORD, RecordingStore, atomic_json
+from .storage import HEADER, MAGIC, RECORD, RecordingStore, atomic_json, recording_rssi_stride
 from .waveform import WaveformReader
 
 CHUNK = re.compile(r"chunk-[0-9]{8}\.bin$")
@@ -115,6 +115,7 @@ def validate_capture(value):
         raise ValueError("原始采样率无效。")
     if not isinstance(origin, (int, float)) or isinstance(origin, bool) or not math.isfinite(origin):
         raise ValueError("原始时间起点无效。")
+    rssi_stride = recording_rssi_stride(manifest)
     names, chunks = set(), []
     for item in files:
         name = item.get("name", "")
@@ -150,7 +151,8 @@ def validate_capture(value):
                 flags = samples["flags"]
                 if (not np.array_equal(samples["index"], np.arange(count, count + len(samples), dtype=np.uint64)) or
                         not np.isfinite(samples["value"]).all() or np.any(flags & 252) or
-                        not np.isfinite(samples["rssi"][flags & 2 != 0]).all()):
+                        not np.isfinite(samples["rssi"][flags & 2 != 0]).all() or
+                        np.any(((flags & 2) != 0) & (samples["index"] % rssi_stride != 0))):
                     raise ValueError("原始样本序号、数值或状态无效。")
                 count += len(samples)
                 overrange += int(np.count_nonzero(flags & 1))
@@ -217,6 +219,13 @@ def import_capture(store: RecordingStore, value):
     manifest = read_json(source / "manifest.json")
     if manifest.get("status") != "complete":
         raise ValueError("采集记录尚未完整上传。")
+    # The HTTP upload service replaces manifest.id with its cloud capture ID.
+    # Keep the desktop origin (or an earlier export origin) for CSV/native
+    # duplicate detection, instead of treating the cloud ID as a new pass.
+    original_id = next((manifest[key] for key in ("sourceRecordingId", "sourceLocalId", "id")
+                        if isinstance(manifest.get(key), str) and CAPTURE.fullmatch(manifest[key])), None)
+    if original_id is None:
+        raise ValueError("原始采集记录编号无效。")
     capture_id = source.parent.name
     target_id = hashlib.sha256(("cloud-capture:" + capture_id).encode()).hexdigest()[:32]
     destination = store.directory(target_id)
@@ -224,6 +233,12 @@ def import_capture(store: RecordingStore, value):
         previous = store._read_manifest(destination)
         if previous.get("cloudCaptureId") != capture_id or previous.get("status") != "complete":
             raise ValueError("分析记录编号冲突。")
+        # Repair analysis copies imported before sourceLocalId was preserved.
+        # Source uploads and raw chunks remain immutable.
+        if previous.get("sourceRecordingId") != original_id:
+            previous["sourceRecordingId"] = original_id
+            atomic_json(destination / "manifest.json", previous)
+            store.update_index(previous)
         return {"recording": previous}
     if len(store.list()) >= 128:
         raise ValueError("当前分析工作区达到 128 条记录上限。")
@@ -246,6 +261,7 @@ def import_capture(store: RecordingStore, value):
                     raise
                 shutil.copyfile(original, temporary / name)
         imported = {**manifest, "id": target_id, "cloudCaptureId": capture_id,
+                    "sourceRecordingId": original_id,
                     "sourceDataPreserved": True, "sourceQuantity": "velocity", "sourceUnit": "m/s",
                     "conversion": "原生采集样本，未重采样或修改数值"}
         atomic_json(temporary / "manifest.json", imported)

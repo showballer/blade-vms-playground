@@ -2,22 +2,23 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   Activity, AlertTriangle, ArrowRight, AudioLines, Check,
-  FlaskConical, FolderOpen, HardDrive, LoaderCircle, LockKeyhole, LogOut, Minus,
+  FolderOpen, HardDrive, LoaderCircle, LockKeyhole, LogOut, Minus,
   Play, Radio, RefreshCw, Settings, ShieldCheck, Square, X,
 } from "lucide-react";
 import { Button, Dialog } from "./common";
 import { FieldRecordingViewer } from "./field-waveform";
-import { FieldDevicePanel, FieldDeviceSnapshot, FieldLaserControl } from "./field-device";
+import { FieldDevicePanel, FieldDeviceSnapshot } from "./field-device";
 import { FieldAnalysis } from "./field-analysis";
 import { FieldAcquisition } from "./field-acquisition";
-import { FieldTurntableManual } from "./field-turntable";
+import { FieldTurntableWorkspace } from "./field-auto-follow";
+import { FieldBladeSummary } from "./field-blade-summary";
 import { FieldAccountPanel, FieldCloudSyncPanel, FieldBindAccountDialog, fieldAccountServerDefault, fieldAccountTime, type FieldBindValues } from "./field-account";
 import {
   fieldDate, fieldIsActive, fieldTurntableReady, validateFieldConfig,
   type FieldConfig, type FieldRecording, type FieldRecordingDetail,
   type FieldRequest, type FieldRequestOptions, type FieldSession, type FieldAccountInfo,
   type FieldStatus, type FieldDeviceSettings, type FieldRssiCalibrationResult,
-  type FieldSimulation, type FieldSource, type FieldSyncStatus,
+  type FieldSyncStatus,
 } from "./field-types";
 
 function fieldBridge(): FieldRequest | undefined {
@@ -136,12 +137,13 @@ export function FieldServicePanel({ status, busy, onAction }: {
   return <section className="field-card field-service-card">
     <div className="field-section-heading"><h2>本机采集服务</h2><Settings size={18} /></div>
     <div className={`field-service-state ${service?.state === "ready" ? "ready" : ""}`}><span className="field-status-dot" />{service ? serviceLabels[service.state] : "正在读取服务状态"}</div>
-    <dl className="field-details"><div><dt>设备 SDK / DLL</dt><dd>{service ? service.dllConfigured ? "已配置" : "未配置" : "—"}</dd></div><div><dt>数据保存位置</dt><dd>本机应用数据目录</dd></div><div><dt>连接方式</dt><dd>设备网卡</dd></div></dl>
-    {service?.executable && <p className="field-path" title={service.executable}>{service.executable}</p>}
+    <dl className="field-details"><div><dt>设备 SDK</dt><dd>{service ? service.dllConfigured ? "已配置" : "未配置" : "—"}</dd></div><div><dt>数据保存位置</dt><dd>本机应用数据目录</dd></div><div><dt>连接方式</dt><dd>设备网卡</dd></div></dl>
+    {service?.executable && <p className="field-path" title={service.executable}>采集服务：{service.executable}</p>}
+    {service?.sdkPath && <p className="field-path" title={service.sdkPath}>设备 SDK：{service.sdkPath}</p>}
     {(service?.error || status?.error) && <p className="field-error" role="alert">{service?.error || status?.error}</p>}
-    {service?.state === "missing" && <p className="field-notice">未找到采集服务，请选择可用的采集服务 EXE。</p>}
+    {service?.state === "missing" && <p className="field-notice">未找到采集服务，请检查本机采集服务安装。</p>}
     {service && !service.dllConfigured && <p className="field-notice">尚未配置厂商 SDK。可以查看已保存记录，不能开始真实采集。厂商驱动需按安装说明准备。</p>}
-    <div className="field-service-actions"><Button disabled={busy || active || service?.launcher === "python-module"} onClick={() => onAction("configureService")}><FolderOpen size={14} />选择采集服务 EXE</Button><Button disabled={busy || active || service?.launcher === "python-module"} onClick={() => onAction("configureDll")}><FolderOpen size={14} />选择设备 DLL</Button><Button disabled={busy || active} onClick={() => onAction("restartService")}><RefreshCw size={14} />重启采集服务</Button><Button disabled={busy} onClick={() => onAction("openDataDirectory")}><HardDrive size={14} />打开数据目录</Button></div>
+    <div className="field-service-actions"><Button disabled={busy || active || service?.launcher === "python-module"} onClick={() => onAction("configureService")}><FolderOpen size={14} />选择采集服务 EXE</Button><Button disabled={busy || active} onClick={() => onAction("configureDll")}><FolderOpen size={14} />选择设备 SDK</Button><Button disabled={busy || active} onClick={() => onAction("restartService")}><RefreshCw size={14} />重启采集服务</Button><Button disabled={busy} onClick={() => onAction("openDataDirectory")}><HardDrive size={14} />打开数据目录</Button></div>
     {active && <p className="field-subtext">采集期间不能更换或重启服务，请先停止并保存。</p>}
   </section>;
 }
@@ -166,7 +168,7 @@ export function FieldStartDialog({ config, busy, error, onClose, onStart }: {
 export function FieldRecordingList({ recordings, selectedId, busy, onSelect, onExport, onUpload, syncedIds = [] }: {
   recordings: FieldRecording[]; selectedId?: string; busy: boolean; onSelect: (id: string) => void; onExport?: (id: string) => void; onUpload?: (id: string) => void; syncedIds?: string[];
 }) {
-  if (!recordings.length) return <div className="field-recordings-empty"><HardDrive size={28} /><h3>还没有采集记录</h3><p>完成设备或模拟采集后，可在此查看记录。</p></div>;
+  if (!recordings.length) return <div className="field-recordings-empty"><HardDrive size={28} /><h3>还没有采集记录</h3><p>完成采集后，可在此查看记录。</p></div>;
   return <div className="field-table-scroll" role="region" aria-label="本机采集记录，可横向滚动查看所有列" tabIndex={0}><table className="field-table"><thead><tr><th>任务 / 对象</th><th>转盘点位</th><th>开始时间</th><th>原始点数</th><th>采样率</th><th>保存状态</th><th>操作</th></tr></thead><tbody>{recordings.map((recording) => <tr key={recording.id} className={selectedId === recording.id ? "selected" : ""}><td><strong>{recording.name}</strong><span className={`field-badge ${recording.source === "simulation" ? "amber" : ""}`}>{recording.source === "simulation" ? "模拟" : "设备"}</span><small>{[recording.object, recording.turbine, recording.point].filter(Boolean).join(" / ") || "未填写对象信息"}</small></td><td>{recording.pointCycle ? <><strong>{recording.pointCycle.pointName}</strong><small>轴1 {recording.pointCycle.targetAxis1AngleDeg.toFixed(3)}° · 轴2 {recording.pointCycle.targetAxis2AngleDeg.toFixed(3)}°</small></> : "—"}</td><td>{timeOf(recording.startedAt)}</td><td className="mono">{count(recording.samples)}</td><td className="mono">{recording.sampleRate ? `${count(recording.sampleRate)} Hz` : "未知"}</td><td><span className={`field-badge ${recording.status === "complete" ? "green" : recording.status === "error" ? "red" : "amber"}`}>{recording.status === "complete" ? "已完成" : recording.status === "error" ? "异常记录" : "采集中 / 未完整结束"}</span></td><td><div className="field-record-actions"><Button disabled={busy} onClick={() => onSelect(recording.id)}>查看波形</Button>{onExport && <Button disabled={busy || recording.status !== "complete"} onClick={() => onExport(recording.id)}>导出原始数据</Button>}{onUpload && <Button disabled={busy || recording.status !== "complete" || syncedIds.includes(recording.id)} onClick={() => onUpload(recording.id)}>{syncedIds.includes(recording.id) ? "已上传 Web" : "上传至 Web"}</Button>}</div></td></tr>)}</tbody></table></div>;
 }
 
@@ -180,8 +182,11 @@ export function FieldDesktopApp() {
   const [recordingsLoaded, setRecordingsLoaded] = useState(false);
   const [selected, setSelected] = useState<FieldRecordingDetail | null>(null);
   const [screen, setScreen] = useState<"acquisition" | "turntable" | "recordings" | "service" | "analysis">("acquisition");
+  const [turntableVisited, setTurntableVisited] = useState(false);
+  const [turntableOperationBusy, setTurntableOperationBusy] = useState(false);
+  const [stoppingCapture, setStoppingCapture] = useState(false);
+  const stopPending = useRef(false);
   const [config, setConfig] = useState<FieldConfig>(blankConfig);
-  const [source, setSource] = useState<FieldSource>("device");
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [pollError, setPollError] = useState("");
@@ -198,7 +203,7 @@ export function FieldDesktopApp() {
 
   const clearSession = useCallback(() => {
     generation.current += 1; setSyncStatus(null); setSession(null); setStatus(null); setRecordings([]); setRecordingsLoaded(false); setSelected(null);
-    setConfirmStart(false); setChangingPassword(false); setBindingAccount(false); setPollError(""); setNotice(""); setSource("device");
+    setConfirmStart(false); setChangingPassword(false); setBindingAccount(false); setPollError(""); setNotice(""); setTurntableVisited(false); setTurntableOperationBusy(false);
   }, []);
   const handleError = useCallback((cause: unknown) => {
     if (cause instanceof FieldRequestError && cause.status === 401) clearSession();
@@ -245,7 +250,6 @@ export function FieldDesktopApp() {
         const next = await fieldCall<FieldStatus>(showFrame ? { action: "frame", windowMs } : { action: "status" });
         if (canceled || epoch !== generation.current) return;
         setStatus(next); setPollError(next.service.error || next.error || "");
-        if (fieldIsActive(next) && next.recording?.source) setSource(next.recording.source === "simulation" ? "simulation" : "device");
         const signature = `${next.state}:${next.recording?.id || ""}`;
         if (signature !== lastRecordingState && next.service.state === "ready") {
           lastRecordingState = signature;
@@ -274,7 +278,7 @@ export function FieldDesktopApp() {
   }, [session]);
 
   async function operate(action: string, fn: () => Promise<void>) {
-    if (busy) return;
+    if (busy || turntableOperationBusy || stoppingCapture) return;
     setBusy(action); setError(""); setNotice("");
     try { await fn(); } catch (cause) { handleError(cause); } finally { if (mounted.current) setBusy(""); }
   }
@@ -308,28 +312,24 @@ export function FieldDesktopApp() {
     });
   }
   async function stopAcquisition() {
-    await operate("stop", async () => {
+    if (stopPending.current) return;
+    stopPending.current = true; setStoppingCapture(true); setError(""); setNotice("");
+    const epoch = generation.current;
+    try {
       await fieldCall({ action: "stop" });
       const stopped = await fieldCall<FieldStatus>({ action: "status" });
+      if (!mounted.current || epoch !== generation.current) return;
       setStatus(stopped); await refreshRecordings();
+      if (!mounted.current || epoch !== generation.current) return;
       if (stopped.state === "error" || stopped.recording?.status === "error") throw new Error(`${stopped.error || stopped.recording?.error || "本次记录异常"}。请在现场确认激光已关闭，并检查本机数据，不能将异常记录视为完整采集。`);
       setNotice(stopped.recording?.source === "simulation" ? "模拟采集已停止，原始记录已保存。" : "已执行停止采集并尝试关闭激光，请在现场核对设备状态、记录保存状态与原始点数。");
-    });
+    } catch (cause) { if (mounted.current && epoch === generation.current) handleError(cause); }
+    finally { stopPending.current = false; if (mounted.current) setStoppingCapture(false); }
   }
   const active = fieldIsActive(status);
-  const accountLocked = active || Boolean(status?.deviceBusy || status?.turntableBusy);
+  const accountLocked = active || turntableOperationBusy || stoppingCapture || Boolean(status?.deviceBusy || status?.turntableBusy);
   const unifiedAccount = account?.mode === "unified";
   function openPassword() { if (!busy && !accountLocked) { setError(""); setChangingPassword(true); } }
-  async function startSimulation(simulation: FieldSimulation) {
-    await operate("start", async () => {
-      const normalized = Object.fromEntries(Object.entries(config).filter(([key]) => key !== "turntable").map(([key, value]) => [key, typeof value === "string" ? value.trim() : value])) as FieldConfig;
-      if (!normalized.name) throw new Error("请填写采集任务名称");
-      await fieldCall({ action: "start", config: { ...normalized, source: "simulation", simulation } });
-      try { localStorage.setItem("blade-field-config-v1", JSON.stringify(normalized)); } catch { /* Optional draft. */ }
-      setConfig(normalized); setStatus(await fieldCall<FieldStatus>({ action: "status" }));
-      setNotice("已开始模拟采集。");
-    });
-  }
 
   return <div className="field-app"><FieldTitlebar />
     {loading ? <div className="field-loading"><LoaderCircle className="spin" size={25} /><p>正在打开本机工作台…</p></div> : !session ? <FieldLoginPanel available={Boolean(fieldBridge())} account={account} accountUnavailable={!account} onRetry={() => void operate("account", refreshAccountInfo)} busy={Boolean(busy)} error={error} onLogin={async (username, password) => {
@@ -337,9 +337,9 @@ export function FieldDesktopApp() {
       await refreshAccountInfo().catch(() => {});
     }} /> : session.mustChangePassword || changingPassword ? <main className="field-password-shell"><FieldPasswordPanel mandatory={session.mustChangePassword} account={account} busy={Boolean(busy)} error={error} onSave={savePassword} onCancel={() => { if (session.mustChangePassword) void logout(); else { setChangingPassword(false); setError(""); } }} /></main> : <>
       <header className="field-header"><div className="field-brand"><div className="field-brand-icon"><Activity size={19} /></div><span>BladeVMS <small>现场采集工作台</small></span></div><div className="field-header-right"><span className={`field-account-header ${account?.offline ? "offline" : ""}`} title={unifiedAccount ? `已绑定 ${account.serverUrl || "Web"}；离线有效期至 ${fieldAccountTime(account.offlineUntil)}` : "原始记录保存在本机"}><ShieldCheck size={13} />{unifiedAccount ? account.offline ? "统一账号 · 离线验证" : "统一账号" : "本机账号"}</span><span className="field-header-user"><span className="field-avatar">{(session.user.name || session.user.username).slice(0, 1).toUpperCase()}</span>{session.user.name || session.user.username}</span><Button variant="ghost" disabled={Boolean(busy) || accountLocked} onClick={openPassword} aria-label={unifiedAccount ? "修改统一密码" : "修改本机密码"}><LockKeyhole size={15} /></Button><Button variant="ghost" disabled={Boolean(busy) || active} onClick={() => void logout()} title={active ? "请先停止并保存采集" : "退出账号"}><LogOut size={15} />退出</Button></div></header>
-      {active && <div className="field-live-controls" aria-label="采集安全控制"><p><strong>{status ? stateLabels[status.state] : "采集服务运行中"}</strong></p><Button type="button" variant="danger" disabled={Boolean(busy) || status?.state === "stopping"} onClick={() => void stopAcquisition()}>{busy === "stop" ? <LoaderCircle className="spin" size={15} /> : <Square size={13} />}停止并保存</Button></div>}
-      <div className="field-workspace"><aside className="field-sidebar"><p>现场作业</p><button className={screen === "acquisition" ? "active" : ""} onClick={() => setScreen("acquisition")}><Activity size={17} />数据采集</button><button className={screen === "turntable" ? "active" : ""} onClick={() => setScreen("turntable")}><Settings size={17} />转盘点位</button><button className={screen === "recordings" ? "active" : ""} onClick={() => { setScreen("recordings"); void operate("recordings", refreshRecordings); }}><HardDrive size={17} />本机记录</button><button className={screen === "service" ? "active" : ""} onClick={() => setScreen("service")}><Settings size={17} />设备与服务</button><p>记录分析</p><button className={screen === "analysis" ? "active" : ""} onClick={() => setScreen("analysis")}><AudioLines size={17} />信号处理</button></aside>
-        <main className="field-content" ref={contentRef}><div className="field-page-heading"><div><h1>{screen === "acquisition" ? "数据采集" : screen === "turntable" ? "转盘点位控制" : screen === "recordings" ? "本机采集记录" : screen === "analysis" ? "信号处理" : "设备与本机服务"}</h1></div><div className="field-page-tools">{screen === "acquisition" && <div className="field-debug-control"><span className="field-debug-label"><FlaskConical size={14} />模拟采集</span><button type="button" className="field-debug-toggle" role="switch" aria-label="模拟采集" aria-checked={source === "simulation"} disabled={active || Boolean(busy) || Boolean(status?.deviceBusy) || !status || status.service.state !== "ready"} title={active ? "请先停止并保存，再切换模拟采集" : "打开后，开始采集将输入模拟波形"} onClick={() => { setSource(previous => previous === "simulation" ? "device" : "simulation"); setError(""); setNotice(""); }}><span /></button></div>}<span className={`field-badge ${status?.state === "acquiring" ? "green" : status?.state === "error" ? "red" : ""}`}><span className="field-status-dot" />{status ? stateLabels[status.state] : "读取状态中"}</span></div></div>
+      {(active || stoppingCapture) && <div className="field-live-controls" aria-label="采集安全控制"><p><strong>{stoppingCapture ? "正在停止并保存" : status ? stateLabels[status.state] : "采集服务运行中"}</strong></p><Button type="button" variant="danger" disabled={stoppingCapture} onClick={() => void stopAcquisition()}>{stoppingCapture ? <LoaderCircle className="spin" size={15} /> : <Square size={13} />}停止并保存</Button></div>}
+      <div className="field-workspace"><aside className="field-sidebar"><p>现场作业</p><button disabled={turntableOperationBusy} className={screen === "acquisition" ? "active" : ""} onClick={() => setScreen("acquisition")}><Activity size={17} />数据采集</button><button disabled={turntableOperationBusy} className={screen === "turntable" ? "active" : ""} onClick={() => { setTurntableVisited(true); setScreen("turntable"); }}><Settings size={17} />转盘点位</button><button disabled={turntableOperationBusy} className={screen === "recordings" ? "active" : ""} onClick={() => { setScreen("recordings"); void operate("recordings", refreshRecordings); }}><HardDrive size={17} />本机记录</button><button disabled={turntableOperationBusy} className={screen === "service" ? "active" : ""} onClick={() => setScreen("service")}><Settings size={17} />设备与服务</button><p>记录分析</p><button disabled={turntableOperationBusy} className={screen === "analysis" ? "active" : ""} onClick={() => setScreen("analysis")}><AudioLines size={17} />信号处理</button></aside>
+        <main className="field-content" ref={contentRef}><div className="field-page-heading"><div><h1>{screen === "acquisition" ? "数据采集" : screen === "turntable" ? "转盘点位控制" : screen === "recordings" ? "本机采集记录" : screen === "analysis" ? "信号处理" : "设备与本机服务"}</h1></div><div className="field-page-tools"><span className={`field-badge ${status?.state === "acquiring" ? "green" : status?.state === "error" ? "red" : ""}`}><span className="field-status-dot" />{status ? stateLabels[status.state] : "读取状态中"}</span></div></div>
           {(error || pollError) && <div className="field-error field-global-message" role="alert"><AlertTriangle size={17} /><span>{error || pollError}</span></div>}
           {busy === "export" && <div className="field-notice field-global-message" role="status"><LoaderCircle size={17} className="spin" />正在导出完整原始波形，大记录需要一些时间，请等待保存完成。</div>}
           {notice && <div className="field-success field-global-message" role="status"><Check size={17} /><span>{notice}</span></div>}
@@ -347,14 +347,14 @@ export function FieldDesktopApp() {
           {busy === "device" && <p className="field-notice warning">设备配置操作进行中，请等待结果。自动聚焦涉及激光，请留意现场状态。</p>}
           {status?.indexWarning && <div className="field-notice warning field-global-message" role="status"><AlertTriangle size={17} /><span>本机索引提示：{status.indexWarning}</span></div>}
           {screen === "analysis" && <FieldAnalysis request={fieldCall} onError={handleError} />}
-          {screen === "turntable" && <><FieldLaserControl deviceIp={config.deviceIp} status={status} disabled={Boolean(busy)} request={fieldCall} /><FieldTurntableManual status={status} disabled={Boolean(busy)} request={fieldCall} /></>}
+          <div hidden={screen !== "turntable"}>{turntableVisited && <FieldTurntableWorkspace onOperationBusy={setTurntableOperationBusy} config={config} onConfig={setConfig} status={status} disabled={Boolean(busy)} request={fieldCall} onStatus={setStatus} onService={() => setScreen("service")} onRecords={() => { setScreen("recordings"); void operate("recordings", refreshRecordings); }} />}</div>
           {screen === "acquisition" && unifiedAccount && syncStatus && <div className="field-cloud-sync-inline" role="status"><strong>Web 同步 · {syncStatus.state === "syncing" ? "正在同步" : syncStatus.state === "ready" ? "已连接" : syncStatus.state === "offline" ? "等待联网登录" : syncStatus.state === "error" ? "同步异常" : "等待联网登录"}</strong><span>{syncStatus.enabled ? "自动同步已开启" : "自动同步已关闭"}</span><span>{syncStatus.items.filter(item => item.state === "synced").length} 条近期已上传 / {syncStatus.items.filter(item => item.state !== "synced").length} 条待完成</span><Button variant="ghost" onClick={() => setScreen("service")}>同步设置</Button></div>}
-          {screen === "acquisition" && <FieldAcquisition source={source} config={config} onConfig={setConfig} status={status} busy={busy} pollError={pollError}
+          {screen === "acquisition" && <FieldAcquisition source="device" showPointCycle={false} config={config} onConfig={setConfig} status={status} busy={busy} pollError={pollError}
             windowMs={windowMs} onWindow={setWindowMs} refreshMs={refreshMs} onRefresh={setRefreshMs} request={fieldCall}
             onDeviceStart={() => { const invalid = validateFieldConfig(config); if (invalid) { setError(invalid); return; } setError(""); setConfirmStart(true); }}
-            onSimulationStart={simulation => void startSimulation(simulation)} onStop={() => void stopAcquisition()}
+            onStop={() => void stopAcquisition()}
             onService={() => setScreen("service")} onRecords={() => { setScreen("recordings"); void operate("recordings", refreshRecordings); }} />}
-          {screen === "recordings" && <><section className="field-card"><div className="field-section-heading"><div><h2>本机采集记录</h2></div><div className="field-form-actions"><Button disabled={Boolean(busy)} onClick={() => void serviceAction("openDataDirectory")}><FolderOpen size={14} />打开数据目录</Button><Button disabled={Boolean(busy)} onClick={() => void operate("recordings", refreshRecordings)}><RefreshCw size={14} />刷新列表</Button></div></div>{recordingsLoaded ? <FieldRecordingList recordings={recordings} syncedIds={syncStatus?.items.filter(item => item.state === "synced").map(item => item.recordingId)} onUpload={unifiedAccount ? id => void operate("sync", async () => { await fieldCall({ action: "syncRecording", id }); setSyncStatus(await fieldCall<FieldSyncStatus>({ action: "syncStatus" })); setNotice("已加入 Web 上传队列，可在设备与服务查看进度。"); }) : undefined} busy={Boolean(busy)} selectedId={selected?.recording.id} onExport={id => void operate("export", async () => { const result = await fieldCall<{ saved?: boolean; fileName?: string }>({ action: "exportRecording", id }); if (result.saved) setNotice(`已导出完整原始波形 ${result.fileName}`); })} onSelect={(id) => void operate("recording", async () => { const data = await fieldCall<FieldRecordingDetail>({ action: "recording", id }); setSelected(data); })} /> : <p className="field-notice">记录列表尚未读取成功，请确认采集服务可用后刷新。服务不可用不代表本机没有保存数据。</p>}</section>
+          {screen === "recordings" && <>{recordingsLoaded && <FieldBladeSummary recordings={recordings} syncItems={syncStatus?.items} onOpenRecording={id => void operate("recording", async () => { setSelected(await fieldCall<FieldRecordingDetail>({ action: "recording", id })); })} />}<section className="field-card"><div className="field-section-heading"><div><h2>本机采集记录</h2></div><div className="field-form-actions"><Button disabled={Boolean(busy)} onClick={() => void serviceAction("openDataDirectory")}><FolderOpen size={14} />打开数据目录</Button><Button disabled={Boolean(busy)} onClick={() => void operate("recordings", refreshRecordings)}><RefreshCw size={14} />刷新列表</Button></div></div>{recordingsLoaded ? <FieldRecordingList recordings={recordings} syncedIds={syncStatus?.items.filter(item => item.state === "synced").map(item => item.recordingId)} onUpload={unifiedAccount ? id => void operate("sync", async () => { await fieldCall({ action: "syncRecording", id }); setSyncStatus(await fieldCall<FieldSyncStatus>({ action: "syncStatus" })); setNotice("已加入 Web 上传队列，可在设备与服务查看进度。"); }) : undefined} busy={Boolean(busy)} selectedId={selected?.recording.id} onExport={id => void operate("export", async () => { const result = await fieldCall<{ saved?: boolean; fileName?: string }>({ action: "exportRecording", id }); if (result.saved) setNotice(`已导出完整原始波形 ${result.fileName}`); })} onSelect={(id) => void operate("recording", async () => { const data = await fieldCall<FieldRecordingDetail>({ action: "recording", id }); setSelected(data); })} /> : <p className="field-notice">记录列表尚未读取成功，请确认采集服务可用后刷新。服务不可用不代表本机没有保存数据。</p>}</section>
             {selected && <section className="field-card field-recording-preview"><div className="field-section-heading"><div><h2>{selected.recording.name} · 波形预览</h2><p>{timeOf(selected.recording.startedAt)} · 全程浏览与区间放大</p></div><Button variant="ghost" onClick={() => setSelected(null)}>关闭预览</Button></div>{selected.recording.error && <p className="field-error">{selected.recording.error}</p>}<FieldRecordingViewer key={selected.recording.id} detail={selected} load={fieldCall} onError={handleError} /><details className="field-recorded-settings"><summary>查看本次采集的设备配置快照</summary><FieldDeviceSnapshot settings={selected.recording.deviceSettings} /></details></section>}
           </>}
           {screen === "service" && <div className="field-settings-grid"><FieldAccountPanel account={account} busy={Boolean(busy)} active={accountLocked} onBind={() => { if (!busy && !accountLocked && account?.mode === "local") { setError(""); setBindingAccount(true); } }} onPassword={openPassword} /><FieldCloudSyncPanel account={account} status={syncStatus} busy={Boolean(busy)} onAuto={enabled => void operate("sync", async () => { await fieldCall({ action: "setAutoSync", enabled }); setSyncStatus(await fieldCall<FieldSyncStatus>({ action: "syncStatus" })); })} onRetry={() => void operate("sync", async () => { await fieldCall({ action: "retrySync" }); setSyncStatus(await fieldCall<FieldSyncStatus>({ action: "syncStatus" })); })} /><FieldDevicePanel deviceIp={config.deviceIp} hostIp={config.hostIp} onIp={deviceIp => setConfig(previous => ({ ...previous, deviceIp }))} status={status} disabled={Boolean(busy)} onBusy={value => setBusy(value ? "device" : "")} onError={handleError} request={request => fieldCall<FieldDeviceSettings>({ action: "device", request })} calibrate={request => fieldCall<FieldRssiCalibrationResult>({ action: "rssiCalibration", request })} /><FieldServicePanel status={status} busy={Boolean(busy)} onAction={(action) => void serviceAction(action)} /><section className="field-card"><div className="field-section-heading"><h2>设备连接检查</h2></div><ol className="field-checklist"><li><strong>检查运行状态</strong><p>确认采集服务和设备驱动已就绪。</p></li><li><strong>确认设备网络与安全</strong><p>确认设备 IP、本机网卡、网络连接和激光作业安全。</p></li><li><strong>采集、停止并核对保存结果</strong><p>停止后核对原始点数、RSSI、超量程和保存状态。</p></li></ol></section></div>}

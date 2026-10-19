@@ -16,9 +16,11 @@ class RssiHandoff:
         self.config = config
         # Movement duration is metadata only; it must never cause early motion.
         self.rate = self.expected = self.origin = None
+        self.stride = None
         self.values = []
         self.armed = False
         self.entry_ms = self.exit_ms = 0.0
+        self.entry_start = self.entry_confirmed = self.exit_start = None
         self.trigger = None
         self.events = []
         self.status = {"rssiPhase": "waiting_blade", "latestRssi": None, "rssiSamples": 0,
@@ -26,7 +28,8 @@ class RssiHandoff:
                        "rssiTrigger": None, "rssiEnterSpread": config.rssiEnterSpread,
                        "rssiExitSpread": config.rssiExitSpread,
                        "rssiEnterConfirmMs": config.rssiEnterConfirmMs,
-                       "rssiConfirmMs": config.rssiConfirmMs}
+                       "rssiConfirmMs": config.rssiConfirmMs,
+                       "signalGapCount": 0, "lastSignalGapReason": None}
 
     def drain_events(self):
         result, self.events = self.events, []
@@ -42,31 +45,40 @@ class RssiHandoff:
                                                      if sample_end is not None else None),
                             "rssiSpread": self.status["rssiSpread"]})
 
-    def _gap(self):
+    def _gap(self, reason="invalid_rssi"):
         self.values.clear()
         self.entry_ms = self.exit_ms = 0.0
         self.armed = False
-        self.status.update(rssiSpread=None, rssiEntryMs=0, rssiBelowMs=0)
-        self.events.append({"phase": "signal_reset"})
+        self.entry_start = self.entry_confirmed = self.exit_start = None
+        self.status.update(rssiSpread=None, rssiEntryMs=0, rssiBelowMs=0,
+                           signalGapCount=self.status["signalGapCount"] + 1,
+                           lastSignalGapReason=reason)
+        self.events.append({"phase": "signal_reset", "reason": reason})
         self._phase("waiting_blade")
 
     def feed(self, batch):
         if self.trigger is not None:
             return self.status
         rate = batch.sample_rate
-        if not math.isfinite(rate) or rate <= 0:
-            self._gap()
+        stride = batch.rssi_sample_stride
+        if (not math.isfinite(rate) or rate <= 0 or isinstance(stride, bool) or
+                not isinstance(stride, int) or not 1 <= stride <= 100_000 or batch.sample_start % stride):
+            self._gap("invalid_sample_timing")
             return self.status
         if ((self.rate is not None and self.rate != rate) or
+                (self.stride is not None and self.stride != stride) or
                 (self.expected is not None and batch.sample_start != self.expected)):
-            self._gap()
+            self._gap("noncontiguous_samples_or_changed_rate")
             self.origin = None
         self.rate = rate
+        self.stride = stride
         if self.origin is None:
             self.origin = batch.sample_start
         self.expected = batch.sample_start + len(batch.values)
-        window = max(1, math.ceil(rate * self.config.rssiSmoothingMs / 1000))
-        length = min(len(batch.rssi), len(batch.values))
+        rssi_rate = rate / stride
+        window = max(1, math.ceil(rssi_rate * self.config.rssiSmoothingMs / 1000))
+        expected_rssi = (len(batch.values) + stride - 1) // stride
+        length = min(len(batch.rssi), expected_rssi)
         offset = 0
         while offset < length:
             end = min(length, offset + window - len(self.values))
@@ -84,11 +96,11 @@ class RssiHandoff:
                 mean = math.fsum(self.values) / window
                 spread = percentile(ordered, .9) - percentile(ordered, .1)
                 self.values.clear()
-                self._window(mean, spread, batch.sample_start + end, window / rate)
+                self._window(mean, spread, batch.sample_start + min(end * stride, len(batch.values)), window / rssi_rate)
                 if self.trigger is not None:
                     break
-        if length < len(batch.values) and self.trigger is None:
-            self._gap()
+        if length < expected_rssi and self.trigger is None:
+            self._gap("missing_rssi_samples")
         return self.status
 
     def _window(self, mean, spread, sample_end, seconds):
@@ -99,15 +111,24 @@ class RssiHandoff:
             self.status.update(rssiEntryMs=0, rssiBelowMs=0)
             return
         if not self.armed:
+            if spread >= self.config.rssiEnterSpread and self.entry_ms == 0:
+                self.entry_start = max(self.origin, sample_end - round(seconds * self.rate))
             self.entry_ms = self.entry_ms + seconds * 1000 if spread >= self.config.rssiEnterSpread else 0.0
+            if self.entry_ms == 0:
+                self.entry_start = None
             self.status["rssiEntryMs"] = self.entry_ms
             self._phase("confirming_entry" if self.entry_ms else "waiting_blade", sample_end)
             if self.entry_ms + 1e-6 >= self.config.rssiEnterConfirmMs:
                 self.armed = True
+                self.entry_confirmed = sample_end - 1
                 self._phase("blade_present", sample_end)
             return
         # Only a continuous low-variation interval confirms exit after entry.
+        if spread <= self.config.rssiExitSpread and self.exit_ms == 0:
+            self.exit_start = max(self.origin, sample_end - round(seconds * self.rate))
         self.exit_ms = self.exit_ms + seconds * 1000 if spread <= self.config.rssiExitSpread else 0.0
+        if self.exit_ms == 0:
+            self.exit_start = None
         self.status["rssiBelowMs"] = self.exit_ms
         self._phase("confirming_exit" if self.exit_ms else "blade_present", sample_end)
         if self.exit_ms + 1e-6 >= self.config.rssiConfirmMs:
@@ -115,6 +136,11 @@ class RssiHandoff:
                             "sampleElapsedSeconds": elapsed, "rssi": mean,
                             "rssiSpread": spread, "enterSpread": self.config.rssiEnterSpread,
                             "exitSpread": self.config.rssiExitSpread,
-                            "enterConfirmedMs": self.entry_ms, "confirmedMs": self.exit_ms}
+                            "enterConfirmedMs": self.entry_ms, "confirmedMs": self.exit_ms,
+                            "entrySampleIndex": self.entry_start,
+                            "entryConfirmedSampleIndex": self.entry_confirmed,
+                            "exitSampleIndex": self.exit_start,
+                            "exitConfirmedSampleIndex": sample_end - 1,
+                            "observedSamples": sample_end - self.entry_start}
             self.status["rssiTrigger"] = "blade_left"
             self._phase("blade_left", sample_end)
