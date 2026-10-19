@@ -22,8 +22,11 @@ class SelfCheckTests(unittest.TestCase):
         # count, so this portable test also detects a stale frozen Windows gate.
         with patch("blade_acquisition.receiver.PolytecReceiver.validate"), patch("blade_acquisition.receiver.C.CDLL", return_value=api), patch("blade_acquisition.receiver.os.add_dll_directory", create=True), patch("blade_acquisition.__main__.Settings.from_environment", side_effect=AssertionError("service must not start")):
             result = self_check()
-        self.assertEqual(result["sdkSymbols"], 23)
+        self.assertEqual(result["sdkSymbols"], 30)
         for name in ["PolyHasCommand", "PolyItemListGetAvailableItems", "PolyItemListSetCurrentItem", "PolySendGetDevInfoRange", "PolySendGetInt16"]:
+            self.assertIn(name, result["sdkSymbolNames"])
+        for name in ["PolySendGetInt32", "PolyChannelActivationIsChannelAvailable", "PolyChannelActivationIsChannelEnabled",
+                     "PolyChannelActivationEnableChannel", "PolySendGetWithTag", "PolyGetInt16FromPayload", "PolyFreePayload"]:
             self.assertIn(name, result["sdkSymbolNames"])
         self.assertTrue(result["dllLoaded"])
         self.assertFalse(result["hardwareTouched"])

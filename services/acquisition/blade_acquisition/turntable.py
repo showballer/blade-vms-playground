@@ -11,13 +11,14 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, field_validator, model_validator
 
+from .serial_ports import SerialPort
 from .turntable_driver import MotorController, MotorError
 from .turntable_driver.protocol import validate_output_angle
 
 
 class TurntableConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    port: str = Field(pattern=r"^COM[1-9][0-9]{0,3}$")
+    port: SerialPort
     axis: StrictInt = Field(default=1, ge=1, le=2)
     speedRpm: float = Field(default=0.2, ge=0.02, le=100, allow_inf_nan=False)
     direction: Literal["forward", "reverse"] = "forward"
@@ -55,7 +56,7 @@ class TurntableRequest(TurntableConfig):
     axis1AngleDeg: float | None = Field(default=None, allow_inf_nan=False)
     axis2AngleDeg: float | None = Field(default=None, allow_inf_nan=False)
     referenceSignature: str | None = Field(default=None, max_length=512)
-    recordedPort: str | None = Field(default=None, pattern=r"^COM[1-9][0-9]{0,3}$")
+    recordedPort: SerialPort | None = None
 
     @field_validator("axis1AngleDeg", "axis2AngleDeg", mode="before")
     @classmethod
@@ -92,7 +93,7 @@ class PointCyclePoint(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     axis1AngleDeg: float = Field(allow_inf_nan=False)
     axis2AngleDeg: float = Field(allow_inf_nan=False)
-    port: str = Field(pattern=r"^COM[1-9][0-9]{0,3}$")
+    port: SerialPort
     referenceSignature: str = Field(min_length=1, max_length=512)
 
     @field_validator("name")
@@ -129,7 +130,7 @@ class PointCyclePoint(BaseModel):
 class PointCycleConfig(BaseModel):
     """Validated parameters for a multi-point, multi-circle capture."""
     model_config = ConfigDict(extra="ignore")
-    port: str = Field(pattern=r"^COM[1-9][0-9]{0,3}$")
+    port: SerialPort
     points: list[PointCyclePoint] = Field(min_length=1, max_length=200)
     cycles: StrictInt = Field(default=1, ge=1, le=100)
     dwellSeconds: float = Field(default=2, ge=1, le=3600, allow_inf_nan=False)

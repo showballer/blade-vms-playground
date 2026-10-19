@@ -17,7 +17,7 @@ async function waitFor(check) {
   while (Date.now() < end) { if (check()) return; await pause(10); }
   assert.fail('Timed out waiting for actual field-main assembly');
 }
-async function harness(t) {
+async function harness(t, hooks = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'blade-capture-main-'));
   const records = path.join(directory, 'field-data/recordings'); fs.mkdirSync(records, { recursive: true });
   const binding = { serverUrl: 'http://localhost:3000', user: { id: 'owner', tenant: 'tenant' } };
@@ -42,6 +42,12 @@ async function harness(t) {
     async begin(_config, context) {
       startedWith = context;
       snapshot = { service: { state: 'ready' }, state: 'starting', receiver: { running: true }, recording: null };
+      return snapshot;
+    },
+    async singlePoint(request, context) {
+      hooks.singlePoint?.(request);
+      if (request.action === 'prepare') { await hooks.beforePrepare?.(); return this.begin(request, context); }
+      if (request.action === 'cancel') return this.stop();
       return snapshot;
     },
     async stop() {
@@ -77,12 +83,13 @@ async function harness(t) {
   vm.runInNewContext(fs.readFileSync(mainFile, 'utf8'), { require: requireOverride, __dirname: path.dirname(mainFile),
     process, console, Buffer, setTimeout, clearTimeout, setInterval, clearInterval }, { filename: mainFile });
   await waitFor(() => ipc && win?.webContents.mainFrame.url);
+  async function raw(options) { return ipc({ sender: win.webContents, senderFrame: win.webContents.mainFrame }, options); }
   async function invoke(options) {
-    const result = await ipc({ sender: win.webContents, senderFrame: win.webContents.mainFrame }, options);
+    const result = await raw(options);
     assert.equal(result.status, 200, result.data?.error); return result.data;
   }
   t.after(async () => { tracker.dispose(); await tracker.settled(); fs.rmSync(directory, { recursive: true, force: true }); });
-  return { invoke, recording, observed, directory, get startedWith() { return startedWith; },
+  return { invoke, raw, recording, observed, directory, get startedWith() { return startedWith; },
     active(recording) { snapshot = { service: { state: 'ready' }, state: 'acquiring', receiver: { running: true }, recording }; },
     close() { win.emit('close', { preventDefault() {} }); }, get closed() { return quit && queueDisposed; } };
 }
@@ -113,4 +120,38 @@ test('actual main honors disabled auto-sync and does not forward renderer-author
   assert.equal(h.startedWith, undefined);
   h.active(h.recording(1, 'incomplete', 'f'.repeat(32))); await h.invoke({ action: 'stop' });
   assert.equal(h.observed.size, 0);
+});
+
+test('actual main enrolls a single point once across retries and cancellation flushes its record', async t => {
+  const h = await harness(t);
+  const request = { action: 'prepare', sessionId: 'session-single-0001', commandId: 'prepare-single-0001',
+    config: { materialMark: 'A/P1', distanceM: 2, hubHeightDeltaM: 0.2, radiusM: 0.4 },
+    capture: { name: 'single-point', deviceIp: '192.168.106.90', hostIp: '192.168.106.10', port: 'COM6', captureSessionId: 'f'.repeat(32) },
+    confirmLaser: true, confirmStaticPoint: true, confirmGeometry: true };
+  await h.invoke({ action: 'singlePoint', request });
+  const id = h.startedWith.captureSessionId;
+  assert.match(id, /^[a-f0-9]{32}$/); assert.notEqual(id, 'f'.repeat(32));
+  await h.invoke({ action: 'singlePoint', request });
+  assert.equal(h.startedWith.captureSessionId, id);
+  const record = h.recording(1, 'incomplete'); h.active(record);
+  await h.invoke({ action: 'singlePoint', request: { action: 'cancel', sessionId: request.sessionId, commandId: 'cancel-single-0001' } });
+  assert.equal(h.observed.get(record.id).status, 'complete');
+});
+
+test('single-point preparation blocks account mutations while cancellation bypasses its pending response', async t => {
+  let release; const pending = new Promise(resolve => { release = resolve; }); const actions = [];
+  const h = await harness(t, { beforePrepare: () => pending, singlePoint: request => actions.push(request.action) });
+  const request = { action: 'prepare', sessionId: 'session-pending-0001', commandId: 'prepare-pending-0001',
+    config: { materialMark: 'A/P1', distanceM: 2, hubHeightDeltaM: 0.2, radiusM: 0.4 },
+    capture: { name: 'single-point', deviceIp: '192.168.106.90', hostIp: '192.168.106.10', port: 'COM6' },
+    confirmLaser: true, confirmStaticPoint: true, confirmGeometry: true };
+  const preparing = h.invoke({ action: 'singlePoint', request });
+  await waitFor(() => actions.includes('prepare'));
+  let accountResolved = false;
+  const logout = h.raw({ action: 'logout' }).then(value => { accountResolved = true; return value; });
+  await pause(20); assert.equal(accountResolved, false, 'Account mutation must wait for preparation');
+  await h.invoke({ action: 'singlePoint', request: { action: 'cancel', sessionId: request.sessionId, commandId: 'cancel-pending-0001' } });
+  assert.deepEqual(actions, ['prepare', 'cancel']);
+  release(); await preparing;
+  assert.equal((await logout).status, 409, 'The active service prevents logout after prepare resolves');
 });

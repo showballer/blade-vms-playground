@@ -1,4 +1,5 @@
 import type { FieldAxisFeedback, FieldBladePoint } from "./field-types";
+import { isTurntablePort, normalizeTurntablePort } from "./field-turntable-port";
 
 export const sharedTurntablePointKey = "blade-turntable-points-v2";
 export const newTurntablePointId = () => globalThis.crypto?.randomUUID?.() || `point-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -45,7 +46,7 @@ export function normalizeSharedTurntablePoints(raw: unknown): FieldBladePoint[] 
       circleStepDeg: Number.isFinite(point.circleStepDeg) && point.circleStepDeg > 0 ? point.circleStepDeg : 60,
       axis1AngleDeg: Number.isFinite(point.axis1AngleDeg) ? point.axis1AngleDeg : null,
       axis2AngleDeg: Number.isFinite(point.axis2AngleDeg) ? point.axis2AngleDeg : null,
-      ...(typeof point.port === "string" ? { port: point.port.trim().toUpperCase() } : {}),
+      ...(typeof point.port === "string" ? { port: normalizeTurntablePort(point.port) } : {}),
       // Keep the legacy alias for old local data consumers; never resolve conflicts silently.
       ...(referenceSignature ? { referenceSignature, references: referenceSignature } : {}),
     } as FieldBladePoint;
@@ -80,7 +81,7 @@ export function turntablePointMotionError(point: Pick<FieldBladePoint, "axis1Ang
   if (point.port && point.port !== port) return "记录串口与当前串口不同，请切换至记录串口或重新标定此点";
   const recorded = pointReferenceSignature(point);
   if (!recorded) return "点位缺少有效参考位信息或旧签名冲突，请重新读取并标定此点";
-  if (!point.port || !/^COM[1-9][0-9]{0,3}$/.test(point.port)) return "历史点位缺少有效串口信息，请重新读取并标定此点";
+  if (!point.port || !isTurntablePort(point.port)) return "历史点位缺少有效串口信息，请重新读取并标定此点";
   const current = turntableReferenceSignature(axes);
   if (!current) return "请读取两轴有效参考位反馈后再执行点位运动";
   if (recorded !== current) return "记录后参考位或反馈单位已变化，请重新标定此点";

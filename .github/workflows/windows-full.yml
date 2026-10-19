@@ -60,6 +60,12 @@ jobs:
         run: |
           npm run test:field
           if ($LASTEXITCODE -ne 0) { throw 'Field unit tests failed' }
+          npm run test:single-point:ui
+          if ($LASTEXITCODE -ne 0) { throw 'Single-point and motion-trial UI tests failed' }
+          node scripts/test-field-capture-main.cjs
+          if ($LASTEXITCODE -ne 0) { throw 'Single-point capture bridge tests failed' }
+          node --test scripts/test-windows-motion-trial-gate.cjs
+          if ($LASTEXITCODE -ne 0) { throw 'Frozen motion-trial gate contract tests failed' }
           npm run test:unified-auth
           if ($LASTEXITCODE -ne 0) { throw 'Unified account tests failed' }
           npm run test:field-cloud-sync
@@ -78,6 +84,10 @@ jobs:
         run: |
           node scripts/test-windows-simulation.cjs --resources apps/desktop/release/win-unpacked/resources
           if ($LASTEXITCODE -ne 0) { throw 'Frozen simulation and export verification failed' }
+      - name: Verify frozen full-circle planner without hardware and reject unavailable execution
+        run: |
+          node scripts/test-windows-motion-trial.cjs --resources apps/desktop/release/win-unpacked/resources
+          if ($LASTEXITCODE -ne 0) { throw 'Frozen motion-trial preview and arm-rejection verification failed' }
       - name: Verify waveform and device configuration UI without hardware
         run: npm run test:field-waveform
       - name: Verify frozen runtime, install, login, coexistence and uninstall
@@ -109,6 +119,7 @@ jobs:
           path: |
             artifacts/windows-bundle-smoke/
             artifacts/windows-simulation-smoke/report.json
+            artifacts/windows-motion-trial-smoke/report.json
             artifacts/field-waveform-smoke/
           if-no-files-found: warn
           retention-days: 30

@@ -5,11 +5,14 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
+const { createRequire } = require('node:module');
 
 const mainPath = path.resolve(__dirname, '../apps/desktop/electron/field-main.cjs');
+const mainRequire = createRequire(mainPath);
 async function harness() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'blade-account-ipc-'));
-  const calls = [], cloudCalls = [], handlers = new Map();
+  const calls = [], cloudCalls = [], trackerCalls = [], handlers = new Map();
+  let trackerError = '';
   let window, syncOptions, serviceOptions, signedIn = false;
   let snapshot = { service: { state: 'ready' }, state: 'idle', receiver: { running: false } };
   const fail = (message, status = 500) => Object.assign(new Error(message), { status });
@@ -44,18 +47,29 @@ async function harness() {
     if (name === './field-service.cjs') return { createFieldService: options => { serviceOptions = options; return service; }, failure: fail };
     if (name === './field-cloud-sync.cjs') return { createFieldCloudSync: options => { syncOptions = options; return ({
       status: () => ({ enabled: true, connected: true, state: 'ready', items: [] }),
-      resume() {}, pause() {}, dispose() {}, started(recording) { cloudCalls.push(['started', recording]); throw Error('sync disk failure'); }, finished(recording) { cloudCalls.push(['finished', recording]); throw Error('sync disk failure'); },
+      resume() {}, pause() {}, dispose() {},
       setEnabled: enabled => { cloudCalls.push(['enabled', enabled]); return { enabled }; },
       uploadRecording: id => { cloudCalls.push(['upload', id]); return { items: [] }; }, retry: () => ({ items: [] }),
     }); } };
+    // The durable tracker now owns capture enrollment. Its disk failure must
+    // surface as a sync warning without blocking capture or account guards.
+    // Durable manifest/queue integration is covered by test-field-capture-main.
+    if (name === './field-capture-tracker.cjs') return { createCaptureTracker: () => ({
+      prepare() { trackerCalls.push(['prepare']); throw Error('sync disk failure'); },
+      activate(id) { trackerCalls.push(['activate', id]); },
+      async scan() { trackerCalls.push(['scan']); },
+      async flush(snapshot) { trackerCalls.push(['flush', snapshot]); },
+      warning(message) { trackerError = message; }, status: () => ({ error: trackerError }),
+      dispose() {}, async settled() {},
+    }) };
     if (name === './field-window.cjs') return { initialWindowBounds: () => ({}) };
     if (name === './bootstrap-admin.json') return {};
-    return require(name);
+    return mainRequire(name);
   };
   vm.runInNewContext(fs.readFileSync(mainPath, 'utf8'), { require: customRequire, __dirname: path.dirname(mainPath), process: { platform: process.platform, env: {} } }, { filename: mainPath });
   await new Promise(resolve => setImmediate(resolve));
   const request = (options, event = { sender: window.webContents, senderFrame: window.webContents.mainFrame }) => handlers.get('blade:field')(event, options);
-  return { request, calls, cloudCalls, syncOptions, serviceOptions, setStatus: next => { snapshot = next; }, cleanup: () => fs.rmSync(directory, { recursive: true, force: true }) };
+  return { request, calls, cloudCalls, trackerCalls, syncOptions, serviceOptions, setStatus: next => { snapshot = next; }, cleanup: () => fs.rmSync(directory, { recursive: true, force: true }) };
 }
 
 test('public account mode never grants a session; untrusted windows cannot read or bind', async () => {
@@ -106,7 +120,7 @@ test('desktop package includes the unified authentication module', () => {
 });
 
 
-test('sync IPC requires trusted authenticated windows and sync failures never turn capture start/stop into errors', async () => {
+test('sync IPC requires trusted authenticated windows and tracker enrollment failures do not block capture start/stop', async () => {
   const h = await harness();
   try {
     for (const action of ['syncStatus', 'setAutoSync', 'syncRecording', 'retrySync', 'cloudSession', 'cloudBinding']) assert.equal((await h.request({ action })).status, 401);
@@ -115,10 +129,11 @@ test('sync IPC requires trusted authenticated windows and sync failures never tu
     assert.equal((await h.request({ action: 'syncStatus' }, { sender: {}, senderFrame: { url: 'file://evil' } })).status, 403);
     assert.equal((await h.request({ action: 'start', config: {} })).status, 200);
     assert.equal((await h.request({ action: 'stop' })).status, 200);
-    assert.equal(h.cloudCalls.filter(call => ['started', 'finished'].includes(call[0])).length, 2);
+    assert.deepEqual(h.trackerCalls.filter(call => ['prepare', 'flush'].includes(call[0])).map(call => call[0]), ['prepare', 'flush']);
     const result = await h.request({ action: 'syncStatus' });
     assert.equal(result.status, 200);
-    assert.equal(result.data.state, 'ready');
+    assert.equal(result.data.state, 'error');
+    assert.match(result.data.error, /sync disk failure/);
     assert.equal((await h.request({ action: 'syncRecording', id: 'a'.repeat(32), token: 'never-forward' })).status, 200);
     assert.deepEqual(h.cloudCalls.at(-1), ['upload', 'a'.repeat(32)]);
   } finally { h.cleanup(); }

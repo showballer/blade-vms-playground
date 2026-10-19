@@ -12,7 +12,7 @@ import threading
 from collections import OrderedDict
 from operator import itemgetter
 
-from .storage import HEADER, MAGIC, RECORD, empty_waveform
+from .storage import HEADER, MAGIC, RECORD, empty_waveform, recording_rssi_stride
 
 RAW_LIMIT = 4096
 MAX_BUCKETS = 1000
@@ -94,11 +94,26 @@ def live_envelope(rows, step):
             for a, b, lo, hi, rlo, rhi, miss, flag in zip(offsets, ends, low, high, rssi_low, rssi_high, missing, flags)]
 
 
-def make_wave(rows, rate, origin, start=None, end=None):
+def sparse_envelope(envelope, stride):
+    """Correct display quality counts without changing cached/raw samples."""
+    if stride == 1:
+        return envelope
+    result = []
+    for item in envelope:
+        expected = (item["end"] - 1) // stride - (item["start"] - 1) // stride
+        not_sampled = item["end"] - item["start"] - expected
+        result.append({**item, "missing": max(0, item["missing"] - not_sampled),
+                       "rssiNotSampled": not_sampled})
+    return result
+
+
+def make_wave(rows, rate, origin, start=None, end=None, *, rssi_stride=1):
     rows = list(rows)
     wave = empty_waveform()
     wave.update(sampleRate=rate, sampleOrigin=origin, representation="raw",
                 sourceSamples=len(rows), overrangeCount=0, missingRssiCount=0)
+    if rssi_stride > 1:
+        wave.update(rssiSampleStride=rssi_stride, rssiSampleRate=rate / rssi_stride if rate else None)
     if not rows:
         return wave
     wave.update(sampleStart=rows[0][0], rangeStart=rows[0][0] if start is None else start,
@@ -106,14 +121,17 @@ def make_wave(rows, rate, origin, start=None, end=None):
     if len(rows) <= RAW_LIMIT:
         wave.update(values=[row[1] for row in rows], rssi=[row[2] for row in rows],
                     overrange=[row[3] for row in rows], overrangeCount=sum(bool(row[3]) for row in rows),
-                    missingRssiCount=sum(row[2] is None for row in rows))
+                    missingRssiCount=sum(row[2] is None and row[0] % rssi_stride == 0 for row in rows))
     else:
-        envelope = live_envelope(rows, bucket_size(len(rows)))
+        envelope = sparse_envelope(live_envelope(rows, bucket_size(len(rows))), rssi_stride)
         wave.update(representation="envelope", envelope=envelope,
                     overrangeCount=sum(item["overrange"] for item in envelope),
                     missingRssiCount=sum(item["missing"] for item in envelope))
     # Instantaneous indicators are actual last samples, never an envelope extremum.
-    wave["latest"] = {"velocity": rows[-1][1], "rssi": rows[-1][2]}
+    latest_rssi = next((row for row in reversed(rows) if row[0] % rssi_stride == 0), None)
+    wave["latest"] = {"velocity": rows[-1][1], "rssi": latest_rssi[2] if latest_rssi else None}
+    if rssi_stride > 1:
+        wave["latest"]["rssiSampleIndex"] = latest_rssi[0] if latest_rssi else None
     return wave
 
 
@@ -157,9 +175,10 @@ class WaveformReader:
         end = total if end is None else min(total, end)
         start = min(start, end)
         rate, origin = manifest.get("sampleRate"), manifest.get("sampleOrigin")
+        rssi_stride = recording_rssi_stride(manifest)
         if total and (not rate or not math.isfinite(rate) or rate <= 0):
             raise ValueError("记录采样率无效。")
-        wave = make_wave([], rate, origin)
+        wave = make_wave([], rate, origin, rssi_stride=rssi_stride)
         wave.update(source=manifest.get("source", "polytec_ivs500"), simulation=manifest.get("simulation"))
         wave.update(rangeStart=start, rangeEnd=end, sampleStart=start, sourceSamples=end - start)
         if start == end:
@@ -228,8 +247,9 @@ class WaveformReader:
         if covered != end:
             raise ValueError("记录标记的样本数超过可读取原始数据，请检查记录完整性。")
         if raw:
-            wave = make_wave(raw, rate, origin, start, end)
+            wave = make_wave(raw, rate, origin, start, end, rssi_stride=rssi_stride)
         else:
+            aggregates = sparse_envelope(aggregates, rssi_stride)
             wave.update(representation="envelope", envelope=aggregates,
                         overrangeCount=sum(item["overrange"] for item in aggregates),
                         missingRssiCount=sum(item["missing"] for item in aggregates))

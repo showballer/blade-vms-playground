@@ -13,7 +13,7 @@ import uuid
 
 import numpy as np
 
-from .storage import HEADER, MAGIC, RECORD, RecordingStore, atomic_json
+from .storage import HEADER, MAGIC, RECORD, RecordingStore, atomic_json, recording_rssi_stride
 from .waveform import WaveformReader
 
 CHUNK = re.compile(r"chunk-[0-9]{8}\.bin$")
@@ -115,6 +115,7 @@ def validate_capture(value):
         raise ValueError("原始采样率无效。")
     if not isinstance(origin, (int, float)) or isinstance(origin, bool) or not math.isfinite(origin):
         raise ValueError("原始时间起点无效。")
+    rssi_stride = recording_rssi_stride(manifest)
     names, chunks = set(), []
     for item in files:
         name = item.get("name", "")
@@ -150,7 +151,8 @@ def validate_capture(value):
                 flags = samples["flags"]
                 if (not np.array_equal(samples["index"], np.arange(count, count + len(samples), dtype=np.uint64)) or
                         not np.isfinite(samples["value"]).all() or np.any(flags & 252) or
-                        not np.isfinite(samples["rssi"][flags & 2 != 0]).all()):
+                        not np.isfinite(samples["rssi"][flags & 2 != 0]).all() or
+                        np.any(((flags & 2) != 0) & (samples["index"] % rssi_stride != 0))):
                     raise ValueError("原始样本序号、数值或状态无效。")
                 count += len(samples)
                 overrange += int(np.count_nonzero(flags & 1))

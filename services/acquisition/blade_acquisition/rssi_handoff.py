@@ -16,6 +16,7 @@ class RssiHandoff:
         self.config = config
         # Movement duration is metadata only; it must never cause early motion.
         self.rate = self.expected = self.origin = None
+        self.stride = None
         self.values = []
         self.armed = False
         self.entry_ms = self.exit_ms = 0.0
@@ -54,19 +55,25 @@ class RssiHandoff:
         if self.trigger is not None:
             return self.status
         rate = batch.sample_rate
-        if not math.isfinite(rate) or rate <= 0:
+        stride = batch.rssi_sample_stride
+        if (not math.isfinite(rate) or rate <= 0 or isinstance(stride, bool) or
+                not isinstance(stride, int) or not 1 <= stride <= 100_000 or batch.sample_start % stride):
             self._gap()
             return self.status
         if ((self.rate is not None and self.rate != rate) or
+                (self.stride is not None and self.stride != stride) or
                 (self.expected is not None and batch.sample_start != self.expected)):
             self._gap()
             self.origin = None
         self.rate = rate
+        self.stride = stride
         if self.origin is None:
             self.origin = batch.sample_start
         self.expected = batch.sample_start + len(batch.values)
-        window = max(1, math.ceil(rate * self.config.rssiSmoothingMs / 1000))
-        length = min(len(batch.rssi), len(batch.values))
+        rssi_rate = rate / stride
+        window = max(1, math.ceil(rssi_rate * self.config.rssiSmoothingMs / 1000))
+        expected_rssi = (len(batch.values) + stride - 1) // stride
+        length = min(len(batch.rssi), expected_rssi)
         offset = 0
         while offset < length:
             end = min(length, offset + window - len(self.values))
@@ -84,10 +91,10 @@ class RssiHandoff:
                 mean = math.fsum(self.values) / window
                 spread = percentile(ordered, .9) - percentile(ordered, .1)
                 self.values.clear()
-                self._window(mean, spread, batch.sample_start + end, window / rate)
+                self._window(mean, spread, batch.sample_start + min(end * stride, len(batch.values)), window / rssi_rate)
                 if self.trigger is not None:
                     break
-        if length < len(batch.values) and self.trigger is None:
+        if length < expected_rssi and self.trigger is None:
             self._gap()
         return self.status
 

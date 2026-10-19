@@ -208,6 +208,24 @@ class TurntableTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         return client
 
+    def test_mac_port_probe_uses_exact_path_and_preserves_motion_guards(self):
+        motor = FakeMotor(reference_valid=False, soft_enabled=False)
+        client = self.make_client(motor)
+        port = "/dev/cu.SLAB_USBtoUART"
+        with patch("blade_acquisition.service.list_turntable_ports", return_value=[{"port": port, "description": "USB UART"}]):
+            self.assertEqual(client.get("/api/field/turntable/ports").json()["ports"][0]["port"], port)
+        response = client.post("/api/field/turntable", json={"port": port, "axis": 1, "action": "probe"})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["turntable"]["port"], port)
+        self.assertEqual(motor.start_calls, 0)
+        move = client.post("/api/field/turntable", json={"port": port, "axis": 1, "action": "manual_move", "protocol": "position",
+            "targetAngleDeg": 0, "speedRpm": 0.2, "confirmMotion": True})
+        self.assertEqual(move.status_code, 200, move.text)
+        checked = self.wait_test(client)
+        self.assertEqual(checked["turntable"]["state"], "error")
+        self.assertIn("参考", checked["turntable"]["error"])
+        self.assertEqual(motor.start_calls, 0)
+
     def start_body(self, config=None):
         body = {"deviceIp": "192.168.104.50", "hostIp": "192.168.104.10", "name": "joint", "object": "blade",
                 "turbine": "T1", "point": "P1", "confirmLaser": True, "confirmMotion": True}

@@ -10,7 +10,7 @@ import math
 import os
 import threading
 import time
-from collections import deque
+from collections import OrderedDict, deque
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,11 +19,15 @@ from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field, StrictBool, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
 from .receiver import Batch, PolytecReceiver, ReceiverConfig
 from .rssi_handoff import RssiHandoff
-from .storage import DISPLAY_LIMIT, RecordingStore, empty_waveform
+from .serial_ports import SerialPort, list_turntable_ports
+from .single_point import SinglePointConfig, preview_plan
+from .single_point_runner import SinglePointSession
+from .motion_trial import MotionTrialConfig, preview_full_circle
+from .storage import DISPLAY_LIMIT, RecordingStore, atomic_json, empty_waveform, recording_rssi_stride
 from .waveform import WaveformReader, make_wave
 from .device import DevicePanel, WRITABLE
 from .simulation import SimulationConfig, SimulationReceiver, simulation_catalog
@@ -150,6 +154,64 @@ class RssiCalibrationRequest(BaseModel):
         return self
 
 
+class SinglePointCapture(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=120)
+    deviceIp: str = Field(min_length=7, max_length=15)
+    hostIp: str = Field(min_length=7, max_length=15)
+    port: SerialPort
+    object: str = Field(default="", max_length=120)
+    turbine: str = Field(default="", max_length=120)
+    point: str = Field(default="", max_length=120)
+    captureSessionId: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$")
+
+    _address = field_validator("deviceIp", "hostIp")(StartRequest.valid_address.__func__)
+    _text = field_validator("name", "object", "turbine", "point")(StartRequest.strip_text.__func__)
+    _name = field_validator("name")(StartRequest.name_is_not_blank.__func__)
+
+    @model_validator(mode="after")
+    def distinct_addresses(self):
+        if self.deviceIp == self.hostIp:
+            raise ValueError("设备与本机网卡 IP 不能相同")
+        return self
+
+
+class SinglePointRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: Literal["preview", "prepare", "mark", "reset_sync", "arm", "cancel"]
+    sessionId: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{8,120}$")
+    commandId: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{8,120}$")
+    config: SinglePointConfig | None = None
+    capture: SinglePointCapture | None = None
+    confirmLaser: StrictBool = False
+    confirmStaticPoint: StrictBool = False
+    confirmGeometry: StrictBool = False
+    confirmMotion: StrictBool = False
+
+    @model_validator(mode="after")
+    def required_fields(self):
+        if self.action != "preview" and (not self.sessionId or not self.commandId):
+            raise ValueError("任务操作需要 sessionId 与 commandId")
+        if self.action in {"preview", "prepare"} and self.config is None:
+            raise ValueError("请填写单叶片单测点参数")
+        if self.action == "prepare":
+            if self.capture is None:
+                raise ValueError("请填写真实采集地址、串口和任务名称")
+            if not (self.confirmLaser and self.confirmStaticPoint and self.confirmGeometry):
+                raise ValueError("请确认激光、静止六点方向材料测点及几何标定")
+        elif self.capture is not None:
+            raise ValueError("只有准备操作可以更改采集配置")
+        if self.action not in {"prepare", "preview"} and self.config is not None:
+            raise ValueError("准备后不能更改几何或时序配置，请取消并重新准备")
+        return self
+
+
+class MotionTrialRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: Literal["preview"]
+    config: MotionTrialConfig
+
+
 class AcquisitionController:
     def __init__(self, settings: Settings, receiver_factory=PolytecReceiver, motor_factory=DEFAULT_MOTOR_FACTORY):
         self.settings = settings
@@ -190,6 +252,11 @@ class AcquisitionController:
         self.rssi_calibration_lock = threading.Lock()
         self.rssi_calibration_path = settings.data_dir / "rssi-calibration.json"
         self.observation_laser_ip = None
+        self.single_point_runner = None
+        # A cancel can overtake prepare over independent HTTP requests. Remember
+        # it so that delayed preparation never starts a laser after cancellation.
+        self.single_point_cancelled_sessions = OrderedDict()
+        self.single_point_seen_sessions = set()
 
     def status(self) -> dict:
         with self.lock:
@@ -213,7 +280,102 @@ class AcquisitionController:
                     "turntableTest": copy.deepcopy(self.turntable_test),
                     "turntablePreparation": copy.deepcopy(self.turntable_preparation),
                     "pointCycle": copy.deepcopy(self.point_cycle),
+                    "singlePoint": self.single_point_runner.snapshot() if self.single_point_runner else None,
                     "indexWarning": self.store.index_error}
+
+    def motion_trial_operation(self, request: MotionTrialRequest):
+        # This is not a hardware capability probe. The shipped adapter has no
+        # versioned finite-trajectory command; never fall back to stop/go moves
+        # or continuous velocity mode with disabled soft limits.
+        preview = preview_full_circle(request.config)
+        reason = "当前转盘接口尚未接入整圈连续轨迹，需要配套控制板固件及轨迹执行协议"
+        preview.update(
+            executionReady=False,
+            capability={"supported": False, "checkedHardware": False,
+                        "source": "client_protocol", "code": "trajectory_protocol_unavailable",
+                        "message": reason},
+            blockReasons=[reason],
+        )
+        return {**self.status(), "motionTrialPreview": preview}
+
+    def single_point_operation(self, request: SinglePointRequest):
+        if request.action == "preview":
+            with self.lock:
+                runner = self.single_point_runner
+                anchor = (runner.anchor if runner and runner.state["state"] in {"awaiting_sync", "ready"}
+                          and request.config == runner.config else None)
+            return {**self.status(), "singlePointPreview": preview_plan(request.config, anchor)}
+        if request.action == "cancel":
+            with self.lock:
+                runner = self.single_point_runner
+                if runner and runner.request.sessionId == request.sessionId:
+                    return runner.command(request)
+                # No hardware side effect. Do not let a stale cancellation stop
+                # a different session, but suppress a not-yet-arrived prepare.
+                self.single_point_cancelled_sessions[request.sessionId] = request.commandId
+                while len(self.single_point_cancelled_sessions) > 256:
+                    self.single_point_cancelled_sessions.popitem(last=False)
+                return self.status()
+        if request.action != "prepare":
+            with self.lock:
+                if self.single_point_runner is None:
+                    raise HTTPException(409, "请先准备单叶片单测点任务")
+                return self.single_point_runner.command(request)
+        if not self.operation_lock.acquire(blocking=False):
+            raise HTTPException(409, "设备操作进行中，请等待完成")
+        try:
+            with self.lock:
+                if request.sessionId in self.single_point_cancelled_sessions:
+                    raise HTTPException(409, "此准备任务已取消，请使用新的任务编号")
+                previous = self.single_point_runner
+                if previous and previous.request.sessionId == request.sessionId:
+                    if previous.duplicate(request):
+                        return self.status()
+                    raise HTTPException(409, "同一任务已经准备过；修改参数须创建新的任务")
+                if request.sessionId in self.single_point_seen_sessions:
+                    raise HTTPException(409, "该任务编号已结束且已被后续任务替代，请创建新的任务")
+                if len(self.single_point_seen_sessions) >= 2048:
+                    raise HTTPException(409, "本次服务的单点任务编号已达上限，请停止后重新启动客户端")
+                if (self.turntable_busy or self.device_busy or self.status()["receiver"]["running"] or
+                        self.state in {"starting", "acquiring", "stopping"}):
+                    raise HTTPException(409, "已有采集或设备操作运行，请先停止保存")
+                if self.motion_guard.warning:
+                    raise HTTPException(409, self.motion_guard.warning)
+                if self.device_warning:
+                    raise HTTPException(409, self.device_warning)
+                capture = request.capture
+                if self.observation_laser_ip and self.observation_laser_ip != capture.deviceIp:
+                    raise HTTPException(409, "请先关闭上一台设备的观察激光")
+                try:
+                    receiver = self.receiver_factory(ReceiverConfig(capture.deviceIp, capture.hostIp, self.settings.dll_path))
+                    receiver.validate()
+                except (OSError, RuntimeError, ValueError) as exc:
+                    raise HTTPException(503, str(exc)) from exc
+                metadata = capture.model_dump(exclude={"port"})
+                metadata.update(source="polytec_ivs500", simulation=None, point=request.config.pointName,
+                                turntable={"port": capture.port, "state": "preparing",
+                                           "synchronization": "manual_unverified", "singlePoint": {}})
+                try:
+                    self.writer = self.store.create(metadata)
+                except OSError as exc:
+                    raise HTTPException(507, f"无法创建原始记录：{exc}") from exc
+                self.source, self.simulation = "polytec_ivs500", None
+                self.device_ip, self.host_ip = capture.deviceIp, capture.hostIp
+                self.rows.clear()
+                self.point_cycle, self.rssi_handoff = None, None
+                self.turntable_preparation = None
+                self.stop_event.clear()
+                self.state, self.error = "starting", None
+                runner = SinglePointSession(self, request, receiver)
+                self.single_point_runner = runner
+                self.single_point_seen_sessions.add(request.sessionId)
+                self.writer.manifest["turntable"]["singlePoint"] = runner.snapshot()
+                self.writer.persist()
+                self.thread = threading.Thread(target=runner.run, name="blade-single-point", daemon=True)
+                self.thread.start()
+                return self.status()
+        finally:
+            self.operation_lock.release()
 
     def turntable_operation(self, request: TurntableRequest):
         if request.action in ("stop", "test", "manual_move", "recall", "prepare", "reference", "limits") and not request.confirmMotion:
@@ -259,7 +421,10 @@ class AcquisitionController:
             if request.action == "stop":
                 if self.motion_guard.warning and self.motion_guard.identity and self.motion_guard.identity != (request.port, request.axis):
                     raise RuntimeError("请选择上次未确认停止的同一端口和轴进行恢复")
+                pending_axes = self._pending_turntable_axes(request.port)
                 self.motion_guard.mark(request, True, "转盘停止尚未确认")
+                if pending_axes:
+                    self._persist_pending_axes(request.port, pending_axes)
                 motor.stop(request.axis)
             feedback = motor_snapshot(motor, request.axis)
             if request.action in ("reference", "limits"):
@@ -298,13 +463,13 @@ class AcquisitionController:
                 identity = self.motion_guard.identity
                 if self.motion_guard.warning and identity and identity != (request.port, request.axis):
                     raise RuntimeError("请选择上次未确认停止的同一端口和轴进行恢复")
-                self.motion_guard.mark(request, False)
+                self._confirm_turntable_axis(request)
             elif request.confirmRecovery:
                 require_ready(feedback)
                 identity = self.motion_guard.identity
                 if self.motion_guard.warning and identity and identity != (request.port, request.axis):
                     raise RuntimeError("请选择上次未确认停止的同一端口和轴进行恢复")
-                self.motion_guard.mark(request, False)
+                self._confirm_turntable_axis(request)
             with self.lock:
                 self.turntable_snapshot = {"state": "prepared" if request.action == "prepare" else "stopped" if request.action == "stop" else "checked", "port": request.port,
                                            "axis": request.axis, "feedback": feedback,
@@ -329,6 +494,28 @@ class AcquisitionController:
                     with self.lock:
                         self.turntable_busy = False
                     self.operation_lock.release()
+
+    def _pending_turntable_axes(self, port):
+        try:
+            data = json.loads(self.motion_guard.path.read_text(encoding="utf-8"))
+            if data.get("port") == port:
+                return [axis for axis in data.get("pendingAxes", []) if type(axis) is int and axis in (1, 2)]
+        except (OSError, ValueError, TypeError):
+            pass
+        return []
+
+    def _persist_pending_axes(self, port, axes):
+        atomic_json(self.motion_guard.path, {"uncertain": True, "port": port,
+                                            "axis": axes[0], "pendingAxes": axes, "updatedAt": time.time()})
+        self.motion_guard.identity = (port, axes[0])
+        self.motion_guard.warning = "仍有转盘轴停止未确认，请按当前提示逐轴读取并恢复"
+
+    def _confirm_turntable_axis(self, request):
+        remaining = [axis for axis in self._pending_turntable_axes(request.port) if axis != request.axis]
+        if remaining:
+            self._persist_pending_axes(request.port, remaining)
+        else:
+            self.motion_guard.mark(request, False)
 
     def _stop_turntable_test(self):
         with self.lock:
@@ -565,7 +752,7 @@ class AcquisitionController:
             rows = tail[-size:]
             realtime_rows = tail[-4096:]
             origin = self.writer.manifest.get("sampleOrigin") if self.writer else None
-        wave = make_wave(rows, rate, origin)
+        wave = make_wave(rows, rate, origin, rssi_stride=recording_rssi_stride(status["recording"] or {}))
         wave.update(source=status["receiver"]["source"], simulation=status["receiver"]["simulation"])
         return {**status, "waveform": wave, "realtime": self._cached_realtime(realtime_rows, rate, status)}
 
@@ -583,12 +770,13 @@ class AcquisitionController:
             result = self._realtime_result(rows, rate)
             count = result.get("sampleCount", len(rows))
             selected = rows[-count:] if count else []
+            rssi_stride = recording_rssi_stride(status["recording"] or {})
             result.update(source=status["receiver"]["source"], recordingId=recording_id, unit="m/s",
                           computedAt=time.time(),
                           sampleRange={"start": selected[0][0] if selected else 0,
                                        "end": selected[-1][0] + 1 if selected else 0},
                           quality={"overrangeSamples": sum(bool(r[3]) for r in selected),
-                                   "missingRssiSamples": sum(r[2] is None for r in selected),
+                                   "missingRssiSamples": sum(r[2] is None and r[0] % rssi_stride == 0 for r in selected),
                                    "lowReturnSamples": sum(r[2] is not None and r[2] < 20 for r in selected),
                                    "lowReturnThresholdPercent": 20})
             self.realtime_cache, self.realtime_cache_key, self.realtime_cache_at = result, key, now
@@ -770,7 +958,7 @@ class AcquisitionController:
                     raise HTTPException(409, self.device_warning)
                 if self.observation_laser_ip and (request.source != "polytec_ivs500" or request.deviceIp != self.observation_laser_ip):
                     raise HTTPException(409, "请先关闭观察激光，再切换设备或模拟采集。")
-                if request.turntable and self.motion_guard.warning:
+                if (request.turntable or request.pointCycle) and self.motion_guard.warning:
                     raise HTTPException(409, self.motion_guard.warning)
                 if request.turntable:
                     preparation = self.turntable_preparation
@@ -860,6 +1048,11 @@ class AcquisitionController:
                     self.observation_laser_ip = None
                 self.writer.manifest["deviceSettings"] = getattr(receiver, "device_settings", None)
                 self.writer.manifest["velocityRangeMps"] = getattr(receiver, "velocity_range_mps", None)
+                acquisition = getattr(receiver, "acquisition_metadata", None)
+                if acquisition is not None:
+                    self.writer.manifest["acquisition"] = acquisition
+                    self.writer.manifest.update(rssiSampleStride=acquisition["rssiSampleStride"],
+                                                rssiSampleRate=acquisition["rssiSampleRate"])
             self.writer.ready(rate, origin)
             if not self.stop_event.is_set():
                 self.state = "acquiring"
@@ -870,7 +1063,7 @@ class AcquisitionController:
             # This is a display window, never the source for raw persistence.
             offset = max(0, len(batch.values) - self.rows.maxlen)
             self.rows.extend((batch.sample_start + index, batch.values[index],
-                              batch.rssi[index] if index < len(batch.rssi) else None,
+                              batch.rssi_at(index),
                               batch.overrange[index]) for index in range(offset, len(batch.values)))
             cycle = self.point_cycle
             if cycle and self.rssi_handoff is not None:
@@ -1705,15 +1898,21 @@ def create_app(settings: Settings, receiver_factory=PolytecReceiver, motor_facto
     @app.get("/api/field/turntable/ports")
     def turntable_ports():
         try:
-            from serial.tools.list_ports import comports
-            return {"ports": [{"port": port.device, "description": port.description}
-                              for port in comports() if port.device.startswith("COM")]}
+            return {"ports": list_turntable_ports()}
         except ImportError as exc:
             raise HTTPException(503, "采集服务缺少 pyserial，请更新服务包") from exc
 
     @app.post("/api/field/turntable")
     def turntable(request: TurntableRequest):
         return controller.turntable_operation(request)
+
+    @app.post("/api/field/single-point")
+    def single_point(request: SinglePointRequest):
+        return controller.single_point_operation(request)
+
+    @app.post("/api/field/motion-trial")
+    def motion_trial(request: MotionTrialRequest):
+        return controller.motion_trial_operation(request)
 
     @app.get("/api/field/recordings/{recording_id}/turntable-export")
     def turntable_export(recording_id: str):

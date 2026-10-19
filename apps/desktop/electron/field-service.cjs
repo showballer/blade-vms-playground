@@ -6,6 +6,10 @@ const { Readable } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
 const { createGzip } = require('node:zlib');
 const { randomBytes } = require('node:crypto');
+const { isTurntablePort } = require('./field-turntable-port.cjs');
+const { isSdkFile, resolveSdkPath } = require('./field-sdk.cjs');
+const { singlePointRequest } = require('./field-single-point.cjs');
+const { motionTrialRequest } = require('./field-motion-trial.cjs');
 
 function failure(message, status = 503) {
   return Object.assign(new Error(message), { status });
@@ -20,7 +24,7 @@ function validPointReference(value) {
 function turntableConfig(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value) ||
       Object.keys(value).some(key => !['port', 'axis', 'speedRpm', 'direction', 'durationSeconds', 'protocol', 'targetAngleDeg'].includes(key)) ||
-      !/^COM[1-9][0-9]{0,3}$/.test(value.port) || ![1, 2].includes(value.axis) ||
+      !isTurntablePort(value.port) || ![1, 2].includes(value.axis) ||
       typeof value.speedRpm !== 'number' || !Number.isFinite(value.speedRpm) || value.speedRpm < 0.02 || value.speedRpm > 100 ||
       !['forward', 'reverse'].includes(value.direction) || typeof value.durationSeconds !== 'number' ||
       !Number.isFinite(value.durationSeconds) || value.durationSeconds < 0 || value.durationSeconds > 86400 ||
@@ -32,7 +36,7 @@ function turntableConfig(value) {
 }
 function pointCycleConfig(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value) ||
-      !/^COM[1-9][0-9]{0,3}$/.test(value.port) || !Array.isArray(value.points) ||
+      !isTurntablePort(value.port) || !Array.isArray(value.points) ||
       value.points.length < 1 || value.points.length > 200 ||
       !Number.isInteger(value.cycles) || value.cycles < 1 || value.cycles > 100 ||
       value.points.length * value.cycles > 2000 || typeof value.dwellSeconds !== 'number' ||
@@ -125,8 +129,8 @@ function windowsServiceEnvironment({ file, dataDir, dll, port, secret, source = 
 }
 
 // Non-Windows platforms run the same acquisition service from source through the
-// project virtualenv (services/acquisition/.venv). Real device I/O still needs
-// the Windows-only vendor SDK; playback, waveform and analysis work everywhere.
+// project virtualenv (services/acquisition/.venv). Real device I/O loads a native
+// vendor library built for the same OS and architecture as that interpreter.
 function posixServiceEnvironment({ dataDir, dll, port, secret, source = process.env }) {
   // Mirror the Windows hardening: never inherit Python/Conda/venv variables that
   // could redirect module resolution away from the project virtualenv.
@@ -171,11 +175,12 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     return getConfig().executable || path.join(resourcesDir, 'acquisition', 'BladeAcquisition.exe');
   }
   function dllPath() {
-    return getConfig().dll || path.join(path.dirname(executable()), 'vendor', 'DeviceCommunication.dll');
+    return resolveSdkPath({ configured: getConfig().dll, environment, platform,
+      executable: executable(), resourcesDir, servicesRoot });
   }
   function serviceInfo() {
-    return { state, error, executable: executable(),
-      dllConfigured: fs.existsSync(dllPath()),
+    return { state, error, generation, executable: executable(),
+      dllConfigured: isSdkFile(dllPath(), platform), sdkPath: dllPath(),
       launcher: platform === 'win32' ? 'windows-bundle' : 'python-module' };
   }
   function launchSpec() {
@@ -196,7 +201,7 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
       return { state: 'missing', error: '未找到采集服务源码 blade_acquisition，请确认 services/acquisition 目录完整。' };
     }
     return { file: resolved.python, args: ['-m', 'blade_acquisition'], cwd: resolved.root,
-      environment: ({ port, secret }) => posixServiceEnvironment({ dataDir, dll: getConfig().dll || '', port, secret, source: environment }) };
+      environment: ({ port, secret }) => posixServiceEnvironment({ dataDir, dll: dllPath(), port, secret, source: environment }) };
   }
   function envelope(data = lastStatus) {
     // A failed child cannot be presented as healthy acquisition. Keep unknown
@@ -213,7 +218,7 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     const requestGeneration = generation, requestChild = child;
     const response = await fetchImpl(`http://127.0.0.1:${port}/api/field/${route}`, {
       method, redirect: 'error', signal: AbortSignal.timeout(route.endsWith('/analysis') || route === 'rotation' || route.endsWith('/waveform') || route.includes('/waveform?') ? 120000 :
-        route === 'device' || route === 'rssi-calibration' ? 90000 : route === 'stop' || route === 'turntable' ? Math.max(75000, requestTimeoutMs) : requestTimeoutMs),
+        route === 'device' || route === 'rssi-calibration' ? 90000 : route === 'stop' || route === 'turntable' || route === 'single-point' && body?.action === 'cancel' ? Math.max(75000, requestTimeoutMs) : requestTimeoutMs),
       headers: { Authorization: `Bearer ${secret}`, 'Content-Type': 'application/json' },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
@@ -493,8 +498,26 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     return http('rssi-calibration', 'POST', { deviceIp: request.deviceIp, hostIp: request.hostIp, state: request.state, durationSeconds: request.durationSeconds, confirmLaser: true });
   }
   async function turntablePorts() { await ready(); return http('turntable/ports'); }
+  async function motionTrial(request) {
+    const body = motionTrialRequest(request);
+    await ready();
+    return envelope(await http('motion-trial', 'POST', body));
+  }
+  async function singlePoint(request, trustedCapture) {
+    const body = singlePointRequest(request, trustedCapture);
+    await ready();
+    if (body.action === 'preview') return envelope(await http('single-point', 'POST', body));
+    const epoch = ++snapshotEpoch;
+    try {
+      const result = await http('single-point', 'POST', body);
+      // A delayed prepare/mark response must not revive the UI after cancel.
+      lastStatus = epoch === snapshotEpoch ? result : await http('status');
+      if (body.action === 'prepare') { closeSocket(); stream(); }
+      return envelope();
+    } finally { snapshotEpoch += 1; }
+  }
   async function turntable(request) {
-    if (!request || !['probe', 'test', 'manual_move', 'recall', 'prepare', 'stop', 'reference', 'limits'].includes(request.action) || !/^COM[1-9][0-9]{0,3}$/.test(request.port) ||
+    if (!request || !['probe', 'test', 'manual_move', 'recall', 'prepare', 'stop', 'reference', 'limits'].includes(request.action) || !isTurntablePort(request.port) ||
         ![1, 2].includes(request.axis) || (['stop', 'test', 'manual_move', 'recall', 'prepare', 'reference', 'limits'].includes(request.action) && request.confirmMotion !== true) ||
         (request.confirmRecovery !== undefined && typeof request.confirmRecovery !== 'boolean') ||
         (request.testSeconds !== undefined && (!Number.isInteger(request.testSeconds) || request.testSeconds < 1 || request.testSeconds > 15))) throw failure('无效转盘检查/试转请求', 400);
@@ -551,6 +574,6 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     await ready();
     return http('rotation', 'POST', parameters);
   }
-  return { start, status, frame, begin, stop, recordings, simulation, exportRecording, waveform, analysis, rotation, device, rssiCalibration, turntable, turntablePorts, shutdown, serviceInfo };
+  return { start, status, frame, begin, stop, recordings, simulation, exportRecording, waveform, analysis, rotation, device, rssiCalibration, turntable, turntablePorts, singlePoint, motionTrial, shutdown, serviceInfo };
 }
 module.exports = { createFieldService, windowsServiceEnvironment, posixServiceEnvironment, failure };

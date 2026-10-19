@@ -96,6 +96,20 @@ async function main() {
     await service.live(owner, id, { ...frame, sequence: 2, realtime });
     assert.equal((await service.detail(viewer, id)).frame.realtime.spectrum.frequencies.length, 2049);
     await assert.rejects(service.live(owner, id, { ...frame, sequence: 3, realtime: { ...realtime, spectrum: { frequencies: Array(4097).fill(0), amplitudes: [] } } }), rejected(400));
+    const sparseWaveform = { ...frame.waveform, sampleRate: 51200, sampleStride: 2, rssi: [80, null], rssiSampleStride: 32, rssiSampleRate: 1600 };
+    await service.live(owner, id, { ...frame, sequence: 3, waveform: sparseWaveform });
+    assert.deepEqual((await service.detail(viewer, id)).frame.waveform, sparseWaveform);
+    const invalidRssiTiming = [
+      ...[0, -1, 1.5, 100001, '32', true, null].map(rssiSampleStride => ({ rssiSampleStride, rssiSampleRate: 1600 })),
+      ...[0, -1, '1600', true, null, 1601, 102400, Number.MIN_VALUE].map(rssiSampleRate => ({ rssiSampleStride: 32, rssiSampleRate })),
+      { rssiSampleStride: 32, rssiSampleRate: undefined }, { rssiSampleStride: undefined, rssiSampleRate: 1600 },
+    ];
+    for (const metadata of invalidRssiTiming) {
+      await assert.rejects(service.live(owner, id, { ...frame, sequence: 4,
+        waveform: { ...sparseWaveform, ...metadata } }), rejected(400));
+    }
+    assert.deepEqual((await service.detail(viewer, id)).frame.waveform, sparseWaveform, "Rejected RSSI metadata cannot alter the last accepted live waveform");
+    passed.push("Sparse RSSI acquisition timing survives preview storage; invalid or incomplete timing is rejected");
     await assert.rejects(service.live(teammate, id, frame), rejected(403));
     await assert.rejects(service.prepareAnalysis(owner, id), rejected(403));
     await assert.rejects(service.prepareAnalysis(analyst, id), rejected(409));
