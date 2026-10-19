@@ -192,7 +192,12 @@ async function main() {
     const servoRecording = { ...servo.recording, source: "polytec_ivs500", simulation: null,
       turntable: { config: { port: "COM6", axis: 1 }, preparedReferences: { "1": { origin_counts: 123 } },
         telemetry: { file: "turntable.jsonl", events: 2, sha256: digest(telemetry), timestampBasis: "sequential host observations; not hardware synchronized" } },
-      pointCycle: { cycle: 2, pointIndex: 1, pointName: "B1-P2", actualAngles: { "1": 2, "2": 30 } } };
+      pointCycle: { cycle: 2, pointIndex: 1, pointName: "B1-P2", actualAngles: { "1": 2, "2": 30 },
+        mode: "automatic_stations", sessionId: "a".repeat(32), bladeId: "2", radialPointId: "p2", radialPointName: "叶尖",
+        radiusM: .5, azimuthDeg: 90, stationIndex: 2, stationCount: 4, lapIndex: 2, cycles: 2,
+        identitySource: "operator_assigned", identityVerified: false, coverageKind: "sparse_station_passes", completion: "confirmed_pass",
+        plannedStations: [0, 90, 180, 270].map((azimuthDeg, index) => ({ pointId: `p2-s${index + 1}`, bladeId: "2",
+          radialPointId: "p2", radialPointName: "叶尖", radiusM: .5, azimuthDeg, stationIndex: index + 1, stationCount: 4 })) } };
     const servoFiles = [...servo.files, { name: "turntable.jsonl", bytes: telemetry.length, sha256: digest(telemetry) }];
     const servoId = (await service.create(owner, { clientId: "desktop-servo", recording: servoRecording })).capture.id;
     await assert.rejects(service.attachment(viewer, servoId, "manifest.json"), rejected(409));

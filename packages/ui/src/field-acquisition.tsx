@@ -17,11 +17,12 @@ type Props = {
   windowMs: number; onWindow: (value: number) => void;
   refreshMs: number; onRefresh: (value: number) => void;
   request: <T>(options: FieldRequestOptions) => Promise<T>;
-  onDeviceStart: () => void; onSimulationStart: (simulation: FieldSimulation) => void;
+  onDeviceStart: () => void; onSimulationStart?: (simulation: FieldSimulation) => void;
+  showPointCycle?: boolean;
   onStop: () => void; onService: () => void; onRecords: () => void;
 };
 
-export const FieldAcquisition = memo(function FieldAcquisition({ config, onConfig, source, status, busy, pollError, windowMs, onWindow, refreshMs, onRefresh, request, onDeviceStart, onSimulationStart, onStop, onService, onRecords }: Props) {
+export const FieldAcquisition = memo(function FieldAcquisition({ config, onConfig, source, status, busy, pollError, windowMs, onWindow, refreshMs, onRefresh, request, onDeviceStart, onSimulationStart, onStop, onService, onRecords, showPointCycle = true }: Props) {
   const [simulation, setSimulation] = useState<FieldSimulation>({ point: "P1", scenario: "baseline" });
   const [metadata, setMetadata] = useState<FieldSimulationInfo | null>(null);
   const [metadataError, setMetadataError] = useState("");
@@ -86,7 +87,7 @@ export const FieldAcquisition = memo(function FieldAcquisition({ config, onConfi
     </div>
     <section className={`field-card field-capture-setup ${active && !setupExpanded ? "is-compact" : ""}`}>
       {active && <div className="field-capture-running-summary"><div><span className="field-badge green">正在采集</span><strong>{status?.recording?.name || config.name}</strong><span>{status?.recording?.source === "simulation" ? "模拟输入" : "设备输入"} · {number(status?.recording?.sampleRate)} Hz</span></div><button type="button" className="field-text-button" onClick={() => setSetupExpanded(value => !value)}>{setupExpanded ? "收起参数" : "查看采集参数"}<ChevronRight size={14} /></button></div>}
-      <form hidden={active && !setupExpanded} onSubmit={event => { event.preventDefault(); if (active || busy || !canStart) return; source === "simulation" ? onSimulationStart(simulation) : onDeviceStart(); }}>
+      <form hidden={active && !setupExpanded} onSubmit={event => { event.preventDefault(); if (active || busy || !canStart) return; source === "simulation" ? onSimulationStart?.(simulation) : onDeviceStart(); }}>
         <fieldset disabled={active || !!busy} className="field-capture-inputs">
           <label className="field-task-name">任务名称 <span className="field-required">*</span><input required maxLength={120} aria-label="任务名称" value={config.name} onChange={event => update("name", event.target.value)} placeholder={source === "simulation" ? "例如：叶片模拟采集" : "填写本次采集任务名称"} /></label>
           {source === "simulation" ? <>
@@ -97,7 +98,7 @@ export const FieldAcquisition = memo(function FieldAcquisition({ config, onConfi
         </fieldset>
         {metadataError && source === "simulation" && <p className="field-error" role="alert">{metadataError}<Button type="button" disabled={active || !!busy} onClick={() => setMetadataRevision(value => value + 1)}>重新读取</Button></p>}
         {source === "device" && !status?.service.dllConfigured && <p className="field-capture-driver-note">请先在“设备与服务”中配置设备驱动。</p>}
-        {source === "device" && <FieldTurntableSetup config={config} onConfig={onConfig} status={status} disabled={active || !!busy} request={request} />}
+        {source === "device" && <FieldTurntableSetup config={config} onConfig={onConfig} status={status} disabled={active || !!busy} request={request} showPointCycle={showPointCycle} />}
         <div className="field-task-row">
           <details className="field-task-details"><summary>任务信息 <span>测量对象、机组与测点（可选）</span></summary><fieldset className="field-config-grid" disabled={active || !!busy}>{([["object", "测量对象"], ["turbine", "设备 / 机组"], ["point", "测点名称"]] as const).map(([key, label]) => <label key={key}>{label}<input value={config[key]} maxLength={120} onChange={event => update(key, event.target.value)} placeholder={label} /></label>)}</fieldset></details>
           <button type="button" className="field-text-button" onClick={onService}>设备与服务<ChevronRight size={14} /></button>

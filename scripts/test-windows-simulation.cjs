@@ -94,16 +94,15 @@ async function main() {
   let cloudFile = path.join(root, 'apps/desktop/electron/field-cloud-sync.cjs');
   if (!options.source) {
     assert.ok(fs.statSync(path.join(options.resources, 'acquisition/BladeAcquisition.exe')).isFile());
-    const asar = require('@electron/asar');
-    const packagedBridge = asar.extractFile(path.join(options.resources, 'app.asar'), 'electron/field-service.cjs');
-    bridgeFile = path.join(temporary, 'field-service.cjs');
-    fs.writeFileSync(bridgeFile, packagedBridge);
-    report.packagedBridgeSha256 = sha256(packagedBridge);
-    const packagedCloud = asar.extractFile(path.join(options.resources, 'app.asar'), 'electron/field-cloud-sync.cjs');
-    assert.equal(sha256(packagedCloud), sha256(fs.readFileSync(cloudFile)), 'Packaged cloud-sync must match this release source');
-    cloudFile = path.join(temporary, 'field-cloud-sync.cjs');
-    fs.writeFileSync(cloudFile, packagedCloud);
-    report.packagedCloudSyncSha256 = sha256(packagedCloud);
+    const packaged = require('./windows-packaged-bridge.cjs').extractPackagedBridge({
+      archive: path.join(options.resources, 'app.asar'), directory: temporary,
+      sourceDirectory: path.join(root, 'apps/desktop/electron'),
+    });
+    bridgeFile = packaged.bridgeFile;
+    cloudFile = packaged.cloudFile;
+    report.packagedBridgeSha256 = packaged.hashes['field-service.cjs'];
+    report.packagedCloudSyncSha256 = packaged.hashes['field-cloud-sync.cjs'];
+    report.packagedModuleSha256 = packaged.hashes;
   }
   const { createFieldService } = require(bridgeFile);
   // A nonexistent explicit DLL makes even an accidental receiver path unable

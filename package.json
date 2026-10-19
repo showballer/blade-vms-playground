@@ -64,7 +64,8 @@
     "test:captures": "tsx scripts/test-capture-permissions.ts && tsx scripts/test-captures.ts",
     "test:capture-flow-e2e": "node --env-file=apps/web/.env.local scripts/test-capture-flow-e2e.mjs",
     "db:migrate-captures": "node --env-file=apps/web/.env.local scripts/migrate-captures.mjs",
-    "test:capture-main-e2e": "node --env-file=apps/web/.env.local scripts/test-field-main-capture-e2e.mjs"
+    "test:capture-main-e2e": "node --env-file=apps/web/.env.local scripts/test-field-main-capture-e2e.mjs",
+    "test:auto-follow": "tsx packages/ui/src/field-auto-follow-plan.test.ts && tsx --tsconfig apps/desktop/tsconfig.json packages/ui/src/field-auto-follow.test.tsx && tsx --tsconfig apps/desktop/tsconfig.json packages/ui/src/field-blade-summary.test.tsx"
   },
   "devDependencies": {
     "@types/node": "^22.19.0",

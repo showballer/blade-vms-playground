@@ -41,9 +41,24 @@ export type FieldConfig = {
   turntable?: FieldTurntableConfig;
 };
 export type FieldTurntableConfig = { port: string; axis: 1 | 2; speedRpm: number; direction: "forward" | "reverse"; durationSeconds: number; protocol?: "legacy_speed" | "continuous" | "position"; targetAngleDeg?: number };
-export type FieldPointCyclePoint = { pointId?: string; name: string; axis1AngleDeg: number; axis2AngleDeg: number; port?: string; referenceSignature?: string };
+export type FieldAutoFollowGeometry = {
+  distanceM: number; hubHeightDeltaM: number; rotationDirection: "clockwise" | "counterclockwise";
+  axis1Sign: 1 | -1; axis2Sign: 1 | -1; anchorRadiusM: number;
+  anchorAxis1AngleDeg: number; anchorAxis2AngleDeg: number;
+};
+export type FieldPointCyclePoint = { pointId?: string; name: string; axis1AngleDeg: number; axis2AngleDeg: number; port?: string; referenceSignature?: string;
+  bladeId?: string; radialPointId?: string; radialPointName?: string; radiusM?: number; azimuthDeg?: number };
+export type FieldPlannedStation = { pointId: string; bladeId: string; radialPointId: string; radialPointName: string; radiusM: number; azimuthDeg: number; stationIndex: number; stationCount: number };
+export type FieldAutomaticRecord = {
+  mode?: "automatic_stations" | "legacy"; sessionId?: string; bladeId?: string; radialPointId?: string; radialPointName?: string;
+  radiusM?: number; azimuthDeg?: number; stationIndex?: number; stationCount?: number; lapIndex?: number;
+  identitySource?: "operator_assigned"; identityVerified?: false; coverageKind?: "sparse_station_passes";
+  completion?: "confirmed_pass" | "missing_entry" | "missing_exit" | "signal_gap" | "cancelled" | "device_error";
+  plannedStations?: FieldPlannedStation[]; nominalPeriodSeconds?: number;
+};
 export type FieldPointCycleConfig = {
   port: string; points: FieldPointCyclePoint[]; cycles: number; dwellSeconds: number; speedRpm: number;
+  mode?: "automatic_stations" | "legacy"; nominalPeriodSeconds?: number; maxMoveRpm?: number; geometry?: FieldAutoFollowGeometry;
   rssiTriggerEnabled?: boolean; rssiThresholdMode?: "adaptive" | "absolute"; rssiLeaveThresholdPercent?: number;
   rssiBaselineRatio?: number; rssiSmoothingMs?: number; rssiConfirmMs?: number; rssiMotionMarginMs?: number; rssiMinimumSeconds?: number;
   rssiEnterSpread?: number; rssiExitSpread?: number; rssiEnterConfirmMs?: number;
@@ -143,7 +158,7 @@ export type FieldRecording = {
   sampleOrigin?: number | null;
   velocityRangeMps?: number | null;
   deviceSettings?: FieldDeviceSettings | null;
-  pointCycle?: { cycle: number; pointIndex: number; pointId?: string; pointName: string; cycles: number; dwellSeconds: number; targetAxis1AngleDeg: number; targetAxis2AngleDeg: number; actualAngles?: Record<string, number | null> };
+  pointCycle?: FieldAutomaticRecord & { cycle: number; pointIndex: number; pointId?: string; pointName: string; cycles: number; dwellSeconds: number; targetAxis1AngleDeg: number; targetAxis2AngleDeg: number; actualAngles?: Record<string, number | null> };
 };
 export type FieldRecordingDetail = {
   recording: FieldRecording;

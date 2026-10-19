@@ -43,6 +43,23 @@ function pointCycleConfig(value) {
       !Number.isFinite(value.dwellSeconds) || value.dwellSeconds < 1 || value.dwellSeconds > 3600 ||
       typeof value.speedRpm !== 'number' || !Number.isFinite(value.speedRpm) || value.speedRpm < 0.02 || value.speedRpm > 10)
     throw failure('无效多点循环参数：点位、圈数、停留时间或回位速度超出范围', 400);
+  if (value.mode !== undefined && !['legacy', 'automatic_stations'].includes(value.mode)) throw failure('无效自动跟随模式', 400);
+  const automatic = value.mode === 'automatic_stations';
+  const follow = {};
+  if (automatic) {
+    const number = (v, min, max) => typeof v === 'number' && Number.isFinite(v) && v >= min && v <= max;
+    const geometry = value.geometry;
+    const fields = ['distanceM', 'hubHeightDeltaM', 'rotationDirection', 'axis1Sign', 'axis2Sign', 'anchorRadiusM', 'anchorAxis1AngleDeg', 'anchorAxis2AngleDeg'];
+    if (value.rssiTriggerEnabled !== true || !number(value.nominalPeriodSeconds, 0.5, 3600) ||
+        !number(value.maxMoveRpm, 0.02, 10) || value.speedRpm > value.maxMoveRpm || Math.abs(value.speedRpm / 0.02 - Math.round(value.speedRpm / 0.02)) > 1e-7 ||
+        !geometry || typeof geometry !== 'object' || Array.isArray(geometry) || Object.keys(geometry).some(key => !fields.includes(key)) ||
+        !number(geometry.distanceM, 0.001, 10000) || !number(geometry.hubHeightDeltaM, -10000, 10000) ||
+        !number(geometry.anchorRadiusM, 0.001, 1000) || !number(geometry.anchorAxis1AngleDeg, -35, 35) || !number(geometry.anchorAxis2AngleDeg, -180, 180) ||
+        !['clockwise', 'counterclockwise'].includes(geometry.rotationDirection) || ![-1, 1].includes(geometry.axis1Sign) || ![-1, 1].includes(geometry.axis2Sign))
+      throw failure('自动跟随需要有效安装几何、周期、速度上限及进入离开判定', 400);
+    Object.assign(follow, { mode: 'automatic_stations', nominalPeriodSeconds: value.nominalPeriodSeconds,
+      maxMoveRpm: value.maxMoveRpm, geometry: Object.fromEntries(fields.map(key => [key, geometry[key]])) });
+  }
   const points = value.points.map(point => {
     if (!point || (point.pointId !== undefined && (typeof point.pointId !== 'string' || !point.pointId.trim() || point.pointId.length > 120)) ||
         typeof point.name !== 'string' || !point.name.trim() || point.name.length > 120 ||
@@ -50,7 +67,18 @@ function pointCycleConfig(value) {
         typeof point.axis2AngleDeg !== 'number' || !Number.isFinite(point.axis2AngleDeg) || Math.abs(point.axis2AngleDeg) > 180 ||
         point.port !== value.port || !validPointReference(point.referenceSignature))
       throw failure('无效多点循环点位：需要名称、有效角度、原串口和两轴参考位；历史点位请重新标定', 400);
-    return { ...(point.pointId !== undefined ? { pointId: point.pointId.trim() } : {}), name: point.name.trim(), axis1AngleDeg: point.axis1AngleDeg, axis2AngleDeg: point.axis2AngleDeg,
+    const identity = {};
+    if (automatic) {
+      for (const field of ['bladeId', 'radialPointId', 'radialPointName']) {
+        if (typeof point[field] !== 'string' || !point[field].trim() || point[field].length > 80) throw failure('自动跟随需要叶片编号和测点信息', 400);
+        identity[field] = point[field].trim();
+      }
+      if (!point.pointId || typeof point.radiusM !== 'number' || !Number.isFinite(point.radiusM) || point.radiusM < 0.001 || point.radiusM > 1000 ||
+          typeof point.azimuthDeg !== 'number' || !Number.isFinite(point.azimuthDeg) || point.azimuthDeg < 0 || point.azimuthDeg >= 360)
+        throw failure('自动跟随测点半径和圆周位置无效', 400);
+      Object.assign(identity, { radiusM: point.radiusM, azimuthDeg: point.azimuthDeg });
+    }
+    return { ...identity, ...(point.pointId !== undefined ? { pointId: point.pointId.trim() } : {}), name: point.name.trim(), axis1AngleDeg: point.axis1AngleDeg, axis2AngleDeg: point.axis2AngleDeg,
       port: point.port, referenceSignature: point.referenceSignature };
   });
   const echo = {};
@@ -79,7 +107,7 @@ function pointCycleConfig(value) {
   }
   if (echo.rssiTriggerEnabled && echo.rssiThresholdMode === 'absolute' && echo.rssiLeaveThresholdPercent === undefined)
     throw failure('绝对阈值模式需要填写 RSSI 离开阈值', 400);
-  return { port: value.port, points, cycles: value.cycles, dwellSeconds: value.dwellSeconds, speedRpm: value.speedRpm, ...echo };
+  return { port: value.port, points, cycles: value.cycles, dwellSeconds: value.dwellSeconds, speedRpm: value.speedRpm, ...echo, ...follow };
 }
 function freePort() {
   return new Promise((resolve, reject) => {

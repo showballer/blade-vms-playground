@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import asdict
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import time
@@ -95,18 +96,27 @@ class PointCyclePoint(BaseModel):
     axis2AngleDeg: float = Field(allow_inf_nan=False)
     port: SerialPort
     referenceSignature: str = Field(min_length=1, max_length=512)
+    bladeId: str | None = Field(default=None, min_length=1, max_length=80)
+    radialPointId: str | None = Field(default=None, min_length=1, max_length=80)
+    radialPointName: str | None = Field(default=None, min_length=1, max_length=120)
+    radiusM: float | None = Field(default=None, gt=0, le=1000, allow_inf_nan=False)
+    azimuthDeg: float | None = Field(default=None, ge=0, lt=360, allow_inf_nan=False)
 
-    @field_validator("name")
+    @field_validator("name", "pointId", "bladeId", "radialPointId", "radialPointName")
     @classmethod
     def point_name(cls, value: str) -> str:
+        if value is None:
+            return value
         value = value.strip()
         if not value:
             raise ValueError("循环点位名称不能为空")
         return value
 
-    @field_validator("axis1AngleDeg", "axis2AngleDeg", mode="before")
+    @field_validator("axis1AngleDeg", "axis2AngleDeg", "radiusM", "azimuthDeg", mode="before")
     @classmethod
     def point_angle(cls, value):
+        if value is None:
+            return value
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ValueError("循环点位角度必须是数字")
         return value
@@ -127,11 +137,47 @@ class PointCyclePoint(BaseModel):
         return self
 
 
+class PointCycleGeometry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    distanceM: float = Field(gt=0, le=10000, allow_inf_nan=False)
+    hubHeightDeltaM: float = Field(ge=-10000, le=10000, allow_inf_nan=False)
+    rotationDirection: Literal["clockwise", "counterclockwise"] = "clockwise"
+    axis1Sign: Literal[-1, 1] = 1
+    axis2Sign: Literal[-1, 1] = 1
+    anchorRadiusM: float = Field(gt=0, le=1000, allow_inf_nan=False)
+    anchorAxis1AngleDeg: float = Field(ge=-35, le=35, allow_inf_nan=False)
+    anchorAxis2AngleDeg: float = Field(ge=-180, le=180, allow_inf_nan=False)
+
+    @field_validator("distanceM", "hubHeightDeltaM", "axis1Sign", "axis2Sign", "anchorRadiusM",
+                     "anchorAxis1AngleDeg", "anchorAxis2AngleDeg", mode="before")
+    @classmethod
+    def numeric(cls, value):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("几何和轴向参数必须为有限数字")
+        return value
+
+    def angles(self, radius, azimuth):
+        phase = math.radians(azimuth)
+        # azimuth 0 is the measured six-o'clock anchor, viewed from the laser.
+        direction = -1 if self.rotationDirection == "clockwise" else 1
+        x = direction * radius * math.sin(phase)
+        y = self.hubHeightDeltaM - radius * math.cos(phase)
+        pitch = math.degrees(math.atan2(y, math.hypot(self.distanceM, x)))
+        yaw = math.degrees(math.atan2(x, self.distanceM))
+        base_pitch = math.degrees(math.atan2(self.hubHeightDeltaM - self.anchorRadiusM, self.distanceM))
+        return (self.anchorAxis1AngleDeg + self.axis1Sign * (pitch - base_pitch),
+                self.anchorAxis2AngleDeg + self.axis2Sign * yaw)
+
+
 class PointCycleConfig(BaseModel):
     """Validated parameters for a multi-point, multi-circle capture."""
     model_config = ConfigDict(extra="ignore")
     port: SerialPort
     points: list[PointCyclePoint] = Field(min_length=1, max_length=200)
+    mode: Literal["legacy", "automatic_stations"] = "legacy"
+    nominalPeriodSeconds: float = Field(default=30, ge=0.5, le=3600, allow_inf_nan=False)
+    maxMoveRpm: float = Field(default=0.6, ge=0.02, le=10, allow_inf_nan=False)
+    geometry: PointCycleGeometry | None = None
     cycles: StrictInt = Field(default=1, ge=1, le=100)
     dwellSeconds: float = Field(default=2, ge=1, le=3600, allow_inf_nan=False)
     speedRpm: float = Field(default=0.5, ge=0.02, le=10, allow_inf_nan=False)
@@ -155,7 +201,8 @@ class PointCycleConfig(BaseModel):
 
     @field_validator("dwellSeconds", "speedRpm", "rssiLeaveThresholdPercent", "rssiMinimumSeconds",
                      "rssiBaselineRatio", "rssiSmoothingMs", "rssiConfirmMs", "rssiMotionMarginMs",
-                     "rssiEnterSpread", "rssiExitSpread", "rssiEnterConfirmMs", mode="before")
+                     "rssiEnterSpread", "rssiExitSpread", "rssiEnterConfirmMs", "nominalPeriodSeconds",
+                     "maxMoveRpm", mode="before")
     @classmethod
     def cycle_numeric(cls, value):
         if value is None:
@@ -174,6 +221,38 @@ class PointCycleConfig(BaseModel):
             raise ValueError("离开波动阈值必须小于进入波动阈值")
         if self.rssiMinimumSeconds > self.dwellSeconds:
             raise ValueError("RSSI 最短采集时间不能超过每点采集时长")
+        if self.mode == "automatic_stations":
+            if not self.rssiTriggerEnabled:
+                raise ValueError("自动驻留换点必须确认RSSI进入及离开，不能按定时时长换点")
+            if self.geometry is None:
+                raise ValueError("自动站位需要真实六点方向标定及完整几何参数")
+            if self.speedRpm > self.maxMoveRpm:
+                raise ValueError("自动换点转速超过配置上限")
+            if not math.isclose(self.speedRpm / .02, round(self.speedRpm / .02), abs_tol=1e-8):
+                raise ValueError("自动换点转速必须为 0.02 rpm 的整数倍，不能由硬件向上取整")
+            groups, used, previous_group, finished_groups = {}, set(), None, set()
+            for point in self.points:
+                if not point.pointId or not all((point.bladeId, point.radialPointId, point.radialPointName)) or point.radiusM is None or point.azimuthDeg is None:
+                    raise ValueError("自动站位必须包含叶片、径向测点、半径、方位及唯一站位编号")
+                if point.pointId in used:
+                    raise ValueError("自动站位编号不能重复")
+                used.add(point.pointId)
+                group = (point.bladeId, point.radialPointId)
+                if group != previous_group:
+                    if group in finished_groups:
+                        raise ValueError("同一径向点的圆周站位须连续排列，不能交叉混入其他测点")
+                    if previous_group is not None:
+                        finished_groups.add(previous_group)
+                    previous_group = group
+                shape = groups.setdefault(group, {"radius": point.radiusM, "name": point.radialPointName, "angles": set()})
+                if abs(shape["radius"] - point.radiusM) > 1e-9 or shape["name"] != point.radialPointName:
+                    raise ValueError("同一径向测点的半径和名称必须一致")
+                if point.azimuthDeg in shape["angles"]:
+                    raise ValueError("同一径向点不能重复配置相同方位")
+                shape["angles"].add(point.azimuthDeg)
+                expected = self.geometry.angles(point.radiusM, point.azimuthDeg)
+                if abs(point.axis1AngleDeg - expected[0]) > 0.002 or abs(point.axis2AngleDeg - expected[1]) > 0.002:
+                    raise ValueError("自动站位角度与六点方向几何标定不一致")
         return self
 
 

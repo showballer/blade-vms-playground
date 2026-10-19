@@ -10,6 +10,7 @@ import math
 import os
 import threading
 import time
+import uuid
 from collections import OrderedDict, deque
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -1020,6 +1021,12 @@ class AcquisitionController:
         self.stop_event.clear()
         self.state, self.error = "starting", None
         self.point_cycle = {"state": "checking", "port": cycle.port, "cycles": cycle.cycles,
+                            "sessionId": uuid.uuid4().hex, "mode": cycle.mode,
+                            "sessionState": "running",
+                            "plannedStations": self._cycle_station_plan(cycle),
+                            "identitySource": "operator_assigned", "identityVerified": False,
+                            "coverageKind": "sparse_station_passes",
+                            "nominalPeriodSeconds": cycle.nominalPeriodSeconds,
                             "dwellSeconds": cycle.dwellSeconds, "speedRpm": cycle.speedRpm,
                             "rssiTriggerEnabled": cycle.rssiTriggerEnabled,
                             "rssiLeaveThresholdPercent": cycle.rssiLeaveThresholdPercent,
@@ -1279,12 +1286,30 @@ class AcquisitionController:
             if self.point_cycle is not None:
                 self.point_cycle.update(state=state, **extra)
             self.turntable_snapshot.update(state=state, **extra)
-            if self.writer and self.writer.manifest.get("turntable"):
+            if (self.writer and self.writer.manifest.get("status") == "incomplete" and
+                    self.writer.manifest.get("turntable")):
                 self.writer.manifest["turntable"].update(self.turntable_snapshot)
 
     @staticmethod
     def _cycle_point_reference(point: PointCyclePoint):
         return json.loads(point.referenceSignature)
+
+    @staticmethod
+    def _cycle_station_plan(cycle):
+        groups, indices = {}, {}
+        for point in cycle.points:
+            group = (point.bladeId, point.radialPointId)
+            groups[group] = groups.get(group, 0) + 1
+        plan = []
+        for ordinal, point in enumerate(cycle.points, 1):
+            group = (point.bladeId, point.radialPointId)
+            indices[group] = indices.get(group, 0) + 1
+            plan.append({"pointId": point.pointId or f"station-{ordinal}",
+                         "name": point.name, "bladeId": point.bladeId,
+                         "radialPointId": point.radialPointId, "radialPointName": point.radialPointName,
+                         "radiusM": point.radiusM, "azimuthDeg": point.azimuthDeg,
+                         "stationIndex": indices[group], "stationCount": groups[group]})
+        return plan
 
     @staticmethod
     def _point_travel_cost(current_angles: tuple[float, float], point: PointCyclePoint) -> float:
@@ -1370,116 +1395,81 @@ class AcquisitionController:
         return planned
 
     def _cycle_move_point(self, motor, cycle: PointCycleConfig, point: PointCyclePoint, on_command=None):
-        """Move both axes together and wait for both position controllers.
-
-        The serial protocol has one frame per axis, but the drive controllers
-        execute accepted position commands independently.  Sending both
-        frames before polling feedback makes the two axes travel concurrently;
-        the old implementation waited for axis 1 to stop before commanding
-        axis 2, which made every point transition unnecessarily serial.
-        """
+        """Own one axis at a time; feedback must confirm arrival before the other starts."""
         configs = [TurntableConfig(port=cycle.port, axis=axis, protocol="position",
                                    targetAngleDeg=angle, speedRpm=cycle.speedRpm)
                    for axis, angle in ((1, point.axis1AngleDeg), (2, point.axis2AngleDeg))]
-        active: list[TurntableConfig] = []
-        completed = []
+        completed, active = [], None
+        feedback = None
         try:
             feedback = motor_snapshot(motor, 1)
             require_ready(feedback)
             references = reference_key(feedback)
             expected = self._cycle_point_reference(point)
-            if expected is not None:
-                actual = [[references[str(axis)][key] for key in ("origin_counts", "display_mode", "command_counts_per_rev", "encoder_bits")]
-                          for axis in (1, 2)]
-                if actual != expected:
-                    raise RuntimeError(f"点位 {point.name} 记录后参考位或反馈计数单位已变化")
+            actual = [[references[str(axis)][key] for key in
+                       ("origin_counts", "display_mode", "command_counts_per_rev", "encoder_bits")]
+                      for axis in (1, 2)]
+            if expected is not None and actual != expected:
+                raise RuntimeError(f"点位 {point.name} 记录后参考位或反馈计数单位已变化")
+            # Both targets must be legal before either axis receives a command.
             for config in configs:
                 require_position_ready(feedback, config)
-                if reference_key(feedback) != references:
-                    raise RuntimeError("两轴参考位或反馈计数单位已变化，已取消循环")
-            pending = []
             for config in configs:
                 if self.stop_event.is_set():
                     return False, completed, feedback
-                self._cycle_update("holding" if position_reached(feedback, config) else "positioning",
-                                   axis=config.axis, targetAngleDeg=config.targetAngleDeg,
-                                   currentPoint=point.name)
+                # Selected-axis snapshot is also essential for axis-2 progress/deadline.
+                feedback = motor_snapshot(motor, config.axis)
+                require_position_ready(feedback, config)
+                if reference_key(feedback) != references:
+                    raise RuntimeError("两轴参考位或反馈计数单位已变化，已取消循环")
+                self._cycle_update("positioning", axis=config.axis,
+                                   targetAngleDeg=config.targetAngleDeg, currentPoint=point.name)
                 if position_reached(feedback, config):
                     completed.append(config.axis)
                     continue
-                pending.append((config, PositionProgress(feedback, config)))
-            if not pending:
-                return True, completed, feedback
-
-            # Both preflight checks passed while both axes were stopped.  Keep
-            # the guard armed across the pair, then issue both commands before
-            # entering the feedback loop.  The controller starts each axis as
-            # soon as its own command is accepted; the two serial transactions
-            # are only a few milliseconds apart.
-            self.motion_guard.mark(pending[-1][0], True, "循环点位运动停止尚未确认")
-            if on_command is not None:
-                on_command()
-            for config, _ in pending:
-                # Include an attempted command in cleanup even when its reply
-                # is lost; failure does not prove that the axis stayed still.
-                active.append(config)
-                if start_motor(motor, config, self.stop_event,
-                               prechecked_position=True) is None:
-                    active.pop()
-                    for running in active:
-                        motor.stop(running.axis)
-                        feedback = motor_snapshot(motor, running.axis)
-                        require_stop_confirmed(feedback, running)
-                    self.motion_guard.mark(pending[-1][0], False)
-                    return False, completed, feedback
-            settled = {config.axis: 0 for config, _ in pending}
-            while not self.stop_event.is_set():
-                feedback = motor_snapshot(motor, 1)
-                for config, progress in pending:
-                    axis_feedback = feedback["axes"][str(config.axis)]
-                    if axis_feedback["fault"] or axis_feedback["flags"] & 16:
-                        raise RuntimeError(f"轴{config.axis}运动检测到驱动器报警或限位异常")
-                    progress.check(feedback, config, allow_other_axis_motion=True)
-                    settled[config.axis] = settled[config.axis] + 1 if position_reached(feedback, config) else 0
-                    self._cycle_update("holding" if settled[config.axis] >= 1 else "positioning",
-                                       axis=config.axis, targetAngleDeg=config.targetAngleDeg,
-                                       currentPoint=point.name, positionAngleDeg=axis_feedback["output_angle_deg"])
-                if all(settled[config.axis] >= 1 for config, _ in pending):
-                    break
-                self.stop_event.wait(0.05)
-            if self.stop_event.is_set():
-                # Cancellation is different from normal controller arrival:
-                # stop every axis that received a point command and confirm
-                # each one before returning control to the caller.
-                for config in active:
+                progress = PositionProgress(feedback, config)
+                self.motion_guard.mark(config, True, "循环点位运动停止尚未确认")
+                active = config  # Lost command replies still require an explicit stop check.
+                if on_command is not None:
+                    on_command()
+                accepted = start_motor(motor, config, self.stop_event, prechecked_position=True)
+                if accepted is None and not self.stop_event.is_set():
+                    raise RuntimeError(f"轴{config.axis}定位指令未被接受")
+                while not self.stop_event.is_set():
+                    feedback = motor_snapshot(motor, config.axis)
+                    progress.check(feedback, config)
+                    self._cycle_update("positioning", axis=config.axis,
+                                       positionAngleDeg=feedback["outputAngleDeg"], currentPoint=point.name)
+                    if position_reached(feedback, config):
+                        require_ready(feedback)
+                        break
+                    self.stop_event.wait(0.05)
+                if self.stop_event.is_set():
                     motor.stop(config.axis)
                     feedback = motor_snapshot(motor, config.axis)
                     require_stop_confirmed(feedback, config)
-                self.motion_guard.mark(active[-1], False)
-                return False, completed, feedback
-            for config, _ in pending:
-                if not position_reached(feedback, config):
-                    raise RuntimeError(f"轴{config.axis}控制器报告到位后未保持目标角度")
+                    self.motion_guard.mark(config, False)
+                    active = None
+                    return False, completed, feedback
+                self.motion_guard.mark(config, False)
+                active = None
                 completed.append(config.axis)
-            # Normal arrival already includes target angle and zero-speed
-            # feedback from both position controllers.  No extra stop round
-            # trip is needed between adjacent points.
-            self.motion_guard.mark(pending[-1][0], False)
-            return len(completed) == 2 and not self.stop_event.is_set(), completed, feedback
+            # A fresh pair snapshot ensures axis 1 stayed at its target while axis 2 moved.
+            feedback = motor_snapshot(motor, 1)
+            require_ready(feedback)
+            if reference_key(feedback) != references or not all(position_reached(feedback, c) for c in configs):
+                raise RuntimeError("两轴最终到位或参考位确认失败")
+            self._cycle_update("holding", currentPoint=point.name, feedback=feedback)
+            return not self.stop_event.is_set(), completed, feedback
         except Exception:
-            if active:
-                failures = []
-                for config in active:
-                    try:
-                        motor.stop(config.axis)
-                        feedback = motor_snapshot(motor, config.axis)
-                        require_stop_confirmed(feedback, config)
-                    except Exception as stop_error:
-                        failures.append(f"轴{config.axis}：{stop_error}")
-                if failures:
-                    self.motion_guard.warning = f"循环点位停止未确认：{'; '.join(failures)}；请现场核查"
-                else:
-                    self.motion_guard.mark(active[-1], False)
+            if active is not None:
+                try:
+                    motor.stop(active.axis)
+                    feedback = motor_snapshot(motor, active.axis)
+                    require_stop_confirmed(feedback, active)
+                    self.motion_guard.mark(active, False)
+                except Exception as stop_error:
+                    self.motion_guard.warning = f"循环点位轴{active.axis}停止未确认：{stop_error}；请现场核查"
             raise
 
     def _capture_cycle_point(self, request: StartRequest, cycle: PointCycleConfig,
@@ -1497,14 +1487,26 @@ class AcquisitionController:
                                    "targetAxis1AngleDeg": point.axis1AngleDeg,
                                    "targetAxis2AngleDeg": point.axis2AngleDeg,
                                    **({"actualAngles": actual_angles} if actual_angles is not None else {})}
+        plan = copy.deepcopy(self.point_cycle["plannedStations"])
+        station = next(item for item in plan if item["pointId"] == point.pointId) if point.pointId else next(
+            item for item in plan if item["name"] == point.name)
+        metadata["pointCycle"].update(
+            **{key: station[key] for key in ("bladeId", "radialPointId", "radialPointName", "radiusM",
+                                             "azimuthDeg", "stationIndex", "stationCount")},
+            sessionId=self.point_cycle["sessionId"], mode=cycle.mode, lapIndex=cycle_index,
+            stationId=station["pointId"], plannedStations=plan,
+            nominalPeriodSeconds=cycle.nominalPeriodSeconds,
+            identitySource="operator_assigned", identityVerified=False,
+            coverageKind="sparse_station_passes",
+            outcome="incomplete")
         metadata["turntable"] = {"config": cycle.model_dump(exclude={"points"}),
                                   "state": "holding", "point": point.name,
                                   "cycle": cycle_index, "pointIndex": point_index,
                                   **({"pointId": point.pointId} if point.pointId is not None else {}),
                                   **({"actualAngles": actual_angles} if actual_angles is not None else {})}
         writer = self.store.create(metadata)
-        travel = (max(abs(next_point.axis1AngleDeg - point.axis1AngleDeg),
-                      abs(next_point.axis2AngleDeg - point.axis2AngleDeg)) / (6 * cycle.speedRpm)
+        travel = ((abs(next_point.axis1AngleDeg - point.axis1AngleDeg) +
+                   abs(next_point.axis2AngleDeg - point.axis2AngleDeg)) / (6 * cycle.speedRpm)
                   if next_point is not None else 0.0)
         with self.lock:
             self.writer = writer
@@ -1515,6 +1517,7 @@ class AcquisitionController:
             self.point_cycle.update(latestRssi=None, rssiSamples=0, rssiBelowSamples=0,
                                     rssiTrigger=None, rssiBaseline=None, rssiThreshold=None,
                                     rssiSpread=None, rssiEntryMs=0, rssiBelowMs=0,
+                                    signalGapCount=0, lastSignalGapReason=None,
                                     rssiPhase="waiting_blade" if cycle.rssiTriggerEnabled else None,
                                     nextPoint=next_point.name if next_point is not None else None)
             self._cycle_process("starting_capture", point=point.name)
@@ -1528,6 +1531,10 @@ class AcquisitionController:
                     # SDK shutdown/draining must not add moving samples to it.
                     with self.lock:
                         if not capture_stop.is_set():
+                            if cycle.mode == "automatic_stations" and (
+                                    batch.sample_start != writer.manifest["samples"] or
+                                    batch.sample_rate != writer.manifest["sampleRate"]):
+                                writer.manifest["pointCycle"].update(completion="signal_gap", outcome="incomplete")
                             self._receive(batch)
                 run_kwargs = ({"keep_laser_on": keep_laser_on, "abort": self.stop_event}
                               if getattr(receiver, "supports_laser_persistence", False) else {})
@@ -1567,6 +1574,11 @@ class AcquisitionController:
                 remaining = cycle.dwellSeconds - elapsed
                 if self.stop_event.is_set():
                     raise RuntimeError("循环采集被停止")
+                if cycle.mode == "automatic_stations" and self.rssi_handoff.status["signalGapCount"]:
+                    writer.manifest["pointCycle"].update(
+                        completion="signal_gap", outcome="incomplete",
+                        signalGapReason=self.rssi_handoff.status["lastSignalGapReason"])
+                    raise RuntimeError("RSSI 信号缺失或不连续，未自动换点；当前站位需要重新测量")
                 if capture_done.is_set():
                     raise RuntimeError("该点采集提前退出：" + ("; ".join(capture_errors) or "数据流已结束"))
                 if cycle.rssiTriggerEnabled and self.rssi_event.is_set():
@@ -1579,6 +1591,11 @@ class AcquisitionController:
                                        estimatedTravelSeconds=travel,
                                        boundary="raw capture frozen before motion command")
                         writer.manifest["pointCycle"]["handoff"] = trigger
+                        writer.manifest["pointCycle"].update(
+                            completion="confirmed_pass", outcome="observed",
+                            observedSamples=trigger["observedSamples"],
+                            entrySampleIndex=trigger["entrySampleIndex"],
+                            exitSampleIndex=trigger["exitConfirmedSampleIndex"])
                     # The coordinator still owns the serial port. Start the
                     # next move now, while the DAQ thread closes independently.
                     # No motion samples can enter this point's record.
@@ -1587,6 +1604,9 @@ class AcquisitionController:
                     break
                 if remaining <= 0:
                     if cycle.rssiTriggerEnabled:
+                        writer.manifest["pointCycle"].update(
+                            completion="missing_exit" if self.rssi_handoff.armed else "missing_entry",
+                            outcome="missed")
                         raise RuntimeError(f"点位 {point.name} 等待叶片进入并离开超时，未自动换点；请检查光路或延长最长等候时间")
                     break
                 self.rssi_event.wait(min(0.01, remaining))
@@ -1603,14 +1623,19 @@ class AcquisitionController:
             return writer
         except Exception as exc:
             failure = str(exc)
+            if writer.manifest["pointCycle"].get("completion") is None:
+                writer.manifest["pointCycle"].update(
+                    completion="cancelled" if self.stop_event.is_set() else "device_error",
+                    outcome="cancelled" if self.stop_event.is_set() else "error")
             raise
         finally:
             capture_stop.set()
             if thread.is_alive():
                 thread.join(20)
             with self.lock:
-                self.capture_thread = None
-                self.capture_stop = None
+                if not thread.is_alive():
+                    self.capture_thread = None
+                    self.capture_stop = None
                 self.rssi_handoff = None
                 if failure and writer.manifest.get("status") == "incomplete":
                     try:
@@ -1644,10 +1669,12 @@ class AcquisitionController:
                                                                       protocol="position", targetAngleDeg=angle,
                                                                       speedRpm=cycle.speedRpm))
             anchor = cycle.points[0]
-            planned_points = self._plan_point_order(feedback, cycle.points, anchor)
+            planned_points = (list(cycle.points) if cycle.mode == "automatic_stations" else
+                              self._plan_point_order(feedback, cycle.points, anchor))
             planned_names = [point.name for point in planned_points]
             self._cycle_update("ready", connected=True, references=references,
-                               routeStrategy="closed-nearest-neighbor-linear-safe",
+                               routeStrategy=("configured-station-order" if cycle.mode == "automatic_stations"
+                                              else "closed-nearest-neighbor-linear-safe"),
                                plannedOrder=planned_names)
             receiver = first_receiver
             prefetched_feedback = None
@@ -1657,7 +1684,8 @@ class AcquisitionController:
                 # return jump between the last point of one circle and the
                 # first point of the next circle.
                 feedback = motor_snapshot(motor, 1)
-                planned_points = self._plan_point_order(feedback, cycle.points, anchor)
+                planned_points = (list(cycle.points) if cycle.mode == "automatic_stations" else
+                                  self._plan_point_order(feedback, cycle.points, anchor))
                 planned_names = [point.name for point in planned_points]
                 self._cycle_update("ready", cycle=cycle_index,
                                    plannedOrder=planned_names)
@@ -1681,7 +1709,8 @@ class AcquisitionController:
                         final_feedback, prefetched_feedback = prefetched_feedback, None
                     self._cycle_process("arrived", point=point.name)
                     actual_angles = {str(axis): final_feedback["axes"][str(axis)]["output_angle_deg"] for axis in (1, 2)}
-                    next_point = planned_points[point_index] if point_index < len(planned_points) else anchor
+                    next_point = (planned_points[point_index] if point_index < len(planned_points) else
+                                  anchor if cycle_index < cycle.cycles or cycle.mode != "automatic_stations" else None)
 
                     def handoff(trigger):
                         nonlocal prefetched_feedback
@@ -1690,7 +1719,7 @@ class AcquisitionController:
                             with self.lock:
                                 self._cycle_process("moving", point=next_point.name,
                                                     fromPoint=point.name)
-                                trigger["motionCommandAt"] = time.time()
+                                trigger.setdefault("motionCommandAt", time.time())
                                 self.writer.manifest["pointCycle"]["handoff"].update(trigger)
 
                         reached, _, arrival = self._cycle_move_point(motor, cycle, next_point,
@@ -1709,7 +1738,7 @@ class AcquisitionController:
                         self.point_cycle["state"] = "capturing"
                     current_writer = self._capture_cycle_point(request, cycle, point, cycle_index,
                                                               point_index, receiver, actual_angles,
-                                                              next_point, handoff,
+                                                              next_point, handoff if next_point is not None else None,
                                                               keep_laser_on=cycle.keepLaserOnBetweenPoints)
                     with self.lock:
                         self.point_cycle["completedRecords"] += 1
@@ -1723,6 +1752,8 @@ class AcquisitionController:
                 # Finish every circle at the first configured point.  This is
                 # a positioning move only; it must not create a duplicate
                 # measurement record for the anchor point.
+                if cycle.mode == "automatic_stations" and cycle_index == cycle.cycles:
+                    continue  # No unrequested return motion after the final observed pass.
                 self._cycle_update("positioning", cycle=cycle_index,
                                    point=len(planned_points), currentPoint=f"回到起点 {anchor.name}",
                                    plannedOrder=planned_names)
@@ -1762,10 +1793,12 @@ class AcquisitionController:
                 except Exception as exc:
                     failures.append(f"关闭转盘串口失败：{exc}")
             with self.lock:
-                self.capture_thread = None
-                self.capture_stop = None
+                if not self.capture_thread or not self.capture_thread.is_alive():
+                    self.capture_thread = None
+                    self.capture_stop = None
                 cycle_state = "error" if failures else "cancelled" if cancelled else "complete"
                 self.point_cycle = {**(self.point_cycle or {}), "state": cycle_state,
+                                    "sessionState": cycle_state,
                                     "error": "; ".join(failures) or ("循环采集已停止" if cancelled else None)}
                 self._cycle_process(cycle_state, error=self.point_cycle["error"])
                 self.turntable_snapshot.update(state="error" if failures else "stopped",

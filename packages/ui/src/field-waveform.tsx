@@ -94,7 +94,7 @@ export const FieldWaveChart = memo(function FieldWaveChart({ waveform, kind = "v
     return { width, height, left, right, top, bottom, minimum, maximum, pointX, pointY, path, isolated, start, end,
       clipped: kind === "velocity" && largest > limit };
   }, [waveform, kind, yLimit, unit, compact, plotWidth]);
-  if (!chart || !waveform) return <div className={`field-chart-empty ${kind === "rssi" || compact ? "compact" : ""}`}><AudioLines size={28} /><strong>{kind === "rssi" ? "等待 RSSI 数据" : "等待振动数据"}</strong><span>开始设备采集或模拟采集后显示输入波形。</span></div>;
+  if (!chart || !waveform) return <div className={`field-chart-empty ${kind === "rssi" || compact ? "compact" : ""}`}><AudioLines size={28} /><strong>{kind === "rssi" ? "等待 RSSI 数据" : "等待振动数据"}</strong><span>开始采集后显示输入波形。</span></div>;
   const { width, height, left, right, top, bottom, minimum, maximum, pointY, pointX, path, start, end } = chart;
   const format = (value: number) => Math.abs(value) > 0 && Math.abs(value) < 0.001 ? value.toExponential(1) : Number(value.toPrecision(5)).toLocaleString("zh-CN");
   const endpointLabels = [start, end].map(sample => formatWaveTime(sample, waveform, timeMode));

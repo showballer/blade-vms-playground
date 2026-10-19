@@ -122,7 +122,7 @@ check("未知采样率只能显示样本序号", () => {
 check("空波形等待显式设备或模拟输入，不自行绘制数据", () => {
   const html = renderToStaticMarkup(<FieldWaveChart />);
   assert.ok(html.includes("等待振动数据"));
-  assert.ok(html.includes("开始设备采集或模拟采集后显示输入波形"));
+  assert.ok(html.includes("开始采集后显示输入波形"));
   assert.ok(!html.includes('class="field-wave-svg"'));
 });
 check("真实速度曲线标注单位和时间轴", () => {
@@ -309,7 +309,7 @@ check("统一密码页保留三项输入和 12–128 位校验，说明联网与
 check("记录空态不预置数据", () => {
   const html = renderToStaticMarkup(<FieldRecordingList recordings={[]} busy={false} onSelect={() => {}} />);
   assert.ok(html.includes("还没有采集记录"));
-  assert.ok(html.includes("完成设备或模拟采集后"));
+  assert.ok(html.includes("完成采集后"));
   assert.ok(!html.includes("<table"));
 });
 check("模拟记录必须展示来源且不会因模拟来源掩盖异常状态", () => {

@@ -1,6 +1,6 @@
 {
   "name": "@blade/desktop",
-  "version": "1.5.2",
+  "version": "1.5.3",
   "private": true,
   "type": "module",
   "description": "BladeVMS 现场采集与分析工作台",
@@ -40,8 +40,22 @@
     ],
     "beforePack": "build/before-pack.cjs",
     "extraResources": [
-      { "from": "resources/acquisition", "to": "acquisition", "filter": ["**/*", "!.gitkeep"] },
-      { "from": "resources/prerequisites", "to": "prerequisites", "filter": ["**/*", "!.gitkeep"] }
+      {
+        "from": "resources/acquisition",
+        "to": "acquisition",
+        "filter": [
+          "**/*",
+          "!.gitkeep"
+        ]
+      },
+      {
+        "from": "resources/prerequisites",
+        "to": "prerequisites",
+        "filter": [
+          "**/*",
+          "!.gitkeep"
+        ]
+      }
     ],
     "win": {
       "target": [
@@ -53,7 +67,9 @@
         },
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "signAndEditExecutable": false

@@ -1,29 +1,10 @@
-name: Windows x64 full installer
+name: Windows x64 private test installer
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/windows-full.yml'
-      - 'apps/desktop/**'
-      - 'packages/ui/**'
-      - 'services/acquisition/**'
-      - 'vendor/polytec/**'
-      - 'scripts/*windows*'
-      - 'scripts/test-field-service.cjs'
-      - 'scripts/test-field-window.cjs'
-      - 'scripts/field-waveform-smoke.cjs'
-      - 'scripts/test-local-auth.cjs'
-      - 'scripts/test-unified-auth.cjs'
-      - 'scripts/test-field-account-bridge.cjs'
-      - 'scripts/test-field-cloud-sync.cjs'
-      - 'package.json'
-      - 'package-lock.json'
-      - 'WINDOWS_TEST_GUIDE.md'
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: windows-full-${{ github.ref }}
@@ -62,10 +43,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Field unit tests failed' }
           npm run test:single-point:ui
           if ($LASTEXITCODE -ne 0) { throw 'Single-point and motion-trial UI tests failed' }
+          npm run test:auto-follow
+          if ($LASTEXITCODE -ne 0) { throw 'Automatic station planning, production UI and blade summary tests failed' }
           node scripts/test-field-capture-main.cjs
           if ($LASTEXITCODE -ne 0) { throw 'Single-point capture bridge tests failed' }
           node --test scripts/test-windows-motion-trial-gate.cjs
           if ($LASTEXITCODE -ne 0) { throw 'Frozen motion-trial gate contract tests failed' }
+          node --test scripts/test-windows-packaged-bridge.cjs
+          if ($LASTEXITCODE -ne 0) { throw 'Packaged bridge integrity tests failed' }
           npm run test:unified-auth
           if ($LASTEXITCODE -ne 0) { throw 'Unified account tests failed' }
           npm run test:field-cloud-sync
@@ -99,27 +84,36 @@ jobs:
           } | Set-Content -Encoding utf8NoBOM apps/desktop/release/SHA256SUMS.txt
           Copy-Item WINDOWS_TEST_GUIDE.md apps/desktop/release/
           Copy-Item CLOUD_CAPTURE_FLOW.md apps/desktop/release/
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: BladeVMS-${{ steps.desktop.outputs.version }}-windows-x64-full
-          path: |
-            apps/desktop/release/BladeVMS-Setup-${{ steps.desktop.outputs.version }}-x64.exe
-            apps/desktop/release/BladeVMS-${{ steps.desktop.outputs.version }}-win.zip
-            apps/desktop/release/SHA256SUMS.txt
-            apps/desktop/release/WINDOWS_TEST_GUIDE.md
-            apps/desktop/release/CLOUD_CAPTURE_FLOW.md
-          if-no-files-found: error
-          retention-days: 30
-          compression-level: 0
-      - name: Upload hardware-free verification evidence
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: windows-verification-evidence
-          path: |
-            artifacts/windows-bundle-smoke/
-            artifacts/windows-simulation-smoke/report.json
-            artifacts/windows-motion-trial-smoke/report.json
-            artifacts/field-waveform-smoke/
-          if-no-files-found: warn
-          retention-days: 30
+          Copy-Item docs/AUTOMATIC_FOLLOWING.md apps/desktop/release/
+      - name: Deliver verified test build as a private draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ steps.desktop.outputs.version }}
+        run: |
+          $private = gh api "repos/$env:GITHUB_REPOSITORY" --jq '.private'
+          if ($LASTEXITCODE -ne 0 -or $private.Trim() -ne 'true') { throw 'Test delivery requires the existing private repository' }
+          $tag = "test-v$env:RELEASE_VERSION-$env:GITHUB_RUN_ID"
+          $notes = @"
+          Windows test build $env:RELEASE_VERSION
+          Commit: $env:GITHUB_SHA
+          Build: https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID
+          Hardware-free package checks passed. Physical turntable, laser and blade-entry/exit validation is still pending.
+          This private draft does not update the production download endpoint.
+          "@
+          $notes | Set-Content -Encoding utf8NoBOM apps/desktop/release/BUILD_NOTES.md
+          $evidence = @('artifacts/windows-bundle-smoke', 'artifacts/windows-simulation-smoke/report.json', 'artifacts/windows-motion-trial-smoke/report.json', 'artifacts/field-waveform-smoke')
+          Compress-Archive -Path $evidence -DestinationPath apps/desktop/release/windows-verification-evidence.zip
+          $assets = @(
+            "apps/desktop/release/BladeVMS-Setup-$env:RELEASE_VERSION-x64.exe",
+            "apps/desktop/release/BladeVMS-$env:RELEASE_VERSION-win.zip",
+            'apps/desktop/release/SHA256SUMS.txt',
+            'apps/desktop/release/WINDOWS_TEST_GUIDE.md',
+            'apps/desktop/release/AUTOMATIC_FOLLOWING.md',
+            'apps/desktop/release/CLOUD_CAPTURE_FLOW.md',
+            'apps/desktop/release/BUILD_NOTES.md',
+            'apps/desktop/release/windows-verification-evidence.zip'
+          )
+          foreach ($asset in $assets) { if (-not (Test-Path $asset)) { throw "Missing verified delivery asset: $asset" } }
+          gh release create $tag @assets --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --draft --title "BladeVMS $env:RELEASE_VERSION Windows test" --notes-file apps/desktop/release/BUILD_NOTES.md
+          if ($LASTEXITCODE -ne 0) { throw 'Private draft delivery failed' }
+          "Private test draft: $tag" >> $env:GITHUB_STEP_SUMMARY

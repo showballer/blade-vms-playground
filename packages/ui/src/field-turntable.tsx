@@ -17,8 +17,9 @@ function axisDrafts(): Partial<Record<1 | 2, FieldTurntableConfig>> {
     return Object.fromEntries(([1, 2] as const).filter(axis => saved?.[axis]?.axis === axis && saved[axis].protocol === "position").map(axis => [axis, saved[axis]]));
   } catch { return {}; }
 }
-export function FieldTurntableSetup({ config, onConfig, status, disabled, request }: {
+export function FieldTurntableSetup({ config, onConfig, status, disabled, request, showPointCycle = true }: {
   config: FieldConfig; onConfig: React.Dispatch<React.SetStateAction<FieldConfig>>; status: FieldStatus | null; disabled: boolean;
+  showPointCycle?: boolean;
   request: <T>(options: FieldRequestOptions) => Promise<T>;
 }) {
   const [ports, setPorts] = useState<{ port: string; description: string }[]>([]);
@@ -232,10 +233,10 @@ export function FieldTurntableSetup({ config, onConfig, status, disabled, reques
           <div className="field-table-scroll" role="region" aria-label="已记录叶片点位" tabIndex={0}><table className="field-table"><thead><tr><th>叶片 / 点位</th><th>圆周序号</th><th>轴1俯仰</th><th>轴2水平</th><th>原始计数</th><th>记录时间</th></tr></thead><tbody>{points.map((point, index) => <tr key={`${point.recordedAt}-${index}`}><td>{point.name}<small>叶片 {point.bladeIndex} · 点位 {point.bladePointIndex}</small></td><td>{point.circleIndex} / {point.circleStepDeg}°</td><td>{point.axis1AngleDeg == null ? "—" : `${point.axis1AngleDeg.toFixed(3)}°`}</td><td>{point.axis2AngleDeg == null ? "—" : `${point.axis2AngleDeg.toFixed(3)}°`}</td><td className="mono">{point.axis1RawCounts ?? "—"} / {point.axis2RawCounts ?? "—"}</td><td>{new Date(point.recordedAt).toLocaleTimeString("zh-CN", { hour12: false })}</td></tr>)}</tbody></table></div>
         </>}
       </section>}
-      {positionMode && <section className="field-turntable-test field-turntable-block" aria-label="自动多点循环采集">
+      {positionMode && showPointCycle && <section className="field-turntable-test field-turntable-block" aria-label="自动多点循环采集">
         <div className="field-section-heading"><div><h3>自动多点循环采集</h3><p>使用转盘点位库；每圈以首个点位为起点，按两轴最短安全移动距离规划顺序，采集完成后回到首点，每个点独立保存一条测振记录。</p></div><span className={`field-badge ${cycle?.state === "complete" ? "green" : cycle ? "amber" : ""}`}>{cycle ? `${cycle.completedRecords}/${cycle.totalRecords} 条` : "待开始"}</span></div>
         <div className="field-config-grid"><label>循环圈数<input aria-label="自动循环圈数" type="number" min={1} max={100} step={1} disabled={locked} value={cycleCount} onChange={event => setCycleCount(Math.max(1, Math.min(100, Math.trunc(Number(event.target.value) || 1))))} /></label><label>{rssiTriggerEnabled ? "每点最长等候（秒）" : "每点采集（秒）"}<input aria-label="每点采集秒数" type="number" min={1} max={3600} step={1} disabled={locked} value={dwellSeconds} onChange={event => setDwellSeconds(Math.max(1, Math.min(3600, Number(event.target.value) || 1)))} /></label><label>换点速度（rpm）<CustomSelect aria-label="自动循环换点速度" disabled={locked} value={cycleSpeedRpm} onChange={event => { const speed = Number(event.target.value); if ([0.5, 1, 2, 5, 10].includes(speed)) setCycleSpeedRpm(speed); }}><option value={0.5}>0.5 rpm</option><option value={1}>1 rpm</option><option value={2}>2 rpm</option><option value={5}>5 rpm</option><option value={10}>10 rpm</option></CustomSelect></label></div>
-        <p className="field-subtext">有效点位 {cyclePoints.length} 个，预计保存 {cyclePoints.length * cycleCount} 条独立记录。两轴并行运动，{rssiTriggerEnabled ? `到位后等待叶片进入并离开，最长 ${dwellSeconds} 秒；超时停止，不强制换点` : `到位后采集 ${dwellSeconds} 秒`}；每圈结束回到首个点位。轴2按 ±180° 有效范围直达，不跨边界绕行。</p>
+        <p className="field-subtext">有效点位 {cyclePoints.length} 个，预计保存 {cyclePoints.length * cycleCount} 条独立记录。两轴依次定位并确认停稳，{rssiTriggerEnabled ? `到位后等待叶片进入并离开，最长 ${dwellSeconds} 秒；超时停止，不强制换点` : `到位后采集 ${dwellSeconds} 秒`}；每圈结束回到首个点位。轴2按 ±180° 有效范围直达，不跨边界绕行。</p>
         <div className="field-config-grid">
           <label className="field-turntable-toggle"><input type="checkbox" disabled={locked} checked={rssiTriggerEnabled} onChange={event => { setRssiTriggerEnabled(event.target.checked); if (event.target.checked) setDwellSeconds(previous => Math.max(60, previous)); }} />确认叶片离开后换点</label>
           <label>进入波动阈值（百分点）<input aria-label="RSSI 进入波动阈值" type="number" min={0.1} max={100} step={0.5} disabled={locked || !rssiTriggerEnabled} value={rssiEnterSpread} onChange={event => setRssiEnterSpread(Math.max(0.1, Math.min(100, Number(event.target.value) || 8)))} /></label>

@@ -68,7 +68,7 @@ const RealtimePlot = memo(function RealtimePlot({ realtime, view, active }: { re
   const option = useMemo(() => realtimeChartOption(realtime, view), [realtime, view]);
   const current = views.find(item => item.id === view)!;
   return option ? <Chart key={realtime?.recordingId} active={active} height={340} label={`实时${current.title}，${view === "spectrogram" ? "dB re 1 m/s" : "毫米每秒"}`} option={option} updateMode="merge" />
-    : <div className="field-chart-empty"><Waves size={28} /><strong>等待{current.title}数据</strong><span>开始设备采集或模拟采集，连续窗口达到 64 点后显示。</span></div>;
+    : <div className="field-chart-empty"><Waves size={28} /><strong>等待{current.title}数据</strong><span>开始采集，连续窗口达到 64 点后显示。</span></div>;
 }, (previous, next) => previous.active === next.active && (!next.active || previous.realtime === next.realtime && previous.view === next.view));
 
 export const FieldRealtimeAnalysis = memo(function FieldRealtimeAnalysis({ realtime, paused = false, active = true }: { realtime?: FieldRealtime; paused?: boolean; active?: boolean }) {
