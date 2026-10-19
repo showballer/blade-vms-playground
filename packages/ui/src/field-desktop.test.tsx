@@ -8,8 +8,9 @@ import { FieldAccountPanel, FieldCloudSyncPanel, FieldBindAccountDialog, fieldAc
 import { clampWaveRange, formatWaveTime, waveBounds, waveScaleDraft, type WaveScaleDraft } from "./field-waveform";
 import { FieldDeviceSnapshot } from "./field-device";
 import { FieldCycleProgress } from "./field-cycle-progress";
-import { FieldTurntableManual, FieldTurntableSetup, manualAngleRecordReady, manualPointRecallError } from "./field-turntable";
-import { fieldTurntableReady, type FieldTurntableConfig } from "./field-types";
+import { FieldAcquisition } from "./field-acquisition";
+import { FieldTurntableManual, manualAngleRecordReady, manualPointRecallError } from "./field-turntable";
+import { fieldCaptureConfig, fieldTurntableReady, type FieldTurntableConfig } from "./field-types";
 
 let checks = 0;
 function check(name: string, run: () => void) { run(); checks += 1; console.log("PASS " + name); }
@@ -26,9 +27,9 @@ check("跟随流程保留短暂进入离开状态，移动与到位动作可回�
   assert.ok(failed.includes("流程异常")); assert.ok(failed.includes("等待超时"));
   assert.equal(renderToStaticMarkup(<FieldCycleProgress status={ready} />), "");
 });
-check("独立转盘点位模块只提供单轴微调、定位和两轴记录", () => {
+check("转盘手动模式保留单轴微调、定位和两轴记录", () => {
   const html = renderToStaticMarkup(<FieldTurntableManual status={ready} disabled={false} request={async <T,>() => ({} as T)} />);
-  for (const label of ["转盘手动点位控制", "当前轴 −步长", "当前轴 +步长", "移动到目标点", "读取并记录两轴角度", "设当前轴为初始位", "软限位", "独立于测振仪和联合采集"]) assert.ok(html.includes(label));
+  for (const label of ["转盘手动点位控制", "当前轴 −步长", "当前轴 +步长", "移动到目标点", "读取并记录两轴角度", "设当前轴为初始位", "软限位", "手动瞄准、点位回位与定位采集"]) assert.ok(html.includes(label));
 });
 check("Mac 串口可读取反馈，未建立参考位时运动仍禁用", () => {
   const port = "/dev/cu.SLAB_USBtoUART";
@@ -101,13 +102,22 @@ check("联合转盘采集需完成当前参数设置，试转通过本身不放�
   }
   assert.equal(fieldTurntableReady({ ...prepared, turntableBusy: true }, config), false);
   assert.equal(fieldTurntableReady({ ...prepared, turntableWarning: "停止未确认" }, config), false);
-  const html = renderToStaticMarkup(<FieldTurntableSetup config={{ name: "test", deviceIp: "", hostIp: "", object: "", turbine: "", point: "", turntable: config }} onConfig={() => {}} status={ready} disabled={false} request={async <T,>() => ({} as T)} />);
-  for (const label of ["读取转盘工况", "独立试转", "自动停止", "实际输出轴转速", "试转变化量", "允许联合采集"]) assert.ok(html.includes(label));
+  assert.equal(fieldCaptureConfig({ name: " test ", deviceIp: " 192.168.1.2 ", hostIp: "192.168.1.3", object: "", turbine: "", point: "", turntable: config }).turntable, undefined);
 });
-check("定位模式提供叶片点位标定入口和导出操作", () => {
-  const config: FieldTurntableConfig = { port: "COM6", axis: 1, speedRpm: 0.2, direction: "forward", durationSeconds: 0, protocol: "position", targetAngleDeg: 0 };
-  const html = renderToStaticMarkup(<FieldTurntableSetup config={{ name: "test", deviceIp: "", hostIp: "", object: "", turbine: "", point: "", turntable: config }} onConfig={() => {}} status={{ ...ready, turntable: { state: "checked", port: "COM6", axis: 1, feedback: { outputRpm: 0, motorRpm: 0, alarmCode: 0, limitFlags: 0, positionRaw: 0 } } }} disabled={false} request={async <T,>() => ({} as T)} />);
-  assert.ok(html.includes("叶片点位标定模式"));
+check("普通采集丢弃遗留运动草稿，不显示转盘开关或配置且无需转盘准备", () => {
+  const config = { name: "test", deviceIp: "192.168.1.2", hostIp: "192.168.1.3", object: "", turbine: "", point: "", turntable: { port: "COM3", axis: 1 as const, speedRpm: .2, direction: "forward" as const, durationSeconds: 0 } };
+  const stale = { ...config, pointCycle: { port: "COM3" }, confirmMotion: true };
+  assert.deepEqual(fieldCaptureConfig(stale), { name: "test", deviceIp: "192.168.1.2", hostIp: "192.168.1.3", object: "", turbine: "", point: "" });
+  const html = renderToStaticMarkup(<FieldAcquisition config={config} onConfig={() => {}} source="device" status={ready} busy="" pollError="" windowMs={1000} onWindow={() => {}} refreshMs={100} onRefresh={() => {}} request={async <T,>() => ({} as T)} onDeviceStart={() => {}} onStop={() => {}} onService={() => {}} onRecords={() => {}} />);
+  assert.ok(!html.includes("联动转盘与测振仪")); assert.ok(!html.includes("转盘串口")); assert.ok(!html.includes("采集前转盘检查"));
+  assert.match(html, /<button(?![^>]*disabled)[^>]*>.*?开始采集<\/button>/s);
+});
+check("联合采集位于手动模式并复用现有定位参数", () => {
+  const config = { name: "test", deviceIp: "192.168.1.2", hostIp: "192.168.1.3", object: "", turbine: "", point: "" };
+  const html = renderToStaticMarkup(<FieldTurntableManual status={ready} disabled={false} request={async <T,>() => ({} as T)} capture={{ config, onConfig: () => {}, onStart: () => {}, onStop: () => {}, onWaveform: () => {} }} />);
+  assert.ok(html.includes('aria-label="定位并采集"')); assert.ok(html.includes("先接收测振数据，再移动当前轴"));
+  assert.equal((html.match(/aria-label="手动控制转盘串口"/g) || []).length, 1);
+  assert.ok(html.includes("联合采集自动停止秒数")); assert.ok(!html.includes("联动转盘与测振仪"));
 });
 check("抽样步长参与时间轴，不能把抽样预览误当连续样本", () => {
   assert.equal(fieldSampleX(waveform, 0), 50);
@@ -424,6 +434,6 @@ check("定位配置按轴限制角度，改目标后准备状态失效，参考�
   assert.equal(validateFieldConfig({ ...config, turntable: { ...turntable, axis: 2, targetAngleDeg: -180 } }), null);
   const status: FieldStatus = { ...ready, turntablePreparation: { ready: true, config: turntable, checkedAt: 1 } };
   assert.equal(fieldTurntableReady(status, { ...turntable, targetAngleDeg: 21 }), false);
-  const html = renderToStaticMarkup(<FieldTurntableSetup config={config} onConfig={() => {}} status={status} disabled={false} request={async <T,>() => ({} as T)} />);
-  for (const label of ["俯仰 ±35°", "水平 ±180°", "+25°", "设当前轴参考位", "目标输出轴角度", "软限位", "几何换算待提供"]) assert.ok(html.includes(label), label);
+  const html = renderToStaticMarkup(<FieldStartDialog config={config} busy={false} error="" onClose={() => {}} onStart={() => {}} />);
+  for (const label of ["定位至 20°", "到位后保持采集", "先停止转盘"]) assert.ok(html.includes(label), label);
 });

@@ -21,7 +21,7 @@ check("生产入口只有转盘手动与自动标签，没有单点、试运行�
   assert.ok(!html.includes("单点跟随")); assert.ok(!html.includes("转速试运行")); assert.ok(!html.includes("模拟采集"));
   const source = readFileSync(new URL("./field-desktop.tsx", import.meta.url), "utf8");
   assert.ok(!source.includes("FieldSinglePoint")); assert.ok(!source.includes("field-debug-toggle"));
-  assert.ok(source.includes('source="device" showPointCycle={false}'));
+  assert.ok(source.includes('source="device" config={config}'));
   assert.ok(source.includes("FieldBladeSummary"));
 });
 check("默认30秒模型只生成输入，没有参考位与隐式开机请求", () => {

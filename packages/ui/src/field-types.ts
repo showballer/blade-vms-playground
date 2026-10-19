@@ -243,6 +243,13 @@ export function fieldTurntableReady(status: FieldStatus | null, config?: FieldTu
   return !config || !!status?.turntablePreparation?.ready && !status.turntableWarning && !status.turntableBusy &&
     fieldTurntableMatches(status.turntablePreparation.config, config);
 }
+
+/** Ordinary acquisition never inherits motion instructions from a form draft. */
+export function fieldCaptureConfig(config: FieldConfig): FieldConfig {
+  const text = (value: unknown) => typeof value === "string" ? value.trim() : "";
+  return { name: text(config.name), deviceIp: text(config.deviceIp), hostIp: text(config.hostIp),
+    object: text(config.object), turbine: text(config.turbine), point: text(config.point) };
+}
 export type FieldRequest = (options: FieldRequestOptions) => Promise<{ status: number; data: unknown }>;
 
 export function validateFieldConfig(config: FieldConfig): string | null {

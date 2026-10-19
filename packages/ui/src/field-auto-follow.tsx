@@ -19,6 +19,7 @@ type Props = {
   request: <T>(options: FieldRequestOptions) => Promise<T>;
   onStatus: (status: FieldStatus) => void; onRecords: () => void; onService: () => void;
   onOperationBusy?: (busy: boolean) => void;
+  onJointStart?: (config: FieldConfig) => void; onAcquisition?: () => void; onStop?: () => void;
 };
 
 type AutoFollowCollection = { collectionId: string; collectionContext: string };
@@ -115,7 +116,8 @@ export function FieldTurntableWorkspace(props: Props) {
         selectMode(next ? "auto" : "manual"); tabs.current[next]?.focus();
       }}>{value === "manual" ? <Hand size={16} /> : <Route size={16} />}{value === "manual" ? "手动控制" : "自动跟随"}</button>)}
     </div>
-    <div hidden={mode !== "manual"} role="tabpanel" id={`${id}-manual-panel`} aria-labelledby={`${id}-manual-tab`}><FieldLaserControl deviceIp={props.config.deviceIp} status={props.status} disabled={props.disabled || autoBusy} request={props.request} /><FieldTurntableManual status={props.status} disabled={props.disabled || autoBusy} request={props.request} /></div>
+    <div hidden={mode !== "manual"} role="tabpanel" id={`${id}-manual-panel`} aria-labelledby={`${id}-manual-tab`}><FieldLaserControl deviceIp={props.config.deviceIp} status={props.status} disabled={props.disabled || autoBusy} request={props.request} /><FieldTurntableManual status={props.status} disabled={props.disabled || autoBusy} request={props.request} onBusy={busyChanged} onStatus={props.onStatus}
+      capture={props.onJointStart && props.onAcquisition && props.onStop ? { config: props.config, onConfig: props.onConfig, onStart: props.onJointStart, onWaveform: props.onAcquisition, onStop: props.onStop } : undefined} /></div>
     <div hidden={mode !== "auto"} role="tabpanel" id={`${id}-auto-panel`} aria-labelledby={`${id}-auto-tab`}><FieldAutoFollow {...props} onBusy={busyChanged} onManual={() => selectMode("manual")} /></div>
   </div>;
 }

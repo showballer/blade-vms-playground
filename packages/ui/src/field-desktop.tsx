@@ -11,10 +11,11 @@ import { FieldDevicePanel, FieldDeviceSnapshot } from "./field-device";
 import { FieldAnalysis } from "./field-analysis";
 import { FieldAcquisition } from "./field-acquisition";
 import { FieldTurntableWorkspace } from "./field-auto-follow";
+import { turntableReferenceSignature } from "./field-turntable-points";
 import { FieldBladeSummary } from "./field-blade-summary";
 import { FieldAccountPanel, FieldCloudSyncPanel, FieldBindAccountDialog, fieldAccountServerDefault, fieldAccountTime, type FieldBindValues } from "./field-account";
 import {
-  fieldDate, fieldIsActive, fieldTurntableReady, validateFieldConfig,
+  fieldCaptureConfig, fieldDate, fieldIsActive, fieldTurntableReady, validateFieldConfig,
   type FieldConfig, type FieldRecording, type FieldRecordingDetail,
   type FieldRequest, type FieldRequestOptions, type FieldSession, type FieldAccountInfo,
   type FieldStatus, type FieldDeviceSettings, type FieldRssiCalibrationResult,
@@ -192,7 +193,7 @@ export function FieldDesktopApp() {
   const [pollError, setPollError] = useState("");
   const [notice, setNotice] = useState("");
   useEffect(() => { if (!notice) return; const timer = setTimeout(() => setNotice(""), 6000); return () => clearTimeout(timer); }, [notice]);
-  const [confirmStart, setConfirmStart] = useState(false);
+  const [confirmStart, setConfirmStart] = useState<{ config: FieldConfig; references?: string } | null>(null);
   const [changingPassword, setChangingPassword] = useState(false);
   const [bindingAccount, setBindingAccount] = useState(false);
   const [windowMs, setWindowMs] = useState(1000), [refreshMs, setRefreshMs] = useState(100);
@@ -203,7 +204,7 @@ export function FieldDesktopApp() {
 
   const clearSession = useCallback(() => {
     generation.current += 1; setSyncStatus(null); setSession(null); setStatus(null); setRecordings([]); setRecordingsLoaded(false); setSelected(null);
-    setConfirmStart(false); setChangingPassword(false); setBindingAccount(false); setPollError(""); setNotice(""); setTurntableVisited(false); setTurntableOperationBusy(false);
+    setConfirmStart(null); setChangingPassword(false); setBindingAccount(false); setPollError(""); setNotice(""); setTurntableVisited(false); setTurntableOperationBusy(false);
   }, []);
   const handleError = useCallback((cause: unknown) => {
     if (cause instanceof FieldRequestError && cause.status === 401) clearSession();
@@ -347,11 +348,18 @@ export function FieldDesktopApp() {
           {busy === "device" && <p className="field-notice warning">设备配置操作进行中，请等待结果。自动聚焦涉及激光，请留意现场状态。</p>}
           {status?.indexWarning && <div className="field-notice warning field-global-message" role="status"><AlertTriangle size={17} /><span>本机索引提示：{status.indexWarning}</span></div>}
           {screen === "analysis" && <FieldAnalysis request={fieldCall} onError={handleError} />}
-          <div hidden={screen !== "turntable"}>{turntableVisited && <FieldTurntableWorkspace onOperationBusy={setTurntableOperationBusy} config={config} onConfig={setConfig} status={status} disabled={Boolean(busy)} request={fieldCall} onStatus={setStatus} onService={() => setScreen("service")} onRecords={() => { setScreen("recordings"); void operate("recordings", refreshRecordings); }} />}</div>
+          <div hidden={screen !== "turntable"}>{turntableVisited && <FieldTurntableWorkspace onOperationBusy={setTurntableOperationBusy} config={config} onConfig={setConfig} status={status} disabled={Boolean(busy)} request={fieldCall} onStatus={setStatus} onService={() => setScreen("service")} onRecords={() => { setScreen("recordings"); void operate("recordings", refreshRecordings); }}
+            onJointStart={capture => {
+              const invalid = validateFieldConfig(capture);
+              const references = status?.turntable?.port === capture.turntable?.port ? turntableReferenceSignature(status?.turntable?.feedback?.axes) : null;
+              if (invalid || !references) { setError(invalid || "请先读取两轴有效参考位。"); return; }
+              setError(""); setConfirmStart({ config: capture, references });
+            }}
+            onAcquisition={() => setScreen("acquisition")} onStop={() => void stopAcquisition()} />}</div>
           {screen === "acquisition" && unifiedAccount && syncStatus && <div className="field-cloud-sync-inline" role="status"><strong>Web 同步 · {syncStatus.state === "syncing" ? "正在同步" : syncStatus.state === "ready" ? "已连接" : syncStatus.state === "offline" ? "等待联网登录" : syncStatus.state === "error" ? "同步异常" : "等待联网登录"}</strong><span>{syncStatus.enabled ? "自动同步已开启" : "自动同步已关闭"}</span><span>{syncStatus.items.filter(item => item.state === "synced").length} 条近期已上传 / {syncStatus.items.filter(item => item.state !== "synced").length} 条待完成</span><Button variant="ghost" onClick={() => setScreen("service")}>同步设置</Button></div>}
-          {screen === "acquisition" && <FieldAcquisition source="device" showPointCycle={false} config={config} onConfig={setConfig} status={status} busy={busy} pollError={pollError}
+          {screen === "acquisition" && <FieldAcquisition source="device" config={config} onConfig={setConfig} status={status} busy={busy} pollError={pollError}
             windowMs={windowMs} onWindow={setWindowMs} refreshMs={refreshMs} onRefresh={setRefreshMs} request={fieldCall}
-            onDeviceStart={() => { const invalid = validateFieldConfig(config); if (invalid) { setError(invalid); return; } setError(""); setConfirmStart(true); }}
+            onDeviceStart={() => { const capture = fieldCaptureConfig(config); const invalid = validateFieldConfig(capture); if (invalid) { setError(invalid); return; } setError(""); setConfirmStart({ config: capture }); }}
             onStop={() => void stopAcquisition()}
             onService={() => setScreen("service")} onRecords={() => { setScreen("recordings"); void operate("recordings", refreshRecordings); }} />}
           {screen === "recordings" && <>{recordingsLoaded && <FieldBladeSummary recordings={recordings} syncItems={syncStatus?.items} onOpenRecording={id => void operate("recording", async () => { setSelected(await fieldCall<FieldRecordingDetail>({ action: "recording", id })); })} />}<section className="field-card"><div className="field-section-heading"><div><h2>本机采集记录</h2></div><div className="field-form-actions"><Button disabled={Boolean(busy)} onClick={() => void serviceAction("openDataDirectory")}><FolderOpen size={14} />打开数据目录</Button><Button disabled={Boolean(busy)} onClick={() => void operate("recordings", refreshRecordings)}><RefreshCw size={14} />刷新列表</Button></div></div>{recordingsLoaded ? <FieldRecordingList recordings={recordings} syncedIds={syncStatus?.items.filter(item => item.state === "synced").map(item => item.recordingId)} onUpload={unifiedAccount ? id => void operate("sync", async () => { await fieldCall({ action: "syncRecording", id }); setSyncStatus(await fieldCall<FieldSyncStatus>({ action: "syncStatus" })); setNotice("已加入 Web 上传队列，可在设备与服务查看进度。"); }) : undefined} busy={Boolean(busy)} selectedId={selected?.recording.id} onExport={id => void operate("export", async () => { const result = await fieldCall<{ saved?: boolean; fileName?: string }>({ action: "exportRecording", id }); if (result.saved) setNotice(`已导出完整原始波形 ${result.fileName}`); })} onSelect={(id) => void operate("recording", async () => { const data = await fieldCall<FieldRecordingDetail>({ action: "recording", id }); setSelected(data); })} /> : <p className="field-notice">记录列表尚未读取成功，请确认采集服务可用后刷新。服务不可用不代表本机没有保存数据。</p>}</section>
@@ -363,13 +371,20 @@ export function FieldDesktopApp() {
     </>}
     {bindingAccount && session && !session.mustChangePassword && account?.mode === "local" && <FieldBindAccountDialog busy={Boolean(busy)} active={accountLocked} error={error} initialServerUrl={fieldAccountServerDefault(typeof window === "undefined" ? undefined : window.location)} onClose={() => { setBindingAccount(false); setError(""); }} onBind={bindAccount} />}
     {status?.turntableBusy && !active && status.turntable?.port && status.turntable.axis && <div className="field-live-controls" aria-label="独立试转控制"><p><strong>转盘检查 / 试转进行中 · {status.turntable.port} 轴 {status.turntable.axis}</strong></p><Button type="button" variant="danger" disabled={!!busy || status.turntable.state === "test_stopping"} onClick={() => void operate("turntableStop", async () => { await fieldCall({ action: "turntable", request: { action: "stop", port: status.turntable!.port!, axis: status.turntable!.axis as 1 | 2, confirmMotion: true } }); setStatus(await fieldCall<FieldStatus>({ action: "status" })); })}>停止独立试转</Button></div>}
-    {confirmStart && <FieldStartDialog config={config} busy={Boolean(busy)} error={error} onClose={() => { setConfirmStart(false); setError(""); }} onStart={() => void operate("start", async () => {
-      const normalized = Object.fromEntries(Object.entries(config).map(([key, value]) => [key, typeof value === "string" ? value.trim() : value])) as FieldConfig;
+    {confirmStart && <FieldStartDialog config={confirmStart.config} busy={Boolean(busy)} error={error} onClose={() => { setConfirmStart(null); setError(""); }} onStart={() => void operate("start", async () => {
+      const normalized = { ...fieldCaptureConfig(confirmStart.config), ...(confirmStart.config.turntable ? { turntable: { ...confirmStart.config.turntable } } : {}) };
       const invalid = validateFieldConfig(normalized); if (invalid) throw new Error(invalid);
-      if (!fieldTurntableReady(status, normalized.turntable)) throw new Error("请先完成当前参数的转盘试转并确认设置。");
+      if (normalized.turntable) {
+        const prepared = await fieldCall<FieldStatus>({ action: "turntable", request: { ...normalized.turntable, action: "prepare", confirmMotion: true } });
+        setStatus(prepared);
+        if (!fieldTurntableReady(prepared, normalized.turntable)) throw new Error("转盘定位设置未通过检查，未开始采集。");
+        if (!confirmStart.references || turntableReferenceSignature(prepared.turntable?.feedback?.axes) !== confirmStart.references)
+          throw new Error("两轴参考位或计数单位已变化，未开始采集。请重新读取反馈并核对目标角度。");
+      }
       await fieldCall({ action: "start", config: { ...normalized, confirmLaser: true, ...(normalized.turntable ? { confirmMotion: true } : {}) } });
-      try { localStorage.setItem("blade-field-config-v1", JSON.stringify(normalized)); } catch { /* Saving a draft is optional; raw acquisition storage is managed by Python. */ }
-      setConfig(normalized); setConfirmStart(false); setStatus(await fieldCall<FieldStatus>({ action: "status" }));
+      const plain = fieldCaptureConfig(normalized);
+      try { localStorage.setItem("blade-field-config-v1", JSON.stringify(plain)); } catch { /* Saving a draft is optional; raw acquisition storage is managed by Python. */ }
+      setConfig(plain); setConfirmStart(null); setStatus(await fieldCall<FieldStatus>({ action: "status" })); setScreen("acquisition");
       setNotice("已向设备发送采集请求，请核对真实接收值与保存状态。");
     })} />}
   </div>;
