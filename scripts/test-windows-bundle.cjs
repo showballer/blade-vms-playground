@@ -351,7 +351,7 @@ async function validateInstalledAutoFollow(cdp, field, output) {
   await click('[role=tab]', '自动跟随');
   const initial = await waitFor(async () => { const value = await snapshot(); return value?.pointCount === 1 && value; },
     'installed automatic-follow page and current measurement point');
-  for (const label of ['叶片逐点采集', '本次采集测点', '添加下一测点', '校准起点', '自动换点转速（两轴）']) {
+  for (const label of ['叶片逐点采集', '本次采集测点', '添加下一测点', '校准起点', '自动换点速度上限（每轴）']) {
     assert.ok(initial.text.includes(label), `Installed automatic-follow UI lacks ${label}`);
   }
   assert.equal(initial.installationOpen, false, 'Installation calibration must start collapsed');
