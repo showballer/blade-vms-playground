@@ -101,7 +101,7 @@ jobs:
           This private draft does not update the production download endpoint.
           "@
           $notes | Set-Content -Encoding utf8NoBOM apps/desktop/release/BUILD_NOTES.md
-          $evidence = @('artifacts/windows-bundle-smoke', 'artifacts/windows-simulation-smoke/report.json', 'artifacts/windows-motion-trial-smoke/report.json', 'artifacts/field-waveform-smoke')
+          $evidence = @('artifacts/windows-bundle-smoke', 'artifacts/windows-simulation-smoke', 'artifacts/windows-motion-trial-smoke', 'artifacts/field-waveform-smoke')
           Compress-Archive -Path $evidence -DestinationPath apps/desktop/release/windows-verification-evidence.zip
           $assets = @(
             "apps/desktop/release/BladeVMS-Setup-$env:RELEASE_VERSION-x64.exe",

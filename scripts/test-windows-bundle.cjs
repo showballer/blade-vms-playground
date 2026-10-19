@@ -26,6 +26,40 @@ const report = { startedAt: new Date().toISOString(), platform: process.platform
     'An actual clean Windows OS, installed Conda distribution and 32-bit Python are not provisioned by this script.'], checks: [] };
 const liveChildren = new Set();
 
+// Receiver + device-panel binding contract. Additional SDK bindings are allowed,
+// but every operation used by the shipped capture/configuration adapters is required.
+const REQUIRED_SDK_SYMBOLS = Object.freeze([
+  'PolyOpenUdpEthernetCommunication', 'PolyCloseCommunication', 'PolyLastCommunicationStatus',
+  'PolySendGetString', 'PolySendGetFloat', 'PolySendSetString', 'PolyItemListGetCurrentItem',
+  'PolySendSetInt16', 'PolyOpenDataAcquisition', 'PolyCloseDataAcquisition',
+  'PolyStartDataAcquisition', 'PolyStopDataAcquisition', 'PolyReadData',
+  'PolyExtractedSampleCount', 'PolyGetInt32Data', 'PolyGetOverrange',
+  'PolyBaseSampleRateInHz', 'PolyChannelMaxValue', 'PolyHasCommand',
+  'PolySendGetInt16', 'PolySendGetInt32', 'PolyItemListGetAvailableItems',
+  'PolyItemListSetCurrentItem', 'PolyChannelActivationIsChannelAvailable',
+  'PolyChannelActivationIsChannelEnabled', 'PolyChannelActivationEnableChannel',
+  'PolySendGetWithTag', 'PolyGetInt16FromPayload', 'PolyFreePayload', 'PolySendGetDevInfoRange',
+]);
+
+function assertSdkBindings(diagnostic) {
+  assert.ok(Array.isArray(diagnostic.sdkSymbolNames), 'Frozen self-check must list its SDK bindings');
+  assert.ok(diagnostic.sdkSymbolNames.every(name => typeof name === 'string' && name.startsWith('Poly')),
+    'Frozen self-check contains invalid SDK binding names');
+  assert.equal(diagnostic.sdkSymbols, diagnostic.sdkSymbolNames.length, 'SDK binding count must match named bindings');
+  const names = new Set(diagnostic.sdkSymbolNames);
+  assert.equal(names.size, diagnostic.sdkSymbolNames.length, 'SDK binding names must be unique');
+  for (const symbol of REQUIRED_SDK_SYMBOLS) {
+    assert.ok(names.has(symbol), `Missing required capture/configuration SDK binding: ${symbol}`);
+  }
+}
+
+function assertIdleWaveformUi(value) {
+  assert.equal(value.emptyCount, 2, 'Both velocity and RSSI plots must show their empty state');
+  assert.equal(value.waveformCount, 0, 'Idle plots must not draw invented waveforms');
+  assert.equal(value.velocityTitle, '振动速度');
+  assert.equal(value.rssiTitle, 'RSSI 回波强度');
+}
+
 async function deadline(promise, milliseconds, message) {
   let timer;
   try {
@@ -172,10 +206,7 @@ async function validateService(resources, environment, caseDirectory) {
   assert.equal(diagnostic.frozen, true, 'Must use bundled Python, not system Python');
   assert.equal(path.resolve(diagnostic.executable).toLowerCase(), executable.toLowerCase());
   assert.equal(diagnostic.dllLoaded, true);
-  assert.equal(diagnostic.sdkSymbols, 23);
-  for (const symbol of ['PolyHasCommand', 'PolyItemListGetAvailableItems', 'PolyItemListSetCurrentItem', 'PolySendGetDevInfoRange', 'PolySendGetInt16']) {
-    assert.ok(diagnostic.sdkSymbolNames.includes(symbol), `Missing device configuration binding: ${symbol}`);
-  }
+  assertSdkBindings(diagnostic);
   assert.equal(diagnostic.hardwareTouched, false);
   assert.match(diagnostic.pythonVersion, /^3\./);
 
@@ -340,10 +371,16 @@ async function validateInstalledDesktop(directory, environment, temporary, outpu
     const frame = await field({ action: 'frame' });
     assert.equal(frame.status, 200); assert.deepEqual(frame.data.waveform.values, []);
     assert.deepEqual((await field({ action: 'recordings' })).data.recordings, []);
-    await waitFor(async () => (await body()).includes('等待振动数据'), 'empty live waveform UI');
+    const idleWaveformUi = () => cdp.evaluate(`(() => {
+      const panel = document.querySelector('.field-capture-chart [role="tabpanel"]:not([hidden])');
+      return { emptyCount: panel?.querySelectorAll('.field-chart-empty').length ?? 0,
+        waveformCount: panel?.querySelectorAll('.field-wave-svg').length ?? 0,
+        velocityTitle: panel?.querySelector('.field-capture-wave-heading h2')?.textContent.trim(),
+        rssiTitle: panel?.querySelector('.field-rssi-heading h3')?.textContent.trim() };
+    })()`);
+    await waitFor(async () => (await idleWaveformUi()).emptyCount === 2, 'empty velocity and RSSI waveform UI');
+    assertIdleWaveformUi(await idleWaveformUi());
     const text = await body();
-    assert.ok(text.includes('等待振动数据'));
-    assert.ok(text.includes('等待 RSSI 数据'));
     assert.ok(!text.includes('离线演示工作区'));
     // The current form uses native required validation, rather than disabling
     // its button for missing task/IP fields. Prove both validation states
@@ -524,4 +561,4 @@ async function main() {
 }
 
 if (require.main === module) main().catch(error => { console.error(error.message); process.exitCode = 1; });
-module.exports = { optionsFrom, isolatedEnvironment, assertIdle };
+module.exports = { optionsFrom, isolatedEnvironment, assertIdle, assertSdkBindings, REQUIRED_SDK_SYMBOLS, assertIdleWaveformUi };
