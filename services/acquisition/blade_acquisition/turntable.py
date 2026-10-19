@@ -55,6 +55,7 @@ class TurntableRequest(TurntableConfig):
     axis1AngleDeg: float | None = Field(default=None, allow_inf_nan=False)
     axis2AngleDeg: float | None = Field(default=None, allow_inf_nan=False)
     referenceSignature: str | None = Field(default=None, max_length=512)
+    recordedPort: str | None = Field(default=None, pattern=r"^COM[1-9][0-9]{0,3}$")
 
     @field_validator("axis1AngleDeg", "axis2AngleDeg", mode="before")
     @classmethod
@@ -64,6 +65,10 @@ class TurntableRequest(TurntableConfig):
     @model_validator(mode="after")
     def recall_targets(self):
         if self.action == "recall":
+            if self.recordedPort is None or self.referenceSignature is None:
+                raise ValueError("历史点位缺少串口或参考位信息，请重新标定后回位")
+            if self.recordedPort != self.port:
+                raise ValueError("记录串口与当前串口不同，不能回位")
             if self.axis1AngleDeg is None or self.axis2AngleDeg is None:
                 raise ValueError("点位回位需要两轴有效角度")
             validate_output_angle(1, self.axis1AngleDeg)
@@ -87,7 +92,8 @@ class PointCyclePoint(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     axis1AngleDeg: float = Field(allow_inf_nan=False)
     axis2AngleDeg: float = Field(allow_inf_nan=False)
-    referenceSignature: str | None = Field(default=None, max_length=512)
+    port: str = Field(pattern=r"^COM[1-9][0-9]{0,3}$")
+    referenceSignature: str = Field(min_length=1, max_length=512)
 
     @field_validator("name")
     @classmethod
@@ -159,6 +165,8 @@ class PointCycleConfig(BaseModel):
 
     @model_validator(mode="after")
     def bounded_total(self):
+        if any(point.port != self.port for point in self.points):
+            raise ValueError("点位记录串口与当前循环串口不同，请重新标定")
         if len(self.points) * self.cycles > 2000:
             raise ValueError("循环采集最多生成 2000 条独立记录")
         if self.rssiExitSpread >= self.rssiEnterSpread:
@@ -420,7 +428,7 @@ class TelemetryWriter:
                 "timestampBasis": "sequential host observations; not hardware synchronized",
                 "positionUnit": "raw drive count; outputAngleDeg in degrees only when reference valid",
                 "feedbackProtocol": "0x20/34-byte + 0x24/17-byte",
-                "geometryConversion": "pending user calibration", "cloudSync": "local_only"}
+                "geometryConversion": "pending user calibration", "cloudSync": "supported"}
 
 
 DEFAULT_MOTOR_FACTORY = MotorController

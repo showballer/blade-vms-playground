@@ -1,5 +1,6 @@
 import { auth, HttpError } from "../../../../../lib/db";
 import { captureBody, createCaptureService } from "../../../../../lib/captures";
+import { Readable } from "node:stream";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -32,6 +33,13 @@ async function handle(request: Request, context: Context) {
         return json(action === "complete" ? await service.complete(user, id) : await service.prepareAnalysis(user, id));
       }
       if (action === "waveform" && request.method === "GET") return json(await service.waveform(user, id, Number(url.searchParams.get("start") || 0), url.searchParams.has("end") ? Number(url.searchParams.get("end")) : undefined));
+    }
+    if (parts.length === 3 && action === "files" && request.method === "GET") {
+      const file = await service.attachment(user, id, filename);
+      return new Response(Readable.toWeb(file.stream) as ReadableStream<Uint8Array>, { headers: {
+        "Cache-Control": "no-store", "Content-Type": file.mime, "Content-Length": String(file.bytes),
+        "Content-Disposition": `attachment; filename="${file.filename}"`, "X-Content-Type-Options": "nosniff",
+      } });
     }
     if (parts.length === 3 && action === "chunks" && request.method === "PUT") {
       if (!url.searchParams.has("offset")) throw new HttpError(400, "缺少分段偏移。");

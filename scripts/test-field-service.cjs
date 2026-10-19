@@ -292,7 +292,7 @@ test("point cycle forwards entry and exit RSSI controls through the desktop brid
   const f = fixture(t);
   const config = { deviceIp: "192.168.0.10", hostIp: "192.168.0.2", name: "回波换点", object: "", turbine: "", point: "",
     confirmLaser: true, confirmMotion: true, pointCycle: { port: "COM6", cycles: 1, dwellSeconds: 60, speedRpm: 2,
-      points: [{ name: "M01", axis1AngleDeg: 2, axis2AngleDeg: 6 }], rssiTriggerEnabled: true,
+      points: [{ port: "COM6", referenceSignature: "[[0,3,10000,17],[0,3,10000,17]]", name: "M01", axis1AngleDeg: 2, axis2AngleDeg: 6 }], rssiTriggerEnabled: true,
       rssiThresholdMode: "adaptive", rssiBaselineRatio: .9, rssiConfirmMs: 25, rssiSmoothingMs: 10,
       rssiMinimumSeconds: .5, rssiMotionMarginMs: 200,
       rssiEnterSpread: 9, rssiExitSpread: 2, rssiEnterConfirmMs: 40 } };
@@ -634,7 +634,7 @@ test("position bridge preserves independent axis targets and rejects unsafe angl
 
 test("recorded point recall validates both targets and forwards both angles and reference signature", async t => {
   const f = fixture(t);
-  const request = { action: 'recall', port: 'COM6', axis: 1, speedRpm: 0.2, axis1AngleDeg: 25.935, axis2AngleDeg: -6.994, confirmMotion: true,
+  const request = { action: 'recall', port: 'COM6', recordedPort: 'COM6', axis: 1, speedRpm: 0.2, axis1AngleDeg: 25.935, axis2AngleDeg: -6.994, confirmMotion: true,
     referenceSignature: '[[0,3,10000,17],[0,3,10000,17]]' };
   for (const changes of [{ confirmMotion: false }, { axis1AngleDeg: 36.7 }, { axis2AngleDeg: -180.001 }, { axis1AngleDeg: true }, { axis2AngleDeg: undefined }]) {
     await assert.rejects(f.service.turntable({ ...request, ...changes }), { status: 400 });
@@ -646,4 +646,34 @@ test("recorded point recall validates both targets and forwards both angles and 
   assert.equal(body.axis1AngleDeg, 25.935);
   assert.equal(body.axis2AngleDeg, -6.994);
   assert.equal(body.referenceSignature, request.referenceSignature);
+  assert.equal(body.recordedPort, request.port);
+  for (const changes of [{ recordedPort: undefined }, { recordedPort: 'COM7' }, { referenceSignature: undefined },
+    { referenceSignature: '[null,null]' }, { referenceSignature: '[[0,3,10000,17],[0.5,3,10000,17]]' }]) {
+    await assert.rejects(f.service.turntable({ ...request, ...changes }), { status: 400 });
+  }
+  assert.equal(f.requests.filter(row => row.route === 'turntable').length, 1);
+});
+
+test('cycle bridge rejects missing or mismatched point references before starting service', async t => {
+  const f = fixture(t);
+  const point = { name: 'safe', axis1AngleDeg: 1, axis2AngleDeg: 2, port: 'COM6', referenceSignature: '[[0,3,10000,17],[0,3,10000,17]]' };
+  const config = { deviceIp: '192.168.0.10', hostIp: '192.168.0.2', name: 'cycle', object: '', turbine: '', point: '',
+    confirmLaser: true, confirmMotion: true, pointCycle: { port: 'COM6', cycles: 1, dwellSeconds: 1, speedRpm: 1, points: [point] } };
+  for (const change of [{ port: undefined }, { port: 'COM7' }, { referenceSignature: undefined }, { referenceSignature: 'broken' }]) {
+    await assert.rejects(f.service.begin({ ...config, pointCycle: { ...config.pointCycle, points: [{ ...point, ...change }] } }), { status: 400 });
+  }
+  assert.equal(f.children.length, 0);
+  await f.service.begin(config);
+  assert.deepEqual(JSON.parse(f.requests.find(row => row.route === 'start').options.body).pointCycle.points, [point]);
+});
+
+test('capture session id is supplied only by main and validates before starting service', async t => {
+  const f = fixture(t);
+  const config = { source: 'simulation', simulation: { point: 'P1', scenario: 'baseline' }, name: 'session', object: '', turbine: '', point: '', captureSessionId: 'b'.repeat(32) };
+  for (const captureSessionId of ['bad', 'A'.repeat(32), 42, null]) await assert.rejects(f.service.begin(config, { captureSessionId }), { status: 400 });
+  assert.equal(f.children.length, 0);
+  await f.service.begin(config);
+  assert.equal(JSON.parse(f.requests.find(row => row.route === 'start').options.body).captureSessionId, undefined);
+  await f.service.begin(config, { captureSessionId: 'a'.repeat(32) });
+  assert.equal(JSON.parse(f.requests.filter(row => row.route === 'start').at(-1).options.body).captureSessionId, 'a'.repeat(32));
 });

@@ -10,6 +10,13 @@ const { randomBytes } = require('node:crypto');
 function failure(message, status = 503) {
   return Object.assign(new Error(message), { status });
 }
+function validPointReference(value) {
+  if (typeof value !== 'string' || !value || value.length > 512) return false;
+  try {
+    const axes = JSON.parse(value);
+    return Array.isArray(axes) && axes.length === 2 && axes.every(axis => Array.isArray(axis) && axis.length === 4 && axis.every(Number.isSafeInteger));
+  } catch { return false; }
+}
 function turntableConfig(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value) ||
       Object.keys(value).some(key => !['port', 'axis', 'speedRpm', 'direction', 'durationSeconds', 'protocol', 'targetAngleDeg'].includes(key)) ||
@@ -37,10 +44,10 @@ function pointCycleConfig(value) {
         typeof point.name !== 'string' || !point.name.trim() || point.name.length > 120 ||
         typeof point.axis1AngleDeg !== 'number' || !Number.isFinite(point.axis1AngleDeg) || Math.abs(point.axis1AngleDeg) > 35 ||
         typeof point.axis2AngleDeg !== 'number' || !Number.isFinite(point.axis2AngleDeg) || Math.abs(point.axis2AngleDeg) > 180 ||
-        (point.referenceSignature !== undefined && (typeof point.referenceSignature !== 'string' || point.referenceSignature.length > 512)))
-      throw failure('无效多点循环点位：需要名称及轴1±35°、轴2±180°角度', 400);
+        point.port !== value.port || !validPointReference(point.referenceSignature))
+      throw failure('无效多点循环点位：需要名称、有效角度、原串口和两轴参考位；历史点位请重新标定', 400);
     return { ...(point.pointId !== undefined ? { pointId: point.pointId.trim() } : {}), name: point.name.trim(), axis1AngleDeg: point.axis1AngleDeg, axis2AngleDeg: point.axis2AngleDeg,
-      ...(point.referenceSignature !== undefined ? { referenceSignature: point.referenceSignature } : {}) };
+      port: point.port, referenceSignature: point.referenceSignature };
   });
   const echo = {};
   if (value.rssiTriggerEnabled !== undefined) {
@@ -375,10 +382,14 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     })().finally(() => { frameRequest = null; });
     return frameRequest;
   }
-  async function begin(config) {
+  async function begin(config, { captureSessionId } = {}) {
     if (!config || (config.source !== undefined && !['device', 'simulation'].includes(config.source))) throw failure('无效采集来源', 400);
     const simulated = config.source === 'simulation';
     const body = {};
+    if (captureSessionId !== undefined) {
+      if (typeof captureSessionId !== 'string' || !/^[a-f0-9]{32}$/.test(captureSessionId)) throw failure('无效采集会话编号', 400);
+      body.captureSessionId = captureSessionId;
+    }
     if (config.pointCycle !== undefined) {
       if (simulated || config.confirmMotion !== true) throw failure('多点循环任务必须使用真实采集并确认转盘运动', 400);
       body.pointCycle = pointCycleConfig(config.pointCycle);
@@ -492,9 +503,9 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     const recall = request.action === 'recall' ? (() => {
       if (!Number.isFinite(request.axis1AngleDeg) || Math.abs(request.axis1AngleDeg) > 35 ||
           !Number.isFinite(request.axis2AngleDeg) || Math.abs(request.axis2AngleDeg) > 180) throw failure('点位需要两轴有效角度，轴1限±35°，轴2限±180°', 400);
-      if (request.referenceSignature !== undefined && (typeof request.referenceSignature !== 'string' || request.referenceSignature.length > 512)) throw failure('点位参考位签名无效', 400);
+      if (request.recordedPort !== request.port || !validPointReference(request.referenceSignature)) throw failure('点位串口或参考位信息缺失/不匹配，请重新标定后回位', 400);
       return { axis1AngleDeg: request.axis1AngleDeg, axis2AngleDeg: request.axis2AngleDeg,
-        ...(request.referenceSignature !== undefined ? { referenceSignature: request.referenceSignature } : {}),
+        recordedPort: request.recordedPort, referenceSignature: request.referenceSignature,
         speedRpm: turntableConfig({ port: request.port, axis: 1, speedRpm: request.speedRpm, direction: 'forward', durationSeconds: 0, protocol: 'position', targetAngleDeg: request.axis1AngleDeg }).speedRpm };
     })() : {};
     await ready();

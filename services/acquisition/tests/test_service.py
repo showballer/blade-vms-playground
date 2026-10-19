@@ -24,6 +24,7 @@ from blade_acquisition.storage import HEADER, RECORD, RecordingStore, RecordingW
 from export_csv import export
 
 TOKEN = "unit-test-only-0123456789abcdef0123456789abcdef"
+POINT_REFERENCE = {"port": "COM6", "referenceSignature": "[[0,3,10000,17],[0,3,10000,17]]"}
 START = {"deviceIp": "192.168.104.50", "hostIp": "192.168.104.10", "name": "fixture capture",
          "object": "blade", "turbine": "T1", "point": "P1", "confirmLaser": True}
 
@@ -128,10 +129,10 @@ class ApiTests(unittest.TestCase):
         from test_turntable import FakeMotor
         motor = FakeMotor()
         self.app.state.controller.motor_factory = lambda *args, **kwargs: motor
-        request = {**START, "confirmMotion": True,
+        request = {**START, "confirmMotion": True, "captureSessionId": "a" * 32,
                    "pointCycle": {"port": "COM6", "cycles": 2, "dwellSeconds": 1, "speedRpm": 0.5,
-                                  "points": [{"name": "m01", "axis1AngleDeg": 0, "axis2AngleDeg": 0},
-                                             {"name": "m06", "axis1AngleDeg": 10, "axis2AngleDeg": 5}]}}
+                                  "points": [{**POINT_REFERENCE, "name": "m01", "axis1AngleDeg": 0, "axis2AngleDeg": 0},
+                                             {**POINT_REFERENCE, "name": "m06", "axis1AngleDeg": 10, "axis2AngleDeg": 5}]}}
         self.assertEqual(self.client.post("/api/field/start", json=request).status_code, 200)
         deadline = time.monotonic() + 8
         while time.monotonic() < deadline:
@@ -143,16 +144,85 @@ class ApiTests(unittest.TestCase):
         records = self.client.get("/api/field/recordings").json()["recordings"]
         self.assertEqual(len(records), 4)
         self.assertTrue(all(record["status"] == "complete" for record in records))
+        self.assertTrue(all(record["captureSessionId"] == "a" * 32 for record in records))
+        self.assertTrue(all(record["pointCycle"]["recordedPort"] == "COM6" for record in records))
+        self.assertTrue(all(record["pointCycle"]["referenceSignature"] == POINT_REFERENCE["referenceSignature"] for record in records))
         self.assertEqual(result["pointCycle"]["completedRecords"], 4)
         self.assertEqual(motor.angles, {1: 0.0, 2: 0.0})
         self.assertEqual(motor.stop_calls, 0)
+
+    def test_point_cycle_rejects_missing_or_mismatched_metadata_before_hardware(self):
+        from test_turntable import FakeMotor
+        motor = FakeMotor()
+        self.app.state.controller.motor_factory = lambda *args, **kwargs: motor
+        point = {**POINT_REFERENCE, "name": "old", "axis1AngleDeg": 1, "axis2AngleDeg": 2}
+        for changes in ({"port": None}, {"port": "COM7"}, {"referenceSignature": None},
+                        {"referenceSignature": "broken"}, {"referenceSignature": "[null,null]"}):
+            request = {**START, "confirmMotion": True, "pointCycle": {
+                "port": "COM6", "points": [{**point, **changes}], "dwellSeconds": 1}}
+            response = self.client.post("/api/field/start", json=request)
+            self.assertEqual(response.status_code, 422, response.text)
+        self.assertEqual(motor.start_calls, 0)
+        self.assertEqual(self.app.state.controller.store.list(), [])
+
+    def test_point_cycle_checks_recorded_reference_before_first_motion(self):
+        from test_turntable import FakeMotor
+        motor = FakeMotor(origins={1: 0, 2: 123})
+        self.app.state.controller.motor_factory = lambda *args, **kwargs: motor
+        request = {**START, "confirmMotion": True, "pointCycle": {"port": "COM6", "dwellSeconds": 1,
+                   "points": [{**POINT_REFERENCE, "name": "marked", "axis1AngleDeg": 1, "axis2AngleDeg": 2}]}}
+        response = self.client.post("/api/field/start", json=request)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.app.state.controller.thread.join(3)
+        result = self.client.get("/api/field/status").json()
+        self.assertEqual(result["state"], "error")
+        self.assertIn("参考位或反馈计数单位已变化", result["error"])
+        self.assertEqual(motor.start_calls, 0)
+        self.assertEqual(self.app.state.controller.store.list(), [])
+
+    def test_capture_session_id_validates_and_survives_normal_capture(self):
+        for value in ("bad", "A" * 32, 42):
+            response = self.client.post("/api/field/start", json={**START, "captureSessionId": value})
+            self.assertEqual(response.status_code, 422, response.text)
+        response = self.client.post("/api/field/start", json={**START, "captureSessionId": "b" * 32})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.wait_for_samples()
+        result = self.client.post("/api/field/stop").json()
+        self.assertEqual(result["recording"]["captureSessionId"], "b" * 32)
+
+    def test_point_cycle_rechecks_reference_before_later_points(self):
+        from test_turntable import FakeMotor
+        motor = FakeMotor()
+        self.app.state.controller.motor_factory = lambda *args, **kwargs: motor
+
+        class ChangedReferenceReceiver(FixtureReceiver):
+            def run(self, stop, ready, receive):
+                ready(218750.0, 1700000000.0)
+                receive(batch())
+                motor.origins[2] = 123
+                stop.wait(3)
+
+        self.app.state.controller.receiver_factory = ChangedReferenceReceiver
+        request = {**START, "confirmMotion": True, "pointCycle": {"port": "COM6", "dwellSeconds": 1,
+                   "points": [{**POINT_REFERENCE, "name": "first", "axis1AngleDeg": 0, "axis2AngleDeg": 0},
+                              {**POINT_REFERENCE, "name": "next", "axis1AngleDeg": 1, "axis2AngleDeg": 2}]}}
+        response = self.client.post("/api/field/start", json=request)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.app.state.controller.thread.join(3)
+        result = self.client.get("/api/field/status").json()
+        self.assertEqual(result["state"], "error", result)
+        self.assertIn("参考位或反馈计数单位已变化", result["error"])
+        self.assertEqual(motor.start_calls, 0)
+        records = self.app.state.controller.store.list()
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["status"], "complete")
 
     def test_point_cycle_stop_keeps_completed_records_and_reports_cancelled(self):
         from test_turntable import FakeMotor
         self.app.state.controller.motor_factory = lambda *args, **kwargs: FakeMotor()
         request = {**START, "confirmMotion": True,
                    "pointCycle": {"port": "COM6", "cycles": 3, "dwellSeconds": 3, "speedRpm": 0.5,
-                                  "points": [{"name": "B1-P1-1", "axis1AngleDeg": 0, "axis2AngleDeg": 0}]}}
+                                  "points": [{**POINT_REFERENCE, "name": "B1-P1-1", "axis1AngleDeg": 0, "axis2AngleDeg": 0}]}}
         self.assertEqual(self.client.post("/api/field/start", json=request).status_code, 200)
         deadline = time.monotonic() + 3
         while time.monotonic() < deadline:
@@ -200,8 +270,8 @@ class ApiTests(unittest.TestCase):
         request = {**START, "confirmMotion": True,
                    "pointCycle": {"port": "COM6", "cycles": 2, "dwellSeconds": 3, "speedRpm": 2,
                                   "rssiTriggerEnabled": True,
-                                  "points": [{"name": "m01", "axis1AngleDeg": 0, "axis2AngleDeg": 0},
-                                             {"name": "m02", "axis1AngleDeg": 4, "axis2AngleDeg": 6}]}}
+                                  "points": [{**POINT_REFERENCE, "name": "m01", "axis1AngleDeg": 0, "axis2AngleDeg": 0},
+                                             {**POINT_REFERENCE, "name": "m02", "axis1AngleDeg": 4, "axis2AngleDeg": 6}]}}
         self.assertEqual(self.client.post("/api/field/start", json=request).status_code, 200)
         deadline = time.monotonic() + 8
         while time.monotonic() < deadline:
@@ -233,8 +303,8 @@ class ApiTests(unittest.TestCase):
         self.app.state.controller.motor_factory = lambda *args, **kwargs: motor
         request = {**START, "confirmMotion": True,
                    "pointCycle": {"port": "COM6", "dwellSeconds": 1, "rssiTriggerEnabled": True,
-                                  "points": [{"name": "m01", "axis1AngleDeg": 0, "axis2AngleDeg": 0},
-                                             {"name": "m02", "axis1AngleDeg": 4, "axis2AngleDeg": 6}]}}
+                                  "points": [{**POINT_REFERENCE, "name": "m01", "axis1AngleDeg": 0, "axis2AngleDeg": 0},
+                                             {**POINT_REFERENCE, "name": "m02", "axis1AngleDeg": 4, "axis2AngleDeg": 6}]}}
         self.assertEqual(self.client.post("/api/field/start", json=request).status_code, 200)
         deadline = time.monotonic() + 3
         while time.monotonic() < deadline:
@@ -267,8 +337,8 @@ class ApiTests(unittest.TestCase):
         controller.receiver_factory = Receiver
         request = {**START, "confirmMotion": True,
                    "pointCycle": {"port": "COM6", "dwellSeconds": 3, "rssiTriggerEnabled": True,
-                                  "points": [{"name": "m01", "axis1AngleDeg": 0, "axis2AngleDeg": 0},
-                                             {"name": "m02", "axis1AngleDeg": 4, "axis2AngleDeg": 6}]}}
+                                  "points": [{**POINT_REFERENCE, "name": "m01", "axis1AngleDeg": 0, "axis2AngleDeg": 0},
+                                             {**POINT_REFERENCE, "name": "m02", "axis1AngleDeg": 4, "axis2AngleDeg": 6}]}}
         self.assertEqual(self.client.post("/api/field/start", json=request).status_code, 200)
         controller.thread.join(3)
         self.assertFalse(controller.thread.is_alive())
@@ -283,9 +353,9 @@ class ApiTests(unittest.TestCase):
         controller = self.app.state.controller
         feedback = {"axes": {"1": {"output_angle_deg": 0}, "2": {"output_angle_deg": 0}}}
         points = [
-            PointCyclePoint(pointId="far", name="far", axis1AngleDeg=20, axis2AngleDeg=0),
-            PointCyclePoint(pointId="near", name="near", axis1AngleDeg=2, axis2AngleDeg=1),
-            PointCyclePoint(pointId="back", name="back", axis1AngleDeg=-4, axis2AngleDeg=2),
+            PointCyclePoint(**POINT_REFERENCE, pointId="far", name="far", axis1AngleDeg=20, axis2AngleDeg=0),
+            PointCyclePoint(**POINT_REFERENCE, pointId="near", name="near", axis1AngleDeg=2, axis2AngleDeg=1),
+            PointCyclePoint(**POINT_REFERENCE, pointId="back", name="back", axis1AngleDeg=-4, axis2AngleDeg=2),
         ]
         ordered = controller._plan_point_order(feedback, points)
         self.assertEqual([point.name for point in ordered], ["back", "near", "far"])
@@ -294,9 +364,9 @@ class ApiTests(unittest.TestCase):
         controller = self.app.state.controller
         feedback = {"axes": {"1": {"output_angle_deg": 0}, "2": {"output_angle_deg": 0}}}
         points = [
-            PointCyclePoint(pointId="m01", name="m01", axis1AngleDeg=10, axis2AngleDeg=0),
-            PointCyclePoint(pointId="m02", name="m02", axis1AngleDeg=20, axis2AngleDeg=0),
-            PointCyclePoint(pointId="m06", name="m06", axis1AngleDeg=-20, axis2AngleDeg=0),
+            PointCyclePoint(**POINT_REFERENCE, pointId="m01", name="m01", axis1AngleDeg=10, axis2AngleDeg=0),
+            PointCyclePoint(**POINT_REFERENCE, pointId="m02", name="m02", axis1AngleDeg=20, axis2AngleDeg=0),
+            PointCyclePoint(**POINT_REFERENCE, pointId="m06", name="m06", axis1AngleDeg=-20, axis2AngleDeg=0),
         ]
         ordered = controller._plan_point_order(feedback, points, points[0])
         self.assertEqual(ordered[0].name, "m01")

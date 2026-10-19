@@ -1,7 +1,7 @@
 "use client";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowDownToLine, CheckCircle2, Cloud, Pause, Play, Radio, RefreshCw, Waves } from "lucide-react";
-import { api, ApiError } from "./api";
+import { api, ApiError, download } from "./api";
 import { Button } from "./common";
 import { CustomSelect } from "./custom-select";
 import { FieldRecordingViewer, FieldWaveChart } from "./field-waveform";
@@ -105,6 +105,13 @@ export function WebCaptures({ canAnalyze, onAnalyze }: { canAnalyze: boolean; on
     } catch (cause) { if (selectedRef.current === id) setAnalysisError(cause instanceof Error ? cause.message : "准备分析失败"); }
     finally { setBusy(false); }
   }
+  async function downloadAttachment(name: "manifest.json" | "turntable.jsonl") {
+    if (!selectedId || !complete || busy) return;
+    const id = selectedId; setBusy(true); setAnalysisError("");
+    try { await download(`captures/${encodeURIComponent(id)}/files/${name}`); }
+    catch (cause) { if (selectedRef.current === id) setAnalysisError(cause instanceof Error ? cause.message : "附件下载失败"); }
+    finally { setBusy(false); }
+  }
   const disconnected = Boolean(error) || capture?.liveState === "offline";
   const tabs: { id: View; label: string }[] = [{ id: "waveform", label: "实时波形" }, { id: "analysis", label: "实时分析" }, { id: "recording", label: "完整原始记录" }];
   return <section className="web-captures" aria-label="桌面实时采集与原始记录">
@@ -134,7 +141,7 @@ export function WebCaptures({ canAnalyze, onAnalyze }: { canAnalyze: boolean; on
       {paused && <div className="capture-paused" role="status">显示已暂停 · 画面时间 {time(displayed?.receivedAt)}</div>}
       {view === "waveform" && <section id="capture-waveform-panel" role="tabpanel" aria-labelledby="capture-waveform-tab" className="field-card capture-wave-card"><div className="field-section-heading"><h2><Waves size={17} /> CH1 振动速度</h2><span className="field-subtext">mm/s · 相对时间</span></div><FieldWaveChart waveform={displayed?.waveform} unit="mm/s" /><div className="capture-rssi-heading">RSSI 回波强度 <span>信号质量 · %</span></div><FieldWaveChart waveform={displayed?.waveform} kind="rssi" compact /><p className="capture-preview-note">实时画面为有限显示窗口；完整原始样本以已上传记录为准。</p></section>}
       {view === "analysis" && <div id="capture-analysis-panel" role="tabpanel" aria-labelledby="capture-analysis-tab"><FieldRealtimeAnalysis key={selectedId} realtime={displayed?.realtime} paused={paused} /></div>}
-      {view === "recording" && <section id="capture-recording-panel" role="tabpanel" aria-labelledby="capture-recording-tab" className="field-card capture-history-card"><div className="field-section-heading"><h2><CheckCircle2 size={17} /> 完整原始记录</h2><span className="field-badge green">上传校验通过</span></div>{historyLoading ? <p role="status">正在读取完整记录…</p> : !historyFailed && history && <FieldRecordingViewer key={selectedId} detail={history} load={historyRequest} onError={historyError} />}</section>}
+      {view === "recording" && <section id="capture-recording-panel" role="tabpanel" aria-labelledby="capture-recording-tab" className="field-card capture-history-card"><div className="field-section-heading"><h2><CheckCircle2 size={17} /> 完整原始记录</h2><div className="capture-display-actions">{capture.recording.turntable && <><Button disabled={busy} onClick={() => void downloadAttachment("manifest.json")}><ArrowDownToLine size={15} />转盘元信息</Button>{capture.recording.turntable.telemetry && <Button disabled={busy} onClick={() => void downloadAttachment("turntable.jsonl")}><ArrowDownToLine size={15} />转盘遥测</Button>}</>}<span className="field-badge green">上传校验通过</span></div></div>{historyLoading ? <p role="status">正在读取完整记录…</p> : !historyFailed && history && <FieldRecordingViewer key={selectedId} detail={history} load={historyRequest} onError={historyError} />}</section>}
     </div>}
   </section>;
 }

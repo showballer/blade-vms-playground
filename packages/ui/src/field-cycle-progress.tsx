@@ -22,9 +22,9 @@ export function FieldCycleProgress({ status }: { status: FieldStatus | null }) {
   const last = log.at(-1);
   const terminal = ["complete", "cancelled", "error"].includes(cycle.state);
   const displayedPhase = terminal ? cycle.state : phase;
-  return <section className="field-card field-cycle-progress" aria-label="叶片跟随流程">
+  return <section className="field-card field-cycle-progress field-servo-ui" aria-label="叶片跟随流程">
     <div className="field-section-heading"><h3>叶片跟随流程</h3><span className={`field-badge ${cycle.state === "error" ? "red" : cycle.state === "complete" ? "green" : "amber"}`}>{labels[displayedPhase] || displayedPhase}</span></div>
-    <p role="status">第 {cycle.cycle}/{cycle.cycles} 圈 · {last?.point || cycle.currentPoint || "准备中"} · 已保存 {cycle.completedRecords}/{cycle.totalRecords} 条</p>
+    <div className="field-cycle-summary"><p role="status">第 {cycle.cycle}/{cycle.cycles} 圈 · {last?.point || cycle.currentPoint || "准备中"} · 已保存 {cycle.completedRecords}/{cycle.totalRecords} 条</p><progress aria-label="循环记录保存进度" value={cycle.completedRecords} max={Math.max(1, cycle.totalRecords)} /></div>
     {cycle.rssiTriggerEnabled && <><ol className="field-cycle-steps" aria-label="跟随步骤">{steps.map((label, index) => <li key={label} aria-current={!terminal && phaseStep[phase] === index ? "step" : undefined}>{label}</li>)}</ol>
       <p className="field-subtext">最近采集 RSSI {value(cycle.latestRssi)}% · 窗内波动 {value(cycle.rssiSpread)} 个百分点</p>
       <p className="field-subtext">进入确认 {cycle.rssiEntryMs?.toFixed(0) || 0}/{cycle.rssiEnterConfirmMs ?? 20} ms · 离开确认 {cycle.rssiBelowMs?.toFixed(0) || 0}/{cycle.rssiConfirmMs ?? 30} ms</p>

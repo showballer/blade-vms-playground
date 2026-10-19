@@ -67,6 +67,7 @@ class StartRequest(BaseModel):
     object: str = Field(default="", max_length=120)
     turbine: str = Field(default="", max_length=120)
     point: str = Field(default="", max_length=120)
+    captureSessionId: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$")
     confirmLaser: StrictBool = False
     turntable: TurntableConfig | None = None
     pointCycle: PointCycleConfig | None = None
@@ -1090,8 +1091,6 @@ class AcquisitionController:
 
     @staticmethod
     def _cycle_point_reference(point: PointCyclePoint):
-        if point.referenceSignature is None:
-            return None
         return json.loads(point.referenceSignature)
 
     @staticmethod
@@ -1299,6 +1298,7 @@ class AcquisitionController:
         metadata["point"] = point.name
         metadata["pointCycle"] = {"cycle": cycle_index, "pointIndex": point_index,
                                    **({"pointId": point.pointId} if point.pointId is not None else {}),
+                                   "recordedPort": point.port, "referenceSignature": point.referenceSignature,
                                    "pointName": point.name, "cycles": cycle.cycles,
                                    "dwellSeconds": cycle.dwellSeconds,
                                    "targetAxis1AngleDeg": point.axis1AngleDeg,

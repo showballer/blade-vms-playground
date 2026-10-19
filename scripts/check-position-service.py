@@ -58,7 +58,7 @@ def check(executable):
             status, value = request("turntable", {**base, "action": "manual_move"})
             assert status == 422 and isinstance(value["detail"], str), value
             checks.append("manual_move recognized; rejected before I/O without confirmation")
-            recall = {"port": "COM6", "axis": 1, "action": "recall", "axis1AngleDeg": 25.935, "axis2AngleDeg": -6.994}
+            recall = {"port": "COM6", "recordedPort": "COM6", "referenceSignature": "[[0,3,10000,17],[0,3,10000,17]]", "axis": 1, "action": "recall", "axis1AngleDeg": 25.935, "axis2AngleDeg": -6.994}
             status, value = request("turntable", recall)
             assert status == 422 and isinstance(value["detail"], str), value
             checks.append("recall recognized; rejected before I/O without confirmation")

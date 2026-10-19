@@ -251,3 +251,40 @@ test('current live registration and full 2049-bin FFT bypass an older blocked ra
   release(); await queue.settled();
   assert.equal(f.captures.get(old.manifest.id).complete, true);
 });
+
+test('turntable telemetry and point metadata upload unchanged and resume after a lost telemetry response', async t => {
+  const f = fixture(t), current = f.recording();
+  const telemetry = Buffer.from('{"event":"status","hostTime":1800000000,"elapsedSeconds":0,"axis":1}\n');
+  current.manifest.turntable = { config: { port: 'COM6', axis: 1 }, preparedReferences: { '1': { origin_counts: 500 } },
+    telemetry: { file: 'turntable.jsonl', events: 1, sha256: sha(telemetry) } };
+  current.manifest.pointCycle = { cycle: 1, pointIndex: 2, actualAngles: { '1': 5, '2': 20 } };
+  fs.writeFileSync(path.join(current.dir, 'manifest.json'), JSON.stringify(current.manifest));
+  fs.writeFileSync(path.join(current.dir, 'turntable.jsonl'), telemetry);
+  let lost = false;
+  f.setHandler(async (url, options, respond) => {
+    const result = await respond(url, options);
+    if (!lost && url.includes('/chunks/turntable.jsonl')) { lost = true; throw Error('response lost after telemetry persisted'); }
+    return result;
+  });
+  const first = f.create(); first.resume(); first.uploadRecording(current.manifest.id); await first.settled();
+  assert.equal(first.status().items[0].state, 'error'); first.dispose();
+  f.setHandler(null); const restarted = f.create(); restarted.resume(); await restarted.settled();
+  assert.equal(restarted.status().items[0].state, 'synced');
+  const uploaded = f.captures.get(current.manifest.id);
+  assert.deepEqual(uploaded.bytes['turntable.jsonl'], telemetry);
+  assert.deepEqual(uploaded.recording.turntable, current.manifest.turntable);
+  assert.deepEqual(uploaded.recording.pointCycle, current.manifest.pointCycle);
+  assert.equal(f.requests.filter(r => r.url.includes('/chunks/turntable.jsonl')).length, 1);
+  assert.deepEqual(fs.readFileSync(path.join(current.dir, 'turntable.jsonl')), telemetry);
+});
+
+test('missing or changed turntable telemetry cannot mark a joint recording synced', async t => {
+  const f = fixture(t), current = f.recording();
+  current.manifest.turntable = { telemetry: { file: 'turntable.jsonl', events: 1, sha256: sha(Buffer.from('original')) } };
+  fs.writeFileSync(path.join(current.dir, 'manifest.json'), JSON.stringify(current.manifest));
+  const queue = f.create(); queue.resume(); queue.uploadRecording(current.manifest.id); await queue.settled();
+  assert.equal(queue.status().items[0].state, 'error'); assert.equal(f.requests.length, 0);
+  fs.writeFileSync(path.join(current.dir, 'turntable.jsonl'), 'changed');
+  queue.retry(); await queue.settled();
+  assert.equal(queue.status().items[0].state, 'error'); assert.equal(f.requests.length, 0);
+});

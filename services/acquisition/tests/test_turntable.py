@@ -469,7 +469,8 @@ class TurntableTests(unittest.TestCase):
         require_stop_confirmed(value, TurntableConfig(port="COM6", axis=1))
 
     def recall_body(self, **changes):
-        return {"action": "recall", "port": "COM6", "axis": 1, "axis1AngleDeg": 25.935,
+        return {"action": "recall", "port": "COM6", "recordedPort": "COM6",
+                "referenceSignature": "[[0,3,10000,17],[0,3,10000,17]]", "axis": 1, "axis1AngleDeg": 25.935,
                 "axis2AngleDeg": -6.994, "speedRpm": 0.2, "confirmMotion": True, **changes}
 
     def test_recall_moves_both_axes_in_order_and_verifies_both_targets(self):
@@ -500,7 +501,8 @@ class TurntableTests(unittest.TestCase):
         motor = FakeMotor()
         client = self.make_client(motor)
         for changes in ({"axis1AngleDeg": 36.7}, {"axis2AngleDeg": -180.001}, {"axis2AngleDeg": None},
-                        {"axis1AngleDeg": True}, {"confirmMotion": False}, {"referenceSignature": "broken"}):
+                        {"axis1AngleDeg": True}, {"confirmMotion": False}, {"referenceSignature": "broken"},
+                        {"referenceSignature": None}, {"recordedPort": None}, {"recordedPort": "COM7"}):
             response = client.post("/api/field/turntable", json=self.recall_body(**changes))
             self.assertEqual(response.status_code, 422, response.text)
         self.assertEqual(motor.start_calls, 0)

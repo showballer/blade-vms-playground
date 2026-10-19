@@ -62,7 +62,7 @@ check("轴1停稳后保留故障2可读取记录，运动仍被禁止", () => {
 });
 check("记录点位回位拒绝缺角度、越界和参考变化，回位轴2时停止仍可用", () => {
   const point = { axis1AngleDeg: 25.935, axis2AngleDeg: -6.994 };
-  assert.equal(manualPointRecallError(point, undefined, "COM3"), "");
+  assert.match(manualPointRecallError(point, undefined, "COM3"), /参考位.*重新/);
   assert.match(manualPointRecallError({ ...point, axis1AngleDeg: 36.7 }, undefined, "COM3"), /轴1.*±35/);
   assert.match(manualPointRecallError({ ...point, axis2AngleDeg: null }, undefined, "COM3"), /轴2有效角度/);
   assert.match(manualPointRecallError({ ...point, axis2AngleDeg: Infinity }, undefined, "COM3"), /轴2有效角度/);

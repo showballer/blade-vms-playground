@@ -172,6 +172,52 @@ async function main() {
     assert.ok(Math.abs(measuredResult.modeShape.points[0].amplitude - 0.01) < 0.0001);
     passed.push("Artificial polytec_ivs500 native fixture uploads/imports/analyzes with source preserved; no device used");
 
+    const servo = fixture();
+    const telemetry = Buffer.from([0, 1].map((index) => JSON.stringify({ event: index ? "status" : "start", hostTime: 1700000000 + index,
+      elapsedSeconds: index, receivedSamples: index * 500, feedback: { axes: { "1": { output_angle_deg: index * 2 }, "2": { output_angle_deg: 30 } } } })).join("\n") + "\n");
+    const servoRecording = { ...servo.recording, source: "polytec_ivs500", simulation: null,
+      turntable: { config: { port: "COM6", axis: 1 }, preparedReferences: { "1": { origin_counts: 123 } },
+        telemetry: { file: "turntable.jsonl", events: 2, sha256: digest(telemetry), timestampBasis: "sequential host observations; not hardware synchronized" } },
+      pointCycle: { cycle: 2, pointIndex: 1, pointName: "B1-P2", actualAngles: { "1": 2, "2": 30 } } };
+    const servoFiles = [...servo.files, { name: "turntable.jsonl", bytes: telemetry.length, sha256: digest(telemetry) }];
+    const servoId = (await service.create(owner, { clientId: "desktop-servo", recording: servoRecording })).capture.id;
+    await assert.rejects(service.attachment(viewer, servoId, "manifest.json"), rejected(409));
+    await assert.rejects(service.upload(owner, servoId, { recording: servoRecording, files: servo.files }), rejected(400));
+    await assert.rejects(service.upload(owner, servoId, { recording: { ...servoRecording, turntable: {} }, files: servoFiles }), rejected(400));
+    await service.upload(owner, servoId, { recording: servoRecording, files: servoFiles });
+    for (const file of servo.files) await service.chunk(owner, servoId, file.name, 0, servo.chunks[file.name]);
+    await service.chunk(owner, servoId, "turntable.jsonl", 0, telemetry.subarray(0, 80));
+    const resumedServo = createCaptureService({ repository, root, worker });
+    assert.equal((await resumedServo.upload(owner, servoId, { recording: servoRecording, files: servoFiles })).offsets["turntable.jsonl"], 80);
+    await resumedServo.chunk(owner, servoId, "turntable.jsonl", 80, telemetry.subarray(80));
+    await resumedServo.complete(owner, servoId);
+    const collect = async (file: Awaited<ReturnType<typeof service.attachment>>) => { const chunks: Buffer[] = []; for await (const bytes of file.stream) chunks.push(bytes); return Buffer.concat(chunks); };
+    assert.deepEqual(await collect(await resumedServo.attachment(viewer, servoId, "turntable.jsonl")), telemetry);
+    const downloaded = JSON.parse((await collect(await resumedServo.attachment(viewer, servoId, "manifest.json"))).toString("utf8"));
+    assert.deepEqual(downloaded.turntable, servoRecording.turntable); assert.deepEqual(downloaded.pointCycle, servoRecording.pointCycle);
+    for (const forbidden of [outsider, teammate]) await assert.rejects(resumedServo.attachment(forbidden, servoId, "turntable.jsonl"), rejected(404));
+    await assert.rejects(resumedServo.attachment(viewer, servoId, "../manifest.json"), rejected(400));
+    await assert.rejects(resumedServo.attachment(viewer, measuredId, "turntable.jsonl"), rejected(404));
+    const servoImported = await resumedServo.prepareAnalysis(analyst, servoId);
+    assert.deepEqual(servoImported.recording.turntable, servoRecording.turntable);
+    assert.deepEqual(servoImported.recording.pointCycle, servoRecording.pointCycle);
+    const analysisOwner = createHash("sha256").update(`${analyst.tenant}\0${analyst.id}`).digest("hex");
+    assert.deepEqual(await readFile(path.join(root, "analysis", analysisOwner, "recordings", servoImported.recording.id, "turntable.jsonl")), telemetry);
+    assert.equal((await resumedServo.waveform(viewer, servoId, 0, 10)).waveform.values.length, 10);
+    passed.push("Turntable telemetry resumes, validates, downloads with read authorization and survives native analysis import unchanged");
+
+    const malformed = fixture(), malformedTelemetry = Buffer.from('{"event":"status","hostTime":1,"elapsedSeconds":-1}\n');
+    const malformedRecording = { ...servoRecording, ...malformed.recording, turntable: { ...servoRecording.turntable,
+      telemetry: { file: "turntable.jsonl", events: 1, sha256: digest(malformedTelemetry) } } };
+    const malformedFiles = [...malformed.files, { name: "turntable.jsonl", bytes: malformedTelemetry.length, sha256: digest(malformedTelemetry) }];
+    const malformedId = (await service.create(owner, { clientId: "desktop-servo", recording: malformedRecording })).capture.id;
+    await service.upload(owner, malformedId, { recording: malformedRecording, files: malformedFiles });
+    for (const file of malformed.files) await service.chunk(owner, malformedId, file.name, 0, malformed.chunks[file.name]);
+    await service.chunk(owner, malformedId, "turntable.jsonl", 0, malformedTelemetry);
+    await assert.rejects(service.complete(owner, malformedId), rejected(400));
+    assert.equal((await service.detail(owner, malformedId)).capture.uploadState, "error");
+    passed.push("Matching-hash malformed telemetry cannot finalize or become a downloadable complete record");
+
     const bad = fixture(undefined, true), badId = (await service.create(owner, { clientId: "desktop-1", recording: bad.recording })).capture.id;
     await service.upload(owner, badId, { recording: bad.recording, files: bad.files });
     for (const file of bad.files) await service.chunk(owner, badId, file.name, 0, bad.chunks[file.name]);

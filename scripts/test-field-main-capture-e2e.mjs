@@ -41,7 +41,7 @@ const disabledDll = path.join(userData, "HARDWARE_DISABLED_DO_NOT_CREATE.dll");
 fs.writeFileSync(path.join(userData, "blade-field-settings.json"), JSON.stringify({ dll: disabledDll }), { mode: 0o600 });
 const report = { passed: false, actualFieldMainEntry: true, actualIpc: true, actualAuth: true,
   actualService: true, actualCloudQueue: true, electronWindowStubbed: true, hardwareTested: false };
-let win, ipc, service, queue, unified, child, apiToken;
+let win, ipc, service, queue, captureTracker, unified, child, apiToken;
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function waitFor(operation, label, timeout = 40_000) {
   const until = Date.now() + timeout;
@@ -89,6 +89,9 @@ function requireFromMain(name) {
         return fetch(url, request);
       } }); return service;
   } };
+  if (name === "./field-capture-tracker.cjs") return { createCaptureTracker: options => {
+    captureTracker = mainRequire(name).createCaptureTracker(options); return captureTracker;
+  } };
   if (name === "./field-cloud-sync.cjs") return { createFieldCloudSync: options => {
     report.queueDataDirectory = path.relative(userData, options.dataDir);
     queue = createFieldCloudSync({ ...options, fetchImpl: (url, request) => {
@@ -127,6 +130,7 @@ try {
   console.log("PASS actual field-main assembly: local login -> unified binding -> IPC simulation -> live 2049-bin FFT -> stop -> exact raw cloud upload");
 } catch (error) { report.error = error.message; process.exitCode = 1; console.error(error.message); }
 finally {
+  captureTracker?.dispose(); await captureTracker?.settled();
   queue?.dispose(); await queue?.settled();
   try { await service?.shutdown({ force: true }); if (child) assert.ok(child.exitCode !== null || child.signalCode); unified?.logout(); }
   catch (error) { report.cleanupError = error.message; report.passed = false; process.exitCode = 1; }

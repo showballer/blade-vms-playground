@@ -14,7 +14,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { createHash, randomBytes, randomUUID, scryptSync } from "node:crypto";
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import mysql from "mysql2/promise";
 
 const require = createRequire(import.meta.url);
@@ -83,8 +83,8 @@ if (process.argv.includes("--cleanup")) {
     origin, captureRoot, analysisRoot, temporary, users: [], captures: [] };
   const report = { startedAt: new Date().toISOString(), passed: false, hardwareTested: false,
     platform: process.platform, actualPythonService: true, actualDesktopSync: true, actualWebApi: true,
-    sdkDisabled: true, checks: [], captures: [], network: { rejectedRequests: 0, lostChunkResponses: 0, resumedPlans: 0 }, fixturesRetained: false };
-  let service, cloud, ownedChild, cloudContext, offline = false, loseNextChunkAck = false, preserved = false;
+    sdkDisabled: true, syntheticTurntableFixtures: true, checks: [], captures: [], network: { rejectedRequests: 0, lostChunkResponses: 0, lostTelemetryResponses: 0, resumedPlans: 0 }, fixturesRetained: false };
+  let service, cloud, ownedChild, cloudContext, offline = false, loseNextChunkAck = false, loseNextTelemetryAck = false, preserved = false;
   const clients = {}, tokens = new Map(), chunkRequests = new Map();
   const check = name => { report.checks.push(name); console.log("PASS " + name); };
   async function api(route, { user = "operator", method = "GET", body, binary, expected = 200 } = {}) {
@@ -100,6 +100,40 @@ if (process.argv.includes("--cleanup")) {
     const until = Date.now() + timeout;
     while (Date.now() < until) { const result = await callback(); if (result) return result; await pause(100); }
     throw Error(`Timed out: ${label}; cloud=${cloud?.status().state || "none"}; ${cloud?.status().error || ""}`);
+  }
+  async function download(captureId, name, user = "analyst", expected = 200) {
+    const response = await fetch(`${origin}/api/v1/captures/${captureId}/files/${name}`, {
+      redirect: "error", signal: AbortSignal.timeout(30_000), headers: { authorization: `Bearer ${tokens.get(user)}` },
+    });
+    assert.equal(response.status, expected, `${user} download ${name}`);
+    if (expected === 200) assert.match(response.headers.get("content-disposition") || "", /attachment/);
+    return Buffer.from(await response.arrayBuffer());
+  }
+  function attachSyntheticTurntable(directory, index) {
+    // These are isolated simulation fixtures, not hardware observations. Use
+    // the production telemetry writer so transfer validation sees its real format.
+    const python = process.env.BLADE_ACQUISITION_PYTHON || path.join(root, "services/acquisition/.venv/bin/python");
+    return JSON.parse(execFileSync(python, ["-c", `
+import json, sys
+from pathlib import Path
+from blade_acquisition.storage import atomic_json
+from blade_acquisition.turntable import TelemetryWriter
+folder, kind = Path(sys.argv[1]), int(sys.argv[2])
+meta = json.loads((folder / "manifest.json").read_text())
+assert meta["source"] == "simulation" and meta["status"] == "complete"
+meta["turntable"] = {"state": "stopped", "config": {"port": "COM6", "axis": 1, "speedRpm": 0.2}, "fixture": "synthetic; no hardware"}
+if kind == 1:
+    writer = TelemetryWriter(folder)
+    writer.write("prepared", {"receivedSamples": 0, "axis": 1})
+    writer.write("status", {"receivedSamples": meta["samples"], "outputAngleDeg": 8.5, "motorRpm": 0})
+    writer.write("stopped", {"receivedSamples": meta["samples"]})
+    meta["turntable"]["telemetry"] = writer.finish()
+else:
+    meta["pointCycle"] = {"cycle": 1, "cycles": 2, "pointIndex": 1, "pointId": "e2e-point", "pointName": "P3", "dwellSeconds": 2, "targetAxis1AngleDeg": 8.5, "targetAxis2AngleDeg": 36}
+    meta["turntable"]["actualAngles"] = {"1": 8.5, "2": 36}
+atomic_json(folder / "manifest.json", meta)
+print(json.dumps(meta))
+`, directory, String(index)], { encoding: "utf8", env: { ...process.env, PYTHONPATH: path.join(root, "services/acquisition") } }));
   }
   function keepFixture() { fs.writeFileSync(fixtureFile, JSON.stringify(fixture, null, 2) + "\n", { mode: 0o600 }); fs.chmodSync(fixtureFile, 0o600); preserved = true; }
   async function createUser(label, role, other = false) {
@@ -130,6 +164,10 @@ if (process.argv.includes("--cleanup")) {
         if (loseNextChunkAck && request.method === "PUT" && route.includes("/chunks/") && response.ok) {
           await response.arrayBuffer(); loseNextChunkAck = false; offline = true;
           report.network.lostChunkResponses++; throw new TypeError("Deliberate lost successful chunk acknowledgement");
+        }
+        if (loseNextTelemetryAck && request.method === "PUT" && route.endsWith("/chunks/turntable.jsonl") && response.ok) {
+          await response.arrayBuffer(); loseNextTelemetryAck = false; offline = true;
+          report.network.lostTelemetryResponses++; throw new TypeError("Deliberate lost telemetry acknowledgement");
         }
         if (route.endsWith("/upload") && response.ok) {
           const plan = await response.clone().json();
@@ -194,13 +232,20 @@ if (process.argv.includes("--cleanup")) {
       cloud.pause(); await cloud.settled();
       const stopped = await service.stop(); assert.equal(stopped.recording.status, "complete"); assert.equal(stopped.receiver.running, false);
       const localDirectory = path.join(dataDir, "recordings", stopped.recording.id);
-      const nativeFiles = fs.readdirSync(localDirectory).filter(name => /^(chunk-[0-9]{8}\.bin|unpaired-rssi\.bin)$/.test(name)).sort();
+      if (index > 0) stopped.recording = attachSyntheticTurntable(localDirectory, index);
+      const nativeFiles = fs.readdirSync(localDirectory).filter(name => /^(chunk-[0-9]{8}\.bin|unpaired-rssi\.bin|turntable\.jsonl)$/.test(name)).sort();
       const originalHashes = Object.fromEntries(await Promise.all(nativeFiles.map(async name => [name, await digestFile(path.join(localDirectory, name))])));
       if (index === 0) loseNextChunkAck = true;
+      if (index === 1) loseNextTelemetryAck = true;
       cloud.finished(stopped.recording); cloud.resume();
       if (index === 0) {
         await waitFor(() => report.network.lostChunkResponses === 1 && cloud.status().items.find(value => value.captureId === item)?.state === "error", "acknowledgement loss and persistent retry queue");
         const partial = await api(`captures/${item}`); assert.equal(partial.capture.uploadState, "uploading");
+        cloud.dispose(); await cloud.settled(); offline = false;
+        cloud = openCloud(); cloud.resume();
+      }
+      if (index === 1) {
+        await waitFor(() => report.network.lostTelemetryResponses === 1 && cloud.status().items.find(value => value.captureId === item)?.state === "error", "lost telemetry acknowledgement persisted");
         cloud.dispose(); await cloud.settled(); offline = false;
         cloud = openCloud(); cloud.resume();
       }
@@ -212,6 +257,20 @@ if (process.argv.includes("--cleanup")) {
       for (const name of nativeFiles) {
         assert.equal(await digestFile(path.join(localDirectory, name)), originalHashes[name], "Sync must not mutate desktop raw files");
         assert.equal(await digestFile(path.join(captureRoot, item, "complete", name)), originalHashes[name], "Cloud raw bytes must equal original native files");
+      }
+      if (index > 0) {
+        assert.deepEqual(detail.capture.recording.turntable, stopped.recording.turntable);
+        const metadata = JSON.parse((await download(item, "manifest.json")).toString("utf8"));
+        assert.deepEqual(metadata.turntable, stopped.recording.turntable);
+        if (index === 1) {
+          assert.equal(sha256(await download(item, "turntable.jsonl")), originalHashes["turntable.jsonl"]);
+          assert.equal(chunkRequests.get(`${origin}/api/v1/captures/${item}/chunks/turntable.jsonl?offset=0`), 1);
+          for (const user of ["colleague", "stranger"]) await download(item, "turntable.jsonl", user, 404);
+        } else {
+          assert.deepEqual(metadata.pointCycle, stopped.recording.pointCycle);
+          await download(item, "turntable.jsonl", "analyst", 404);
+        }
+        check(`${point.id}: turntable/cycle metadata preserved and authorized native downloads verified`);
       }
       const wave = await api(`captures/${item}/waveform?start=0&end=128`, { user: "analyst" });
       const localBytes = fs.readFileSync(path.join(localDirectory, nativeFiles.find(name => name.startsWith("chunk-"))));
@@ -258,6 +317,13 @@ if (process.argv.includes("--cleanup")) {
       const result = await api(`captures/${captureId}/prepare-analysis`, { user: "analyst", method: "POST", body: {} });
       assert.equal(result.recording.cloudCaptureId, captureId); assert.equal(result.recording.source, "simulation"); prepared.push(result.recording.id);
       const retry = await api(`captures/${captureId}/prepare-analysis`, { user: "analyst", method: "POST", body: {} }); assert.equal(retry.recording.id, result.recording.id);
+      const original = (await api(`captures/${captureId}`)).capture.recording;
+      if (original.turntable) assert.deepEqual(result.recording.turntable, original.turntable);
+      if (original.pointCycle) assert.deepEqual(result.recording.pointCycle, original.pointCycle);
+      if (original.turntable?.telemetry) {
+        const importedDirectory = path.join(analysisRoot, sha256(`${clients.analyst.tenant}\0${clients.analyst.id}`), "recordings", result.recording.id);
+        assert.equal(await digestFile(path.join(importedDirectory, "turntable.jsonl")), original.turntable.telemetry.sha256);
+      }
     }
     const parameters = { recordingIds: prepared, rpm: 1200, pointsPerRevolution: 256, maxOrder: 20, targetOrder: 1, maxRevolutions: 50, positions: [0.2, 0.6, 0.9], pointNames: ["P1", "P2", "P3"] };
     await api("rotation/analyze", { user: "operator", method: "POST", body: parameters, expected: 403 });

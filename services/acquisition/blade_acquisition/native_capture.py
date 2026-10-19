@@ -18,6 +18,7 @@ from .waveform import WaveformReader
 
 CHUNK = re.compile(r"chunk-[0-9]{8}\.bin$")
 CAPTURE = re.compile(r"[a-f0-9]{32}$")
+TELEMETRY = "turntable.jsonl"
 SAMPLES = np.dtype([("index", "<u8"), ("raw", "<i4"), ("value", "<f8"),
                     ("rssiRaw", "<i4"), ("rssi", "<f4"), ("flags", "u1")])
 assert SAMPLES.itemsize == RECORD.size
@@ -43,6 +44,60 @@ def read_json(file):
     return value
 
 
+def validate_telemetry(directory, manifest, files):
+    """Validate streamed host observations; these are not hardware-synced samples."""
+    turntable = manifest.get("turntable")
+    details = turntable.get("telemetry") if isinstance(turntable, dict) else None
+    item = next((item for item in files if item.get("name") == TELEMETRY), None)
+    if details is None and item is None and (not turntable or manifest.get("pointCycle")):
+        # Point-cycle records can contain angle/point metadata without a motion log.
+        return
+    if (not isinstance(details, dict) or not item or details.get("file") != TELEMETRY or
+            not isinstance(details.get("events"), int) or isinstance(details["events"], bool) or details["events"] < 1 or
+            details.get("sha256") != item.get("sha256")):
+        raise ValueError("转盘遥测清单、事件数量或摘要与记录不符。")
+
+    def bounded(value, depth=0):
+        if depth > 12:
+            raise ValueError("转盘遥测嵌套过深。")
+        if value is None or isinstance(value, bool):
+            return
+        if isinstance(value, (int, float)) and math.isfinite(value):
+            return
+        if isinstance(value, str) and len(value) <= 8192:
+            return
+        if isinstance(value, list) and len(value) <= 2048:
+            for child in value:
+                bounded(child, depth + 1)
+            return
+        if isinstance(value, dict) and len(value) <= 128:
+            for key, child in value.items():
+                if key in ("__proto__", "constructor", "prototype"):
+                    raise ValueError("转盘遥测字段无效。")
+                bounded(child, depth + 1)
+            return
+        raise ValueError("转盘遥测包含无效数值或超出大小限制。")
+
+    count, previous = 0, -1.0
+    with (directory / TELEMETRY).open("rb") as stream:
+        while line := stream.readline(256 * 1024 + 1):
+            if len(line) > 256 * 1024 or not line.endswith(b"\n"):
+                raise ValueError("转盘遥测行过大或未完整保存。")
+            try:
+                event = json.loads(line)
+                bounded(event)
+            except (ValueError, RecursionError, UnicodeError, OverflowError) as error:
+                raise ValueError("转盘遥测 JSON 行无效。") from error
+            if (not isinstance(event, dict) or not isinstance(event.get("event"), str) or not 1 <= len(event["event"]) <= 128 or
+                    any(not isinstance(event.get(key), (int, float)) or isinstance(event[key], bool) or not math.isfinite(event[key])
+                        for key in ("hostTime", "elapsedSeconds")) or event["elapsedSeconds"] < previous or event["elapsedSeconds"] < 0):
+                raise ValueError("转盘遥测事件或观察时间无效。")
+            previous = event["elapsedSeconds"]
+            count += 1
+    if count != details["events"]:
+        raise ValueError("转盘遥测事件总数与记录不符。")
+
+
 def validate_capture(value):
     directory = selected_directory(value)
     transfer = read_json(directory / "transfer.json")
@@ -63,7 +118,7 @@ def validate_capture(value):
     names, chunks = set(), []
     for item in files:
         name = item.get("name", "")
-        if name in names or not (CHUNK.fullmatch(name) or name == "unpaired-rssi.bin"):
+        if name in names or not (CHUNK.fullmatch(name) or name in ("unpaired-rssi.bin", TELEMETRY)):
             raise ValueError("原始文件名重复或无效。")
         names.add(name)
         file = directory / name
@@ -124,6 +179,7 @@ def validate_capture(value):
             raise ValueError(f"{key} 与原始数据不一致。")
     if count < 1:
         raise ValueError("不能上传空采集记录。")
+    validate_telemetry(directory, manifest, files)
     return manifest
 
 
@@ -177,7 +233,7 @@ def import_capture(store: RecordingStore, value):
         transfer = read_json(source / "transfer.json")
         for item in transfer["files"]:
             name = item["name"]
-            if not (CHUNK.fullmatch(name) or name == "unpaired-rssi.bin"):
+            if not (CHUNK.fullmatch(name) or name in ("unpaired-rssi.bin", TELEMETRY)):
                 raise ValueError("原始文件名无效。")
             original = source / name
             if original.is_symlink() or not original.is_file() or original.stat().st_size != item["bytes"]:

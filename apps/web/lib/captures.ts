@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { createReadStream } from "node:fs";
+import { constants, createReadStream } from "node:fs";
 import { mkdir, open, readFile, rename, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 import type { RowDataPacket } from "mysql2/promise";
@@ -57,7 +57,7 @@ export const sqlCaptureRepository: CaptureRepository = {
 };
 
 const ID = /^[a-f0-9]{32}$/;
-const FILE = /^(?:chunk-[0-9]{8}\.bin|unpaired-rssi\.bin)$/;
+const FILE = /^(?:chunk-[0-9]{8}\.bin|unpaired-rssi\.bin|turntable\.jsonl)$/;
 const MAX_PART = 8 * 1024 * 1024;
 const LIVE_TTL = 15_000;
 const invalid = (message = "采集参数无效。") => new HttpError(400, message);
@@ -257,6 +257,11 @@ export function createCaptureService({ repository = sqlCaptureRepository, root =
       requireCaptureWrite(user); directory(id); object(input); only(input, ["recording", "files"]);
       const recording = validateCaptureRecording(input.recording, true), inventory = files(input.files);
       if (inventory.filter(file => file.name.startsWith("chunk-")).length !== recording.chunks) throw invalid("原始分块数量与记录不符。");
+      const telemetry = recording.turntable?.telemetry, telemetryFile = inventory.find(file => file.name === "turntable.jsonl");
+      if (telemetry || telemetryFile || (recording.turntable && !recording.pointCycle)) {
+        if (!telemetry || telemetry.file !== "turntable.jsonl" || !integer(telemetry.events, 1) ||
+            !telemetryFile || telemetry.sha256 !== telemetryFile.sha256) throw invalid("转盘遥测清单、事件数量或摘要与记录不符。");
+      }
       return repository.mutate(id, async row => {
         writable(user, row);
         if (recording.id !== row.local_id || recording.source !== row.body.recording.source) throw invalid("上传清单不属于该采集记录。");
@@ -372,6 +377,19 @@ export function createCaptureService({ repository = sqlCaptureRepository, root =
         row.body.uploadState = "complete"; row.body.receivedBytes = row.body.totalBytes; row.body.liveState = "stopped"; delete row.body.error;
         return { capture: summary(row) };
       });
+    },
+    async attachment(user: User, id: string, name: string) {
+      const row = await get(user, id);
+      if (!["manifest.json", "turntable.jsonl"].includes(name)) throw invalid("不支持的采集附件。");
+      if (row.body.uploadState !== "complete") throw new HttpError(409, "原始记录尚未完整上传，不能下载附件。");
+      if (name === "turntable.jsonl" && !row.body.files?.some(file => file.name === name)) throw new HttpError(404, "此记录没有转盘遥测附件。");
+      const file = directory(id, `complete/${name}`), handle = await open(file, constants.O_RDONLY | (constants.O_NOFOLLOW || 0));
+      try {
+        const metadata = await handle.stat();
+        if (!metadata.isFile()) throw invalid("采集附件无效。");
+        return { stream: handle.createReadStream(), filename: `BladeVMS-${id}-${name}`,
+          mime: name.endsWith("jsonl") ? "application/x-ndjson; charset=utf-8" : "application/json; charset=utf-8", bytes: metadata.size };
+      } catch (error) { await handle.close(); throw error; }
     },
     async prepareAnalysis(user: User, id: string) {
       requireCaptureAnalysis(user); const row = await get(user, id);

@@ -1,0 +1,280 @@
+/* Desktop servo surfaces only. Values follow prototype sections 1.2–1.5;
+   shared brand/status colors resolve through styles.css. */
+.field-app { --field-ui-page-heading: 20px; }
+.field-app .field-content:has(.field-turntable-manual) > .field-page-heading h1 { font-size: var(--field-ui-page-heading); font-weight: 600; }
+.field-servo-ui {
+  --field-ui-primary: var(--accent);
+  --field-ui-primary-soft: var(--accent-soft);
+  --field-ui-text: var(--ink);
+  --field-ui-secondary: #5a6677;
+  --field-ui-muted: var(--muted);
+  --field-ui-line: var(--line);
+  --field-ui-input-line: #d0d7e2;
+  --field-ui-panel: #fff;
+  --field-ui-subtle: var(--surface);
+  --field-ui-table-head: #eef2f7;
+  --field-ui-table-stripe: #fafbfc;
+  --field-ui-danger: var(--red);
+  --field-ui-success: var(--green);
+  --field-ui-warning: var(--orange);
+  --field-ui-space-1: 4px;
+  --field-ui-space-2: 8px;
+  --field-ui-space-3: 12px;
+  --field-ui-space-4: 16px;
+  --field-ui-space-6: 24px;
+  --field-ui-space-8: 32px;
+  --field-ui-caption: 12px;
+  --field-ui-label: 13px;
+  --field-ui-body: 14px;
+  --field-ui-heading: 16px;
+  --field-ui-control-height: 32px;
+  --field-ui-control-radius: 6px;
+  --field-ui-panel-radius: 8px;
+  --field-ui-panel-shadow: 0 2px 8px rgb(0 0 0 / 6%);
+  --field-ui-mono: "Roboto Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
+  color: var(--field-ui-text);
+  line-height: 1.5;
+  min-width: 0;
+}
+.field-app .field-servo-ui.field-card {
+  padding: var(--field-ui-space-4);
+  border: 1px solid var(--field-ui-line);
+  border-radius: var(--field-ui-panel-radius);
+  background: var(--field-ui-panel);
+  box-shadow: var(--field-ui-panel-shadow);
+}
+.field-app .field-servo-ui :is(h2, h3) {
+  color: var(--field-ui-text);
+  font-size: var(--field-ui-heading);
+  font-weight: 600;
+  line-height: 1.4;
+  margin: 0;
+}
+.field-app .field-servo-ui .field-section-heading {
+  align-items: center;
+  gap: var(--field-ui-space-2) var(--field-ui-space-4);
+  margin-bottom: var(--field-ui-space-4);
+}
+.field-app .field-servo-ui :is(.field-subtext, .field-section-heading p) {
+  color: var(--field-ui-secondary);
+  font-size: var(--field-ui-caption);
+  line-height: 1.5;
+  margin: var(--field-ui-space-2) 0 0;
+  overflow-wrap: anywhere;
+}
+.field-app .field-servo-ui .btn {
+  min-height: var(--field-ui-control-height);
+  border-radius: var(--field-ui-control-radius);
+  font-size: var(--field-ui-body);
+  line-height: 1.5;
+  padding: var(--field-ui-space-1) var(--field-ui-space-3);
+  white-space: normal;
+  text-align: center;
+}
+.field-app .field-servo-ui .btn.primary {
+  background: var(--field-ui-primary);
+  border-color: var(--field-ui-primary);
+}
+.field-app .field-servo-ui .btn.outline {
+  color: var(--field-ui-primary);
+  border-color: var(--field-ui-primary);
+}
+.field-app .field-servo-ui .btn.danger {
+  color: var(--field-ui-danger);
+  border-color: var(--field-ui-danger);
+}
+.field-app .field-servo-ui :is(.btn.ghost, .btn.outline):hover:not(:disabled) {
+  background: var(--field-ui-primary-soft);
+}
+.field-app .field-servo-ui .field-config-grid {
+  margin: var(--field-ui-space-3) 0 0;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: end;
+  gap: var(--field-ui-space-4) var(--field-ui-space-3);
+}
+.field-app .field-servo-ui .field-config-grid label {
+  min-width: 0;
+  font-size: var(--field-ui-caption);
+  color: var(--field-ui-secondary);
+}
+.field-app .field-servo-ui :is(.field-config-grid input:not([type="checkbox"]), .custom-select-trigger, .field-device-calibration input[type="number"]) {
+  width: 100%;
+  min-width: 0;
+  min-height: var(--field-ui-control-height);
+  margin-top: var(--field-ui-space-1);
+  border: 1px solid var(--field-ui-input-line);
+  border-radius: var(--field-ui-control-radius);
+  padding: var(--field-ui-space-1) var(--field-ui-space-2);
+  color: var(--field-ui-text);
+  background: var(--field-ui-panel);
+  font-size: var(--field-ui-body);
+  line-height: 1.5;
+}
+.field-app .field-servo-ui .custom-select-trigger { padding-right: var(--field-ui-space-8); }
+.field-app .field-servo-ui input::placeholder { color: var(--field-ui-muted); }
+.field-app .field-servo-ui :is(input:not([type="checkbox"]), .custom-select-trigger):focus-visible {
+  outline: 2px solid var(--field-ui-primary);
+  outline-offset: 2px;
+}
+.field-app .field-servo-ui input[type="number"] { font-variant-numeric: tabular-nums; }
+.field-app .field-servo-ui .field-turntable-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--field-ui-space-2);
+  color: var(--field-ui-text);
+  font-size: var(--field-ui-body);
+  line-height: 1.5;
+}
+.field-app .field-servo-ui .field-turntable-toggle input[type="checkbox"] {
+  width: var(--field-ui-space-4);
+  height: var(--field-ui-space-4);
+  flex: none;
+  margin: var(--field-ui-space-1) 0 0;
+  accent-color: var(--field-ui-primary);
+}
+.field-app .field-servo-ui .field-badge { font-size: var(--field-ui-caption); border-radius: var(--field-ui-control-radius); }
+.field-app .field-servo-ui .field-badge.green { --field-ui-status: var(--field-ui-success); }
+.field-app .field-servo-ui .field-badge.amber { --field-ui-status: var(--field-ui-warning); }
+.field-app .field-servo-ui .field-badge.red { --field-ui-status: var(--field-ui-danger); }
+.field-app .field-servo-ui .field-badge:is(.green, .amber, .red) {
+  color: color-mix(in srgb, var(--field-ui-status) 75%, var(--field-ui-text));
+  border-color: color-mix(in srgb, var(--field-ui-status) 20%, var(--field-ui-panel));
+  background: color-mix(in srgb, var(--field-ui-status) 8%, var(--field-ui-panel));
+}
+.field-turntable-setup {
+  border-top: 1px solid var(--field-ui-line);
+  margin-top: var(--field-ui-space-4);
+  padding-top: var(--field-ui-space-4);
+}
+.field-turntable-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--field-ui-space-2);
+  margin: var(--field-ui-space-3) 0;
+}
+.field-app .field-servo-ui .field-axis-choice { margin: 0; min-height: var(--field-ui-control-height); }
+.field-app .field-servo-ui .field-axis-choice .btn { flex: 1; }
+.field-turntable-test {
+  display: grid;
+  gap: var(--field-ui-space-3);
+  margin: var(--field-ui-space-4) 0;
+}
+.field-turntable-test > .btn { justify-self: start; }
+.field-turntable-test > label:not(.field-turntable-toggle) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--field-ui-space-3);
+  font-size: var(--field-ui-body);
+}
+.field-app .field-servo-ui :is(.field-turntable-block, .field-turntable-check) {
+  min-width: 0;
+  padding: var(--field-ui-space-4);
+  border: 1px solid var(--field-ui-line);
+  border-radius: var(--field-ui-panel-radius);
+  background: var(--field-ui-panel);
+}
+.field-app .field-servo-ui .field-turntable-check { background: var(--field-ui-subtle); }
+.field-app .field-servo-ui .field-turntable-check .field-details { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: var(--field-ui-space-6); }
+.field-app .field-servo-ui .field-turntable-check .field-details > div { display: grid; grid-template-columns: minmax(100px, .8fr) minmax(0, 1.2fr); gap: var(--field-ui-space-2); align-items: start; }
+.field-app .field-servo-ui .field-turntable-check .field-details dd { text-align: left; }
+.field-manual-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.8fr) minmax(240px, 1fr);
+  gap: var(--field-ui-space-3);
+  align-items: start;
+}
+.field-app .field-servo-ui .field-feedback-block { background: var(--field-ui-subtle); }
+.field-app .field-servo-ui .field-details {
+  font-size: var(--field-ui-caption);
+  gap: var(--field-ui-space-3);
+  margin-top: var(--field-ui-space-3);
+}
+.field-app .field-servo-ui .field-details dt { color: var(--field-ui-secondary); }
+.field-app .field-servo-ui .field-details dd {
+  color: var(--field-ui-text);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.field-app .field-servo-ui .field-feedback-block .field-details > div {
+  display: grid;
+  gap: var(--field-ui-space-1);
+}
+.field-app .field-servo-ui .field-feedback-block .field-details dd { text-align: left; }
+.field-app .field-servo-ui .field-points-block { margin-top: var(--field-ui-space-3); }
+.field-app .field-servo-ui .field-recall-speed { grid-template-columns: minmax(200px, 280px); }
+.field-app .field-servo-ui .field-table-scroll {
+  margin-top: var(--field-ui-space-4);
+  border: 1px solid var(--field-ui-line);
+  border-radius: var(--field-ui-control-radius);
+}
+.field-app .field-servo-ui .field-table { min-width: 640px; font-size: var(--field-ui-caption); }
+.field-app .field-servo-ui .field-table :is(td, th) { padding: var(--field-ui-space-3); }
+.field-app .field-servo-ui .field-table th {
+  background: var(--field-ui-table-head);
+  color: var(--field-ui-secondary);
+  font-size: var(--field-ui-label);
+  font-weight: 600;
+}
+.field-app .field-servo-ui .field-table td { color: var(--field-ui-text); font-variant-numeric: tabular-nums; }
+.field-app .field-servo-ui .field-table tbody tr:nth-child(even) { background: var(--field-ui-table-stripe); }
+.field-app .field-servo-ui .field-table tbody tr:hover { background: var(--field-ui-primary-soft); }
+.field-point-row-actions { display: flex; align-items: center; gap: var(--field-ui-space-2); }
+.field-app .field-laser-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--field-ui-space-2) var(--field-ui-space-4);
+  margin-bottom: var(--field-ui-space-3);
+}
+.field-app .field-laser-control > :not(.field-form-actions) { grid-column: 1; margin: 0; }
+.field-app .field-laser-control > .field-form-actions { grid-column: 2; grid-row: 1 / 4; align-self: center; margin: 0; }
+.field-app .field-right-column .field-laser-control { display: flex; flex-direction: column; margin-bottom: 0; }
+.field-app .field-right-column .field-laser-control .field-form-actions { align-self: stretch; }
+.field-app .field-turntable-feedback > p:not(.field-error) { margin: var(--field-ui-space-2) 0 var(--field-ui-space-4); color: var(--field-ui-secondary); font-size: var(--field-ui-caption); }
+.field-app .field-device-calibration { margin: var(--field-ui-space-4) 0; }
+.field-app .field-device-calibration .field-section-heading > label { display: grid; gap: var(--field-ui-space-1); font-size: var(--field-ui-caption); color: var(--field-ui-secondary); }
+.field-app .field-device-calibration input[type="number"] { width: 100px; }
+.field-app .field-servo-ui .field-form-actions { gap: var(--field-ui-space-2); flex-wrap: wrap; }
+.field-app .field-device-calibration .field-form-actions { margin: var(--field-ui-space-3) 0; justify-content: flex-start; }
+.field-calibration-results { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--field-ui-space-3); }
+.field-calibration-results > div { padding: var(--field-ui-space-3); border-radius: var(--field-ui-control-radius); background: var(--field-ui-subtle); min-width: 0; }
+.field-calibration-results:empty { display: none; }
+.field-calibration-results span, .field-calibration-results p { color: var(--field-ui-secondary); font-size: var(--field-ui-caption); }
+.field-calibration-results strong { display: block; margin: var(--field-ui-space-2) 0; font-size: var(--field-ui-heading); font-variant-numeric: tabular-nums; }
+.field-calibration-results small { color: var(--field-ui-secondary); font-size: var(--field-ui-caption); margin-left: var(--field-ui-space-1); font-weight: 400; }
+.field-cycle-progress { container: field-cycle / inline-size; min-width: 0; }
+.field-cycle-summary { display: grid; gap: var(--field-ui-space-2); font-size: var(--field-ui-body); }
+.field-cycle-summary progress { appearance: none; display: block; width: 100%; height: var(--field-ui-space-1); border: 0; border-radius: var(--field-ui-control-radius); overflow: hidden; background: var(--field-ui-line); color: var(--field-ui-primary); }
+.field-cycle-summary progress::-webkit-progress-bar { background: var(--field-ui-line); }
+.field-cycle-summary progress::-webkit-progress-value { background: var(--field-ui-primary); }
+.field-cycle-summary progress::-moz-progress-bar { background: var(--field-ui-primary); }
+.field-cycle-steps { counter-reset: field-cycle-step; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--field-ui-space-2); padding: 0; margin: var(--field-ui-space-4) 0; list-style: none; }
+.field-cycle-steps li { counter-increment: field-cycle-step; display: flex; align-items: center; gap: var(--field-ui-space-1); padding: var(--field-ui-space-2); min-width: 0; border: 1px solid var(--field-ui-line); border-radius: var(--field-ui-control-radius); font-size: var(--field-ui-caption); color: var(--field-ui-secondary); }
+.field-cycle-steps li[aria-current="step"] { color: var(--field-ui-primary); border-color: var(--field-ui-primary); background: var(--field-ui-primary-soft); font-weight: 600; }
+.field-cycle-steps li::before { content: counter(field-cycle-step); font-variant-numeric: tabular-nums; flex: none; }
+.field-cycle-progress details { margin-top: var(--field-ui-space-4); padding-top: var(--field-ui-space-3); border-top: 1px solid var(--field-ui-line); }
+.field-cycle-progress summary { cursor: pointer; font-size: var(--field-ui-caption); color: var(--field-ui-secondary); }
+.field-cycle-progress summary:focus-visible { outline: 2px solid var(--field-ui-primary); outline-offset: 2px; }
+.field-cycle-log { max-height: 192px; overflow-y: auto; padding: 0; margin: var(--field-ui-space-2) 0 0; list-style: none; font-size: var(--field-ui-caption); scrollbar-gutter: stable; }
+.field-cycle-log li { display: grid; gap: var(--field-ui-space-1); padding: var(--field-ui-space-2) 0; border-bottom: 1px solid var(--field-ui-line); }
+.field-cycle-log time { color: var(--field-ui-secondary); font-family: var(--field-ui-mono); font-variant-numeric: tabular-nums; }
+.field-cycle-log span { overflow-wrap: anywhere; }
+@container field-cycle (min-width: 640px) {
+  .field-cycle-steps { grid-template-columns: repeat(7, minmax(0, 1fr)); }
+  .field-cycle-log li { grid-template-columns: auto minmax(0, 1fr); gap: var(--field-ui-space-3); }
+}
+@media (max-width: 1100px) {
+  .field-manual-layout { grid-template-columns: minmax(0, 1fr); }
+  .field-app .field-servo-ui .field-feedback-block .field-details { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 760px) {
+  .field-app .field-servo-ui .field-turntable-check .field-details { grid-template-columns: minmax(0, 1fr); }
+  .field-app .field-servo-ui .field-config-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .field-app .field-laser-control { display: flex; flex-direction: column; }
+  .field-app .field-laser-control .field-form-actions { align-self: flex-start; }
+  .field-calibration-results { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 520px) {
+  .field-app .field-servo-ui .field-config-grid, .field-app .field-servo-ui .field-feedback-block .field-details { grid-template-columns: minmax(0, 1fr); }
+}

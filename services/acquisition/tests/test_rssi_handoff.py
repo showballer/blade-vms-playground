@@ -7,7 +7,7 @@ from blade_acquisition.turntable import PointCycleConfig
 
 
 def config(**extra):
-    return PointCycleConfig(port="COM6", points=[{"name": "p", "axis1AngleDeg": 0, "axis2AngleDeg": 0}],
+    return PointCycleConfig(port="COM6", points=[{"port": "COM6", "referenceSignature": "[[0,3,10000,17],[0,3,10000,17]]", "name": "p", "axis1AngleDeg": 0, "axis2AngleDeg": 0}],
                             rssiTriggerEnabled=True, **extra)
 
 

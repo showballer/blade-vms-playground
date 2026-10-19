@@ -7,8 +7,9 @@ const { createUnifiedAuth } = require('./unified-auth.cjs');
 const { createFieldService, failure } = require('./field-service.cjs');
 const { initialWindowBounds } = require('./field-window.cjs');
 const { createFieldCloudSync } = require('./field-cloud-sync.cjs');
+const { createCaptureTracker } = require('./field-capture-tracker.cjs');
 
-let win, auth, service, cloudSync, config = {}, quitting = false, closing = false;
+let win, auth, service, cloudSync, captureTracker, config = {}, quitting = false, closing = false;
 let settingsFile, dataDir, entryUrl;
 let mutation = Promise.resolve();
 const serial = fn => {
@@ -80,18 +81,29 @@ async function dispatch(options) {
     case 'turntable': return service.turntable(options.request);
     case 'turntablePorts': return service.turntablePorts();
     case 'frame': return service.frame(options.windowMs);
-    case 'syncStatus': return cloudSync.status();
+    case 'syncStatus': {
+      const status = cloudSync.status(), warning = captureTracker.status().error;
+      return warning ? { ...status, state: 'error', error: [status.error, warning].filter(Boolean).join('；') } : status;
+    }
     case 'setAutoSync': return cloudSync.setEnabled(options.enabled);
     case 'syncRecording': return cloudSync.uploadRecording(options.id);
     case 'retrySync': return cloudSync.retry();
     case 'start': {
-      const result = await service.begin(options.config);
-      try { cloudSync.started(result.recording); } catch { /* Cloud failures never interrupt acquisition. */ }
-      return result;
+      let captureSessionId;
+      try { captureSessionId = captureTracker.prepare(); }
+      catch (error) { captureTracker.warning(error.message); /* Cloud failures never interrupt acquisition. */ }
+      try {
+        return await service.begin(options.config, captureSessionId ? { captureSessionId } : undefined);
+      } finally {
+        // A lost start response may still have created records. Keep the run
+        // authorized and reconcile durable manifests instead of dropping it.
+        captureTracker.activate(captureSessionId);
+        void captureTracker.scan();
+      }
     }
     case 'stop': {
       const result = await service.stop();
-      try { cloudSync.finished(result.recording); } catch { /* The durable local recording remains authoritative. */ }
+      await captureTracker.flush(result);
       return result;
     }
     case 'recordings': return service.recordings();
@@ -152,7 +164,8 @@ async function closeSafely() {
         if (answer.response !== 1) return;
         await service.shutdown({ force: true });
       }
-      try { cloudSync?.finished((await service.status()).recording); } catch { /* Preserve shutdown even if queue persistence failed. */ }
+      try { await captureTracker?.flush(await service.status()); } catch { /* Preserve shutdown even if queue persistence failed. */ }
+      captureTracker?.dispose(); await captureTracker?.settled();
       cloudSync?.dispose(); auth?.logout(); quitting = true; app.quit();
     });
   } catch {
@@ -181,6 +194,8 @@ else {
       service = createFieldService({ getConfig: () => config, dataDir,
         resourcesDir: app.isPackaged ? process.resourcesPath : path.join(__dirname, '../resources') });
       cloudSync = createFieldCloudSync({ file: path.join(userData, 'blade-cloud-sync.json'), dataDir: path.join(dataDir, 'recordings'), auth, getLive: () => service.frame() });
+      captureTracker = createCaptureTracker({ file: path.join(userData, 'blade-capture-runs.json'),
+        dataDir: path.join(dataDir, 'recordings'), auth, sync: cloudSync, getSnapshot: () => service.status() });
     } catch {
       dialog.showErrorBox('无法打开现场工作台', '本机凭证、设置或数据目录不可用。未覆盖已有数据、未重置管理员密码。请检查用户目录权限和文件完整性。');
       quitting = true; app.quit(); return;

@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { createHash, randomUUID } = require('node:crypto');
 const ID = /^[a-f0-9]{32}$/;
-const FILE = /^(?:chunk-[0-9]{8}\.bin|unpaired-rssi\.bin)$/;
+const FILE = /^(?:chunk-[0-9]{8}\.bin|unpaired-rssi\.bin|turntable\.jsonl)$/;
 const SHA = /^[a-f0-9]{64}$/;
 const BLOCK = 4 * 1024 * 1024;
 const MAX_PENDING = 1800, MAX_HISTORY = 200, MAX_QUEUE_BYTES = 9 * 1024 * 1024;
@@ -149,7 +149,6 @@ function createFieldCloudSync({ file, dataDir, auth, getLive, fetchImpl = global
   }
   async function prepare(item) {
     const recording = manifest(item.recordingId);
-    if (recording.turntable) throw fail('联合转盘记录暂仅保存在本机，请分别导出波形与转盘遥测；当前 Web 不支持完整联合记录。', 409);
     if (recording.status !== 'complete') {
       if (item.recordingId === activeId && recording.status === 'incomplete') return null;
       throw fail('该记录尚未完整保存，不能上传原始数据。', 409);
@@ -180,6 +179,11 @@ function createFieldCloudSync({ file, dataDir, auth, getLive, fetchImpl = global
     }
     if (samples !== recording.samples || samples < 1) throw fail('采集样本总数不一致或为空', 409);
     if (recording.unpairedRssiSamples > 0 && !selected.includes('unpaired-rssi.bin')) throw fail('缺少未配对 RSSI 原始文件', 409);
+    const telemetry = recording.turntable?.telemetry, telemetryFile = files.find(part => part.name === 'turntable.jsonl');
+    if (telemetry || telemetryFile || (recording.turntable && !recording.pointCycle)) {
+      if (!plain(telemetry) || telemetry.file !== 'turntable.jsonl' || !Number.isSafeInteger(telemetry.events) || telemetry.events < 1 ||
+          !telemetryFile || telemetryFile.bytes < 1 || telemetry.sha256 !== telemetryFile.sha256) throw fail('转盘遥测文件缺失或与记录摘要不一致，不能上传不完整的联合记录。', 409);
+    }
     const planHash = createHash('sha256').update(JSON.stringify(files)).digest('hex');
     if (item.planHash && item.planHash !== planHash) throw fail('原始文件与上次同步校验结果不一致，请检查本机记录。', 409);
     // Keep the per-file checksums in a separate bounded private checkpoint;
@@ -322,9 +326,57 @@ function createFieldCloudSync({ file, dataDir, auth, getLive, fetchImpl = global
     } else if (manual && item.state !== 'synced') { item.manual = true; item.state = 'queued'; item.retryAt = 0; item.error = ''; }
     persist(); wake(); return status();
   }
+  // Only the main-process run journal may call this method. The run owner
+  // remains fixed even while the user switches accounts or goes offline.
+  function observeRecording(recording, { owner, active = false } = {}) {
+    if (!plain(recording) || !ID.test(recording.id) || !['incomplete', 'complete', 'error'].includes(recording.status)) throw fail('无效采集记录');
+    const binding = auth.cloudBinding();
+    if (!binding || owner !== scope(binding)) return false;
+    if (storeError) throw fail(storeError, 503);
+    let item = saved.items.find(candidate => candidate.recordingId === recording.id && candidate.owner === owner);
+    const enrolled = !item, previous = item ? { ...item } : null, previousActiveId = activeId;
+    if (active && recording.status === 'incomplete') activeId = recording.id;
+    else if (activeId === recording.id) activeId = null;
+    if (item?.state === 'synced') return true;
+    if (!item) {
+      compactHistory();
+      if (saved.items.filter(candidate => candidate.state !== 'synced').length >= MAX_PENDING) throw fail('本机待同步队列已满，请先完成待同步记录', 409);
+      item = { recordingId: recording.id, name: String(recording.name || recording.id).slice(0, 120), owner,
+        manual: false, recording: clone(recording), state: 'recording', attempts: 0, retryAt: 0 };
+      if (Buffer.byteLength(JSON.stringify(checkpoint([...saved.items, item]))) > MAX_QUEUE_BYTES) throw fail('同步队列超过容量限制，请先完成待同步记录。', 413);
+      saved.items.push(item);
+    } else if (item.state !== 'recording') {
+      // Polling must not reset retry/backoff, interrupt an upload, or re-enroll
+      // synced history. Explicit Retry is the only reset after an error.
+      return true;
+    }
+    item.recording = clone(recording);
+    if (recording.status === 'complete') { item.state = 'queued'; item.retryAt = 0; item.error = ''; }
+    else if (!active) {
+      item.state = 'error'; item.retryAt = Number.MAX_SAFE_INTEGER;
+      item.error = '该记录未完整保存，已保留在本机，不能按完整记录自动上传。';
+    }
+    // Active samples are not stored in the queue file. Persist only enrollment
+    // and terminal transitions, not every live frame or manifest sample count.
+    try { if (enrolled || item.state !== 'recording') persist(); }
+    catch (error) {
+      // Accepted means durable. A failed save must not leave a queued item in
+      // memory that a later poll could mistake for a persisted enrollment.
+      if (enrolled) {
+        const index = saved.items.indexOf(item);
+        if (index >= 0) saved.items.splice(index, 1);
+      } else {
+        for (const key of Object.keys(item)) if (!(key in previous)) delete item[key];
+        Object.assign(item, previous);
+      }
+      activeId = previousActiveId;
+      throw error;
+    }
+    wake(); return true;
+  }
   timer = setInterval(wake, intervalMs); timer.unref?.();
   return Object.freeze({
-    status, resume, pause,
+    status, resume, pause, observeRecording,
     setEnabled(enabled) { if (typeof enabled !== 'boolean') throw fail('自动同步设置无效'); saved.enabled = enabled; persist(); wake(); return status(); },
     started(recording) { activeId = recording?.id || null; try { return track(recording); } catch (error) { transientError = error.message || '新采集未能加入同步队列'; throw error; } },
     finished(recording) {

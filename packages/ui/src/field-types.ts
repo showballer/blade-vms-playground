@@ -38,7 +38,7 @@ export type FieldConfig = {
   turntable?: FieldTurntableConfig;
 };
 export type FieldTurntableConfig = { port: string; axis: 1 | 2; speedRpm: number; direction: "forward" | "reverse"; durationSeconds: number; protocol?: "legacy_speed" | "continuous" | "position"; targetAngleDeg?: number };
-export type FieldPointCyclePoint = { pointId?: string; name: string; axis1AngleDeg: number; axis2AngleDeg: number; referenceSignature?: string };
+export type FieldPointCyclePoint = { pointId?: string; name: string; axis1AngleDeg: number; axis2AngleDeg: number; port?: string; referenceSignature?: string };
 export type FieldPointCycleConfig = {
   port: string; points: FieldPointCyclePoint[]; cycles: number; dwellSeconds: number; speedRpm: number;
   rssiTriggerEnabled?: boolean; rssiThresholdMode?: "adaptive" | "absolute"; rssiLeaveThresholdPercent?: number;
@@ -60,6 +60,8 @@ export type FieldBladePoint = {
   axis1RawCounts: number | null;
   axis2RawCounts: number | null;
   referenceSignature?: string;
+  references?: string;
+  port?: string;
 };
 export type FieldAxisFeedback = {
   output_angle_deg: number | null; motor_rpm: number; actual_counts: number; commanded_counts: number;
@@ -184,7 +186,7 @@ export type FieldRequestOptions =
   | { action: "rotation"; parameters: Record<string, unknown> }
   | { action: "device"; request: FieldDeviceRequest }
   | { action: "rssiCalibration"; request: FieldRssiCalibrationRequest }
-  | { action: "turntable"; request: { action: "probe" | "test" | "manual_move" | "recall" | "prepare" | "stop" | "reference" | "limits"; port: string; axis: 1 | 2; speedRpm?: number; direction?: FieldTurntableConfig["direction"]; durationSeconds?: number; protocol?: FieldTurntableConfig["protocol"]; targetAngleDeg?: number; axis1AngleDeg?: number; axis2AngleDeg?: number; referenceSignature?: string; testSeconds?: number; confirmMotion?: true; confirmRecovery?: boolean } };
+  | { action: "turntable"; request: { action: "probe" | "test" | "manual_move" | "recall" | "prepare" | "stop" | "reference" | "limits"; port: string; axis: 1 | 2; speedRpm?: number; direction?: FieldTurntableConfig["direction"]; durationSeconds?: number; protocol?: FieldTurntableConfig["protocol"]; targetAngleDeg?: number; axis1AngleDeg?: number; axis2AngleDeg?: number; referenceSignature?: string; recordedPort?: string; testSeconds?: number; confirmMotion?: true; confirmRecovery?: boolean } };
 
 export function fieldTurntableMatches(a: FieldTurntableConfig | Omit<FieldTurntableConfig, "durationSeconds"> | undefined, b: FieldTurntableConfig, duration = true) {
   return !!a && a.port === b.port && a.axis === b.axis && a.speedRpm === b.speedRpm && a.direction === b.direction &&

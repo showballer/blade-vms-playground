@@ -4,6 +4,7 @@ import { FieldDesktopApp } from "../../../packages/ui/src/field-desktop";
 import "@blade/ui/styles.css";
 import "../../../packages/ui/src/field-styles.css";
 import "../../../packages/ui/src/field-realtime.css";
+import "../../../packages/ui/src/field-turntable.css";
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <FieldDesktopApp />
