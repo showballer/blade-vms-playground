@@ -33,6 +33,8 @@ jobs:
   build-and-verify:
     runs-on: windows-2022
     timeout-minutes: 40
+    permissions:
+      contents: write # Private draft fallback only; never publishes a release.
     defaults:
       run:
         shell: pwsh
@@ -109,6 +111,7 @@ jobs:
       - name: Verify frozen runtime, install, login, coexistence and uninstall
         run: node scripts/test-windows-bundle.cjs --resources apps/desktop/release/win-unpacked/resources --installer apps/desktop/release/BladeVMS-Setup-${{ steps.desktop.outputs.version }}-x64.exe
       - name: Record package checksums
+        id: verified_package
         run: |
           Get-ChildItem apps/desktop/release -File | Where-Object { $_.Extension -in '.exe', '.zip' } | ForEach-Object {
             "{0}  {1}" -f (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant(), $_.Name
@@ -116,7 +119,10 @@ jobs:
           Copy-Item WINDOWS_TEST_GUIDE.md apps/desktop/release/
           Copy-Item CLOUD_CAPTURE_FLOW.md apps/desktop/release/
           Copy-Item docs/AUTOMATIC_FOLLOWING.md apps/desktop/release/
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - name: Upload verified Windows package
+        id: package_artifact
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: BladeVMS-${{ steps.desktop.outputs.version }}-windows-x64-full
           path: |
@@ -130,7 +136,9 @@ jobs:
           retention-days: 30
           compression-level: 0
       - name: Upload hardware-free verification evidence
+        id: evidence_artifact
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: windows-verification-evidence
@@ -144,3 +152,53 @@ jobs:
             artifacts/auto-follow-ui-review/*.png
           if-no-files-found: warn
           retention-days: 30
+      - name: Deliver verified package through a private draft if artifact upload failed
+        id: draft_delivery
+        if: ${{ success() && steps.verified_package.outcome == 'success' && (steps.package_artifact.outcome != 'success' || steps.evidence_artifact.outcome != 'success') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ steps.desktop.outputs.version }}
+        run: |
+          $private = gh api "repos/$env:GITHUB_REPOSITORY" --jq '.private'
+          if ($LASTEXITCODE -ne 0 -or $private.Trim() -ne 'true') { throw 'Fallback delivery requires a private repository' }
+          # One draft per run attempt. No recursive dispatch, automatic rerun or production download update.
+          $tag = "ci-v$env:RELEASE_VERSION-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          $notes = @"
+          Verified Windows build $env:RELEASE_VERSION
+          Commit: $env:GITHUB_SHA
+          Build: https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID/attempts/$env:GITHUB_RUN_ATTEMPT
+          The build, frozen runtime, installed application and hardware-free checks passed.
+          GitHub Actions artifact upload was unavailable; this private draft retains the verified package and evidence.
+          Physical turntable, laser and blade-entry/exit validation remains pending.
+          This draft does not update the production download endpoint.
+          "@
+          $notes | Set-Content -Encoding utf8NoBOM apps/desktop/release/BUILD_NOTES.md
+          $evidence = @('artifacts/windows-bundle-smoke', 'artifacts/windows-simulation-smoke', 'artifacts/windows-motion-trial-smoke', 'artifacts/field-waveform-smoke', 'artifacts/windows-blade-passes-smoke', 'artifacts/auto-follow-ui-review')
+          foreach ($item in $evidence) { if (-not (Test-Path -LiteralPath $item -PathType Container)) { throw "Missing verification evidence: $item" } }
+          Compress-Archive -Path $evidence -DestinationPath apps/desktop/release/windows-verification-evidence.zip
+          $assets = @(
+            "apps/desktop/release/BladeVMS-Setup-$env:RELEASE_VERSION-x64.exe",
+            "apps/desktop/release/BladeVMS-$env:RELEASE_VERSION-win.zip",
+            'apps/desktop/release/SHA256SUMS.txt',
+            'apps/desktop/release/WINDOWS_TEST_GUIDE.md',
+            'apps/desktop/release/AUTOMATIC_FOLLOWING.md',
+            'apps/desktop/release/CLOUD_CAPTURE_FLOW.md',
+            'apps/desktop/release/BUILD_NOTES.md',
+            'apps/desktop/release/windows-verification-evidence.zip'
+          )
+          foreach ($asset in $assets) { if (-not (Test-Path -LiteralPath $asset -PathType Leaf)) { throw "Missing verified delivery asset: $asset" } }
+          gh release create $tag @assets --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --draft --title "BladeVMS $env:RELEASE_VERSION Windows verified build" --notes-file apps/desktop/release/BUILD_NOTES.md
+          if ($LASTEXITCODE -ne 0) { throw 'Private draft fallback delivery failed' }
+          "Verified private draft fallback: $tag" >> $env:GITHUB_STEP_SUMMARY
+      - name: Require a complete verified delivery
+        if: ${{ always() && !cancelled() && steps.verified_package.outcome == 'success' }}
+        env:
+          PACKAGE_ARTIFACT: ${{ steps.package_artifact.outcome }}
+          EVIDENCE_ARTIFACT: ${{ steps.evidence_artifact.outcome }}
+          DRAFT_DELIVERY: ${{ steps.draft_delivery.outcome }}
+        run: |
+          if (($env:PACKAGE_ARTIFACT -eq 'success' -and $env:EVIDENCE_ARTIFACT -eq 'success') -or $env:DRAFT_DELIVERY -eq 'success') {
+            'Verified package and evidence delivered.' >> $env:GITHUB_STEP_SUMMARY
+          } else {
+            throw 'Neither complete artifact delivery nor private draft fallback succeeded'
+          }
