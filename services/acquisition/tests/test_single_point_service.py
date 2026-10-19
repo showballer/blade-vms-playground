@@ -16,7 +16,7 @@ from blade_acquisition.receiver import Batch
 from blade_acquisition.service import Settings, create_app
 from blade_acquisition.single_point import estimate_manual_sync, preview_plan
 from blade_acquisition.turntable import MotionGuard, TurntableConfig, start_motor
-from blade_acquisition.single_point_runner import MotionDeadline
+from blade_acquisition.single_point_runner import MotionDeadline, SinglePointSession
 from blade_acquisition.turntable_driver.motor_controller import MotionAccepted, MotorController
 from test_turntable import FakeMotor
 
@@ -58,6 +58,88 @@ class ContinuousReceiver:
             stop.wait(0.01)
 
 
+class ControlledClock:
+    """Only explicitly injected device/wait events consume protocol time.
+
+    Real filesystem and Windows scheduler duration still execute, but cannot
+    accidentally stand in for a slow serial reply in a fake-transport test.
+    """
+    def __init__(self):
+        self.value = 1000.0
+        self.epoch_origin = time.time()
+        self.lock = threading.RLock()
+        self.on_advance = None
+        self.samples_ready = threading.Event()
+        self.wait_entered = threading.Event()
+        self.pause_at_wait = False
+
+    def now(self):
+        with self.lock:
+            return self.value
+
+    def epoch(self):
+        return self.epoch_origin + self.now() - 1000.0
+
+    def advance(self, seconds):
+        with self.lock:
+            self.value += seconds
+            callback = self.on_advance
+        if callback:
+            callback()
+
+
+class ClockDrivenStopEvent(threading.Event):
+    def __init__(self, clock):
+        super().__init__()
+        self.clock = clock
+
+    def wait(self, timeout=None):
+        if self.is_set():
+            return True
+        if self.clock.pause_at_wait:
+            self.clock.wait_entered.set()
+            # This is a cancellation handshake, not a timing delay. The test
+            # sends cancel only after the coordinator reaches this boundary.
+            return super().wait(5)
+        if timeout is None:
+            return super().wait()
+        self.clock.advance(timeout)
+        return self.is_set()
+
+
+class ClockDrivenReceiver(ContinuousReceiver):
+    def __init__(self, options, clock):
+        super().__init__(options)
+        self.clock = clock
+
+    def run(self, stop, ready, receive):
+        ContinuousReceiver.starts += 1
+        origin = self.clock.epoch()
+        started = self.clock.now()
+        count = 0
+        publish_lock = threading.Lock()
+
+        def publish():
+            nonlocal count
+            with publish_lock:
+                wanted = max(1, int((self.clock.now() - started) * 1000) + 1)
+                size = wanted - count
+                if size <= 0:
+                    return
+                receive(Batch(count, 1000.0, origin, [1] * size, [0.1] * size,
+                              [800] * size, [80] * size, [False] * size))
+                count += size
+
+        ready(1000.0, origin)
+        self.clock.on_advance = publish
+        publish()
+        self.clock.samples_ready.set()
+        try:
+            stop.wait(30)
+        finally:
+            self.clock.on_advance = None
+
+
 class RecordingMotor(FakeMotor):
     def __init__(self):
         super().__init__()
@@ -67,11 +149,15 @@ class RecordingMotor(FakeMotor):
         self.command_delay = {}
         self.never_reach = False
         self.operations = []
+        self.clock = None
 
     def move_to_angle(self, axis, target, speed_rpm, cancel=None):
         self.commands.append((axis, target, speed_rpm))
         if self.command_delay.get(axis):
-            time.sleep(self.command_delay[axis])
+            if self.clock:
+                self.clock.advance(self.command_delay[axis])
+            else:
+                time.sleep(self.command_delay[axis])
         if self.never_reach:
             return MotionAccepted(axis, target - self.angles[axis], speed_rpm)
         return super().move_to_angle(axis, target, speed_rpm, cancel)
@@ -101,6 +187,7 @@ class SinglePointServiceTests(unittest.TestCase):
                                  headers={"Authorization": f"Bearer {TOKEN}"})
         self.client.__enter__()
         self.session = uuid.uuid4().hex
+        self.clock = None
 
     def tearDown(self):
         self.motor.fail_stop = False
@@ -133,7 +220,27 @@ class SinglePointServiceTests(unittest.TestCase):
         response = self.client.post("/api/field/single-point", json=data)
         self.assertEqual(response.status_code, 200, response.text)
         self.wait_state({"awaiting_sync"})
+        if self.clock:
+            self.assertTrue(self.clock.samples_ready.wait(3), "fake DAQ did not publish its initial batch")
         return data
+
+    def control_motion_time(self):
+        """Inject a clock before preparation, without replacing runner guards."""
+        self.clock = ControlledClock()
+        self.motor.clock = self.clock
+        self.controller.stop_event = ClockDrivenStopEvent(self.clock)
+        self.controller.receiver_factory = lambda options: ClockDrivenReceiver(options, self.clock)
+
+        def session_factory(controller, request, receiver):
+            runner = SinglePointSession(controller, request, receiver)
+            runner.now = self.clock.now
+            runner.created_monotonic = self.clock.now()
+            runner.created_epoch = self.clock.epoch()
+            return runner
+
+        patcher = patch("blade_acquisition.service.SinglePointSession", side_effect=session_factory)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def seed_sync(self):
         # Fake fixture supplies four past server times; production API never
@@ -238,6 +345,7 @@ class SinglePointServiceTests(unittest.TestCase):
         self.assertEqual(ContinuousReceiver.starts, 1)
 
     def test_one_short_arc_then_stop_preserves_single_record_and_one_command_per_axis(self):
+        self.control_motion_time()
         self.prepare()
         sync = self.seed_sync()
         self.assertTrue(sync["sync"]["ready"], sync["sync"])
@@ -250,18 +358,27 @@ class SinglePointServiceTests(unittest.TestCase):
         self.assertEqual(len({command[0] for command in self.motor.commands}), len(self.motor.commands))
         self.assertTrue(done["stopConfirmed"])
         self.assertFalse(done["identityConfirmed"])
+        window = done["captureWindow"]
+        self.assertTrue(window["covered"])
+        self.assertGreater(window["endSampleExclusive"], window["startSample"])
+        self.assertGreaterEqual(window["receivedThroughSample"], window["endSampleExclusive"])
+        self.assertFalse(done["captureWindowVerified"])
         self.assertEqual(self.controller.writer.manifest["status"], "complete")
         self.assertEqual(self.post("arm", confirmMotion=True).status_code, 409)
 
     def test_expired_sync_and_changed_reference_never_move(self):
+        self.control_motion_time()
         self.prepare()
         self.seed_sync()
         runner = self.controller.single_point_runner
+        expiry = runner.config.maxSyncAgeSeconds + 1
         with self.controller.lock:
-            runner.marks = [value - 40 for value in runner.marks]
-        self.assertEqual(self.post("arm", confirmMotion=True).status_code, 409)
+            runner.marks = [value - expiry for value in runner.marks]
+        response = self.post("arm", confirmMotion=True)
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("人工同步已过期", response.text)
         with self.controller.lock:
-            runner.marks = [value + 40 for value in runner.marks]
+            runner.marks = [value + expiry for value in runner.marks]
         self.motor.origins[2] = 99
         self.assertEqual(self.post("arm", confirmMotion=True).status_code, 200)
         done = self.wait_state({"error"})
@@ -277,6 +394,7 @@ class SinglePointServiceTests(unittest.TestCase):
         self.assertEqual(ContinuousReceiver.starts, 1)
 
     def test_dual_axis_uncertain_stop_requires_both_recoveries(self):
+        self.control_motion_time()
         self.prepare()
         self.seed_sync()
         self.motor.fail_stop = True
@@ -297,6 +415,7 @@ class SinglePointServiceTests(unittest.TestCase):
 
     def test_actual_narrow_soft_limit_blocks_target_before_motion(self):
         from dataclasses import replace
+        self.control_motion_time()
         self.prepare()
         self.seed_sync()
         self.motor.guard_configs[2] = replace(self.motor.get_guard_config(2), minimum_deg=-0.1, maximum_deg=0.1)
@@ -306,6 +425,7 @@ class SinglePointServiceTests(unittest.TestCase):
         self.assertEqual(self.motor.commands, [])
 
     def test_slow_first_command_is_failure_and_second_is_not_dispatched(self):
+        self.control_motion_time()
         self.prepare()
         self.seed_sync()
         self.motor.command_delay[1] = 0.04
@@ -317,6 +437,7 @@ class SinglePointServiceTests(unittest.TestCase):
         self.assertTrue(done["stopConfirmed"])
 
     def test_second_axis_slow_reply_is_not_reported_as_complete(self):
+        self.control_motion_time()
         self.prepare()
         self.seed_sync()
         self.motor.command_delay[2] = 0.04
@@ -329,11 +450,12 @@ class SinglePointServiceTests(unittest.TestCase):
         self.assertEqual(operations[first_stop:first_stop + 2], [("stop", 1, False), ("stop", 2, False)])
 
     def test_slow_guard_persistence_never_sends_a_late_move(self):
+        self.control_motion_time()
         self.prepare()
         self.seed_sync()
         original = self.controller._persist_pending_axes
         def slow_write(port, axes):
-            time.sleep(0.04)
+            self.clock.advance(0.04)
             original(port, axes)
         with patch.object(self.controller, "_persist_pending_axes", side_effect=slow_write):
             self.assertEqual(self.post("arm", confirmMotion=True).status_code, 200)
@@ -346,29 +468,27 @@ class SinglePointServiceTests(unittest.TestCase):
         for slow_step in ("feedback", "alarm"):
             with self.subTest(slow_step=slow_step):
                 motor = MotorController("COM6")
+                clock = ControlledClock()
                 sent = []
                 def feedback(axis):
                     if slow_step == "feedback":
-                        time.sleep(0.02)
+                        clock.advance(0.02)
                     return self.motor.get_feedback(axis)
                 def alarm(axis):
                     if slow_step == "alarm":
-                        time.sleep(0.02)
+                        clock.advance(0.02)
                     return 0
                 motor.get_feedback = feedback
                 motor.read_alarm = alarm
                 motor._request = lambda packet: sent.append(packet)
                 motion = TurntableConfig(port="COM6", axis=1, protocol="position", targetAngleDeg=0.1)
-                deadline = MotionDeadline(threading.Event(), time.monotonic, time.monotonic() + 0.005)
+                deadline = MotionDeadline(threading.Event(), clock.now, clock.now() + 0.005)
                 self.assertIsNone(start_motor(motor, motion, deadline, prechecked_position=True))
                 self.assertEqual(sent, [])
 
     def test_never_reached_endpoint_is_not_a_completed_trial(self):
-        # This tests endpoint rejection, not dispatch jitter. Keep the fake
-        # timing budget independent of host fsync/scheduler load in the full
-        # suite; separate tests above exercise strict late-command guards.
-        self.prepare(config=config(commandLatencyMs=200, axisStartSkewMs=200,
-                                   maxPredictionErrorMm=600))
+        self.control_motion_time()
+        self.prepare()
         self.seed_sync()
         self.motor.never_reach = True
         self.assertEqual(self.post("arm", confirmMotion=True).status_code, 200)
@@ -379,10 +499,13 @@ class SinglePointServiceTests(unittest.TestCase):
         self.assertIn("未在预测终点", done["error"])
 
     def test_cancel_scheduled_task_prevents_motion(self):
+        self.control_motion_time()
+        self.clock.pause_at_wait = True
         self.prepare()
         self.seed_sync()
         self.assertEqual(self.post("arm", confirmMotion=True).status_code, 200)
-        self.wait_state({"scheduled"})
+        self.assertTrue(self.clock.wait_entered.wait(3), "coordinator did not wait at its dispatch boundary")
+        self.assertEqual(self.controller.status()["singlePoint"]["state"], "scheduled")
         self.post("cancel")
         done = self.wait_state({"cancelled"})
         self.assertEqual(self.motor.commands, [])
@@ -403,28 +526,27 @@ class SinglePointServiceTests(unittest.TestCase):
         self.assertEqual(self.motor.commands, [])
 
     def test_initial_samples_then_stream_stalls_is_not_completed(self):
-        class StalledReceiver(ContinuousReceiver):
-            def run(self, stop, ready, receive):
-                origin = time.time()
-                ready(1000.0, origin)
-                receive(Batch(0, 1000.0, origin, [1], [0.1], [800], [80], [False]))
-                stop.wait(30)
-        self.controller.receiver_factory = StalledReceiver
+        self.control_motion_time()
         self.prepare()
+        # Initial raw samples exist, then transport stops publishing while the
+        # coordinator's scheduled waits advance beyond the freshness deadline.
+        self.clock.on_advance = None
         self.seed_sync()
         self.assertEqual(self.post("arm", confirmMotion=True).status_code, 200)
         done = self.wait_state({"error"})
         self.assertIn("500毫秒", done["error"])
 
     def test_receiver_normal_early_exit_is_an_error(self):
+        exit_requested = threading.Event()
         class EarlyExitReceiver(ContinuousReceiver):
             def run(self, stop, ready, receive):
                 origin = time.time()
                 ready(1000.0, origin)
                 receive(Batch(0, 1000.0, origin, [1], [0.1], [800], [80], [False]))
-                stop.wait(0.05)
+                exit_requested.wait(5)
         self.controller.receiver_factory = EarlyExitReceiver
         self.prepare()
+        exit_requested.set()
         done = self.wait_state({"error"})
         self.assertIn("采集已意外退出", done["error"])
         self.assertEqual(self.motor.commands, [])
