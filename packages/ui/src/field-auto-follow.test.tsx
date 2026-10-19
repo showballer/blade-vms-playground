@@ -28,8 +28,11 @@ check("默认30秒模型只生成输入，没有参考位与隐式开机请求",
   assert.equal(restored.draft.periodSeconds, 30); assert.equal(restored.draft.bladeId, "2");
   assert.equal(restored.draft.distanceM, 2.86); assert.equal(restored.draft.hubHeightDeltaM, 1.46); assert.equal(restored.draft.points[0].radiusM, .31);
   const html = renderToStaticMarkup(<FieldAutoFollow {...props} />);
-  assert.ok(html.includes("读取两轴瞄准参考")); assert.ok(html.includes("开始前还需完成"));
-  assert.match(html, /<button[^>]*disabled=""[^>]*>.*?开始自动跟随/s);
+  assert.ok(html.includes("以当前位置为起点")); assert.ok(html.includes("开始前还需完成"));
+  assert.match(html, /<button[^>]*disabled=""[^>]*>.*?开始自动采集/s);
+  assert.ok(html.includes("校准起点")); assert.ok(html.includes("开始后将开启激光，并按路线自动换点。"));
+  assert.ok(!html.includes('type="checkbox"')); assert.ok(!html.includes("6→9"));
+  assert.ok(html.includes("从激光器一侧看叶轮"));
   assert.ok(html.includes("不能自动识别叶片")); assert.ok(!html.includes("连续轨迹"));
 });
 check("仅恢复草稿字段，丢弃伪造参考和安全确认，保留用户旧周期", () => {

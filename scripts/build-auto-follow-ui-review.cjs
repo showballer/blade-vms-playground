@@ -29,7 +29,7 @@ function App(){
  async function request(options){
   window.__autoFixture.calls.push(options);
   if(options.action==='turntablePorts')return {ports:[{port:'COM3',description:'隔离验收串口'}]};
-  if(options.action==='turntable'&&options.request.action==='probe')return structuredClone(ready);
+  if(options.action==='turntable'&&options.request.action==='probe')return structuredClone(window.__autoFixture.probeStatus||ready);
   if(options.action==='start'){
     if(window.__autoFixture.holdStart){startGate=new Promise(resolve=>window.__autoFixture.release=resolve);await startGate;}
     latest={...ready,state:'acquiring',pointCycle:{...cycle,pointCount:options.config.pointCycle.points.length,totalRecords:options.config.pointCycle.points.length*options.config.pointCycle.cycles}};return latest;

@@ -21,19 +21,20 @@
 .field-auto-follow summary { cursor: pointer; font-size: var(--field-ui-body); color: var(--field-ui-primary); }
 .field-auto-follow summary span { margin-left: var(--field-ui-space-3); color: var(--field-ui-muted); font-size: var(--field-ui-caption); }
 .field-auto-setup .field-auto-grid { margin-top: var(--field-ui-space-4); }
-.field-auto-follow .field-auto-check { display: flex; flex-direction: row; align-items: start; gap: var(--field-ui-space-2); line-height: 1.6; }
-.field-auto-check input[type=checkbox] { flex: 0 0 auto; width: 16px; height: 16px; margin: 3px 0 0; accent-color: var(--field-ui-primary); }
-.field-auto-anchor-read { margin: var(--field-ui-space-4) 0; color: var(--field-ui-secondary); font-size: var(--field-ui-label); }
+.field-auto-anchor-read { margin: var(--field-ui-space-4) 0 0; color: var(--field-ui-secondary); font-size: var(--field-ui-label); }
 .field-auto-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--field-ui-space-3); }
 .field-auto-metrics > div { display: grid; gap: var(--field-ui-space-2); background: var(--field-ui-subtle); padding: var(--field-ui-space-3); border-radius: var(--field-ui-control-radius); }
 .field-auto-metrics span { color: var(--field-ui-muted); font-size: var(--field-ui-caption); }
 .field-auto-metrics strong { color: var(--field-ui-text); font-size: var(--field-ui-heading); font-variant-numeric: tabular-nums; }
 .field-auto-blockers { border-left: 3px solid var(--field-ui-warning); background: var(--field-ui-subtle); padding: var(--field-ui-space-3) var(--field-ui-space-4); margin-top: var(--field-ui-space-4); color: var(--field-ui-secondary); font-size: var(--field-ui-label); }
 .field-auto-blockers ul { margin: var(--field-ui-space-2) 0 0; padding-left: var(--field-ui-space-4); display: grid; gap: var(--field-ui-space-1); }
-.field-auto-confirmations { display: grid; gap: var(--field-ui-space-3); margin: var(--field-ui-space-4) 0; }
 .field-auto-actions { border-top: 1px solid var(--field-ui-line); padding-top: var(--field-ui-space-4); }
 .field-auto-actions .btn:last-child { margin-left: auto; }
 .field-auto-route .field-table-scroll { margin-top: var(--field-ui-space-3); max-height: 320px; overflow: auto; }
 .field-auto-route th { position: sticky; top: 0; }
 @media (max-width: 1100px) { .field-auto-core, .field-auto-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .field-auto-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 640px) { .field-auto-follow .field-card { padding: var(--field-ui-space-4); } .field-auto-core, .field-auto-grid { grid-template-columns: minmax(0, 1fr); } .field-auto-point { grid-template-columns: 24px minmax(0, 1fr) 32px; } .field-auto-point label { grid-column: 2; } .field-auto-point-index { align-self: start; } .field-auto-point-stations { grid-column: 2; } .field-auto-point > .btn { grid-column: 3; grid-row: 1; } .field-auto-follow .field-section-heading { flex-wrap: wrap; } .field-auto-actions .btn:last-child { margin-left: 0; } }
+
+.field-auto-label-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--field-ui-space-2); }
+.field-auto-label-line small { color: var(--field-ui-muted); font-size: var(--field-ui-caption); }
+.field-auto-start-note { flex-basis: 100%; margin: 0; color: var(--field-ui-secondary); font-size: var(--field-ui-label); }
