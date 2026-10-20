@@ -163,7 +163,7 @@ export function FieldTurntableHealth({ port, status, disabled = false, pollUnava
         <Button type="button" disabled={checking || blocked || !!error || !recovery.axes[axis.axis - 1].guard} onClick={() => void inspect("clear_guard_fault", axis.axis)}>清除{axis.name}故障</Button>
         <Button type="button" disabled={checking || blocked || !!error || !recovery.axes[axis.axis - 1].alarm} onClick={() => void inspect("reset_alarm", axis.axis)}>复位驱动报警</Button>
       </div></section>)}</div>
-      <p className="field-subtext">PA40／PA41是驱动器加减速时间常数，PA42是平滑时间，均为实际读值；与换点加速度 °/s² 分别生效，检查不会修改这些参数。</p>
+      <p className="field-subtext">PA40／PA41是驱动器加减速时间常数，PA42是平滑时间，均为实际读值。内部定位使用这组参数；轨迹模式另有换点加速度 °/s² 设置。检查不会修改参数。</p>
       <section className="field-health-trajectory"><h3>双轴轨迹</h3><dl><div><dt>轨迹状态</dt><dd>{report.trajectoryState}</dd></div><div><dt>轨迹故障</dt><dd>{report.trajectoryFault}</dd></div>
         <div><dt>轨迹快照误差（俯仰／水平）</dt><dd>{report.errors.join(" / ")}</dd></div></dl>
         <div className="field-health-recovery-actions"><Button type="button" disabled={checking || blocked || !!error || !recovery.cancelPending} onClick={() => void inspect("cancel_trajectory")}>取消待执行轨迹</Button>

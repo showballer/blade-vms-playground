@@ -112,7 +112,7 @@ export function planAutoFollow(draft: AutoFollowDraft, anchor: AutoFollowAnchor 
   for (let i = 0; i < result.points.length; i++) {
     const from = result.points[i], to = result.points[(i + 1) % result.points.length];
     const one = Math.abs(to.axis1AngleDeg - from.axis1AngleDeg), two = Math.abs(to.axis2AngleDeg - from.axis2AngleDeg);
-    maxTravel = Math.max(maxTravel, motionMode === "dual_axis_timed" ? Math.max(one, two) : one + two);
+    maxTravel = Math.max(maxTravel, (motionMode === "dual_axis_timed" || motionMode === "drive_internal") ? Math.max(one, two) : one + two);
   }
   if (!manualRotation) {
     const needed = maxTravel * (motionMode === "dual_axis_timed" ? 1.5 * 1.05 : 1) / (6 * result.intervalSeconds * 0.5);
@@ -120,7 +120,7 @@ export function planAutoFollow(draft: AutoFollowDraft, anchor: AutoFollowAnchor 
   }
   const ceiling = draft.maxMoveRpm;
   const cap = Math.floor((ceiling + 1e-10) / 0.02) * 0.02;
-  result.speedRpm = round(manualRotation ? cap : Math.min(cap, result.requiredRpm));
+  result.speedRpm = round(manualRotation || motionMode === "drive_internal" ? cap : Math.min(cap, result.requiredRpm));
   result.maxTravelLowerBoundSeconds = maxTravel / (6 * result.speedRpm);
   // s(u)=3u²−2u³: peak speed=1.5Δ/T; peak acceleration=6Δ/T².
   // Baseline estimate only: backend checks wire-quantized points and may extend duration.

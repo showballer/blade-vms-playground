@@ -1,5 +1,19 @@
 .field-turntable-heading { display: flex; align-items: center; flex-wrap: wrap; gap: var(--field-ui-space-3); }
 .field-health-control { display: inline-flex; }
+.field-drive-profile { margin-bottom: var(--field-ui-space-4); }
+.field-drive-profile > summary { cursor: pointer; font-weight: 600; color: var(--field-ui-text); }
+.field-drive-profile > summary .field-subtext { margin-left: var(--field-ui-space-2); font-weight: 400; }
+.field-drive-profile > p { margin-top: var(--field-ui-space-3); }
+.field-drive-profile-axes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--field-ui-space-4); }
+.field-drive-profile-axis { padding: var(--field-ui-space-4); border: 1px solid var(--field-ui-line); border-radius: var(--field-ui-control-radius); min-width: 0; background: var(--field-ui-subtle); }
+.field-drive-profile-axis h3 { margin: 0; font-size: var(--field-ui-body); }
+.field-drive-profile-inputs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--field-ui-space-3); }
+.field-drive-profile-inputs label { display: grid; gap: var(--field-ui-space-2); min-width: 0; font-size: var(--field-ui-body); color: var(--field-ui-secondary); }
+.field-servo-ui .field-drive-profile-inputs input { width: 100%; min-width: 0; max-width: none; box-sizing: border-box; }
+.field-drive-profile-footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--field-ui-space-2); margin-top: var(--field-ui-space-3); }
+.field-drive-profile-footer .field-subtext { margin: 0; }
+@media (max-width: 1100px) { .field-drive-profile-axes { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 540px) { .field-drive-profile-inputs { grid-template-columns: minmax(0, 1fr); } }
 .field-health-recovery-actions { display: flex; flex-wrap: wrap; gap: var(--field-ui-space-2); margin-top: var(--field-ui-space-4); }
 .field-health-issues > div + div { margin-top: var(--field-ui-space-4); }
 .field-health-alert-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--field-ui-danger); }

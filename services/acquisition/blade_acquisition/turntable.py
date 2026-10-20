@@ -51,8 +51,17 @@ class TurntableConfig(BaseModel):
         return self.speedRpm * (1 if self.direction == "forward" else -1)
 
 
+class DriveMotionProfile(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    accel_ms: StrictInt = Field(ge=1, le=10000)
+    decel_ms: StrictInt = Field(ge=1, le=10000)
+    s_curve_ms: StrictInt = Field(ge=0, le=1000)
+
+
 class TurntableRequest(TurntableConfig):
-    action: Literal["probe", "health", "test", "manual_move", "recall", "prepare", "stop", "reference", "limits", "clear_trajectory_fault", "clear_guard_fault", "reset_alarm", "cancel_trajectory"] = "probe"
+    action: Literal["probe", "health", "test", "manual_move", "recall", "prepare", "stop", "reference", "limits", "clear_trajectory_fault", "clear_guard_fault", "reset_alarm", "cancel_trajectory", "read_motion_profile", "set_motion_profile"] = "probe"
+    motionProfile: DriveMotionProfile | None = None
+    expectedMotionProfile: DriveMotionProfile | None = None
     testSeconds: StrictInt = Field(default=3, ge=1, le=15)
     confirmMotion: StrictBool = False
     confirmRecovery: StrictBool = False
@@ -62,6 +71,7 @@ class TurntableRequest(TurntableConfig):
     recordedPort: SerialPort | None = None
     maxMoveAccelerationDegS2: float = Field(default=3, ge=0.1, le=120, allow_inf_nan=False)
     followErrorLimitDeg: float = Field(default=0.75, ge=0.5, le=10, allow_inf_nan=False)
+    diagnosticDrivePosition: StrictBool = False
     expectedTrajectorySession: StrictInt | None = Field(default=None, ge=1, le=65535)
 
     @field_validator("axis1AngleDeg", "axis2AngleDeg", "maxMoveAccelerationDegS2", "followErrorLimitDeg", mode="before")
@@ -71,6 +81,15 @@ class TurntableRequest(TurntableConfig):
 
     @model_validator(mode="after")
     def recall_targets(self):
+        if self.action == "set_motion_profile":
+            if self.motionProfile is None or self.expectedMotionProfile is None:
+                raise ValueError("请先读取当前轴的驱动参数，再应用修改")
+        elif self.motionProfile is not None or self.expectedMotionProfile is not None:
+            raise ValueError("只有应用驱动参数操作可以携带修改值")
+        if self.action in ("read_motion_profile", "set_motion_profile") and (self.confirmMotion or self.confirmRecovery):
+            raise ValueError("驱动参数操作不能同时执行运动或故障恢复")
+        if self.diagnosticDrivePosition and self.action != "recall":
+            raise ValueError("内部定位对照仅支持两轴点位回位")
         if self.action == "health" and self.confirmRecovery:
             raise ValueError("状态检查只读，不能同时确认恢复")
         if self.action in ("clear_trajectory_fault", "clear_guard_fault", "reset_alarm", "cancel_trajectory") and not self.confirmRecovery:
@@ -193,6 +212,7 @@ class PointCycleConfig(BaseModel):
     port: SerialPort
     points: list[PointCyclePoint] = Field(min_length=1, max_length=200)
     mode: Literal["legacy", "automatic_stations"] = "legacy"
+    diagnosticDrivePosition: StrictBool = False
     # Explicit calibrated-point contract: verify the first pose, never move to it.
     # The default preserves initial positioning for computed/legacy routes.
     startAtCurrentPose: StrictBool = False
@@ -310,7 +330,9 @@ def probe_motion_capability(motor):
             "mode": "dual_axis_timed" if status is not None else "sequential",
             "protocol": "0x30-0x36" if status is not None else None,
             "probe": "confirmed" if status is not None else "legacy-command-unsupported",
-            "status": asdict(status) if status is not None else None}
+            "status": asdict(status) if status is not None else None,
+            "pointMode": "drive_internal" if status is not None and
+                getattr(motor, "drive_internal_position", False) is True else None}
 
 
 def station_timing_plan(cycle: PointCycleConfig, start, target: PointCyclePoint,
@@ -322,6 +344,21 @@ def station_timing_plan(cycle: PointCycleConfig, start, target: PointCyclePoint,
     keep the configured ceiling. Half the nominal interval is reserved for
     observation/setup; a missed budget never raises that ceiling or bypasses RSSI.
     """
+    if motion_mode == "drive_internal":
+        # Stop-and-wait acquisition needs the configured ceiling, not a retimed
+        # trajectory velocity. PA40/41/42 govern native acceleration on the drive.
+        ceiling = cycle.maxMoveRpm if cycle.mode == "automatic_stations" else cycle.speedRpm
+        speed = round(math.floor((ceiling + 1e-10) / .02) * .02, 6)
+        travel = max(abs(target.axis1AngleDeg - start[0]), abs(target.axis2AngleDeg - start[1]))
+        timing = {"sourceStationId": source.pointId if source else None, "targetStationId": target.pointId,
+                  "nominalPeriodSeconds": cycle.nominalPeriodSeconds, "speedLimitRpm": speed,
+                  "configuredCeilingRpm": speed, "plannedMoveSeconds": travel / (6 * speed),
+                  "estimateIsLowerBound": True, "timingBasis": "native_distance_speed_lower_bound",
+                  "identityVerified": False}
+        if source and cycle.mode == "automatic_stations" and cycle.nominalPeriodSeconds > 0:
+            gap = (target.azimuthDeg - source.azimuthDeg) % 360 or 360
+            timing.update(azimuthGapDeg=gap, nominalIntervalSeconds=cycle.nominalPeriodSeconds * gap / 360)
+        return speed, timing
     if cycle.mode == "automatic_stations" and cycle.nominalPeriodSeconds == 0:
         speed = round(math.floor((min(cycle.speedRpm, cycle.maxMoveRpm) + 1e-10) / .02) * .02, 6)
         distances = (abs(target.axis1AngleDeg - start[0]), abs(target.axis2AngleDeg - start[1]))

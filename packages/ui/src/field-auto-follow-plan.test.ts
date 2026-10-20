@@ -264,3 +264,10 @@ for (const patch of [{ port: "COM4" }, { referenceSignature: "[]" }, { generatio
 const outsideZero = planAutoFollow(fieldDraft, null, "dual_axis_timed", "COM3", { ...commonZero, axis1AngleDeg: 30 });
 assert.ok(outsideZero.errors.some(message => message.includes("超出机械角度范围"))); assert.equal(outsideZero.pointCycle, undefined);
 console.log("Automatic follow geometry, shared optical zero, per-point calibration, grouping, sequential and cubic dual-axis timing, and invalid-input checks passed");
+
+const nativePlan = planAutoFollow({ ...fieldDraft, periodSeconds: 5, maxMoveRpm: 5 }, null, "drive_internal", "COM3", commonZero);
+assert.deepEqual(nativePlan.errors, []);
+assert.equal(nativePlan.speedRpm, 5, "Native stopped point hops use the configured ceiling, not a retimed trajectory speed");
+assert.equal(nativePlan.plannedMoveSeconds, nativePlan.maxTravelLowerBoundSeconds);
+assert.equal(nativePlan.pointCycle!.speedRpm, 5);
+assert.deepEqual(nativePlan.points, withZero.points);

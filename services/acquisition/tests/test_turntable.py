@@ -696,6 +696,40 @@ class TurntableTests(unittest.TestCase):
         for axis, target in (("1", 25.935), ("2", -6.994)):
             self.assertEqual(status["turntable"]["feedback"]["axes"][axis]["output_angle_deg"], target)
 
+    def test_drive_position_diagnostic_requires_explicit_local_enablement(self):
+        motor = FakeMotor()
+        client = self.make_client(motor)
+        with patch.dict("os.environ", {"BLADE_TURNTABLE_DRIVE_POSITION_TEST": ""}):
+            response = client.post("/api/field/turntable",
+                                   json=self.recall_body(diagnosticDrivePosition=True))
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(motor.start_calls, 0)
+
+    def test_drive_position_diagnostic_keeps_group_pending_until_stop_confirmed(self):
+        motor = FakeMotor()
+        client = self.make_client(motor)
+        def run(motor, **kwargs):
+            motor.angles.update({1: kwargs["targets"][0], 2: kwargs["targets"][1]})
+            return {"feedback": snapshot(motor, 1), "stopConfirmed": True, "state": "complete"}
+        with patch.dict("os.environ", {"BLADE_TURNTABLE_DRIVE_POSITION_TEST": "1"}), \
+             patch("blade_acquisition.drive_position.execute_drive_position", side_effect=run):
+            client.post("/api/field/turntable", json=self.recall_body(diagnosticDrivePosition=True))
+            status = self.wait_test(client)
+        self.assertTrue(status["turntableTest"]["passed"])
+        self.assertIsNone(status["turntableWarning"])
+        self.assertEqual(status["turntable"]["recall"]["motionMode"], "drive_internal")
+
+    def test_drive_position_diagnostic_retains_warning_when_stop_unknown(self):
+        motor = FakeMotor()
+        client = self.make_client(motor)
+        with patch.dict("os.environ", {"BLADE_TURNTABLE_DRIVE_POSITION_TEST": "1"}), \
+             patch("blade_acquisition.drive_position.execute_drive_position",
+                   side_effect=RuntimeError("lost response")):
+            client.post("/api/field/turntable", json=self.recall_body(diagnosticDrivePosition=True))
+            status = self.wait_test(client)
+        self.assertFalse(status["turntableTest"]["passed"])
+        self.assertIn("停止未确认", status["turntableWarning"])
+
     def test_recall_rejects_invalid_or_missing_targets_and_confirmation_before_motion(self):
         motor = FakeMotor()
         client = self.make_client(motor)

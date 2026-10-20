@@ -5,7 +5,7 @@ import { Button } from "./common";
 import { isTurntablePort } from "./field-turntable-port";
 import { createWorkOrigin, matchingWorkOrigin, revalidateWorkOrigin, toWorkAngle, type FieldWorkOrigin } from "./field-turntable-origin";
 import { turntablePointMotionError, turntableReferenceSignature } from "./field-turntable-points";
-import { fieldIsActive, type FieldRequestOptions, type FieldStatus } from "./field-types";
+import { fieldIsActive, fieldTurntableMotionMode, type FieldRequestOptions, type FieldStatus } from "./field-types";
 import { autoFollowDefaults } from "./field-auto-follow-plan";
 
 export type FieldOriginReturnMotion = { speedRpm: number; maxMoveAccelerationDegS2: number; followErrorLimitDeg?: number };
@@ -108,6 +108,7 @@ export function FieldTurntableOriginControl({ port, status, disabled, origin, op
   const optical = matchingWorkOrigin(opticalOrigin, status, port);
   const saved = opticalOrigin || origin;
   const returnCandidate = saved?.port === port ? saved : null;
+  const nativePosition = fieldTurntableMotionMode(status?.turntable, port) === "drive_internal";
   const recoverySession = originTrajectoryRecoverySession(status, port);
   let motion: FieldOriginReturnMotion | null = null, motionError = "";
   try { motion = checkedOriginReturnMotion(returnMotion ?? { speedRpm: autoFollowDefaults.maxMoveRpm,
@@ -318,7 +319,7 @@ export function FieldTurntableOriginControl({ port, status, disabled, origin, op
           {pending ? <LoaderCircle size={15} className="spin" /> : <Crosshair size={15} />}设置归零
         </Button>
         <Button type="button" aria-label="回到原点" disabled={disabled || pending || !!returnPhase || !returnCandidate || !motion}
-          title={!returnCandidate ? "尚无此串口保存的作业原点" : motionError || `按当前设置返回：转速上限 ${motion!.speedRpm} rpm，加速度上限 ${motion!.maxMoveAccelerationDegS2} °/s²`}
+          title={!returnCandidate ? "尚无此串口保存的作业原点" : motionError || `按当前设置返回：转速上限 ${motion!.speedRpm} rpm${nativePosition ? "，使用驱动器加减速参数" : ""}`}
           onClick={() => void returnToOrigin()}><RotateCcw size={14} />回到原点</Button>
         {returnPhase && <Button type="button" variant="danger" aria-label="停止回原点" disabled={returnPhase === "stopping" || returnPhase === "unconfirmed" && (!returnRun.current || !transportCurrent(returnRun.current) || fieldIsActive(status))} onClick={stopReturn}><Square size={14} />{returnPhase === "stopping" ? "正在停止…" : returnPhase === "unconfirmed" ? "重试停止" : "停止回原点"}</Button>}
         {current && <Button type="button" variant="ghost" disabled={disabled || pending || !!returnPhase} onClick={() => { onOrigin(null); setError(""); }}><RotateCcw size={14} />恢复设备坐标</Button>}
@@ -331,7 +332,7 @@ export function FieldTurntableOriginControl({ port, status, disabled, origin, op
     </div>
     <p className="field-subtext">{current || optical ? "公共光学零点已设置。未校准测点先按尺寸定位，已校准测点沿用其首个点位；恢复设备坐标仅切换角度显示。" : returnCandidate ? "已保留原点坐标；回到原点前会重新读取并核验两轴参考位，无需在当前位置重新归零。" : missingOpticalOrigin ? "请重新将激光调至水平并正对叶轮中线，再设置归零；未单独校准的测点暂不能开始。" : "先将激光调至水平并正对叶轮中线，再设置归零。所有测点共用，归零不会校准某个测点，也不会移动转盘。"}</p>
     {returnCandidate && <p className="field-subtext" aria-label="保存的原点坐标">保存的原点（设备坐标）：俯仰 {angleText(returnCandidate.axis1AngleDeg)} · 水平 {angleText(returnCandidate.axis2AngleDeg)}</p>}
-    {returnCandidate && motion && <p className="field-subtext" aria-label="回原点运动参数">回原点沿用自动跟随设置：转速上限 {motion.speedRpm} rpm · 加速度上限 {motion.maxMoveAccelerationDegS2} °/s² · 运动中误差上限 {motion.followErrorLimitDeg}°。到位精度仍为0.1°，修改后下次点击生效。</p>}
+    {returnCandidate && motion && <p className="field-subtext" aria-label="回原点运动参数">回原点沿用自动跟随设置：转速上限 {motion.speedRpm} rpm。{nativePosition ? "起步与减速使用驱动器内部参数。" : <>轨迹加速度上限 {motion.maxMoveAccelerationDegS2} °/s² · 运动中误差上限 {motion.followErrorLimitDeg}°。</>}到位精度仍为0.1°，修改后下次点击生效。</p>}
     {recoverySession !== null && <div className="field-notice warning" role="status">
       <span>上次轨迹触发跟随误差保护。原点坐标已保留，先清除旧轨迹后再定位。</span>{" "}
       <Button type="button" variant="outline" disabled={disabled || pending || !!returnPhase}

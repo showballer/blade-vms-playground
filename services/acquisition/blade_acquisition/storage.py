@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import copy
 import math
 import os
 import re
@@ -21,6 +22,55 @@ RECORD = struct.Struct("<QidifB")  # index, raw velocity, m/s, raw RSSI, RSSI %,
 ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 CHUNK_PATTERN = re.compile(r"^chunk-[0-9]{8}\.bin(?:\.part)?$")
 DISPLAY_LIMIT = 2048
+
+RECORDING_LIST_FIELDS = (
+    "id", "name", "source", "windFarm", "object", "turbine", "point",
+    "samples", "sampleRate", "startedAt", "endedAt", "status", "error", "unit",
+    "sampleOrigin", "velocityRangeMps", "position", "rpm", "qualityCounts", "simulation",
+)
+POINT_LIST_FIELDS = (
+    "mode", "collectionId", "sessionId", "bladeId", "radialPointId", "radialPointName",
+    "radiusM", "azimuthDeg", "stationIndex", "stationCount", "lapIndex", "identitySource",
+    "identityVerified", "coverageKind", "completion", "plannedStations", "nominalPeriodSeconds",
+    "cycle", "pointIndex", "pointId", "pointName", "cycles", "dwellSeconds",
+    "targetAxis1AngleDeg", "targetAxis2AngleDeg", "actualAngles",
+)
+
+
+def recording_summary(manifest: dict) -> dict:
+    """List-only metadata; detail/export/upload retain the original full manifest."""
+    result = {key: copy.deepcopy(manifest[key]) for key in RECORDING_LIST_FIELDS if key in manifest}
+    for source, target in ((manifest, result), (manifest.get("sourceMetadata"), {})):
+        if not isinstance(source, dict) or "pointCycle" not in source:
+            continue
+        cycle = source["pointCycle"]
+        target["pointCycle"] = ({key: copy.deepcopy(cycle[key]) for key in POINT_LIST_FIELDS if key in cycle}
+                                if isinstance(cycle, dict) else copy.deepcopy(cycle))
+        if source is not manifest:
+            result["sourceMetadata"] = target
+    return result
+
+
+def recording_list_page(records: list[dict], offset: int = 0, limit: int = 100,
+                        *, max_bytes: int = 1_500_000) -> dict:
+    """Bound each transport response without dropping records or stored motion evidence."""
+    if offset < 0 or not 1 <= limit <= 100:
+        raise ValueError("Invalid recording-list page")
+    page = []
+    # Reserve space for the envelope and separators, using UTF-8 bytes rather
+    # than characters so non-ASCII labels cannot exceed the transport budget.
+    used = 128
+    for manifest in records[offset:offset + limit]:
+        summary = recording_summary(manifest)
+        size = len(json.dumps(summary, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) + 1
+        if used + size > max_bytes:
+            if not page:
+                raise ValueError("单条记录的列表信息过大，请检查点位计划元数据")
+            break
+        page.append(summary)
+        used += size
+    end = offset + len(page)
+    return {"recordings": page, "nextOffset": end if end < len(records) else None, "total": len(records)}
 
 
 def empty_waveform() -> dict:

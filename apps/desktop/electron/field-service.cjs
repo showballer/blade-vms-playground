@@ -518,7 +518,24 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
   }
   async function recordings(id) {
     if (id !== undefined && (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,100}$/.test(id))) throw failure('无效录制编号', 400);
-    await ready(); return http(id === undefined ? 'recordings' : `recordings/${id}`);
+    await ready();
+    if (id !== undefined) return http(`recordings/${id}`);
+    const records = new Map(); let offset = 0;
+    // Keep the renderer contract unchanged while each service response stays
+    // below the transport limit. Uploads/details still read full manifests.
+    for (let page = 0; page < 1001; page += 1) {
+      const data = await http(`recordings?summary=true&offset=${offset}`);
+      if (!Array.isArray(data.recordings)) throw failure('采集记录列表响应无效');
+      for (const recording of data.recordings) {
+        if (!recording || typeof recording.id !== 'string') throw failure('采集记录编号无效');
+        records.set(recording.id, recording);
+      }
+      if (data.nextOffset === null || data.nextOffset === undefined) return { recordings: [...records.values()] };
+      if (!Number.isSafeInteger(data.nextOffset) || data.nextOffset <= offset || data.nextOffset > 1001 || !data.recordings.length)
+        throw failure('采集记录分页无效，请刷新重试');
+      offset = data.nextOffset;
+    }
+    throw failure('采集记录分页未结束，请刷新重试');
   }
   async function simulation() {
     await ready(); return http('simulation');
@@ -602,7 +619,7 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     } finally { snapshotEpoch += 1; }
   }
   async function turntable(request) {
-    if (!request || !['probe', 'health', 'test', 'manual_move', 'recall', 'prepare', 'stop', 'reference', 'limits', 'clear_trajectory_fault', 'clear_guard_fault', 'reset_alarm', 'cancel_trajectory'].includes(request.action) || !isTurntablePort(request.port) ||
+    if (!request || !['probe', 'health', 'test', 'manual_move', 'recall', 'prepare', 'stop', 'reference', 'limits', 'clear_trajectory_fault', 'clear_guard_fault', 'reset_alarm', 'cancel_trajectory', 'read_motion_profile', 'set_motion_profile'].includes(request.action) || !isTurntablePort(request.port) ||
         (request.action === 'health' && request.confirmRecovery === true) ||
         (['clear_trajectory_fault', 'clear_guard_fault', 'reset_alarm', 'cancel_trajectory'].includes(request.action) && request.confirmRecovery !== true) ||
         (request.action === 'cancel_trajectory' && (!Number.isInteger(request.expectedTrajectorySession) || request.expectedTrajectorySession < 1 || request.expectedTrajectorySession > 65535)) ||
@@ -611,6 +628,20 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
         ![1, 2].includes(request.axis) || (['stop', 'test', 'manual_move', 'recall', 'prepare', 'reference', 'limits'].includes(request.action) && request.confirmMotion !== true) ||
         (request.confirmRecovery !== undefined && typeof request.confirmRecovery !== 'boolean') ||
         (request.testSeconds !== undefined && (!Number.isInteger(request.testSeconds) || request.testSeconds < 1 || request.testSeconds > 15))) throw failure('无效转盘检查/试转请求', 400);
+    const profile = {};
+    const validProfile = value => value && typeof value === 'object' && !Array.isArray(value) &&
+      Object.keys(value).length === 3 && ['accel_ms', 'decel_ms', 's_curve_ms'].every(key =>
+        Number.isInteger(value[key]) && value[key] >= (key === 's_curve_ms' ? 0 : 1) && value[key] <= (key === 's_curve_ms' ? 1000 : 10000));
+    if (request.action === 'set_motion_profile') {
+      if (!validProfile(request.motionProfile) || !validProfile(request.expectedMotionProfile))
+        throw failure('请先读取驱动参数；PA40/41须为1～10000整数，PA42须为0～1000整数', 400);
+      profile.motionProfile = { ...request.motionProfile };
+      profile.expectedMotionProfile = { ...request.expectedMotionProfile };
+    } else if (request.motionProfile !== undefined || request.expectedMotionProfile !== undefined) {
+      throw failure('只有应用驱动参数操作可以携带修改值', 400);
+    }
+    if (['read_motion_profile', 'set_motion_profile'].includes(request.action) && (request.confirmMotion || request.confirmRecovery))
+      throw failure('驱动参数操作不能同时执行运动或故障恢复', 400);
     const config = ['test', 'manual_move', 'prepare'].includes(request.action) ? turntableConfig({ port: request.port, axis: request.axis,
       speedRpm: request.speedRpm, direction: request.direction, durationSeconds: request.durationSeconds, protocol: request.protocol, targetAngleDeg: request.targetAngleDeg }) : {};
     const recall = request.action === 'recall' ? (() => {
@@ -639,7 +670,7 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     if (current.deviceBusy || (current.turntableBusy && request.action !== 'stop') || current.receiver?.running || ['starting', 'acquiring', 'stopping'].includes(current.state)) throw failure('设备正在使用，请先停止并保存', 409);
     snapshotEpoch += 1;
     try {
-      lastStatus = await http('turntable', 'POST', { ...config, ...recall, action: request.action, port: request.port, axis: request.axis,
+      lastStatus = await http('turntable', 'POST', { ...config, ...recall, ...profile, action: request.action, port: request.port, axis: request.axis,
         ...(request.testSeconds !== undefined ? { testSeconds: request.testSeconds } : {}),
         ...(['cancel_trajectory', 'clear_trajectory_fault'].includes(request.action) && request.expectedTrajectorySession !== undefined
           ? { expectedTrajectorySession: request.expectedTrajectorySession } : {}),

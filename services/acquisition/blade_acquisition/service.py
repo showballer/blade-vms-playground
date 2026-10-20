@@ -28,13 +28,14 @@ from .serial_ports import SerialPort, list_turntable_ports
 from .single_point import SinglePointConfig, preview_plan
 from .single_point_runner import SinglePointSession
 from .motion_trial import MotionTrialConfig, preview_full_circle
-from .storage import DISPLAY_LIMIT, RecordingStore, atomic_json, empty_waveform, recording_rssi_stride
+from .storage import DISPLAY_LIMIT, RecordingStore, atomic_json, empty_waveform, recording_rssi_stride, recording_list_page
 from .waveform import WaveformReader, make_wave
 from .device import DevicePanel, WRITABLE
 from .simulation import SimulationConfig, SimulationReceiver, simulation_catalog
+from .turntable_driver import MotorError
 from .turntable_driver.faults import get_fault_advice
 from .turntable_driver.timing import trace_event
-from .turntable import (TurntableConfig, TurntableRequest, PointCycleConfig, PointCyclePoint, MotionGuard, TelemetryWriter,
+from .turntable import (TurntableConfig, TurntableRequest, DriveMotionProfile, PointCycleConfig, PointCyclePoint, MotionGuard, TelemetryWriter,
                         DEFAULT_MOTOR_FACTORY, snapshot as motor_snapshot, require_ready,
                         joint_snapshots, joint_snapshots_from_observations,
                         start_motor, renew_motor, test_key, require_position_ready,
@@ -478,7 +479,93 @@ class AcquisitionController:
         finally:
             self.operation_lock.release()
 
+    def _turntable_profile_operation(self, request: TurntableRequest):
+        """Explicit, idle-only drive configuration through the sole serial owner."""
+        if not self._acquire_operation():
+            raise HTTPException(409, "设备操作进行中，请等待完成")
+        motor, feedback, attempted, claimed = None, None, False, False
+        writing = request.action == "set_motion_profile"
+        try:
+            with self.lock:
+                if (self.device_busy or self.turntable_busy or self.status()["receiver"]["running"] or
+                        self.state in {"starting", "acquiring", "stopping"}):
+                    raise HTTPException(409, "设备正在使用，请先停止并保存")
+                self.turntable_busy = True
+                claimed = True
+            motor = self.motor_factory(request.port, timeout=2.0, gear_ratio=50.0)
+            motor.connect()
+            feedback = motor_snapshot(motor, request.axis)
+            capability = probe_motion_capability(motor)
+            before = DriveMotionProfile.model_validate(asdict(motor.get_motion_profile(request.axis)))
+            actual = before
+            if writing:
+                if self.motion_guard.warning:
+                    raise RuntimeError(self.motion_guard.warning)
+                trajectory = capability.get("status")
+                if capability.get("probe") != "legacy-command-unsupported" and (
+                        not trajectory or trajectory["state"] not in (0, 6, 8) or
+                        trajectory["fault"] and (trajectory["state"], trajectory["fault"]) != (8, 1)):
+                    raise RuntimeError("控制器有待执行轨迹、运动或故障，请先停止并核查")
+                other = motor_snapshot(motor, 3 - request.axis)
+                require_ready(feedback)
+                require_ready(other)
+                before_reference = reference_key(feedback)
+                before_guards = {key: value["guard"] for key, value in feedback["axes"].items()}
+                if reference_key(other) != before_reference:
+                    raise RuntimeError("两轴参考读数不一致，请重新读取")
+                if before != request.expectedMotionProfile:
+                    raise HTTPException(409, "驱动参数已变化，请重新读取后再应用；未写入")
+                attempted = True
+                # SDK sends one parameter command and reads all three registers back.
+                # Never retry an uncertain write or silently restore earlier values.
+                actual = DriveMotionProfile.model_validate(asdict(motor.set_motion_profile(
+                    request.axis, **request.motionProfile.model_dump())))
+                if actual != request.motionProfile:
+                    raise RuntimeError("驱动参数读回不一致")
+                feedback = motor_snapshot(motor, request.axis)
+                other = motor_snapshot(motor, 3 - request.axis)
+                for observation in (feedback, other):
+                    require_ready(observation)
+                    if reference_key(observation) != before_reference or any(
+                            value["guard"] != before_guards[key] for key, value in observation["axes"].items()):
+                        raise RuntimeError("写入后参考位或保护配置发生变化，请核查")
+            with self.lock:
+                if writing:
+                    self.turntable_preparation = None
+                self.turntable_snapshot = {
+                    "state": "checked", "port": request.port, "axis": request.axis,
+                    "connected": False, "feedback": feedback, "motionCapability": capability, "error": None,
+                    "motionProfile": {"axis": request.axis, "values": actual.model_dump(), "readAt": time.time(),
+                                      "operation": "write" if writing else "read", "verified": True,
+                                      "temporary": True}}
+        except Exception as exc:
+            if not claimed:
+                raise
+            message = (str(exc.detail) if isinstance(exc, HTTPException) else str(exc))
+            if isinstance(exc, MotorError) and getattr(exc, "status", None) == 7:
+                message = "当前固件不支持驱动参数接口，请检查控制板版本"
+            if attempted:
+                message = f"驱动参数应用结果未确认，请重新读取实际值后再操作：{message}"
+            with self.lock:
+                self.turntable_snapshot = {"state": "error", "port": request.port, "axis": request.axis,
+                                           "feedback": feedback, "error": message}
+            raise HTTPException(exc.status_code if isinstance(exc, HTTPException) else 503, message) from exc
+        finally:
+            try:
+                if motor is not None:
+                    motor.close(stop=False)
+            finally:
+                if claimed:
+                    with self.lock:
+                        self.turntable_busy = False
+                self.operation_lock.release()
+        return self.status()
+
     def turntable_operation(self, request: TurntableRequest):
+        if request.action in ("read_motion_profile", "set_motion_profile"):
+            return self._turntable_profile_operation(request)
+        if request.diagnosticDrivePosition and os.environ.get("BLADE_TURNTABLE_DRIVE_POSITION_TEST") != "1":
+            raise HTTPException(422, "当前服务未开启内部定位对照测试")
         trace_event("service_turntable_request", action=request.action, axis=request.axis,
                     targetAngleDeg=request.targetAngleDeg, axis1AngleDeg=request.axis1AngleDeg,
                     axis2AngleDeg=request.axis2AngleDeg, speedRpm=request.speedRpm,
@@ -947,6 +1034,66 @@ class AcquisitionController:
                 return False, [], feedback
             raise exc
 
+    def _execute_drive_position(self, motor, configs, feedback, cancel, update, on_command=None,
+                                initial_snapshots=None):
+        """Joint native positioning shared by recall, capture and return-to-origin."""
+        from .drive_position import execute_drive_position
+
+        self._persist_pending_axes(configs[0].port, [1, 2], "drive_internal")
+        evidence = {"mode": "drive_internal"}
+        command_notified = False
+
+        def observed(event):
+            nonlocal command_notified, feedback
+            trace_event("drive_internal", **event)
+            if event.get("phase") == "command_sending" and not command_notified:
+                command_notified = True
+                if on_command:
+                    on_command()
+            if event.get("phase") == "position_sample":
+                feedback = copy.deepcopy(feedback)
+                observed_at = time.time()
+                for axis, value in enumerate(event["feedbackReadings"], 1):
+                    feedback["axes"][str(axis)].update(value, observedAt=observed_at)
+                selected = feedback["axes"][str(feedback["axis"])]
+                feedback.update(outputAngleDeg=selected["output_angle_deg"], motorRpm=selected["motor_rpm"],
+                                outputRpm=selected["motor_rpm"] / 50, observedAt=observed_at)
+            update("positioning", motionMode="drive_internal", lastMove={**event, "mode": "drive_internal",
+                   "speedLimitRpm": configs[0].speedRpm}, feedback=feedback)
+
+        references = reference_key(feedback)
+        signature = [[references[str(axis)][key] for key in
+                      ("origin_counts", "display_mode", "command_counts_per_rev", "encoder_bits")]
+                     for axis in (1, 2)]
+        try:
+            evidence = execute_drive_position(
+                motor, targets=tuple(config.targetAngleDeg for config in configs),
+                speed_rpm=configs[0].speedRpm, reference_signature=signature,
+                cancel=cancel, timeout_s=min(600, max(15, 5 + max(
+                    abs(config.targetAngleDeg - feedback["axes"][str(config.axis)]["output_angle_deg"])
+                    for config in configs) / (6 * configs[0].speedRpm) * 3)),
+                observe=observed, initial_snapshots=initial_snapshots)
+            feedback = evidence["feedback"]
+            if not evidence.get("stopConfirmed"):
+                raise RuntimeError("内部定位两轴停止未确认")
+            self.motion_guard.mark(configs[0], False)
+            update("holding", motionMode="drive_internal", lastMove=evidence,
+                   feedback=feedback, stopConfirmed=True)
+            return not cancel.is_set(), [1, 2], feedback
+        except Exception as exc:
+            evidence = getattr(exc, "evidence", evidence)
+            feedback = evidence.get("feedback", feedback)
+            if evidence.get("stopConfirmed"):
+                self.motion_guard.mark(configs[0], False)
+            else:
+                self.motion_guard.warning = "内部定位两轴停止未确认，请现场核查"
+            update("stopped" if evidence.get("stopConfirmed") else "unknown",
+                   motionMode="drive_internal", lastMove=evidence,
+                   feedback=feedback, stopConfirmed=bool(evidence.get("stopConfirmed")))
+            if cancel.is_set() and not self.motion_guard.warning:
+                return False, [], feedback
+            raise
+
     @staticmethod
     def _trajectory_position_feedback(previous, positions, configs, query_started_at, received_at):
         """Only 0x37 position fields are fresh; references/guards stay preflight observations."""
@@ -1139,7 +1286,7 @@ class AcquisitionController:
             references = None
             initial_snapshots = (joint_snapshots(motor)
                                  if getattr(motor, "trajectory_start_observer", False) is True
-                                 else (motor_snapshot(motor, config.axis) for config in configs))
+                                 else tuple(motor_snapshot(motor, config.axis) for config in configs))
             for config, feedback in zip(configs, initial_snapshots):
                 require_position_ready(feedback, config)
                 if references is None:
@@ -1152,6 +1299,10 @@ class AcquisitionController:
                     raise RuntimeError("两轴参考位或反馈单位已变化，请重新核查点位")
             capability = self._motion_capability(motor)
             update("positioning", motionCapability=capability, motionMode=capability["mode"])
+            if capability.get("pointMode") == "drive_internal" or request.diagnosticDrivePosition:
+                passed, completed, feedback = self._execute_drive_position(
+                    motor, configs, feedback, self.test_stop, update, initial_snapshots=initial_snapshots)
+                return
             if capability["supported"]:
                 passed, completed, feedback = self._execute_dual_axis_move(
                     motor, configs, feedback, self.test_stop, update,
@@ -1435,6 +1586,9 @@ class AcquisitionController:
             return {**result, "states": existing["states"]}
 
     def start(self, request: StartRequest) -> dict:
+        if (request.pointCycle and request.pointCycle.diagnosticDrivePosition and
+                os.environ.get("BLADE_TURNTABLE_DRIVE_POSITION_TEST") != "1"):
+            raise HTTPException(422, "当前服务未开启内部定位对照测试")
         with self.lock:
             if self.turntable_busy:
                 raise HTTPException(409, "转盘检查/试转仍在进行，请先确认停稳并完成设置")
@@ -2030,11 +2184,20 @@ class AcquisitionController:
                 require_position_ready(checked, config)
             capability = self._motion_capability(motor)
             start_angles = tuple(feedback["axes"][str(axis)]["output_angle_deg"] for axis in (1, 2))
-            speed, timing = station_timing_plan(cycle, start_angles, point, capability["mode"], source_point)
+            point_mode = capability.get("pointMode") or capability["mode"]
+            speed, timing = station_timing_plan(cycle, start_angles, point, point_mode, source_point)
             configs = [config.model_copy(update={"speedRpm": speed}) for config in configs]
-            self._cycle_update("positioning", motionCapability=capability, motionMode=capability["mode"], feedback=feedback,
+            self._cycle_update("positioning", motionCapability=capability, motionMode=point_mode, feedback=feedback,
                                targetPointId=point.pointId, targetAxis1AngleDeg=point.axis1AngleDeg,
                                targetAxis2AngleDeg=point.axis2AngleDeg)
+            if point_mode == "drive_internal" or cycle.diagnosticDrivePosition:
+                def diagnostic_update(state, **extra):
+                    if timing is not None and "lastMove" in extra:
+                        extra["lastMove"] = {**extra["lastMove"], "stationTiming": timing}
+                    self._cycle_update(state, currentPoint=point.name, **extra)
+                return self._execute_drive_position(
+                    motor, configs, feedback, self.stop_event, diagnostic_update, on_command,
+                    initial_snapshots=initial_snapshots)
             if capability["supported"]:
                 def dual_update(state, **extra):
                     if timing is not None and "lastMove" in extra:
@@ -2710,11 +2873,16 @@ def create_app(settings: Settings, receiver_factory=PolytecReceiver, motor_facto
         return controller.stop()
 
     @app.get("/api/field/recordings")
-    def recordings():
+    def recordings(summary: bool = False, offset: int = Query(0, ge=0, le=1001)):
         records = controller.store.list()
         current = controller.status()["recording"]
         if current:
             records = [current] + [item for item in records if item["id"] != current["id"]]
+        if summary:
+            try:
+                return recording_list_page(records, offset)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
         return {"recordings": records}
 
     @app.get("/api/field/recordings/{recording_id}")

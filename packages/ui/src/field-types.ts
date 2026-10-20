@@ -98,9 +98,9 @@ export type FieldAxisFeedback = {
   flags: number; fault: number; origin_counts: number; home_phase: number; observedAt: number;
   referenceAngleDeg: number; guard: { soft_enabled: boolean; hardware_enabled: boolean; minimum_deg: number; maximum_deg: number };
 };
-export type FieldMotionMode = "dual_axis_timed" | "sequential";
+export type FieldMotionMode = "dual_axis_timed" | "sequential" | "drive_internal";
 export type FieldTurntableMotionCapability = {
-  supported: boolean; mode: FieldMotionMode; protocol: "0x30-0x36" | null;
+  supported: boolean; mode: FieldMotionMode; pointMode?: "drive_internal" | null; protocol: "0x30-0x36" | null;
   probe: "confirmed" | "legacy-command-unsupported" | "driver-unavailable";
   status: Record<string, unknown> | null;
 };
@@ -113,6 +113,8 @@ export type FieldTurntableMove = {
   session?: number; status?: Record<string, unknown>; state?: string; error?: string; stopError?: string;
 };
 export type FieldTurntableRecoveryAction = "clear_trajectory_fault" | "clear_guard_fault" | "reset_alarm" | "cancel_trajectory";
+export type FieldDriveMotionProfile = { accel_ms: number; decel_ms: number; s_curve_ms: number };
+export type FieldDriveProfileRead = { axis: 1 | 2; values: FieldDriveMotionProfile; readAt: number; operation: "read" | "write"; verified: true; temporary: true };
 export type FieldTurntableFaultAdvice = { domain: string; code: number | string; title: string; steps: string[]; motor_id: number | null; detail?: string; execution_unknown?: boolean };
 export type FieldTurntableHealthRead = {
   issues?: FieldTurntableFaultAdvice[];
@@ -120,12 +122,12 @@ export type FieldTurntableHealthRead = {
   readAt: number; readOnly: true; referenceChangedDuringRead: boolean;
   axes: Record<string, { alarmCode: number | null; runState: number | null; limitFlags: number | null; observedAt: number }>;
 };
-export type FieldTurntableStatus = { recovery?: { action: FieldTurntableRecoveryAction; axis: number; verified: true; completedAt: number }; health?: FieldTurntableHealthRead; state: string; port?: string; axis?: number; connected?: boolean; effectiveRpm?: number; positionDelta?: number; motionCapability?: FieldTurntableMotionCapability; motionMode?: FieldMotionMode; lastMove?: FieldTurntableMove; recall?: { state: "moving" | "complete" | "cancelled" | "error"; targets: [number, number]; completedAxes: number[]; motionMode?: FieldMotionMode; lastMove?: FieldTurntableMove }; feedback?: { outputRpm: number; motorRpm: number; runState?: number; alarmCode: number; limitFlags: number | null; positionRaw: number; outputAngleDeg?: number | null; axes?: Record<string, FieldAxisFeedback>; observedAt?: number }; error?: string };
+export type FieldTurntableStatus = { motionProfile?: FieldDriveProfileRead; recovery?: { action: FieldTurntableRecoveryAction; axis: number; verified: true; completedAt: number }; health?: FieldTurntableHealthRead; state: string; port?: string; axis?: number; connected?: boolean; effectiveRpm?: number; positionDelta?: number; motionCapability?: FieldTurntableMotionCapability; motionMode?: FieldMotionMode; lastMove?: FieldTurntableMove; recall?: { state: "moving" | "complete" | "cancelled" | "error"; targets: [number, number]; completedAxes: number[]; motionMode?: FieldMotionMode; lastMove?: FieldTurntableMove }; feedback?: { outputRpm: number; motorRpm: number; runState?: number; alarmCode: number; limitFlags: number | null; positionRaw: number; outputAngleDeg?: number | null; axes?: Record<string, FieldAxisFeedback>; observedAt?: number }; error?: string };
 /** A probe releases the serial port afterwards; capability is not a live connection indicator. */
 export function fieldTurntableMotionMode(turntable: FieldTurntableStatus | undefined, port: string): FieldMotionMode | "unknown" {
   if (!port || turntable?.port !== port) return "unknown";
   const capability = turntable.motionCapability;
-  if (capability?.supported && capability.mode === "dual_axis_timed" && capability.protocol === "0x30-0x36" && capability.probe === "confirmed") return "dual_axis_timed";
+  if (capability?.supported && capability.mode === "dual_axis_timed" && capability.protocol === "0x30-0x36" && capability.probe === "confirmed") return capability.pointMode === "drive_internal" ? "drive_internal" : "dual_axis_timed";
   if (capability?.supported === false && capability.mode === "sequential" && capability.probe === "legacy-command-unsupported") return "sequential";
   return "unknown";
 }
@@ -260,7 +262,7 @@ export type FieldRequestOptions =
   | { action: "rssiCalibration"; request: FieldRssiCalibrationRequest }
   | { action: "singlePoint"; request: FieldSinglePointRequest }
   | { action: "motionTrial"; request: FieldMotionTrialRequest }
-  | { action: "turntable"; request: { action: "probe" | "health" | "test" | "manual_move" | "recall" | "prepare" | "stop" | "reference" | "limits" | FieldTurntableRecoveryAction; port: string; axis: 1 | 2; speedRpm?: number; direction?: FieldTurntableConfig["direction"]; durationSeconds?: number; protocol?: FieldTurntableConfig["protocol"]; targetAngleDeg?: number; axis1AngleDeg?: number; axis2AngleDeg?: number; maxMoveAccelerationDegS2?: number; followErrorLimitDeg?: number; referenceSignature?: string; recordedPort?: string; testSeconds?: number; confirmMotion?: true; confirmRecovery?: boolean; expectedTrajectorySession?: number } };
+  | { action: "turntable"; request: { action: "read_motion_profile" | "set_motion_profile" | "probe" | "health" | "test" | "manual_move" | "recall" | "prepare" | "stop" | "reference" | "limits" | FieldTurntableRecoveryAction; port: string; axis: 1 | 2; speedRpm?: number; direction?: FieldTurntableConfig["direction"]; durationSeconds?: number; protocol?: FieldTurntableConfig["protocol"]; targetAngleDeg?: number; axis1AngleDeg?: number; axis2AngleDeg?: number; maxMoveAccelerationDegS2?: number; followErrorLimitDeg?: number; referenceSignature?: string; recordedPort?: string; testSeconds?: number; confirmMotion?: true; confirmRecovery?: boolean; expectedTrajectorySession?: number; motionProfile?: FieldDriveMotionProfile; expectedMotionProfile?: FieldDriveMotionProfile } };
 
 export function fieldTurntableMatches(a: FieldTurntableConfig | Omit<FieldTurntableConfig, "durationSeconds"> | undefined, b: FieldTurntableConfig, duration = true) {
   return !!a && a.port === b.port && a.axis === b.axis && a.speedRpm === b.speedRpm && a.direction === b.direction &&

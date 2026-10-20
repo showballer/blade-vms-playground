@@ -13,6 +13,34 @@ const idle = () => ({ state: "idle", error: null, receiver: { connected: false }
 const acquiring = () => ({ state: "acquiring", error: null, receiver: { connected: true }, recording: { id: "recording-1", state: "acquiring" } });
 const waveform = values => ({ sampleRate: 1000, unit: "m/s", values, rssi: [], overrange: [] });
 
+test('drive profile bridge preserves explicit per-axis values on Mac and Windows', async t => {
+  const f = fixture(t);
+  const values = { accel_ms: 100, decel_ms: 100, s_curve_ms: 0 };
+  for (const port of ['COM7', '/dev/cu.usbserial-110']) {
+    await f.service.turntable({ action: 'read_motion_profile', port, axis: 2 });
+    let body = JSON.parse(f.requests.filter(row => row.route === 'turntable').at(-1).options.body);
+    assert.equal(body.action, 'read_motion_profile'); assert.equal(body.axis, 2);
+    assert.equal(body.motionProfile, undefined);
+    await f.service.turntable({ action: 'set_motion_profile', port, axis: 2, motionProfile: values, expectedMotionProfile: values });
+    body = JSON.parse(f.requests.filter(row => row.route === 'turntable').at(-1).options.body);
+    assert.deepEqual(body.motionProfile, values); assert.deepEqual(body.expectedMotionProfile, values);
+    assert.equal(body.port, port); assert.equal(body.axis, 2); assert.equal(body.confirmMotion, false);
+  }
+});
+
+test('drive profile rejects missing reads and invalid values before starting service', async t => {
+  const f = fixture(t), values = { accel_ms: 100, decel_ms: 100, s_curve_ms: 0 };
+  const request = { action: 'set_motion_profile', port: 'COM7', axis: 1, motionProfile: values, expectedMotionProfile: values };
+  for (const changes of [{ expectedMotionProfile: undefined }, { confirmMotion: true }, { confirmRecovery: true },
+    { action: 'read_motion_profile' }, { axis: 3 }, ...[
+      ['accel_ms', 0], ['accel_ms', 10001], ['decel_ms', '100'], ['decel_ms', true], ['s_curve_ms', 1001],
+      ['s_curve_ms', -1], ['accel_ms', 1.5], ['accel_ms', NaN],
+    ].map(([key, value]) => ({ motionProfile: { ...values, [key]: value } }))]) {
+    await assert.rejects(f.service.turntable({ ...request, ...changes }), { status: 400 });
+  }
+  assert.equal(f.requests.length, 0);
+});
+
 const singlePointConfig = { materialMark: 'A/P1 marked region', distanceM: 2, hubHeightDeltaM: 0.2, radiusM: 0.4 };
 const motionTrialConfig = { distanceM: 2.86, hubHeightDeltaM: 1.46, radiusM: 0.31,
   periodSeconds: 5, rotationDirection: 'clockwise', axis1Sign: 1, axis2Sign: 1 };
@@ -160,6 +188,28 @@ test('laser monitor reads bypass active-capture prechecks and forward only a rea
   assert.equal(f.requests.filter(request => request.route === 'device').length, 1);
 });
 const response = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, text: async () => JSON.stringify(data) });
+
+test('recording list pages are aggregated while detail reads stay complete', async t => {
+  const full = { id: 'a'.repeat(32), pointCycle: { arrivalMove: { referenceChecks: [1, 2, 3] } } };
+  const f = fixture(t, { fetch: ({ route, url }) => {
+    if (route === `recordings/${full.id}`) return response({ recording: full });
+    if (route !== 'recordings') return response(idle());
+    const query = new URL(url).searchParams;
+    assert.equal(query.get('summary'), 'true');
+    return response(query.get('offset') === '0'
+      ? { recordings: [{ id: full.id, name: 'first' }], nextOffset: 1, total: 2 }
+      : { recordings: [{ id: 'b'.repeat(32), name: 'second' }], nextOffset: null, total: 2 });
+  } });
+  assert.deepEqual((await f.service.recordings()).recordings.map(item => item.name), ['first', 'second']);
+  assert.deepEqual((await f.service.recordings(full.id)).recording, full);
+});
+
+test('recording pagination rejects repeated cursors instead of looping or returning a partial list', async t => {
+  const f = fixture(t, { fetch: ({ route }) => response(route === 'recordings'
+    ? { recordings: [{ id: 'a'.repeat(32) }], nextOffset: 0 } : idle()) });
+  await assert.rejects(f.service.recordings(), /分页无效/);
+  assert.equal(f.requests.filter(item => item.route === 'recordings').length, 1);
+});
 
 function fixture(t, overrides = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "blade-field-service-test-"));

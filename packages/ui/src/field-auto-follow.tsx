@@ -4,6 +4,7 @@ import { Crosshair, Hand, LoaderCircle, Plus, RefreshCw, Route, Trash2 } from "l
 import { Button, CustomSelect } from "./common";
 import { FieldLaserControl } from "./field-device";
 import { FieldTurntableManual } from "./field-turntable";
+import { FieldDriveProfile } from "./field-drive-profile";
 import { FieldTurntableOriginControl, type FieldOriginReturnMotion } from "./field-turntable-origin-control";
 import { matchingWorkOrigin, toWorkAngle, readSavedWorkOrigins, revalidateWorkOrigin, recoverCalculatedWorkOrigin, workOriginStorageKey, type FieldWorkOrigin } from "./field-turntable-origin";
 import type { FieldCaptureRoute, FieldAutoCaptureTarget } from "./field-capture-route";
@@ -17,7 +18,7 @@ const numberText = (value: number | undefined | null, digits = 2) => typeof valu
 const messageOf = (error: unknown) => error instanceof Error ? error.message : "操作失败，请检查设备状态";
 type Props = {
   config: FieldConfig; onConfig: React.Dispatch<React.SetStateAction<FieldConfig>>;
-  status: FieldStatus | null; disabled: boolean;
+  status: FieldStatus | null; disabled: boolean; pollUnavailable?: boolean;
   request: <T>(options: FieldRequestOptions) => Promise<T>;
   onStatus: (status: FieldStatus) => void; onRecords: () => void; onService: () => void;
   onOperationBusy?: (busy: boolean) => void;
@@ -103,7 +104,7 @@ export function autoFollowBlockers(config: FieldConfig, status: FieldStatus | nu
 export function FieldTurntableWorkspace(props: Props) {
   const [localMode, setMode] = useState<"manual" | "auto">("manual");
   const mode = props.routeMode || localMode;
-  const [autoBusy, setAutoBusy] = useState(false), [originBusy, setOriginBusy] = useState(false);
+  const [autoBusy, setAutoBusy] = useState(false), [originBusy, setOriginBusy] = useState(false), [profileBusy, setProfileBusy] = useState(false);
   const savedOrigins = () => { try { return readSavedWorkOrigins(localStorage.getItem(workOriginStorageKey)); } catch { return readSavedWorkOrigins(null); } };
   const [workOrigin, setWorkOrigin] = useState<FieldWorkOrigin | null>(() => savedOrigins().work);
   const [opticalOrigin, setOpticalOrigin] = useState<FieldWorkOrigin | null>(() => savedOrigins().optical);
@@ -130,7 +131,7 @@ export function FieldTurntableWorkspace(props: Props) {
     try { if (localStorage.getItem(opticalOriginRequiredKey) === "true") setOriginRequired(true); }
     catch { /* A successful zero still stays required for this session. */ }
   }, []);
-  useEffect(() => { props.onOperationBusy?.(autoBusy || originBusy); return () => props.onOperationBusy?.(false); }, [autoBusy, originBusy, props.onOperationBusy]);
+  useEffect(() => { props.onOperationBusy?.(autoBusy || originBusy || profileBusy); return () => props.onOperationBusy?.(false); }, [autoBusy, originBusy, profileBusy, props.onOperationBusy]);
   useEffect(() => {
     try { localStorage.setItem(workOriginStorageKey, JSON.stringify({ version: 1, work: workOrigin, optical: opticalOrigin })); }
     catch { /* Keep the coordinates in memory when storage is unavailable. */ }
@@ -144,7 +145,7 @@ export function FieldTurntableWorkspace(props: Props) {
   }, [props.status, workOrigin, opticalOrigin]);
   useEffect(() => {
     const saved = opticalOrigin || workOrigin;
-    if (!saved || activePort !== saved.port || props.visible === false || props.disabled || autoBusy || originBusy ||
+    if (!saved || activePort !== saved.port || props.visible === false || props.disabled || autoBusy || originBusy || profileBusy ||
         !props.status || props.status.service.state !== "ready" || fieldIsActive(props.status) || props.status.deviceBusy || props.status.turntableBusy ||
         !saved.verificationRequired && saved.generation === props.status.service.generation) return;
     const key = JSON.stringify([saved, props.status.service.generation, activePort]);
@@ -159,9 +160,9 @@ export function FieldTurntableWorkspace(props: Props) {
       if (workOrigin) setWorkOrigin(verified);
     }).catch(() => { /* Coordinates remain saved; manual return can retry the fresh probe and explain any error. */ });
   }, [activePort, props.visible, props.disabled, props.status?.service.generation, props.status?.service.state,
-    props.status?.state, props.status?.deviceBusy, props.status?.turntableBusy, workOrigin, opticalOrigin, autoBusy, originBusy]);
+    props.status?.state, props.status?.deviceBusy, props.status?.turntableBusy, workOrigin, opticalOrigin, autoBusy, originBusy, profileBusy]);
   const id = useId(), tabs = useRef<(HTMLButtonElement | null)[]>([]);
-  const editingLocked = props.disabled || autoBusy || fieldIsActive(props.status) || !!props.status?.deviceBusy;
+  const editingLocked = props.disabled || autoBusy || profileBusy || fieldIsActive(props.status) || !!props.status?.deviceBusy;
   const baseLocked = editingLocked || !!props.status?.turntableBusy;
   const locked = baseLocked || originBusy;
   const selectMode = (next: "manual" | "auto") => { if (!locked) { setMode(next); props.onRouteMode?.(next); } };
@@ -174,6 +175,8 @@ export function FieldTurntableWorkspace(props: Props) {
           try { localStorage.setItem(opticalOriginRequiredKey, "true"); } catch { /* Keep the session fail-closed even if persistence is unavailable. */ }
         }
       }} onStatus={props.onStatus} onBusy={setOriginBusy} />
+    <FieldDriveProfile port={activePort} status={props.status} disabled={props.disabled || autoBusy || originBusy || !!props.pollUnavailable}
+      request={props.request} onStatus={props.onStatus} onBusy={setProfileBusy} />
     <div className="field-view-tabs" data-active={mode === "manual" ? "wave" : "analysis"} role="tablist" aria-label="转盘作业方式">
       {(["manual", "auto"] as const).map((value, index) => <button key={value} ref={node => { tabs.current[index] = node; }} type="button" role="tab" id={`${id}-${value}-tab`} aria-controls={`${id}-${value}-panel`} aria-selected={mode === value} tabIndex={mode === value ? 0 : -1} disabled={locked} onClick={() => selectMode(value)} onKeyDown={event => {
         if (locked || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
@@ -181,8 +184,8 @@ export function FieldTurntableWorkspace(props: Props) {
         selectMode(next ? "auto" : "manual"); tabs.current[next]?.focus();
       }}>{value === "manual" ? <Hand size={16} /> : <Route size={16} />}{value === "manual" ? "手动控制" : "自动跟随"}</button>)}
     </div>
-    <div hidden={mode !== "manual"} role="tabpanel" id={`${id}-manual-panel`} aria-labelledby={`${id}-manual-tab`}><FieldLaserControl deviceIp={props.config.deviceIp} status={props.status} disabled={props.disabled || autoBusy || originBusy} request={props.request} /><FieldTurntableManual status={props.status} disabled={props.disabled || autoBusy || originBusy} request={props.request} onBusy={busyChanged} onStatus={props.onStatus} onRoute={props.onRoute} onAcquisition={props.onAcquisition} workOrigin={workOrigin} onPortChange={manualPortChanged} /></div>
-    <div hidden={mode !== "auto"} role="tabpanel" id={`${id}-auto-panel`} aria-labelledby={`${id}-auto-tab`}><FieldAutoFollow {...props} disabled={props.disabled || originBusy} workOrigin={workOrigin} opticalOrigin={opticalOrigin} opticalOriginRequired={opticalOriginRequired} onPortChange={autoPortChanged} visible={props.visible !== false && mode === "auto"} onBusy={busyChanged} onReturnMotion={setReturnMotion} /></div>
+    <div hidden={mode !== "manual"} role="tabpanel" id={`${id}-manual-panel`} aria-labelledby={`${id}-manual-tab`}><FieldLaserControl deviceIp={props.config.deviceIp} status={props.status} disabled={props.disabled || autoBusy || originBusy || profileBusy} request={props.request} /><FieldTurntableManual status={props.status} disabled={props.disabled || autoBusy || originBusy || profileBusy} request={props.request} onBusy={busyChanged} onStatus={props.onStatus} onRoute={props.onRoute} onAcquisition={props.onAcquisition} workOrigin={workOrigin} onPortChange={manualPortChanged} /></div>
+    <div hidden={mode !== "auto"} role="tabpanel" id={`${id}-auto-panel`} aria-labelledby={`${id}-auto-tab`}><FieldAutoFollow {...props} disabled={props.disabled || originBusy || profileBusy} workOrigin={workOrigin} opticalOrigin={opticalOrigin} opticalOriginRequired={opticalOriginRequired} onPortChange={autoPortChanged} visible={props.visible !== false && mode === "auto"} onBusy={busyChanged} onReturnMotion={setReturnMotion} /></div>
   </div>;
 }
 
@@ -406,9 +409,9 @@ export function FieldAutoFollow({ config, onConfig, status, disabled, request, o
       })}</div></>}
       <p className="field-subtext">未校准时按安装尺寸计算瞄准位置，开始后先自动定位，再等待叶片。已校准测点在其首个点位等待叶片，离开后换点。校准只读取当前两轴角度，不会识别光斑是否对准测点；其修正量用于此测点的全部圆周点位。校准前将实际测点置于旋转中心正下方并准确瞄准，公共归零不能替代测点校准。每次只采集一个测点。</p>
       <details className="field-auto-setup"><summary>叶片进入与离开判定 <span>使用 RSSI 回波</span></summary><div className="field-auto-grid">{!plan.manualRotation && numeric("单站最多等待 · 圈", "waitRevolutions", 1, 10, 1)}{numeric("进入回波波动阈值 · 百分点", "rssiEnterSpread", .1, 100, .1)}{numeric("离开回波波动阈值 · 百分点", "rssiExitSpread", 0, 99.9, .1)}{numeric("进入确认时间 · ms", "rssiEnterConfirmMs", 10, 1000, 10)}{numeric("离开确认时间 · ms", "rssiConfirmMs", 10, 1000, 10)}</div></details>
-      <details className="field-auto-setup field-auto-turntable-setup"><summary>转盘安装设置 <span>安装或接线变化时调整</span></summary><div className="field-auto-grid"><label>俯仰轴方向<CustomSelect aria-label="俯仰轴方向" value={draft.axis1Sign} disabled={locked} onChange={event => editSettings({ axis1Sign: Number(event.target.value) as 1 | -1 })}><option value={1}>抬高瞄准点时角度增加</option><option value={-1}>抬高瞄准点时角度减小</option></CustomSelect></label><label>水平轴方向<CustomSelect aria-label="水平轴方向" value={draft.axis2Sign} disabled={locked} onChange={event => editSettings({ axis2Sign: Number(event.target.value) as 1 | -1 })}><option value={1}>向右瞄准时角度增加</option><option value={-1}>向右瞄准时角度减小</option></CustomSelect></label>{numeric("两轴换点转速上限 · rpm", "maxMoveRpm", .02, 10, .02)}{numeric("换点加速度上限 · °/s²", "maxMoveAccelerationDegS2", .1, 120, .1)}{numeric("运动中跟随误差上限 · °", "followErrorLimitDeg", .5, 10, .05)}</div><p className="field-subtext">{plan.manualRotation ? "人手转动时按此处设置的速度上限换点。" : "根据叶轮周期、点位间隔和两轴行程自动计算每段速度，均不超过此上限。"}转盘停稳后等待叶片，离开后再换点。加速度控制双轴轨迹的起步与减速快慢，任务回原点沿用此值；旧控制器按驱动器自身的加减速设置执行。跟随误差上限控制运动中实际位置与轨迹目标允许相差多少，范围0.5～10°；到位精度仍为0.1°。修改后下次开始采集或回原点生效，不能设为0关闭。</p></details>
+      <details className="field-auto-setup field-auto-turntable-setup"><summary>转盘安装设置 <span>安装或接线变化时调整</span></summary><div className="field-auto-grid"><label>俯仰轴方向<CustomSelect aria-label="俯仰轴方向" value={draft.axis1Sign} disabled={locked} onChange={event => editSettings({ axis1Sign: Number(event.target.value) as 1 | -1 })}><option value={1}>抬高瞄准点时角度增加</option><option value={-1}>抬高瞄准点时角度减小</option></CustomSelect></label><label>水平轴方向<CustomSelect aria-label="水平轴方向" value={draft.axis2Sign} disabled={locked} onChange={event => editSettings({ axis2Sign: Number(event.target.value) as 1 | -1 })}><option value={1}>向右瞄准时角度增加</option><option value={-1}>向右瞄准时角度减小</option></CustomSelect></label>{numeric("两轴换点转速上限 · rpm", "maxMoveRpm", .02, 10, .02)}{motionMode !== "drive_internal" && <>{numeric("换点加速度上限 · °/s²", "maxMoveAccelerationDegS2", .1, 120, .1)}{numeric("运动中跟随误差上限 · °", "followErrorLimitDeg", .5, 10, .05)}</>}</div><p className="field-subtext">{motionMode === "drive_internal" ? "按设置的转速上限分别下发两轴定位，运动可重叠；两轴停稳后才等待叶片。起步与减速使用驱动器内部参数，可在转盘状态中查看。修改速度后，下次采集或回原点生效。到位精度为0.1°。" : <>{plan.manualRotation ? "人手转动时按此处设置的速度上限换点。" : "根据叶轮周期、点位间隔和两轴行程自动计算每段速度，均不超过此上限。"}转盘停稳后等待叶片，离开后再换点。加速度控制双轴轨迹的起步与减速快慢，任务回原点沿用此值；旧控制器按驱动器自身的加减速设置执行。跟随误差上限控制运动中实际位置与轨迹目标允许相差多少，范围0.5～10°；到位精度仍为0.1°。修改后下次开始采集或回原点生效，不能设为0关闭。</>}</p></details>
     </section>
-    <section className="field-card"><div className="field-section-heading"><div><h2>当前测点路线</h2><p>叶片 {blade?.name || "—"} · {currentPoint?.name || "—"} · {anchor ? "已记录首个点位 · 原地等待叶片" : originError ? "公共光学零点待重设 · 暂不能开始" : commonOrigin ? "按公共光学零点计算 · 先定位再等待" : "按设备坐标计算 · 先定位再等待"}{motionMode === "dual_axis_timed" ? " · 双轴同时换点" : motionMode === "sequential" ? " · 两轴依次换点" : " · 待读取控制器"}</p></div><span className="field-badge">{plan.manualRotation ? "人手转动叶片" : `${numberText(plan.nominalRpm)} rpm · ${draft.periodSeconds} s / 圈`}</span></div><div className="field-auto-metrics"><div><span>圆周点位</span><strong>{plan.stationsPerPoint} 个点位</strong></div><div><span>采集轮数 / 计划记录</span><strong>{draft.cycles} 轮 / {Number.isFinite(plan.totalRecords) ? plan.totalRecords : "—"} 条</strong></div><div><span>换点速度上限（每轴）</span><strong>{plan.speedRpm && (plan.manualRotation || motionMode !== "unknown") ? numberText(plan.speedRpm) : "—"} rpm</strong></div><div><span>最长点位间运动估算</span><strong>{plan.speedRpm && motionMode !== "unknown" ? numberText(plan.plannedMoveSeconds) : "—"} s</strong></div></div><p className="field-subtext">{plan.manualRotation ? "按设定上限换点，并计入起停加减速、通讯和停稳确认；不按叶轮周期估算相位。" : "每段执行时依据相邻点位重新计算速度，并计入起停加减速、通讯和停稳确认。"}{plan.mayMissNextPass && motionMode !== "unknown" ? "可能赶不上下一次经过，到位后继续等待。" : "确认叶片进入并离开后，才切换下一个点位。"}任务完成后自动回到作业原点，停止采集并保持激光开启。</p>
+    <section className="field-card"><div className="field-section-heading"><div><h2>当前测点路线</h2><p>叶片 {blade?.name || "—"} · {currentPoint?.name || "—"} · {anchor ? "已记录首个点位 · 原地等待叶片" : originError ? "公共光学零点待重设 · 暂不能开始" : commonOrigin ? "按公共光学零点计算 · 先定位再等待" : "按设备坐标计算 · 先定位再等待"}{motionMode === "drive_internal" ? " · 驱动器内部定位" : motionMode === "dual_axis_timed" ? " · 双轴同时换点" : motionMode === "sequential" ? " · 两轴依次换点" : " · 待读取控制器"}</p></div><span className="field-badge">{plan.manualRotation ? "人手转动叶片" : `${numberText(plan.nominalRpm)} rpm · ${draft.periodSeconds} s / 圈`}</span></div><div className="field-auto-metrics"><div><span>圆周点位</span><strong>{plan.stationsPerPoint} 个点位</strong></div><div><span>采集轮数 / 计划记录</span><strong>{draft.cycles} 轮 / {Number.isFinite(plan.totalRecords) ? plan.totalRecords : "—"} 条</strong></div><div><span>换点速度上限（每轴）</span><strong>{plan.speedRpm && (plan.manualRotation || motionMode !== "unknown") ? numberText(plan.speedRpm) : "—"} rpm</strong></div><div><span>{motionMode === "drive_internal" ? "匀速行程下限（不含通信与起停）" : "最长点位间运动估算"}</span><strong>{plan.speedRpm && motionMode !== "unknown" ? numberText(plan.plannedMoveSeconds) : "—"} s</strong></div></div><p className="field-subtext">{motionMode === "drive_internal" ? "显示的行程下限仅按角度和速度计算；实际换点还需两轴指令下发、驱动器起停、到位确认和采集准备，能否赶上需以实测为准。" : plan.manualRotation ? "按设定上限换点，并计入起停加减速、通讯和停稳确认；不按叶轮周期估算相位。" : "每段执行时依据相邻点位重新计算速度，并计入起停加减速、通讯和停稳确认。"}{plan.mayMissNextPass && motionMode !== "unknown" ? "可能赶不上下一次经过，到位后继续等待。" : "确认叶片进入并离开后，才切换下一个点位。"}任务完成后自动回到作业原点，停止采集并保持激光开启。</p>
       {plan.points.length > 0 && <details className="field-auto-route"><summary>查看 {plan.points.length} 个点位的目标角度{currentOrigin ? " · 作业坐标" : ""}</summary><div className="field-table-scroll"><table className="field-table"><thead><tr><th>顺序</th><th>测点</th><th>圆周角</th><th>俯仰目标</th><th>水平目标</th></tr></thead><tbody>{plan.points.map((point, index) => <tr key={point.pointId}><td>{index + 1}</td><td>{point.radialPointName}</td><td>{point.azimuthDeg}°</td><td>{numberText(toWorkAngle(point.axis1AngleDeg, 1, currentOrigin), 3)}°</td><td>{numberText(toWorkAngle(point.axis2AngleDeg, 2, currentOrigin), 3)}°</td></tr>)}</tbody></table></div></details>}
       {blockers.length > 0 && !cycleRunning && <div className="field-auto-blockers" role="status"><strong>当前测点还需完成</strong><ul>{blockers.map(item => <li key={item}>{item}</li>)}</ul></div>}
       {error && <p className="field-error" role="alert">{error}</p>}{notice && <p className="field-success" role="status">{notice}</p>}

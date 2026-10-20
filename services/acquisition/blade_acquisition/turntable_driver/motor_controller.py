@@ -140,6 +140,7 @@ class MotorController:
     """
 
     trajectory_start_observer = True
+    drive_internal_position = True
 
     def __init__(self, port: str, *, timeout: float = 2.0,
                  gear_ratio: float = 50.0, serial_factory=None):
@@ -448,6 +449,31 @@ class MotorController:
         """Position move for callers that already verified zero speed and faults."""
         return self.move_to_angle(motor_id, angle_deg, speed_rpm=speed_rpm,
                                   cancel=cancel, stop_before=False)
+
+    def move_to_angle_verified(self, motor_id, angle_deg, *, speed_rpm, cancel,
+                               reference, start_angle):
+        """Native group member: freshly verify its coordinates before triggering.
+
+        A caller owns both axes and their guard checks. Keep alarm checking and
+        never replay a position command after a lost or ambiguous response.
+        """
+        validate_output_angle(motor_id, angle_deg)
+        with self._lock:
+            if cancel.is_set():
+                return None
+            feedback = self.get_feedback(motor_id)
+            keys = ("origin_counts", "display_mode", "command_counts_per_rev", "encoder_bits")
+            if ([getattr(feedback, key) for key in keys] != list(reference) or
+                    feedback.motor_rpm or feedback.fault or feedback.flags & 16 or
+                    not feedback.flags & 1 or feedback.output_angle_deg is None or
+                    not math.isfinite(feedback.output_angle_deg) or
+                    abs(feedback.output_angle_deg - start_angle) > .1 + 1e-9):
+                raise MotorError(f"轴{motor_id}下发前参考、故障或停止位置已变化")
+            delta = round((angle_deg - feedback.output_angle_deg) * 1000) / 1000
+            if delta == 0:
+                return MotionAccepted(motor_id, 0, speed_rpm)
+            return self.move_relative(motor_id, delta, speed_rpm=speed_rpm,
+                                      cancel=cancel, stop_before=False)
 
     def _invalidate_trajectory(self):
         self._trajectory_session = None

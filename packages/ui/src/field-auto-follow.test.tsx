@@ -185,6 +185,16 @@ check("双轴能力须经当前串口探测确认，释放串口不抹去已确�
   const unknown = renderToStaticMarkup(<FieldAutoFollow {...props} />);
   assert.ok(unknown.includes("待读取控制器")); assert.ok(!unknown.includes("已识别双轴联动"));
 });
+check("内部定位显示实际模式，速度沿用上限且不把轨迹加速度冒充驱动参数", () => {
+  const next = structuredClone(ready);
+  next.turntable!.motionCapability = { supported: true, mode: "dual_axis_timed", pointMode: "drive_internal", protocol: "0x30-0x36", probe: "confirmed", status: {} };
+  assert.equal(fieldTurntableMotionMode(next.turntable, "COM3"), "drive_internal");
+  assert.equal(fieldTurntableMotionMode(next.turntable, "COM4"), "unknown");
+  const html = renderToStaticMarkup(<FieldTurntableManual status={next} disabled={false} request={props.request} />);
+  assert.ok(html.includes("驱动器内部定位"));
+  assert.ok(html.includes("运动可重叠"));
+  assert.ok(!html.includes("两轴同时启动并按同一时长到位"));
+});
 check("双轴回位提供整次停止，运动反馈使用实际执行方式", () => {
   const next = structuredClone(ready);
   next.turntableBusy = true;
