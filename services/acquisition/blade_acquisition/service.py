@@ -36,6 +36,7 @@ from .turntable_driver.faults import get_fault_advice
 from .turntable_driver.timing import trace_event
 from .turntable import (TurntableConfig, TurntableRequest, PointCycleConfig, PointCyclePoint, MotionGuard, TelemetryWriter,
                         DEFAULT_MOTOR_FACTORY, snapshot as motor_snapshot, require_ready,
+                        joint_snapshots, joint_snapshots_from_observations,
                         start_motor, renew_motor, test_key, require_position_ready,
                         position_reached, PositionProgress, ManualPositionProgress, reference_key,
                         check_position_motion,
@@ -836,18 +837,35 @@ class AcquisitionController:
             # Uploading does not move. References may nevertheless have changed
             # between our point check and the driver's preparation snapshot.
             # Reject that change before START, not only after physical arrival.
-            for config in configs:
-                checked = motor_snapshot(motor, config.axis)
-                verify_reference(checked, "before_start", "轨迹准备期间参考位或反馈计数单位已变化，未启动双轴运动")
-                require_position_ready(checked, config)
-                if any(
-                        abs(checked["axes"][str(axis)]["output_angle_deg"] - start[axis - 1]) > .1
-                        for axis in (1, 2)):
-                    raise RuntimeError("轨迹准备期间参考位或起点已变化，未启动双轴运动")
-            if on_command:
-                on_command()
+            def validate_start(snapshots):
+                nonlocal feedback
+                for config, checked in zip(configs, snapshots):
+                    verify_reference(checked, "before_start", "轨迹准备期间参考位或反馈计数单位已变化，未启动双轴运动")
+                    require_position_ready(checked, config)
+                    if any(
+                            abs(checked["axes"][str(axis)]["output_angle_deg"] - start[axis - 1]) > .1
+                            for axis in (1, 2)):
+                        raise RuntimeError("轨迹准备期间参考位或起点已变化，未启动双轴运动")
+                    feedback = checked
+                if on_command:
+                    on_command()
+
+            def before_start(observations):
+                # The SDK has just read and validated both drives under its
+                # serial lock. Compare our original plan against those same
+                # observations; do not issue another round of serial queries.
+                validate_start(joint_snapshots_from_observations(observations))
+
+            reuse_observations = getattr(motor, "trajectory_start_observer", False) is True
+            evidence["startCheckSource"] = "sdk_observation" if reuse_observations else "service_snapshot"
+            if not reuse_observations:
+                # Keep compatibility with older injected/vendor adapters.
+                validate_start(motor_snapshot(motor, config.axis) for config in configs)
             started_at = time.monotonic()
-            motor.start_trajectory(prepared.session, cancel=cancel)
+            if reuse_observations:
+                motor.start_trajectory(prepared.session, cancel=cancel, before_start=before_start)
+            else:
+                motor.start_trajectory(prepared.session, cancel=cancel)
 
             last_feedback_at = -math.inf
             # Explicit local timing diagnostics sample the same cached 0x37
@@ -1119,8 +1137,10 @@ class AcquisitionController:
             motor.connect()
             # Validate both drives and both targets before moving either axis.
             references = None
-            for config in configs:
-                feedback = motor_snapshot(motor, config.axis)
+            initial_snapshots = (joint_snapshots(motor)
+                                 if getattr(motor, "trajectory_start_observer", False) is True
+                                 else (motor_snapshot(motor, config.axis) for config in configs))
+            for config, feedback in zip(configs, initial_snapshots):
                 require_position_ready(feedback, config)
                 if references is None:
                     references = reference_key(feedback)
@@ -1993,7 +2013,10 @@ class AcquisitionController:
         completed, active = [], None
         feedback = None
         try:
-            feedback = motor_snapshot(motor, 1)
+            initial_snapshots = (joint_snapshots(motor)
+                                 if getattr(motor, "trajectory_start_observer", False) is True
+                                 else (motor_snapshot(motor, 1),) * 2)
+            feedback = initial_snapshots[0]
             require_ready(feedback)
             references = reference_key(feedback)
             expected = self._cycle_point_reference(point)
@@ -2003,8 +2026,8 @@ class AcquisitionController:
             if expected is not None and actual != expected:
                 raise RuntimeError(f"点位 {point.name} 记录后参考位或反馈计数单位已变化")
             # Both targets must be legal before either axis receives a command.
-            for config in configs:
-                require_position_ready(feedback, config)
+            for config, checked in zip(configs, initial_snapshots):
+                require_position_ready(checked, config)
             capability = self._motion_capability(motor)
             start_angles = tuple(feedback["axes"][str(axis)]["output_angle_deg"] for axis in (1, 2))
             speed, timing = station_timing_plan(cycle, start_angles, point, capability["mode"], source_point)

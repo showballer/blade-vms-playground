@@ -120,6 +120,17 @@ class GuardConfig:
     home_at_end: bool
 
 
+@dataclass(frozen=True)
+class TrajectoryAxisObservation:
+    """Fresh sequential readback used by both SDK and service START checks."""
+    axis: int
+    status: MotorStatus
+    feedback: PositionFeedback
+    guard: GuardConfig
+    query_started_at: float
+    observed_at: float
+
+
 class MotorController:
     """共享一条 PC 串口控制两轴。不发送 SON 或限位旁路命令。
 
@@ -127,6 +138,8 @@ class MotorController:
     timeout 是单条通信的等待上限，不是机械运动时间。
     serial_factory 仅用于注入串口适配器/测试替身。
     """
+
+    trajectory_start_observer = True
 
     def __init__(self, port: str, *, timeout: float = 2.0,
                  gear_ratio: float = 50.0, serial_factory=None):
@@ -711,11 +724,15 @@ class MotorController:
                 return None
             raise
 
-    def _trajectory_axes(self, points, *, expected=None, target=None, tolerance=0.1, cancel=None):
+    def _trajectory_axes(self, points, *, expected=None, target=None, tolerance=0.1, cancel=None, on_checked=None):
         references = []
+        observations = []
         for axis in (1, 2):
             self._trajectory_cancelled(cancel)
+            query_started_at = time.time()
             status, feedback, guard = self.get_status(axis), self.get_feedback(axis), self.get_guard_config(axis)
+            observations.append(TrajectoryAxisObservation(axis, status, feedback, guard,
+                                                          query_started_at, time.time()))
             if (status.motor_rpm or feedback.motor_rpm or status.alarm_code or
                     status.limit_flags not in (None, 0) or feedback.fault or feedback.flags & 16 or
                     feedback.home_phase not in (0, 7, 8)):
@@ -746,6 +763,11 @@ class MotorController:
                                feedback.encoder_bits, guard))
         if expected is not None and tuple(references) != expected:
             raise MotorError("两轴参考位、反馈单位或保护配置已变化，请重新准备轨迹")
+        self._trajectory_cancelled(cancel)
+        if on_checked is not None:
+            # The caller may compare its planning reference without querying the
+            # serial bus again. Rejecting/cancelling this hook must prevent START.
+            on_checked(tuple(observations))
         self._trajectory_cancelled(cancel)
         return tuple(references)
 
@@ -808,7 +830,8 @@ class MotorController:
                 self._trajectory_abort()
                 raise
 
-    def start_trajectory(self, session: int, *, cancel=None) -> TrajectoryStatus:
+    def start_trajectory(self, session: int, *, cancel=None, before_start=None) -> TrajectoryStatus:
+        """Run fresh START checks, then a local read-only observer before writing."""
         validate_trajectory_session(session)
         with self._lock:
             if session != self._trajectory_session or self._trajectory_prepared is None or self._trajectory_started:
@@ -820,7 +843,8 @@ class MotorController:
                 if (result.session != session or result.state != 2 or result.fault or
                         result.point_count != len(points) or result.uploaded_count != len(points)):
                     raise MotorError("下位机轨迹会话已变化或未就绪，禁止启动")
-                self._trajectory_axes(points, expected=references, target=points[0], tolerance=tolerance, cancel=cancel)
+                self._trajectory_axes(points, expected=references, target=points[0], tolerance=tolerance,
+                                      cancel=cancel, on_checked=before_start)
                 self._trajectory_cancelled(cancel)
                 self._trajectory_started = True
                 result = self._trajectory_data(self._request(build_request(1, CMD_TRAJECTORY_START, parameter=session)))

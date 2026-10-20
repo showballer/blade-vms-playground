@@ -2,7 +2,7 @@
 import struct
 import threading
 import unittest
-from dataclasses import replace
+from dataclasses import FrozenInstanceError, replace
 from unittest.mock import patch
 
 from blade_acquisition.turntable_driver import MotorController, MotorError, CommunicationError, TrajectoryPoint
@@ -26,6 +26,8 @@ class SerialFixture:
         self.flags = {1: 3, 2: 3}
         self.origins = {1: 101, 2: 202}
         self.rpm = {1: 0, 2: 0}
+        self.alarms = {1: 0, 2: 0}
+        self.limit_flags = {1: 0, 2: 0}
         self.reject = {}
         self.drop = None
         self.on_write = None
@@ -79,9 +81,9 @@ class SerialFixture:
             if self.bad_status:
                 data = data[:-1]
         elif command == 0x07:
-            data = struct.pack(">hHB", self.rpm[axis], 0, 0)
+            data = struct.pack(">hHB", self.rpm[axis], 0, self.limit_flags[axis])
         elif command == 0x09:
-            data = b"\0\0"
+            data = struct.pack(">H", self.alarms[axis])
         elif command == 0x20:
             data = struct.pack(">iiiHHHiHBBBBih", 0, 0, 0, 3, 10000, 17,
                                round(self.angles[axis] * 1000), self.flags[axis], 0, 0, 0, 0,
@@ -246,18 +248,111 @@ class BufferedTrajectoryTests(unittest.TestCase):
     def test_start_rechecks_reference_and_cancels_buffer(self):
         self.prepare()
         self.serial.origins[2] += 1
+        checked = []
         with self.assertRaisesRegex(MotorError, "参考位"):
-            self.motor.start_trajectory(17)
+            self.motor.start_trajectory(17, before_start=checked.append)
+        self.assertEqual(checked, [])
         self.assertNotIn(START, self.commands())
         self.assertIn(STOP, self.commands())
 
     def test_start_requires_first_pose_and_never_autopositions(self):
         self.prepare()
         self.serial.angles[1] += 0.2
+        checked = []
         with self.assertRaises(MotorError):
-            self.motor.start_trajectory(17)
+            self.motor.start_trajectory(17, before_start=checked.append)
+        self.assertEqual(checked, [])
         self.assertNotIn(START, self.commands())
         self.assertNotIn(0x14, self.commands())
+
+    def test_start_observer_reuses_fresh_immutable_axis_reads_without_extra_io(self):
+        self.prepare()
+        before = len(self.commands())
+        observed = []
+        def checked(axes):
+            self.assertIsInstance(axes, tuple)
+            self.assertEqual(tuple(axis.axis for axis in axes), (1, 2))
+            self.assertEqual(self.commands()[before:], [STATUS, 0x07, 0x09, 0x20, 0x24,
+                                                        0x07, 0x09, 0x20, 0x24])
+            self.assertFalse(self.motor._trajectory_started)
+            for axis in axes:
+                self.assertEqual(axis.status.motor_id, axis.axis)
+                self.assertEqual(axis.feedback.origin_counts, self.serial.origins[axis.axis])
+                self.assertEqual(axis.feedback.output_angle_deg, self.serial.angles[axis.axis])
+                self.assertTrue(axis.guard.soft_enabled)
+                self.assertLessEqual(axis.query_started_at, axis.observed_at)
+                with self.assertRaises(FrozenInstanceError):
+                    axis.observed_at = 0
+                with self.assertRaises(FrozenInstanceError):
+                    axis.feedback.origin_counts = 0
+            self.assertLessEqual(axes[0].observed_at, axes[1].query_started_at)
+            observed.append(axes)
+        self.assertTrue(self.motor.trajectory_start_observer)
+        self.motor.start_trajectory(17, before_start=checked)
+        self.assertEqual(len(observed), 1)
+        self.assertEqual(self.commands()[before:], [STATUS, 0x07, 0x09, 0x20, 0x24,
+                                                    0x07, 0x09, 0x20, 0x24, START])
+
+    def test_start_axis2_drive_alarm_rejects_before_observer_and_start(self):
+        self.prepare()
+        self.serial.alarms[2] = 9
+        observed = []
+        with self.assertRaisesRegex(MotorError, "轴2"):
+            self.motor.start_trajectory(17, before_start=observed.append)
+        self.assertEqual(observed, [])
+        self.assertNotIn(START, self.commands())
+        self.assertIn(STOP, self.commands())
+
+    def test_start_axis2_limit_flags_reject_before_observer_and_start(self):
+        self.prepare()
+        self.serial.limit_flags[2] = 1
+        observed = []
+        with self.assertRaisesRegex(MotorError, "轴2"):
+            self.motor.start_trajectory(17, before_start=observed.append)
+        self.assertEqual(observed, [])
+        self.assertNotIn(START, self.commands())
+        self.assertIn(STOP, self.commands())
+
+    def test_start_observer_rejection_cancels_buffer_without_start(self):
+        self.prepare()
+        def reject(_axes):
+            raise RuntimeError("planning reference changed")
+        with self.assertRaisesRegex(RuntimeError, "planning reference changed"):
+            self.motor.start_trajectory(17, before_start=reject)
+        self.assertNotIn(START, self.commands())
+        self.assertEqual(self.commands().count(STOP), 1)
+        self.assertIsNone(self.motor._trajectory_prepared)
+        self.assertFalse(self.motor._trajectory_started)
+        previous = list(self.commands())
+        with self.assertRaises(MotorError):
+            self.motor.start_trajectory(17)
+        self.assertEqual(self.commands(), previous)
+
+    def test_cancel_in_start_observer_never_writes_start(self):
+        self.prepare()
+        cancel = threading.Event()
+        with self.assertRaisesRegex(MotorError, "取消"):
+            self.motor.start_trajectory(17, cancel=cancel, before_start=lambda _axes: cancel.set())
+        self.assertNotIn(START, self.commands())
+        self.assertEqual(self.commands().count(STOP), 1)
+        self.assertIsNone(self.motor._trajectory_prepared)
+        self.assertFalse(self.motor._trajectory_started)
+
+    def test_cancel_during_last_guard_read_skips_observer_and_start(self):
+        self.prepare()
+        cancel = threading.Event()
+        observed = []
+        def cancel_last_guard(command):
+            if command == 0x24 and self.serial.frames[-1][3] == 2:
+                cancel.set()
+        self.serial.on_write = cancel_last_guard
+        with self.assertRaisesRegex(MotorError, "取消"):
+            self.motor.start_trajectory(17, cancel=cancel, before_start=observed.append)
+        self.assertEqual(observed, [])
+        self.assertNotIn(START, self.commands())
+        self.assertEqual(self.commands().count(STOP), 1)
+        self.assertIsNone(self.motor._trajectory_prepared)
+        self.assertFalse(self.motor._trajectory_started)
 
     def test_cancel_during_upload_cannot_late_start(self):
         cancel = threading.Event()

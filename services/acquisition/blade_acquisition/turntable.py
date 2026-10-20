@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, field_
 
 from .serial_ports import SerialPort
 from .turntable_driver import MotorController, MotorError
+from .turntable_driver.motor_controller import TrajectoryAxisObservation
 from .turntable_driver.protocol import validate_output_angle
 from .turntable_driver.trajectory import TrajectoryPoint
 
@@ -452,6 +453,48 @@ def snapshot(motor, axis):
             "limitBypass": bool(flags & 4) if flags is not None else None,
             "outputAngleDeg": axes[str(axis)]["output_angle_deg"], "axes": axes,
             "queryStartedAt": start, "observedAt": time.time()}
+
+
+def joint_snapshots_from_observations(observations):
+    """Two selected-drive views of one fresh pair, with no transport access."""
+    if len(observations) != 2 or {item.axis for item in observations} != {1, 2}:
+        raise MotorError("双轴观察数据不完整，不能开始运动")
+    axes = {
+        str(item.axis): {
+            **asdict(item.feedback), "guard": asdict(item.guard),
+            "referenceAngleDeg": 25 if item.axis == 1 else 0,
+            "observedAt": item.observed_at,
+        } for item in observations
+    }
+    result = []
+    for item in sorted(observations, key=lambda item: item.axis):
+        status = item.status
+        flags = status.limit_flags
+        result.append({
+            "axis": item.axis, "motorRpm": status.motor_rpm,
+            "outputRpm": status.output_rpm, "runState": status.run_state,
+            "alarmCode": status.alarm_code, "positionRaw": item.feedback.actual_counts,
+            "limitFlags": flags, "limitActive": bool(flags & 1) if flags is not None else None,
+            "stopPending": bool(flags & 2) if flags is not None else None,
+            "limitBypass": bool(flags & 4) if flags is not None else None,
+            "outputAngleDeg": item.feedback.output_angle_deg, "axes": axes,
+            "queryStartedAt": min(part.query_started_at for part in observations),
+            "observedAt": max(part.observed_at for part in observations),
+        })
+    return tuple(result)
+
+
+def joint_snapshots(motor):
+    """Read both drive statuses, references and guards once; never reuse a cache."""
+    observations = []
+    for axis in (1, 2):
+        started = time.time()
+        status = motor.get_status(axis)
+        feedback = motor.get_feedback(axis)
+        guard = motor.get_guard_config(axis)
+        observations.append(TrajectoryAxisObservation(
+            axis, status, feedback, guard, started, time.time()))
+    return joint_snapshots_from_observations(observations)
 
 
 def require_ready(value):
