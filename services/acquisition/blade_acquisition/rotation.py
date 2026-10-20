@@ -178,7 +178,7 @@ def _manifest(store, recording_id: str) -> dict:
     source_metadata = manifest.get("sourceMetadata")
     cycles = [manifest.get("pointCycle"), source_metadata.get("pointCycle") if isinstance(source_metadata, dict) else None]
     if any(cycle is not None for cycle in cycles):
-        raise ValueError("自动站位记录是间断的叶片经过片段，请使用叶片有效片段分析；不能按连续整圈波形计算阶次和振型。")
+        raise ValueError("自动点位记录是间断的叶片经过片段，请使用叶片有效片段分析；不能按连续整圈波形计算阶次和振型。")
     if manifest.get("status") != "complete":
         raise ValueError("多点融合只接受已停止并完整保存的记录。")
     rate, samples = manifest.get("sampleRate"), manifest.get("samples")

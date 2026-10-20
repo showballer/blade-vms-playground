@@ -4,6 +4,10 @@
 .field-blade-task-heading { margin-bottom: var(--field-ui-space-2); }
 .field-blade-task-heading h3 { margin: 0; color: var(--field-ui-text); font-size: var(--field-ui-body); font-weight: 600; overflow-wrap: anywhere; }
 .field-blade-task-heading p { margin: var(--field-ui-space-1) 0 0; color: var(--field-ui-secondary); font-size: var(--field-ui-caption); }
+.field-blade-collection + .field-blade-collection { margin-top: var(--field-ui-space-4); }
+.field-blade-collection-heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: var(--field-ui-space-2); margin: var(--field-ui-space-3) 0 var(--field-ui-space-2); }
+.field-blade-collection-heading h4 { margin: 0; font-size: var(--field-ui-body); color: var(--field-ui-text); font-weight: 600; overflow-wrap: anywhere; }
+.field-blade-collection-heading > span { color: var(--field-ui-secondary); font-size: var(--field-ui-caption); }
 .field-blade-totals {
   display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: var(--field-ui-space-3); margin: 0 0 var(--field-ui-space-4);
@@ -34,6 +38,11 @@
 .field-blade-summary tbody tr:last-child td { border-bottom: 0; }
 .field-blade-summary td small { display: block; margin-top: var(--field-ui-space-1); }
 .field-blade-record-links { display: flex; gap: var(--field-ui-space-1); flex-wrap: wrap; overflow-wrap: anywhere; }
+.field-blade-timing { display: flex; flex-wrap: wrap; gap: var(--field-ui-space-2) var(--field-ui-space-4); margin-top: var(--field-ui-space-2); font-size: var(--field-ui-caption); color: var(--field-ui-secondary); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.field-blade-timing strong { color: var(--field-ui-text); font-weight: 500; }
+.field-blade-record-times { display: grid; gap: var(--field-ui-space-3); white-space: nowrap; }
+.field-blade-record-times strong { font-weight: 500; }
+.field-blade-summary td:has(.field-blade-record-times) { vertical-align: top; }
 .field-blade-summary .field-blade-record-links .btn { font-size: var(--field-ui-caption); }
 .field-blade-note, .field-blade-notice { margin: var(--field-ui-space-3) 0 0; font-size: var(--field-ui-caption); line-height: 1.6; color: var(--field-ui-secondary); }
 .field-blade-notice { padding: var(--field-ui-space-2) var(--field-ui-space-3); border-left: 2px solid var(--field-ui-warning); background: var(--field-ui-subtle); }

@@ -245,7 +245,11 @@ else {
         // marks and cancellation go straight to server-side session ownership,
         // so a slow preparation cannot postpone a stop or synchronization mark.
         const directSinglePoint = options?.action === 'singlePoint' && options.request?.action !== 'prepare';
-        const result = directSinglePoint || ['session', 'accountInfo', 'status', 'frame', 'recordings', 'simulation', 'recording', 'waveform', 'analysis', 'rotation', 'syncStatus'].includes(options?.action)
+        // Read-only laser monitoring must remain responsive while a serialized
+        // device operation owns the SDK. The service returns its owner's cache
+        // in that case and never opens a competing connection.
+        const directLaserRead = options?.action === 'device' && options.request?.action === 'laser_read';
+        const result = directSinglePoint || directLaserRead || ['session', 'accountInfo', 'status', 'frame', 'recordings', 'simulation', 'recording', 'waveform', 'analysis', 'rotation', 'syncStatus'].includes(options?.action)
           ? await execute() : await serial(execute);
         return { status: 200, data: result };
       } catch (error) { return { status: error.status || 500, data: { error: error.message || '本机操作失败' } }; }

@@ -36,8 +36,10 @@ from .turntable import (TurntableConfig, TurntableRequest, PointCycleConfig, Poi
                         DEFAULT_MOTOR_FACTORY, snapshot as motor_snapshot, require_ready,
                         start_motor, renew_motor, test_key, require_position_ready,
                         position_reached, PositionProgress, ManualPositionProgress, reference_key,
+                        check_position_motion,
+                        reference_check, reference_change_message,
                         require_manual_position_ready, require_manual_axis_ready, require_stop_confirmed,
-                        probe_motion_capability, station_move_plan)
+                        probe_motion_capability, station_move_plan, station_timing_plan)
 
 MOTOR_STARTUP_SECONDS = 10.0
 DAQ_READY_SECONDS = 30.0
@@ -70,6 +72,7 @@ class StartRequest(BaseModel):
     deviceIp: str = Field(default="", max_length=15)
     hostIp: str = Field(default="", max_length=15)
     name: str = Field(min_length=1, max_length=120)
+    windFarm: str = Field(default="", max_length=120)
     object: str = Field(default="", max_length=120)
     turbine: str = Field(default="", max_length=120)
     point: str = Field(default="", max_length=120)
@@ -106,7 +109,7 @@ class StartRequest(BaseModel):
             self.simulation = SimulationConfig()
         return self
 
-    @field_validator("name", "object", "turbine", "point")
+    @field_validator("name", "windFarm", "object", "turbine", "point")
     @classmethod
     def strip_text(cls, value: str) -> str:
         return value.strip()
@@ -121,7 +124,7 @@ class StartRequest(BaseModel):
 
 class DeviceRequest(BaseModel):
     deviceIp: str = Field(min_length=7, max_length=15)
-    action: str = Field(pattern="^(read|set|autofocus|laser_on|laser_off)$")
+    action: str = Field(pattern="^(read|laser_read|set|autofocus|laser_on|laser_off)$")
     key: str | None = Field(default=None, max_length=32)
     value: str | int | None = None
     expected: str | int | None = None
@@ -162,13 +165,14 @@ class SinglePointCapture(BaseModel):
     deviceIp: str = Field(min_length=7, max_length=15)
     hostIp: str = Field(min_length=7, max_length=15)
     port: SerialPort
+    windFarm: str = Field(default="", max_length=120)
     object: str = Field(default="", max_length=120)
     turbine: str = Field(default="", max_length=120)
     point: str = Field(default="", max_length=120)
     captureSessionId: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$")
 
     _address = field_validator("deviceIp", "hostIp")(StartRequest.valid_address.__func__)
-    _text = field_validator("name", "object", "turbine", "point")(StartRequest.strip_text.__func__)
+    _text = field_validator("name", "windFarm", "object", "turbine", "point")(StartRequest.strip_text.__func__)
     _name = field_validator("name")(StartRequest.name_is_not_blank.__func__)
 
     @model_validator(mode="after")
@@ -229,7 +233,9 @@ class AcquisitionController:
         self.device_ip = self.host_ip = ""
         self.rows: deque = deque(maxlen=250_000)
         self.device_busy = False
+        self.laser_poll_busy = False
         self.device_snapshot = None
+        self.laser_observation = None
         self.device_warning = None
         self.device_warning_ip = None
         self.source = "polytec_ivs500"
@@ -276,6 +282,7 @@ class AcquisitionController:
                     "deviceBusy": self.device_busy,
                     "deviceWarning": self.device_warning,
                     "deviceSettings": copy.deepcopy(self.device_snapshot),
+                    "laserStatus": self._laser_status(),
                     "turntable": copy.deepcopy(self.turntable_snapshot),
                     "turntableBusy": self.turntable_busy,
                     "turntableWarning": self.motion_guard.warning,
@@ -284,6 +291,91 @@ class AcquisitionController:
                     "pointCycle": copy.deepcopy(self.point_cycle),
                     "singlePoint": self.single_point_runner.snapshot() if self.single_point_runner else None,
                     "indexWarning": self.store.index_error}
+
+    def _laser_status(self, device_ip=None, *, busy=None):
+        with self.lock:
+            if busy is None:
+                busy = bool(self.device_busy or self.turntable_busy or self.state in {"starting", "acquiring", "stopping"} or
+                            (self.thread and self.thread.is_alive()) or
+                            (self.capture_thread and self.capture_thread.is_alive()))
+            observed = copy.deepcopy(self.laser_observation)
+            selected_ip = (device_ip if device_ip is not None else (observed or {}).get("deviceIp", self.device_ip)) or ""
+            if not observed or observed.get("deviceIp") != selected_ip:
+                return {"deviceIp": selected_ip, "state": "unknown", "readAt": None,
+                        "source": "unavailable", "busy": bool(busy)}
+            if observed["state"] != "unknown" and (observed["readAt"] is None or time.time() - observed["readAt"] > 3):
+                observed.update(state="unknown", source="unavailable", error="激光状态已过期，等待设备回读")
+            return {**observed, "busy": bool(busy)}
+
+    def _record_laser_snapshot(self, snapshot):
+        if not isinstance(snapshot, dict):
+            snapshot = {}
+        field = snapshot.get("fields", {}).get("laser", {})
+        value = field.get("value")
+        known = field.get("supported") is True and type(value) is int and value in (0, 1)
+        read_at = snapshot.get("readAt")
+        read_at = float(read_at) if type(read_at) in (int, float) and math.isfinite(read_at) else None
+        error = field.get("error") or snapshot.get("error")
+        error_at = snapshot.get("observedAt")
+        error_at = float(error_at) if type(error_at) in (int, float) and math.isfinite(error_at) else time.time()
+        with self.lock:
+            self.laser_observation = {"deviceIp": snapshot.get("deviceIp", ""),
+                "state": ("on" if value else "off") if known else "unknown",
+                "readAt": read_at, "source": "device-readback" if known else "unavailable",
+                **({"error": str(error), "errorAt": error_at} if not known and error else {})}
+
+    def _unknown_laser(self, device_ip, error=None):
+        self._record_laser_snapshot({"deviceIp": device_ip, "fields": {}, "error": error,
+                                     **({"observedAt": time.time()} if error else {})})
+
+    def _device_receiver(self, config):
+        receiver = self.receiver_factory(config)
+        self._unknown_laser(config.device_ip)
+        receiver.laser_observer = self._record_laser_snapshot
+        return receiver
+
+    def _acquire_operation(self):
+        # User operations may wait briefly for a lightweight status read, never
+        # queue behind another user action or an active capture.
+        with self.lock:
+            if self.operation_lock.acquire(blocking=False):
+                return True
+            polling = self.laser_poll_busy
+        return bool(polling and self.operation_lock.acquire(timeout=0.6))
+
+    def _device_command(self, config, action, key=None, value=None, expected=None, *, laser_only=False):
+        try:
+            panel = DevicePanel(config)
+            result = (panel.run_command(action, laser_only=True) if laser_only else
+                      panel.run_command(action) if key is None and value is None and expected is None else
+                      panel.run_command(action, key, value, expected))
+            self._record_laser_snapshot(result)
+            return result
+        except (OSError, RuntimeError, ValueError) as exc:
+            self._unknown_laser(config.device_ip, str(exc))
+            raise
+
+    def read_laser(self, request: DeviceRequest):
+        # A header poll never queues behind a capture/configuration operation.
+        # The capture owner publishes readbacks through its bounded monitor handle.
+        with self.lock:
+            if not self.operation_lock.acquire(blocking=False):
+                return self._laser_status(request.deviceIp, busy=True)
+            if (self.device_busy or self.turntable_busy or self.status()["receiver"]["running"] or
+                    self.state in {"starting", "acquiring", "stopping"}):
+                self.operation_lock.release()
+                return self._laser_status(request.deviceIp, busy=True)
+            self.laser_poll_busy = True
+        try:
+            try:
+                self._device_command(ReceiverConfig(request.deviceIp, "", self.settings.dll_path), "laser_read")
+            except (OSError, RuntimeError, ValueError):
+                pass  # Unknown is a valid poll result; never substitute an OFF value.
+        finally:
+            with self.lock:
+                self.laser_poll_busy = False
+                self.operation_lock.release()
+        return self._laser_status(request.deviceIp)
 
     def motion_trial_operation(self, request: MotionTrialRequest):
         # This is not a hardware capability probe. The shipped adapter has no
@@ -323,7 +415,7 @@ class AcquisitionController:
                 if self.single_point_runner is None:
                     raise HTTPException(409, "请先准备单叶片单测点任务")
                 return self.single_point_runner.command(request)
-        if not self.operation_lock.acquire(blocking=False):
+        if not self._acquire_operation():
             raise HTTPException(409, "设备操作进行中，请等待完成")
         try:
             with self.lock:
@@ -349,7 +441,7 @@ class AcquisitionController:
                 if self.observation_laser_ip and self.observation_laser_ip != capture.deviceIp:
                     raise HTTPException(409, "请先关闭上一台设备的观察激光")
                 try:
-                    receiver = self.receiver_factory(ReceiverConfig(capture.deviceIp, capture.hostIp, self.settings.dll_path))
+                    receiver = self._device_receiver(ReceiverConfig(capture.deviceIp, capture.hostIp, self.settings.dll_path))
                     receiver.validate()
                 except (OSError, RuntimeError, ValueError) as exc:
                     raise HTTPException(503, str(exc)) from exc
@@ -390,7 +482,7 @@ class AcquisitionController:
                 self.test_stop.set()
         if testing and request.action == "stop":
             return self._stop_turntable_test()
-        if not self.operation_lock.acquire(blocking=False):
+        if not self._acquire_operation():
             raise HTTPException(409, "设备操作进行中，请等待完成")
         motor, handed_off, feedback = None, False, None
         group_recovery = False
@@ -487,14 +579,24 @@ class AcquisitionController:
                 if self.motion_guard.warning and identity and identity != (request.port, request.axis):
                     raise RuntimeError("请选择上次未确认停止的同一端口和轴进行恢复")
                 self._confirm_turntable_axis(request)
-            capability = probe_motion_capability(motor) if request.action == "probe" else None
+            health = None
+            if request.action == "health":
+                observations = {request.axis: feedback}
+                other = 2 if request.axis == 1 else 1
+                observations[other] = motor_snapshot(motor, other)
+                health = {"readAt": time.time(), "readOnly": True,
+                          "referenceChangedDuringRead": reference_key(observations[1]) != reference_key(observations[2]),
+                          "axes": {str(axis): {key: observations[axis].get(key) for key in
+                                   ("alarmCode", "runState", "limitFlags", "observedAt")}
+                                   for axis in (1, 2)}}
+            capability = probe_motion_capability(motor) if request.action in ("probe", "health") else None
             with self.lock:
                 self.turntable_snapshot = {"state": "prepared" if request.action == "prepare" else "stopped" if request.action == "stop" else "checked", "port": request.port,
                                            "axis": request.axis, "feedback": feedback,
                                            "connected": False, "error": None,
                                            **({"motionCapability": capability} if capability is not None else {}),
+                                           **({"health": health} if health is not None else {}),
                                            **({"stopConfirmed": True} if request.action == "stop" else {})}
-            return self.status()
         except HTTPException:
             raise
         except Exception as exc:
@@ -513,6 +615,10 @@ class AcquisitionController:
                     with self.lock:
                         self.turntable_busy = False
                     self.operation_lock.release()
+        # Synchronous reads/setup are complete only after the serial owner has
+        # closed and released its lock. Async handoffs return from above while
+        # their worker still owns the busy state and lock.
+        return self.status()
 
     def _pending_turntable_axes(self, port):
         try:
@@ -546,7 +652,8 @@ class AcquisitionController:
             motor._blade_motion_capability = probe_motion_capability(motor)
         return motor._blade_motion_capability
 
-    def _execute_dual_axis_move(self, motor, configs, feedback, cancel, update, on_command=None):
+    def _execute_dual_axis_move(self, motor, configs, feedback, cancel, update, on_command=None,
+                               *, acceleration=3.0):
         """Own the buffered group move until BOTH axes are verified stopped."""
         from dataclasses import asdict
 
@@ -562,7 +669,18 @@ class AcquisitionController:
             raise RuntimeError("控制器轨迹仍处于故障状态，请先停止并核查")
         start = tuple(feedback["axes"][str(axis)]["output_angle_deg"] for axis in (1, 2))
         targets = tuple(config.targetAngleDeg for config in configs)
-        points, evidence = station_move_plan(start, targets, configs[0].speedRpm)
+        points, evidence = station_move_plan(start, targets, configs[0].speedRpm, acceleration=acceleration)
+        evidence["referenceBefore"] = copy.deepcopy(references)
+        evidence["referenceChecks"] = []
+        def verify_reference(value, phase, context):
+            check = reference_check(references, value, phase)
+            evidence["referenceChecks"].append(check)
+            del evidence["referenceChecks"][:-20]
+            if check["changes"]:
+                # Keep the offending observation even when catch performs a
+                # newer stop-confirmation snapshot and the transient disappears.
+                evidence["referenceMismatch"] = {**check, "feedback": copy.deepcopy(value)}
+                raise RuntimeError(reference_change_message(context, check))
         if all(position_reached(feedback, config) for config in configs):
             evidence.update(plannedSeconds=0, actualSeconds=0, state="already_at_target")
             update("holding", motionMode="dual_axis_timed", lastMove=evidence, feedback=feedback)
@@ -588,8 +706,9 @@ class AcquisitionController:
             # Reject that change before START, not only after physical arrival.
             for config in configs:
                 checked = motor_snapshot(motor, config.axis)
+                verify_reference(checked, "before_start", "轨迹准备期间参考位或反馈计数单位已变化，未启动双轴运动")
                 require_position_ready(checked, config)
-                if reference_key(checked) != references or any(
+                if any(
                         abs(checked["axes"][str(axis)]["output_angle_deg"] - start[axis - 1]) > .1
                         for axis in (1, 2)):
                     raise RuntimeError("轨迹准备期间参考位或起点已变化，未启动双轴运动")
@@ -598,9 +717,33 @@ class AcquisitionController:
             started_at = time.monotonic()
             motor.start_trajectory(prepared.session, cancel=cancel)
 
+            last_feedback_at = -math.inf
             def observed(status):
+                nonlocal last_feedback_at, feedback
                 evidence["status"] = asdict(status)
-                update("positioning", motionMode="dual_axis_timed", lastMove=copy.deepcopy(evidence))
+                extra = {}
+                if status.state in (3, 4) and not status.fault and time.monotonic() - last_feedback_at >= 1:
+                    query_started_at = time.time()
+                    supported = getattr(motor, "_blade_axis_positions_supported", None)
+                    positions = (motor.probe_axis_positions() if supported is None else
+                                 motor.get_axis_positions() if supported else None)
+                    received_at = time.time()
+                    if supported is None:
+                        motor._blade_axis_positions_supported = positions is not None
+                    if positions is None:
+                        # Only an explicit unsupported command may enter this
+                        # path. Do not replace missing positions with 0x34 targets
+                        # or resume the expensive 0x20/guard polling while moving.
+                        evidence["positionFeedback"] = {"supported": False,
+                            "source": "legacy-command-unsupported", "readAt": received_at}
+                    else:
+                        evidence["positionObservation"] = {"source": "0x37", "readAt": received_at,
+                            "axes": [asdict(position) for position in positions]}
+                        feedback = self._trajectory_position_feedback(feedback, positions, configs,
+                                                                      query_started_at, received_at)
+                        extra["feedback"] = feedback
+                    last_feedback_at = time.monotonic()
+                update("positioning", motionMode="dual_axis_timed", lastMove=copy.deepcopy(evidence), **extra)
 
             finished = motor.wait_trajectory(prepared.session,
                                              timeout=evidence["plannedSeconds"] + 15,
@@ -609,8 +752,9 @@ class AcquisitionController:
                             actualSeconds=time.monotonic() - started_at)
             for config in configs:
                 feedback = motor_snapshot(motor, config.axis)
+                verify_reference(feedback, "arrival", "双轴换点最终参考位或反馈计数单位已变化")
                 require_position_ready(feedback, config)
-                if reference_key(feedback) != references or not position_reached(feedback, config):
+                if not position_reached(feedback, config):
                     raise RuntimeError("双轴换点最终角度或参考位核查失败")
             self.motion_guard.mark(configs[0], False)
             touched = False
@@ -627,6 +771,10 @@ class AcquisitionController:
                     for config in configs:
                         feedback = motor_snapshot(motor, config.axis)
                         require_stop_confirmed(feedback, config)
+                    stop_check = reference_check(references, feedback, "after_stop")
+                    evidence["referenceChecks"].append(stop_check)
+                    if stop_check["changes"] and "referenceMismatch" not in evidence:
+                        evidence["referenceMismatch"] = stop_check
                     self.motion_guard.mark(configs[0], False)
                 except Exception as stop_error:
                     evidence["stopError"] = str(stop_error)
@@ -637,6 +785,41 @@ class AcquisitionController:
             if cancel.is_set() and not self.motion_guard.warning:
                 return False, [], feedback
             raise
+
+    @staticmethod
+    def _trajectory_position_feedback(previous, positions, configs, query_started_at, received_at):
+        """Only 0x37 position fields are fresh; references/guards stay preflight observations."""
+        if len(positions) != 2:
+            raise RuntimeError("两轴位置反馈数量无效，已停止轨迹")
+        transport_ms = (received_at - query_started_at) * 1000
+        if transport_ms < 0 or not math.isfinite(transport_ms):
+            raise RuntimeError("两轴位置反馈观察时间无效，已停止轨迹")
+        result = copy.deepcopy(previous)
+        for axis, position in enumerate(positions, 1):
+            conservative_age_ms = position.sample_age_ms + transport_ms
+            if (not position.usable or position.source not in (0, 1) or
+                    not math.isfinite(position.angle_deg) or not position.flags & 1 or
+                    position.sample_age_ms < 0 or conservative_age_ms > 1000 or
+                    position.alarm_code or position.guard_fault or position.flags & 16):
+                raise RuntimeError(f"轴{axis} 0x37位置反馈过期、参考无效、读取失败或存在报警，已停止轨迹")
+            old = previous["axes"][str(axis)]
+            if bool(position.flags & 2) != bool(old["guard"]["soft_enabled"]):
+                raise RuntimeError(f"轴{axis}运动期间软限位启用状态已变化，已停止轨迹")
+            result["axes"][str(axis)].update(actual_counts=position.actual_counts,
+                output_angle_deg=position.angle_deg, motor_rpm=position.motor_rpm,
+                flags=position.flags, fault=position.guard_fault,
+                observedAt=received_at - conservative_age_ms / 1000,
+                positionSampleAgeMs=position.sample_age_ms, positionSource=position.source,
+                positionConservativeAgeMs=conservative_age_ms,
+                referenceObservedAt=old.get("referenceObservedAt", old["observedAt"]),
+                guardObservedAt=old.get("guardObservedAt", old["observedAt"]))
+        selected = result["axes"][str(result["axis"])]
+        result.update(motorRpm=selected["motor_rpm"], outputRpm=selected["motor_rpm"] / 50,
+                      outputAngleDeg=selected["output_angle_deg"], positionRaw=selected["actual_counts"],
+                      queryStartedAt=query_started_at, observedAt=received_at, positionSource="0x37")
+        for config in configs:
+            check_position_motion(result, config, allow_other_axis_motion=True)
+        return result
 
     def _confirm_turntable_axis(self, request):
         remaining = [axis for axis in self._pending_turntable_axes(request.port) if axis != request.axis]
@@ -808,7 +991,8 @@ class AcquisitionController:
             update("positioning", motionCapability=capability, motionMode=capability["mode"])
             if capability["supported"]:
                 passed, completed, feedback = self._execute_dual_axis_move(
-                    motor, configs, feedback, self.test_stop, update)
+                    motor, configs, feedback, self.test_stop, update,
+                    acceleration=request.maxMoveAccelerationDegS2)
                 return
             for config in configs:
                 if self.test_stop.is_set():
@@ -941,11 +1125,13 @@ class AcquisitionController:
         return {**status, "realtime": result}
 
     def configure_device(self, request: DeviceRequest):
+        if request.action == "laser_read":
+            return self.read_laser(request)
         if request.action == "set" and (not request.confirmChange or request.key not in WRITABLE):
             raise HTTPException(422, "请明确确认修改支持的配置项。")
         if request.action in {"autofocus", "laser_on", "laser_off"} and not request.confirmLaser:
             raise HTTPException(422, "激光操作需要明确确认现场光路安全。")
-        if not self.operation_lock.acquire(blocking=False):
+        if not self._acquire_operation():
             raise HTTPException(409, "设备操作进行中，请等待完成。")
         try:
             with self.lock:
@@ -956,8 +1142,8 @@ class AcquisitionController:
                 self.device_busy = True
                 # A failed/uncertain write must not leave old values marked as verified.
                 self.device_snapshot = None
-            panel = DevicePanel(ReceiverConfig(request.deviceIp, "", self.settings.dll_path))
-            result = panel.run_command(request.action, request.key, request.value, request.expected)
+            result = self._device_command(ReceiverConfig(request.deviceIp, "", self.settings.dll_path),
+                                          request.action, request.key, request.value, request.expected)
             with self.lock:
                 self.device_snapshot = result
                 laser = result.get("fields", {}).get("laser", {})
@@ -1001,7 +1187,7 @@ class AcquisitionController:
             error: Exception | None = None
             thread_error: list[Exception] = []
             ready_event = threading.Event()
-            receiver = self.receiver_factory(ReceiverConfig(request.deviceIp, request.hostIp, self.settings.dll_path))
+            receiver = self._device_receiver(ReceiverConfig(request.deviceIp, request.hostIp, self.settings.dll_path))
             try:
                 receiver.validate()
 
@@ -1052,7 +1238,7 @@ class AcquisitionController:
                 try:
                     if self.device_busy:
                         raise RuntimeError("采集线程仍占用设备，激光状态未确认，请现场关闭激光。")
-                    DevicePanel(ReceiverConfig(request.deviceIp, request.hostIp, self.settings.dll_path)).run_command("laser_off")
+                    self._device_command(ReceiverConfig(request.deviceIp, request.hostIp, self.settings.dll_path), "laser_off")
                     self.observation_laser_ip = None
                 except Exception as cleanup_error:
                     error = RuntimeError(f"{error}；并且关闭激光失败：{cleanup_error}")
@@ -1088,6 +1274,8 @@ class AcquisitionController:
         with self.lock:
             if self.turntable_busy:
                 raise HTTPException(409, "转盘检查/试转仍在进行，请先确认停稳并完成设置")
+            if request.turntable and request.turntable.protocol != "position":
+                raise HTTPException(409, "联合采集只支持定位停稳后记录；请在转盘点位配置定位路线，不支持连续转动期间采集")
         with self.operation_lock:
             with self.lock:
                 if self.device_warning and request.source == "polytec_ivs500":
@@ -1106,7 +1294,7 @@ class AcquisitionController:
                     return self._start_point_cycle_locked(request)
                 try:
                     receiver = (SimulationReceiver(request.simulation) if request.source == "simulation" else
-                                self.receiver_factory(ReceiverConfig(request.deviceIp, request.hostIp, self.settings.dll_path)))
+                                self._device_receiver(ReceiverConfig(request.deviceIp, request.hostIp, self.settings.dll_path)))
                     receiver.validate()
                 except (OSError, RuntimeError, ValueError) as exc:
                     self.state, self.error = "error", str(exc)
@@ -1132,7 +1320,7 @@ class AcquisitionController:
                 self.state, self.error = "starting", None
                 self.turntable_preparation = None
                 self.turntable_snapshot = {"state": "checking" if request.turntable else "disconnected", "feedback": None}
-                self.thread = threading.Thread(target=self._run, args=(receiver, request.turntable), name=f"blade-{request.source}", daemon=True)
+                self.thread = threading.Thread(target=self._run, args=(receiver, request.turntable, request), name=f"blade-{request.source}", daemon=True)
                 self.thread.start()
                 return self.status()
 
@@ -1144,7 +1332,7 @@ class AcquisitionController:
         if self.device_warning:
             raise HTTPException(409, self.device_warning)
         try:
-            receiver = self.receiver_factory(ReceiverConfig(request.deviceIp, request.hostIp, self.settings.dll_path))
+            receiver = self._device_receiver(ReceiverConfig(request.deviceIp, request.hostIp, self.settings.dll_path))
             receiver.validate()
         except (OSError, RuntimeError, ValueError) as exc:
             self.state, self.error = "error", str(exc)
@@ -1158,6 +1346,10 @@ class AcquisitionController:
         self.point_cycle = {"state": "checking", "port": cycle.port, "cycles": cycle.cycles,
                             **({"collectionId": cycle.collectionId} if cycle.collectionId else {}),
                             "sessionId": uuid.uuid4().hex, "mode": cycle.mode,
+                            "laserPolicy": "continuous_during_session",
+                            "returnToOrigin": cycle.returnToOrigin.model_dump() if cycle.returnToOrigin else None,
+                            "geometry": cycle.geometry.model_dump() if cycle.geometry else None,
+                            **({"firstStationMode": "hold_current_pose"} if cycle.startAtCurrentPose else {}),
                             "sessionState": "running",
                             "plannedStations": self._cycle_station_plan(cycle),
                             "identitySource": "operator_assigned", "identityVerified": False,
@@ -1224,13 +1416,13 @@ class AcquisitionController:
                     cycle["latestRssi"] = valid_rssi[-1]
                     cycle["rssiSamples"] = int(cycle.get("rssiSamples", 0)) + len(valid_rssi)
 
-    def _run_joint(self, receiver, config):
-        """Own the motor on this coordinator thread; DAQ never waits on serial I/O."""
+    def _run_joint(self, receiver, config, request):
+        """Legacy finite positioning: laser ON -> stopped arrival -> DAQ."""
         ready, capture_done, capture_stop = threading.Event(), threading.Event(), threading.Event()
-        capture_errors = []
+        capture_errors, failures = [], []
         motor, telemetry, capture = None, None, None
         attempted = False
-        failures = []
+        arrived = False
 
         def event(kind, **data):
             with self.lock:
@@ -1239,9 +1431,7 @@ class AcquisitionController:
 
         def update(state, feedback=None, **extra):
             with self.lock:
-                previous = self.turntable_snapshot
-                self.turntable_snapshot = {**previous, "state": state, "port": config.port,
-                                           "axis": config.axis, **extra}
+                self.turntable_snapshot.update(state=state, port=config.port, axis=config.axis, **extra)
                 if feedback is not None:
                     self.turntable_snapshot["feedback"] = feedback
                 self.writer.manifest["turntable"].update(self.turntable_snapshot)
@@ -1251,13 +1441,17 @@ class AcquisitionController:
                 def on_ready(rate, origin):
                     self._ready(rate, origin, receiver)
                     ready.set()
-                receiver.run(capture_stop, on_ready, self._receive)
+                run_kwargs = ({"keep_laser_on": True, "abort": self.stop_event}
+                              if getattr(receiver, "supports_laser_persistence", False) else {})
+                receiver.run(capture_stop, on_ready, self._receive, **run_kwargs)
             except Exception as exc:
                 capture_errors.append(str(exc))
             finally:
                 capture_done.set()
 
         try:
+            if config.protocol != "position":
+                raise RuntimeError("联合采集只支持定位停稳后记录；请在转盘点位配置定位路线")
             telemetry = TelemetryWriter(self.writer.directory)
             event("configured", config=config.model_dump())
             motor = self.motor_factory(config.port, timeout=2.0, gear_ratio=50.0)
@@ -1265,106 +1459,105 @@ class AcquisitionController:
             feedback = motor_snapshot(motor, config.axis)
             update("checked", feedback, connected=True)
             event("preflight", feedback=feedback)
-            if config.protocol == "position":
-                require_position_ready(feedback, config)
-                if reference_key(feedback) != self.writer.manifest["turntable"]["preparedReferences"]:
-                    raise RuntimeError("参考位或反馈计数单位已变化，请重新确认定位设置")
-            else:
-                require_ready(feedback)
+            require_position_ready(feedback, config)
+            references = self.writer.manifest["turntable"]["preparedReferences"]
+            if reference_key(feedback) != references:
+                raise RuntimeError("参考位或反馈计数单位已变化，请重新确认定位设置")
+            if self.stop_event.is_set():
+                return
+            laser_on = self._confirm_motion_laser_on(request)
+            event("laser_on_confirmed", **laser_on)
+            feedback = motor_snapshot(motor, config.axis)
+            require_position_ready(feedback, config)
+            if reference_key(feedback) != references:
+                raise RuntimeError("运动前参考位或计数单位变化，请重新确认定位设置")
+            event("before_motion", feedback=feedback)
+            progress = PositionProgress(feedback, config)
+            if not position_reached(feedback, config):
+                self.motion_guard.mark(config, True)
+                attempted = True
+                update("starting")
+                effective = start_motor(motor, config, self.stop_event, prechecked_position=True)
+                if effective is None:
+                    return
+                update("positioning", effectiveRpm=effective, commandAcceptedAt=time.time())
+                event("accepted", effectiveRpm=effective)
+            settled = 0
+            while not self.stop_event.is_set():
+                feedback = motor_snapshot(motor, config.axis)
+                progress.check(feedback, config)
+                settled = settled + 1 if position_reached(feedback, config) else 0
+                update("positioning", feedback)
+                event("status", feedback=feedback)
+                if settled >= 2:
+                    break
+                self.stop_event.wait(.05)
+            if self.stop_event.is_set():
+                return
+            require_ready(feedback)
+            arrived = True
+            self.motion_guard.mark(config, False)
+            update("holding", feedback, stopConfirmed=True)
+            event("position_reached", feedback=feedback, targetAngleDeg=config.targetAngleDeg)
             if self.stop_event.is_set():
                 return
             capture = threading.Thread(target=receive_loop, name="blade-joint-receiver", daemon=True)
             self.capture_thread, self.capture_stop = capture, capture_stop
             capture.start()
             deadline = time.monotonic() + DAQ_READY_SECONDS
-            while not ready.wait(0.05):
+            while not ready.wait(.05):
                 if self.stop_event.is_set():
                     return
                 if capture_done.is_set():
                     raise RuntimeError("; ".join(capture_errors) or "采集未就绪即退出")
                 if time.monotonic() > deadline:
-                    raise RuntimeError("采集未在 30 秒内就绪，未启动转盘")
-            if self.stop_event.is_set():
-                return
-            if capture_done.is_set():
-                raise RuntimeError("; ".join(capture_errors) or "采集已退出，未启动转盘")
-            if config.protocol == "position":
-                feedback = motor_snapshot(motor, config.axis)
-                require_position_ready(feedback, config)
-                if reference_key(feedback) != self.writer.manifest["turntable"]["preparedReferences"]:
-                    raise RuntimeError("采集就绪期间参考位或计数单位变化，请重新确认定位设置")
-                event("before_motion", feedback=feedback)
-            # Persist before any motion. A crash/timeout cannot erase uncertainty.
-            self.motion_guard.mark(config, True)
-            attempted = True
-            update("starting")
-            effective = start_motor(motor, config, self.stop_event)
-            if effective is None:
-                return
-            if config.protocol == "position":
-                progress = PositionProgress(feedback, config)
+                    raise RuntimeError("测振仪未在 30 秒内就绪")
             started = time.monotonic()
-            update("awaiting_feedback", effectiveRpm=effective, commandAcceptedAt=time.time())
-            event("accepted", effectiveRpm=effective)
-            seen_running, deviations = False, 0
-            settled, reached = 0, False
             while not self.stop_event.is_set():
                 if capture_done.is_set():
                     raise RuntimeError("; ".join(capture_errors) or "采集意外退出")
-                renew_motor(motor, config)
                 feedback = motor_snapshot(motor, config.axis)
-                if feedback["alarmCode"] or feedback["limitFlags"] not in (None, 0):
-                    event("status", feedback=feedback)
-                    update("error", feedback)
-                    raise RuntimeError("转盘报警或限位触发/旁路")
-                if config.protocol == "position":
-                    progress.check(feedback, config)
-                    settled = settled + 1 if position_reached(feedback, config) else 0
-                    if settled >= 2 and not reached:
-                        reached = True
-                        event("position_reached", feedback=feedback, targetAngleDeg=config.targetAngleDeg)
-                    update("holding" if reached else "positioning", feedback)
-                    event("status", feedback=feedback)
-                    age = time.monotonic() - started
-                    if reached and not position_reached(feedback, config):
-                        raise RuntimeError("到位后角度偏移或再次运动，联合任务已停止")
-                    if config.durationSeconds and age >= config.durationSeconds:
-                        if not reached:
-                            raise RuntimeError("采集时长已到但定位未完成")
-                        event("duration_elapsed")
-                        break
-                    self.stop_event.wait(0.2)
-                    continue
-                matched = abs(feedback["outputRpm"] - effective) <= max(0.01, abs(effective) * 0.1)
-                seen_running = seen_running or matched
-                update("running" if matched else "awaiting_feedback", feedback)
+                require_position_ready(feedback, config)
+                if reference_key(feedback) != references or not position_reached(feedback, config):
+                    raise RuntimeError("到位后角度偏移、参考位变化或再次运动，联合任务已停止")
+                update("holding", feedback)
                 event("status", feedback=feedback)
-                age = time.monotonic() - started
-                if age > MOTOR_STARTUP_SECONDS and not seen_running:
-                    raise RuntimeError("转盘启动 10 秒后仍未达到设定速度，请检查 SON 和驱动器")
-                if seen_running:
-                    deviations = 0 if matched else deviations + 1
-                    if deviations >= 3:
-                        raise RuntimeError("转盘连续三次反馈偏离运行速度，联合任务已停止")
-                if config.durationSeconds and age >= config.durationSeconds:
-                    if not seen_running:
-                        raise RuntimeError("自动停止时间已到，但转盘尚未达到目标转速；请先独立试转并检查 SON 和驱动器")
+                if config.durationSeconds and time.monotonic() - started >= config.durationSeconds:
                     event("duration_elapsed")
                     break
-                self.stop_event.wait(0.5)
+                self.stop_event.wait(.2)
         except Exception as exc:
             failures.append(str(exc))
         finally:
-            if attempted:
-                update("stopping")
-                with self.lock:
-                    self.state = "stopping"
+            # A failed positioning move must be stopped immediately; do not
+            # postpone an emergency stop behind SDK or receiver cleanup.
+            if attempted and not arrived:
                 try:
-                    # The receiver stays alive through normal motor deceleration.
                     motor.stop(config.axis)
                     feedback = motor_snapshot(motor, config.axis)
-                    if feedback["motorRpm"] != 0:
-                        raise RuntimeError("停止后读回仍非零速")
+                    require_stop_confirmed(feedback, config)
+                    self.motion_guard.mark(config, False)
+                    update("stopped", feedback, stopConfirmed=True)
+                    event("stopped", feedback=feedback)
+                    attempted = False
+                except Exception as exc:
+                    failures.append(f"转盘停止未确认：{exc}")
+                    self.motion_guard.warning = failures[-1] + "；请现场核查"
+            capture_stop.set()
+            if capture:
+                capture.join(20)
+                if capture.is_alive():
+                    failures.append("采集线程未退出，不能确认激光已关闭或数据完成")
+            failures.extend(capture_errors)
+            try:
+                self._confirm_motion_laser_off(request)
+            except Exception as exc:
+                failures.append(f"采集结束关闭激光失败：{exc}")
+            if attempted:
+                try:
+                    motor.stop(config.axis)
+                    feedback = motor_snapshot(motor, config.axis)
+                    require_stop_confirmed(feedback, config)
                     self.motion_guard.mark(config, False)
                     update("stopped", feedback, stoppedAt=time.time(), stopConfirmed=True)
                     event("stopped", feedback=feedback)
@@ -1372,12 +1565,6 @@ class AcquisitionController:
                     failures.append(f"转盘停止未确认：{exc}")
                     self.motion_guard.warning = failures[-1] + "；请现场核查后读取并确认恢复"
                     update("unknown", stopConfirmed=False, error=failures[-1])
-            capture_stop.set()
-            if capture:
-                capture.join(20)
-                if capture.is_alive():
-                    failures.append("采集线程未退出，不能确认激光已关闭或数据完成")
-            failures.extend(capture_errors)
             if motor:
                 try:
                     motor.close(stop=False)
@@ -1386,9 +1573,6 @@ class AcquisitionController:
             if telemetry:
                 try:
                     event("finished", errors=failures)
-                except Exception as exc:
-                    failures.append(f"转盘遥测收尾失败：{exc}")
-                try:
                     details = telemetry.finish()
                     with self.lock:
                         self.writer.manifest["turntable"]["telemetry"] = details
@@ -1442,10 +1626,72 @@ class AcquisitionController:
             indices[group] = indices.get(group, 0) + 1
             plan.append({"pointId": point.pointId or f"station-{ordinal}",
                          "name": point.name, "bladeId": point.bladeId,
+                         "axis1AngleDeg": point.axis1AngleDeg, "axis2AngleDeg": point.axis2AngleDeg,
                          "radialPointId": point.radialPointId, "radialPointName": point.radialPointName,
                          "radiusM": point.radiusM, "azimuthDeg": point.azimuthDeg,
+                         **({"rootRadiusM": point.rootRadiusM} if point.rootRadiusM is not None else {}),
+                         **({"bladeLengthM": point.bladeLengthM} if point.bladeLengthM is not None else {}),
+                         **({"distanceFromRootM": point.radiusM - point.rootRadiusM}
+                            if point.radiusM is not None and point.rootRadiusM is not None else {}),
                          "stationIndex": indices[group], "stationCount": groups[group]})
         return plan
+
+    def _confirm_session_laser(self, request, enabled):
+        action, label = ("laser_on", "开启") if enabled else ("laser_off", "关闭")
+        target = int(enabled)
+        if self.capture_thread and self.capture_thread.is_alive():
+            self._unknown_laser(request.deviceIp, "采集接收线程尚未关闭，禁止并发操作激光")
+            with self.lock:
+                self.stop_event.set()
+                self.observation_laser_ip = request.deviceIp
+                self.device_warning_ip = request.deviceIp
+                self.device_warning = "采集接收线程尚未关闭，激光状态未知；请现场核查。"
+            suffix = "未启动转盘" if enabled else "关闭状态未知，请现场核查"
+            raise RuntimeError(f"采集接收线程尚未关闭，不能确认激光状态；{suffix}")
+        self._cycle_process(action)
+        try:
+            result = self._device_command(ReceiverConfig(request.deviceIp, request.hostIp, self.settings.dll_path),
+                                          action, laser_only=True)
+            laser = result.get("fields", {}).get("laser", {})
+            if laser.get("supported") is not True or type(laser.get("value")) is not int or laser["value"] != target:
+                raise RuntimeError(f"激光{label}未获得真实读回")
+        except (OSError, RuntimeError, ValueError) as exc:
+            self._unknown_laser(request.deviceIp, str(exc))
+            with self.lock:
+                self.observation_laser_ip = request.deviceIp
+                self.device_warning_ip = request.deviceIp
+                self.device_warning = f"设备 {request.deviceIp} 激光{label}未确认，请现场核查后重新读取。"
+            suffix = "未启动转盘" if enabled else "请现场核查"
+            raise RuntimeError(f"激光{label}未确认，{suffix}：{exc}") from exc
+        with self.lock:
+            self.observation_laser_ip = request.deviceIp if enabled else None
+            if not enabled and self.device_warning_ip == request.deviceIp:
+                self.device_warning = self.device_warning_ip = None
+        evidence = {"deviceIp": request.deviceIp, "state": "on" if enabled else "off", "readAt": result.get("readAt"),
+                    "confirmedAt": time.time(), "source": "device-readback"}
+        self._cycle_process(f"{action}_confirmed", **evidence)
+        return evidence
+
+    def _confirm_motion_laser_off(self, request):
+        return self._confirm_session_laser(request, False)
+
+    def _confirm_motion_laser_on(self, request):
+        return self._confirm_session_laser(request, True)
+
+    def _cycle_position_laser_on(self, request, motor, cycle, point, **kwargs):
+        if self.stop_event.is_set():
+            raise RuntimeError("循环采集已停止")
+        self._cycle_update("positioning", targetPointId=point.pointId, currentPoint=point.name,
+                           targetAxis1AngleDeg=point.axis1AngleDeg, targetAxis2AngleDeg=point.axis2AngleDeg)
+        laser_on = self._confirm_motion_laser_on(request)
+        if self.stop_event.is_set():
+            raise RuntimeError("循环采集已停止")
+        result = self._cycle_move_point(motor, cycle, point, **kwargs)
+        with self.lock:
+            evidence = copy.deepcopy(self.point_cycle.get("lastMove") or {})
+            evidence["laserOnBeforeMotion"] = laser_on
+            self._cycle_update(self.point_cycle.get("state", "holding"), lastMove=evidence)
+        return result
 
     @staticmethod
     def _point_travel_cost(current_angles: tuple[float, float], point: PointCyclePoint) -> float:
@@ -1530,7 +1776,72 @@ class AcquisitionController:
             remaining = [(item_index, item) for item_index, item in remaining if item_index != index]
         return planned
 
-    def _cycle_move_point(self, motor, cycle: PointCycleConfig, point: PointCyclePoint, on_command=None):
+    def _cycle_verify_initial_pose(self, motor, cycle: PointCycleConfig, point: PointCyclePoint, phase: str):
+        """Fresh read-only acceptance of a calibrated first station, never a move.
+
+        The requested point remains authoritative. A new read cannot redefine
+        P1 or repair a changed aim by issuing another positioning command.
+        """
+        if self.stop_event.is_set():
+            raise RuntimeError("循环采集已停止")
+        feedback = motor_snapshot(motor, 1)
+        require_ready(feedback)
+        references = reference_key(feedback)
+        actual = [[references[str(axis)][key] for key in
+                   ("origin_counts", "display_mode", "command_counts_per_rev", "encoder_bits")]
+                  for axis in (1, 2)]
+        if actual != self._cycle_point_reference(point):
+            raise RuntimeError("首个点位参考位或反馈计数单位已变化，请重新手动瞄准并校准")
+        configs = [TurntableConfig(port=cycle.port, axis=axis, protocol="position",
+                                   targetAngleDeg=angle, speedRpm=cycle.speedRpm)
+                   for axis, angle in ((1, point.axis1AngleDeg), (2, point.axis2AngleDeg))]
+        for config in configs:
+            require_position_ready(feedback, config)
+        capability = self._motion_capability(motor)
+        if capability["supported"]:
+            status = motor.get_trajectory_status()
+            if status.state not in (0, 6, 8) or status.fault not in (0, 1):
+                raise RuntimeError("控制器轨迹仍待执行、运行或存在故障，不能在首个点位原地开始采集")
+        if not all(position_reached(feedback, config) for config in configs):
+            raise RuntimeError("首个点位瞄准位置已变化，请重新手动瞄准并校准")
+        observed = {str(axis): feedback["axes"][str(axis)]["output_angle_deg"] for axis in (1, 2)}
+        previous = (self.point_cycle or {}).get("lastMove") or {}
+        checks = list(previous.get("poseChecks", [])) if previous.get("motionCommanded") is False else []
+        checks.append({"phase": phase, "observedAt": feedback["observedAt"],
+                       "actualAngles": observed, "referenceSignature": point.referenceSignature})
+        evidence = {"mode": capability["mode"], "state": "initial_pose_verified",
+                    "plannedSeconds": 0, "actualSeconds": 0, "speedLimitRpm": 0,
+                    "targets": [point.axis1AngleDeg, point.axis2AngleDeg],
+                    "timingBasis": "read_only_initial_pose_check", "motionCommanded": False,
+                    "measurementDuringMotion": False, "poseChecks": checks}
+        self._cycle_update("holding", currentPoint=point.name, feedback=feedback, lastMove=evidence,
+                           firstStationMode="hold_current_pose")
+        return feedback
+
+    def _cycle_capture_pose(self, motor, cycle, point, *, check_trajectory=True):
+        feedback = motor_snapshot(motor, 1)
+        require_ready(feedback)
+        references = reference_key(feedback)
+        actual = [[references[str(axis)][key] for key in
+                   ("origin_counts", "display_mode", "command_counts_per_rev", "encoder_bits")]
+                  for axis in (1, 2)]
+        if actual != self._cycle_point_reference(point):
+            raise RuntimeError("采集点位参考位或反馈计数单位已变化，请重新手动瞄准并校准")
+        for axis, angle in ((1, point.axis1AngleDeg), (2, point.axis2AngleDeg)):
+            config = TurntableConfig(port=cycle.port, axis=axis, protocol="position",
+                                     targetAngleDeg=angle, speedRpm=cycle.speedRpm)
+            require_position_ready(feedback, config)
+            if not position_reached(feedback, config):
+                raise RuntimeError("采集点位角度已变化或尚未到位，未开启下一个点位采集")
+        if check_trajectory and self._motion_capability(motor)["supported"]:
+            status = motor.get_trajectory_status()
+            if status.state not in (0, 6, 8) or status.fault not in (0, 1):
+                raise RuntimeError("转盘轨迹未停稳或存在故障，未开启下一个点位采集")
+        self._cycle_update("holding", feedback=feedback, currentPoint=point.name)
+        return feedback
+
+    def _cycle_move_point(self, motor, cycle: PointCycleConfig, point: PointCyclePoint, on_command=None,
+                          source_point: PointCyclePoint | None = None):
         """Use the verified firmware path and confirm stopped arrival before capture."""
         configs = [TurntableConfig(port=cycle.port, axis=axis, protocol="position",
                                    targetAngleDeg=angle, speedRpm=cycle.speedRpm)
@@ -1551,17 +1862,27 @@ class AcquisitionController:
             for config in configs:
                 require_position_ready(feedback, config)
             capability = self._motion_capability(motor)
-            self._cycle_update("positioning", motionCapability=capability, motionMode=capability["mode"])
+            start_angles = tuple(feedback["axes"][str(axis)]["output_angle_deg"] for axis in (1, 2))
+            speed, timing = station_timing_plan(cycle, start_angles, point, capability["mode"], source_point)
+            configs = [config.model_copy(update={"speedRpm": speed}) for config in configs]
+            self._cycle_update("positioning", motionCapability=capability, motionMode=capability["mode"], feedback=feedback,
+                               targetPointId=point.pointId, targetAxis1AngleDeg=point.axis1AngleDeg,
+                               targetAxis2AngleDeg=point.axis2AngleDeg)
             if capability["supported"]:
                 def dual_update(state, **extra):
+                    if timing is not None and "lastMove" in extra:
+                        extra["lastMove"] = {**extra["lastMove"], "stationTiming": timing}
                     self._cycle_update(state, currentPoint=point.name, **extra)
                 return self._execute_dual_axis_move(motor, configs, feedback, self.stop_event,
-                                                   dual_update, on_command)
+                                                   dual_update, on_command,
+                                                   acceleration=cycle.maxMoveAccelerationDegS2)
             planned = sum(abs(config.targetAngleDeg - feedback["axes"][str(config.axis)]["output_angle_deg"])
-                          for config in configs) / (6 * cycle.speedRpm)
-            evidence = {"mode": "sequential", "plannedSeconds": planned, "speedLimitRpm": cycle.speedRpm,
+                          for config in configs) / (6 * speed)
+            evidence = {"mode": "sequential", "plannedSeconds": planned, "speedLimitRpm": speed,
                         "targets": [config.targetAngleDeg for config in configs],
                         "timingBasis": "distance_speed_estimate", "measurementDuringMotion": False}
+            if timing is not None:
+                evidence["stationTiming"] = timing
             started_at = time.monotonic()
             self._cycle_update("positioning", lastMove=evidence)
             for config in configs:
@@ -1572,7 +1893,7 @@ class AcquisitionController:
                 require_position_ready(feedback, config)
                 if reference_key(feedback) != references:
                     raise RuntimeError("两轴参考位或反馈计数单位已变化，已取消循环")
-                self._cycle_update("positioning", axis=config.axis,
+                self._cycle_update("positioning", axis=config.axis, feedback=feedback,
                                    targetAngleDeg=config.targetAngleDeg, currentPoint=point.name)
                 if position_reached(feedback, config):
                     completed.append(config.axis)
@@ -1588,7 +1909,7 @@ class AcquisitionController:
                 while not self.stop_event.is_set():
                     feedback = motor_snapshot(motor, config.axis)
                     progress.check(feedback, config)
-                    self._cycle_update("positioning", axis=config.axis,
+                    self._cycle_update("positioning", axis=config.axis, feedback=feedback,
                                        positionAngleDeg=feedback["outputAngleDeg"], currentPoint=point.name)
                     if position_reached(feedback, config):
                         require_ready(feedback)
@@ -1627,7 +1948,7 @@ class AcquisitionController:
                              point: PointCyclePoint, cycle_index: int, point_index: int,
                              receiver, actual_angles: dict[str, float | None] | None = None,
                              next_point: PointCyclePoint | None = None, on_handoff=None,
-                             keep_laser_on: bool = False):
+                             keep_laser_on: bool = True, before_capture=None, feedback_poll=None):
         metadata = request.model_dump(exclude={"confirmLaser", "confirmMotion", "simulation", "turntable", "pointCycle"})
         metadata["point"] = point.name
         metadata["pointCycle"] = {"cycle": cycle_index, "pointIndex": point_index,
@@ -1646,6 +1967,8 @@ class AcquisitionController:
             **{key: station[key] for key in ("bladeId", "radialPointId", "radialPointName", "radiusM",
                                              "azimuthDeg", "stationIndex", "stationCount")},
             sessionId=self.point_cycle["sessionId"], mode=cycle.mode, lapIndex=cycle_index,
+            laserPolicy="continuous_during_session",
+            **({"firstStationMode": "hold_current_pose"} if cycle.startAtCurrentPose else {}),
             stationId=station["pointId"], plannedStations=plan,
             nominalPeriodSeconds=cycle.nominalPeriodSeconds,
             motionMode=self.point_cycle.get("motionMode", "sequential"),
@@ -1653,6 +1976,8 @@ class AcquisitionController:
             identitySource="operator_assigned", identityVerified=False,
             coverageKind="sparse_station_passes",
             outcome="incomplete")
+        metadata["pointCycle"].update({key: station[key] for key in
+            ("rootRadiusM", "bladeLengthM", "distanceFromRootM") if key in station})
         metadata["turntable"] = {"config": cycle.model_dump(exclude={"points"}),
                                   "state": "holding", "point": point.name,
                                   "motionMode": self.point_cycle.get("motionMode", "sequential"),
@@ -1661,13 +1986,22 @@ class AcquisitionController:
                                   **({"pointId": point.pointId} if point.pointId is not None else {}),
                                   **({"actualAngles": actual_angles} if actual_angles is not None else {})}
         writer = self.store.create(metadata)
-        travel = ((abs(next_point.axis1AngleDeg - point.axis1AngleDeg) +
-                   abs(next_point.axis2AngleDeg - point.axis2AngleDeg)) / (6 * cycle.speedRpm)
-                  if next_point is not None else 0.0)
-        if next_point is not None and self.point_cycle.get("motionMode") == "dual_axis_timed":
-            _, next_move = station_move_plan((point.axis1AngleDeg, point.axis2AngleDeg),
-                                             (next_point.axis1AngleDeg, next_point.axis2AngleDeg), cycle.speedRpm)
-            travel = next_move["plannedSeconds"]
+        travel = 0.0
+        if next_point is not None:
+            start_angles = tuple((actual_angles or {}).get(str(axis), angle) for axis, angle in (
+                (1, point.axis1AngleDeg), (2, point.axis2AngleDeg)))
+            mode = self.point_cycle.get("motionMode", "sequential")
+            move_speed, timing = station_timing_plan(cycle, start_angles, next_point, mode, point)
+            if timing is not None:
+                travel = timing["plannedMoveSeconds"]
+            elif mode == "dual_axis_timed":
+                _, next_move = station_move_plan(start_angles,
+                    (next_point.axis1AngleDeg, next_point.axis2AngleDeg), move_speed,
+                    acceleration=cycle.maxMoveAccelerationDegS2)
+                travel = next_move["plannedSeconds"]
+            else:
+                travel = (abs(next_point.axis1AngleDeg - start_angles[0]) +
+                          abs(next_point.axis2AngleDeg - start_angles[1])) / (6 * move_speed)
         with self.lock:
             self.writer = writer
             self.rows.clear()
@@ -1683,6 +2017,20 @@ class AcquisitionController:
             self._cycle_process("starting_capture", point=point.name)
         capture_stop, capture_done, ready = threading.Event(), threading.Event(), threading.Event()
         capture_errors = []
+        capture_started_at = time.time()
+
+        def require_capture_laser():
+            with self.lock:
+                observed = copy.deepcopy(self.laser_observation or {})
+            if observed.get("deviceIp") != request.deviceIp:
+                return
+            known_off = observed.get("state") == "off" and (observed.get("readAt") or 0) >= capture_started_at
+            read_failed = bool(observed.get("error") and (observed.get("errorAt") or 0) >= capture_started_at)
+            if known_off or read_failed:
+                reason = "采集期间已读到激光关闭" if known_off else "采集期间激光状态读取失败"
+                writer.manifest["pointCycle"].update(completion="device_error", outcome="error",
+                    laserError="laser_state_unconfirmed", laserErrorReason=reason)
+                raise RuntimeError(f"{reason}，不能将低波动判为叶片离开；未换点")
 
         def receive_loop():
             try:
@@ -1691,12 +2039,14 @@ class AcquisitionController:
                     # SDK shutdown/draining must not add moving samples to it.
                     with self.lock:
                         if not capture_stop.is_set():
-                            if cycle.mode == "automatic_stations" and (
+                            if (cycle.mode == "automatic_stations" or cycle.routeOrder == "configured") and (
                                     batch.sample_start != writer.manifest["samples"] or
                                     batch.sample_rate != writer.manifest["sampleRate"]):
                                 writer.manifest["pointCycle"].update(completion="signal_gap", outcome="incomplete")
                             self._receive(batch)
-                run_kwargs = ({"keep_laser_on": keep_laser_on, "abort": self.stop_event}
+                # Every station closes DAQ before movement, but normal station
+                # boundaries keep the laser on. Abort/errors still force OFF.
+                run_kwargs = ({"keep_laser_on": True, "abort": self.stop_event}
                               if getattr(receiver, "supports_laser_persistence", False) else {})
                 def on_ready(rate, origin):
                     self._ready(rate, origin, receiver)
@@ -1711,9 +2061,17 @@ class AcquisitionController:
 
         thread = threading.Thread(target=receive_loop, name="blade-point-receiver", daemon=True)
         self.capture_thread, self.capture_stop = thread, capture_stop
-        thread.start()
         failure = None
         try:
+            if before_capture is not None:
+                verified = before_capture()
+                current_angles = {str(axis): verified["axes"][str(axis)]["output_angle_deg"] for axis in (1, 2)}
+                evidence = copy.deepcopy(self.point_cycle.get("lastMove"))
+                writer.manifest["pointCycle"].update(actualAngles=current_angles, arrivalMove=evidence)
+                writer.manifest["turntable"].update(actualAngles=current_angles, arrivalMove=evidence)
+            if self.stop_event.is_set():
+                raise RuntimeError("循环采集已停止，未启动接收线程或开启激光")
+            thread.start()
             deadline = time.monotonic() + DAQ_READY_SECONDS
             while not ready.wait(0.05):
                 if self.stop_event.is_set():
@@ -1729,16 +2087,19 @@ class AcquisitionController:
             self._cycle_update("holding", currentPoint=point.name, cycle=cycle_index,
                                pointIndex=point_index, dwellStartedAt=time.time())
             started = time.monotonic()
+            next_feedback_at = time.monotonic()
+            trigger = None
             while True:
                 elapsed = time.monotonic() - started
                 remaining = cycle.dwellSeconds - elapsed
                 if self.stop_event.is_set():
                     raise RuntimeError("循环采集被停止")
-                if cycle.mode == "automatic_stations" and self.rssi_handoff.status["signalGapCount"]:
+                require_capture_laser()
+                if (cycle.mode == "automatic_stations" or cycle.routeOrder == "configured") and self.rssi_handoff.status["signalGapCount"]:
                     writer.manifest["pointCycle"].update(
                         completion="signal_gap", outcome="incomplete",
                         signalGapReason=self.rssi_handoff.status["lastSignalGapReason"])
-                    raise RuntimeError("RSSI 信号缺失或不连续，未自动换点；当前站位需要重新测量")
+                    raise RuntimeError("RSSI 信号缺失或不连续，未自动换点；当前点位需要重新测量")
                 if capture_done.is_set():
                     raise RuntimeError("该点采集提前退出：" + ("; ".join(capture_errors) or "数据流已结束"))
                 if cycle.rssiTriggerEnabled and self.rssi_event.is_set():
@@ -1756,11 +2117,6 @@ class AcquisitionController:
                             observedSamples=trigger["observedSamples"],
                             entrySampleIndex=trigger["entrySampleIndex"],
                             exitSampleIndex=trigger["exitConfirmedSampleIndex"])
-                    # The coordinator still owns the serial port. Start the
-                    # next move now, while the DAQ thread closes independently.
-                    # No motion samples can enter this point's record.
-                    if on_handoff is not None:
-                        on_handoff(trigger)
                     break
                 if remaining <= 0:
                     if cycle.rssiTriggerEnabled:
@@ -1769,6 +2125,9 @@ class AcquisitionController:
                             outcome="missed")
                         raise RuntimeError(f"点位 {point.name} 等待叶片进入并离开超时，未自动换点；请检查光路或延长最长等候时间")
                     break
+                if time.monotonic() >= next_feedback_at and feedback_poll is not None:
+                    feedback_poll()
+                    next_feedback_at = time.monotonic() + .2
                 self.rssi_event.wait(min(0.01, remaining))
             capture_stop.set()
             self._cycle_process("saving", point=point.name)
@@ -1777,6 +2136,20 @@ class AcquisitionController:
                 raise RuntimeError("该点测振线程未退出，不能确认数据完整保存")
             if capture_errors:
                 raise RuntimeError("; ".join(capture_errors))
+            require_capture_laser()
+            if self.stop_event.is_set():
+                raise RuntimeError("循环采集已停止，未换到下一个点位")
+            with self.lock:
+                # The previous station's armed/triggered gate cannot be reused
+                # while moving, even though the optical source remains on.
+                self.rssi_handoff = None
+                self.rssi_event.clear()
+                self.point_cycle.update(rssiPhase=None, latestRssi=None)
+            if trigger is not None:
+                trigger["receiverClosedAt"] = time.time()
+                writer.manifest["pointCycle"]["handoff"].update(trigger)
+                if on_handoff is not None:
+                    on_handoff(trigger)
             with self.lock:
                 self._cycle_process("record_saved", point=point.name)
                 writer.finish(None)
@@ -1819,7 +2192,7 @@ class AcquisitionController:
             capability = self._motion_capability(motor)
             self._cycle_update("checking", motionCapability=capability, motionMode=capability["mode"])
             references = reference_key(feedback)
-            for point in cycle.points:
+            for point in [*cycle.points, *([cycle.returnToOrigin] if cycle.returnToOrigin else [])]:
                 expected = self._cycle_point_reference(point)
                 if expected is not None:
                     actual = [[references[str(axis)][key] for key in ("origin_counts", "display_mode", "command_counts_per_rev", "encoder_bits")]
@@ -1831,11 +2204,11 @@ class AcquisitionController:
                                                                       protocol="position", targetAngleDeg=angle,
                                                                       speedRpm=cycle.speedRpm))
             anchor = cycle.points[0]
-            planned_points = (list(cycle.points) if cycle.mode == "automatic_stations" else
+            planned_points = (list(cycle.points) if cycle.mode == "automatic_stations" or cycle.routeOrder == "configured" else
                               self._plan_point_order(feedback, cycle.points, anchor))
             planned_names = [point.name for point in planned_points]
             self._cycle_update("ready", connected=True, references=references,
-                               routeStrategy=("configured-station-order" if cycle.mode == "automatic_stations"
+                               routeStrategy=("configured-station-order" if cycle.mode == "automatic_stations" or cycle.routeOrder == "configured"
                                               else "closed-nearest-neighbor-linear-safe"),
                                plannedOrder=planned_names)
             receiver = first_receiver
@@ -1846,7 +2219,7 @@ class AcquisitionController:
                 # return jump between the last point of one circle and the
                 # first point of the next circle.
                 feedback = motor_snapshot(motor, 1)
-                planned_points = (list(cycle.points) if cycle.mode == "automatic_stations" else
+                planned_points = (list(cycle.points) if cycle.mode == "automatic_stations" or cycle.routeOrder == "configured" else
                                   self._plan_point_order(feedback, cycle.points, anchor))
                 planned_names = [point.name for point in planned_points]
                 self._cycle_update("ready", cycle=cycle_index,
@@ -1858,11 +2231,16 @@ class AcquisitionController:
                         self.point_cycle.update(cycle=cycle_index, point=point_index,
                                                 currentPoint=point.name)
                     self._cycle_update("positioning", cycle=cycle_index, point=point_index,
-                                       currentPoint=point.name)
-                    if prefetched_feedback is None:
+                                       currentPoint=point.name, targetPointId=point.pointId,
+                                       targetAxis1AngleDeg=point.axis1AngleDeg, targetAxis2AngleDeg=point.axis2AngleDeg)
+                    initial_hold = cycle.startAtCurrentPose and cycle_index == 1 and point_index == 1
+                    if initial_hold:
+                        self._cycle_process("verifying_initial_pose", point=point.name)
+                        final_feedback = self._cycle_verify_initial_pose(motor, cycle, point, "worker_start")
+                    elif prefetched_feedback is None:
                         self._cycle_process("positioning", point=point.name)
-                        reached, _, feedback = self._cycle_move_point(
-                            motor, cycle, point,
+                        reached, _, feedback = self._cycle_position_laser_on(
+                            request, motor, cycle, point,
                             on_command=lambda: self._cycle_process("moving", point=point.name))
                         if not reached:
                             raise RuntimeError(f"点位 {point.name} 未完成两轴到位确认")
@@ -1872,7 +2250,7 @@ class AcquisitionController:
                     self._cycle_process("arrived", point=point.name)
                     actual_angles = {str(axis): final_feedback["axes"][str(axis)]["output_angle_deg"] for axis in (1, 2)}
                     next_point = (planned_points[point_index] if point_index < len(planned_points) else
-                                  anchor if cycle_index < cycle.cycles or cycle.mode != "automatic_stations" else None)
+                                  anchor if cycle_index < cycle.cycles or (cycle.mode != "automatic_stations" and cycle.routeOrder != "configured") else None)
 
                     def handoff(trigger):
                         nonlocal prefetched_feedback
@@ -1886,8 +2264,9 @@ class AcquisitionController:
                                 trigger["plannedMove"] = copy.deepcopy(self.point_cycle.get("lastMove"))
                                 self.writer.manifest["pointCycle"]["handoff"].update(trigger)
 
-                        reached, _, arrival = self._cycle_move_point(motor, cycle, next_point,
-                                                                     on_command=command_started)
+                        reached, _, arrival = self._cycle_position_laser_on(request, motor, cycle, next_point,
+                                                                     on_command=command_started,
+                                                                     source_point=point)
                         if not reached:
                             raise RuntimeError(f"换点 {next_point.name} 未完成两轴到位确认")
                         prefetched_feedback = arrival
@@ -1904,7 +2283,12 @@ class AcquisitionController:
                     current_writer = self._capture_cycle_point(request, cycle, point, cycle_index,
                                                               point_index, receiver, actual_angles,
                                                               next_point, handoff if next_point is not None else None,
-                                                              keep_laser_on=cycle.keepLaserOnBetweenPoints)
+                                                              keep_laser_on=True,
+                                                              before_capture=(lambda: self._cycle_verify_initial_pose(
+                                                                  motor, cycle, point, "before_daq")) if initial_hold else
+                                                              (lambda: self._cycle_capture_pose(motor, cycle, point)),
+                                                              feedback_poll=lambda: self._cycle_capture_pose(
+                                                                  motor, cycle, point, check_trajectory=False))
                     with self.lock:
                         self.point_cycle["completedRecords"] += 1
                     self._cycle_update("ready", cycle=cycle_index, point=point_index,
@@ -1912,24 +2296,42 @@ class AcquisitionController:
                                        completedRecords=self.point_cycle["completedRecords"],
                                        plannedOrder=planned_names)
                     if cycle_index != cycle.cycles or point_index != len(cycle.points):
-                        receiver = self.receiver_factory(ReceiverConfig(request.deviceIp, request.hostIp, self.settings.dll_path))
+                        receiver = self._device_receiver(ReceiverConfig(request.deviceIp, request.hostIp, self.settings.dll_path))
                         receiver.validate()
-                # Finish every circle at the first configured point.  This is
+                # Historical open clients finish every circle at the first configured point. This is
                 # a positioning move only; it must not create a duplicate
                 # measurement record for the anchor point.
-                if cycle.mode == "automatic_stations" and cycle_index == cycle.cycles:
-                    continue  # No unrequested return motion after the final observed pass.
+                if (cycle.mode == "automatic_stations" or cycle.routeOrder == "configured") and cycle_index == cycle.cycles:
+                    continue  # The final pass returns to work zero below, not to a measurement station.
                 self._cycle_update("positioning", cycle=cycle_index,
                                    point=len(planned_points), currentPoint=f"回到起点 {anchor.name}",
                                    plannedOrder=planned_names)
                 if prefetched_feedback is None:
                     self._cycle_process("returning", point=anchor.name)
-                    reached, _, feedback = self._cycle_move_point(motor, cycle, anchor)
+                    reached, _, feedback = self._cycle_position_laser_on(request, motor, cycle, anchor)
                     if not reached:
                         raise RuntimeError(f"未能回到循环起点 {anchor.name}")
                 self._cycle_update("ready", cycle=cycle_index,
                                    point=len(planned_points), currentPoint=anchor.name,
                                    plannedOrder=planned_names)
+            if cycle.returnToOrigin is not None:
+                origin = cycle.returnToOrigin
+                self._cycle_update("positioning", returningToOrigin=True)
+                self._cycle_process("returning_origin", point=origin.name)
+                reached, _, feedback = self._cycle_position_laser_on(
+                    request, motor, cycle, origin,
+                    on_command=lambda: self._cycle_process("returning_origin", point=origin.name))
+                if not reached:
+                    raise RuntimeError("任务采集已保存，但尚未确认返回作业原点")
+                self._cycle_update("ready", returnOrigin={
+                    **origin.model_dump(), "confirmedAt": time.time(),
+                    "actualAngles": {str(axis): feedback["axes"][str(axis)]["output_angle_deg"] for axis in (1, 2)}})
+                self._cycle_process("origin_arrived", point=origin.name)
+            # DAQ is closed. Keep the light on as an owned observation laser,
+            # so the header can still read/control it after the task finishes.
+            self._confirm_motion_laser_on(request)
+            if self.stop_event.is_set():
+                raise RuntimeError("循环采集已停止")
             self._cycle_update("complete", cycle=cycle.cycles, point=len(planned_points),
                                completedRecords=cycle.cycles * len(planned_points), currentPoint=None,
                                plannedOrder=planned_names)
@@ -1946,17 +2348,18 @@ class AcquisitionController:
                 except Exception as finish_error:
                     failures.append(f"记录收尾失败：{finish_error}")
         finally:
-            if cycle and cycle.keepLaserOnBetweenPoints and getattr(first_receiver, "supports_laser_persistence", False):
-                try:
-                    DevicePanel(ReceiverConfig(request.deviceIp, request.hostIp, self.settings.dll_path)).run_command("laser_off")
-                    self.observation_laser_ip = None
-                except Exception as exc:
-                    failures.append(f"采集结束关闭激光失败：{exc}")
             if motor:
                 try:
                     motor.close(stop=False)
                 except Exception as exc:
                     failures.append(f"关闭转盘串口失败：{exc}")
+            if cycle and (failures or cancelled or self.stop_event.is_set()):
+                cancelled = cancelled or self.stop_event.is_set() and not failures
+                try:
+                    self._confirm_motion_laser_off(request)
+                    self.observation_laser_ip = None
+                except Exception as exc:
+                    failures.append(f"采集结束关闭激光失败：{exc}")
             with self.lock:
                 if not self.capture_thread or not self.capture_thread.is_alive():
                     self.capture_thread = None
@@ -1971,11 +2374,11 @@ class AcquisitionController:
                 self.error = "; ".join(failures) or None
                 self.state = "error" if failures else "idle"
 
-    def _run(self, receiver, turntable=None) -> None:
+    def _run(self, receiver, turntable=None, request=None) -> None:
         failure = None
         try:
             if turntable is not None:
-                self._run_joint(receiver, turntable)
+                self._run_joint(receiver, turntable, request)
             else:
                 receiver.run(self.stop_event, lambda rate, origin: self._ready(rate, origin, receiver), self._receive)
         except Exception as exc:
@@ -2016,7 +2419,7 @@ class AcquisitionController:
                     observation_ip = None
             if observation_ip:
                 try:
-                    DevicePanel(ReceiverConfig(observation_ip, "", self.settings.dll_path)).run_command("laser_off")
+                    self._device_command(ReceiverConfig(observation_ip, "", self.settings.dll_path), "laser_off")
                     self.observation_laser_ip = None
                 except Exception as exc:
                     raise HTTPException(503, f"关闭观察激光失败：{exc}") from exc

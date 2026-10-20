@@ -46,6 +46,22 @@ function pointCycleConfig(value) {
   if (value.mode !== undefined && !['legacy', 'automatic_stations'].includes(value.mode)) throw failure('无效自动跟随模式', 400);
   const automatic = value.mode === 'automatic_stations';
   const follow = {};
+  if (value.maxMoveAccelerationDegS2 !== undefined) {
+    if (typeof value.maxMoveAccelerationDegS2 !== 'number' || !Number.isFinite(value.maxMoveAccelerationDegS2) ||
+        value.maxMoveAccelerationDegS2 < 0.1 || value.maxMoveAccelerationDegS2 > 120)
+      throw failure('换点加速度上限应为0.1～120 °/s²', 400);
+    follow.maxMoveAccelerationDegS2 = value.maxMoveAccelerationDegS2;
+  }
+  if (value.startAtCurrentPose !== undefined) {
+    if (typeof value.startAtCurrentPose !== 'boolean' || value.startAtCurrentPose && !automatic)
+      throw failure('首个点位原地等待必须为布尔值，且仅适用于已校准的自动点位采集', 400);
+    follow.startAtCurrentPose = value.startAtCurrentPose;
+  }
+  if (value.routeOrder !== undefined) {
+    if (!['configured', 'shortest_safe'].includes(value.routeOrder)) throw failure('无效点位执行顺序', 400);
+    if (value.routeOrder === 'configured' && value.rssiTriggerEnabled !== true) throw failure('按配置顺序换点必须确认叶片进入和离开', 400);
+    follow.routeOrder = value.routeOrder;
+  }
   if (value.collectionId !== undefined) {
     if (!automatic || typeof value.collectionId !== 'string' || value.collectionId.length !== 32 || !/^[a-f0-9]{32}$/.test(value.collectionId))
       throw failure('无效叶片采集任务编号', 400);
@@ -55,7 +71,7 @@ function pointCycleConfig(value) {
     const number = (v, min, max) => typeof v === 'number' && Number.isFinite(v) && v >= min && v <= max;
     const geometry = value.geometry;
     const fields = ['distanceM', 'hubHeightDeltaM', 'rotationDirection', 'axis1Sign', 'axis2Sign', 'anchorRadiusM', 'anchorAxis1AngleDeg', 'anchorAxis2AngleDeg'];
-    if (value.rssiTriggerEnabled !== true || !number(value.nominalPeriodSeconds, 0.5, 3600) ||
+    if (value.rssiTriggerEnabled !== true || !(value.nominalPeriodSeconds === 0 || number(value.nominalPeriodSeconds, 0.5, 3600)) ||
         !number(value.maxMoveRpm, 0.02, 10) || value.speedRpm > value.maxMoveRpm || Math.abs(value.speedRpm / 0.02 - Math.round(value.speedRpm / 0.02)) > 1e-7 ||
         !geometry || typeof geometry !== 'object' || Array.isArray(geometry) || Object.keys(geometry).some(key => !fields.includes(key)) ||
         !number(geometry.distanceM, 0.001, 10000) || !number(geometry.hubHeightDeltaM, -10000, 10000) ||
@@ -83,9 +99,31 @@ function pointCycleConfig(value) {
         throw failure('自动跟随测点半径和圆周位置无效', 400);
       Object.assign(identity, { radiusM: point.radiusM, azimuthDeg: point.azimuthDeg });
     }
+    for (const field of ['rootRadiusM', 'bladeLengthM']) {
+      if (point[field] !== undefined) {
+        if (typeof point[field] !== 'number' || !Number.isFinite(point[field]) || point[field] < (field === 'rootRadiusM' ? 0 : 0.000001) || point[field] > 1000)
+          throw failure('叶根半径和叶片长度必须为有效距离', 400);
+        identity[field] = point[field];
+      }
+    }
+    if (point.rootRadiusM !== undefined && point.radiusM !== undefined &&
+        (point.radiusM < point.rootRadiusM || point.bladeLengthM !== undefined && point.radiusM > point.rootRadiusM + point.bladeLengthM))
+      throw failure('测点必须位于叶根到叶尖范围内', 400);
     return { ...identity, ...(point.pointId !== undefined ? { pointId: point.pointId.trim() } : {}), name: point.name.trim(), axis1AngleDeg: point.axis1AngleDeg, axis2AngleDeg: point.axis2AngleDeg,
       port: point.port, referenceSignature: point.referenceSignature };
   });
+  if (value.returnToOrigin !== undefined) {
+    const origin = value.returnToOrigin;
+    if (!origin || typeof origin !== 'object' || Array.isArray(origin) ||
+        Object.keys(origin).some(key => !['name', 'port', 'referenceSignature', 'axis1AngleDeg', 'axis2AngleDeg'].includes(key)) ||
+        typeof origin.name !== 'string' || !origin.name.trim() || origin.name.length > 120 || origin.port !== value.port ||
+        !validPointReference(origin.referenceSignature) || origin.referenceSignature !== points[0].referenceSignature ||
+        typeof origin.axis1AngleDeg !== 'number' || !Number.isFinite(origin.axis1AngleDeg) || Math.abs(origin.axis1AngleDeg) > 35 ||
+        typeof origin.axis2AngleDeg !== 'number' || !Number.isFinite(origin.axis2AngleDeg) || Math.abs(origin.axis2AngleDeg) > 180)
+      throw failure('作业原点需要有效的两轴坐标、相同串口与参考位', 400);
+    follow.returnToOrigin = { name: origin.name.trim(), port: origin.port, referenceSignature: origin.referenceSignature,
+      axis1AngleDeg: origin.axis1AngleDeg, axis2AngleDeg: origin.axis2AngleDeg };
+  }
   const echo = {};
   if (value.rssiTriggerEnabled !== undefined) {
     if (typeof value.rssiTriggerEnabled !== 'boolean') throw failure('RSSI 开关必须为布尔值', 400);
@@ -398,6 +436,9 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
       const data = await http(`frame?window_ms=${windowMs}`);
       if (epoch !== snapshotEpoch) return envelope();
       validateWave(data.waveform);
+      // A verified response recovers transport health, while data.error remains
+      // the previous capture result. Keep those two meanings independent.
+      lastStatus = { ...data, waveform: undefined }; error = null;
       return envelope(data);
     }
     if (cachedFrame && Date.now() - receivedAt < 1500) return envelope(cachedFrame);
@@ -454,6 +495,10 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
       if (typeof config[field] !== 'string' || (field === 'name' && !config[field].trim()) || config[field].length > 120) throw failure('请填写有效的采集任务信息，任务名不能为空，各字段最多120字', 400);
       body[field] = config[field].trim();
     }
+    if (config.windFarm !== undefined) {
+      if (typeof config.windFarm !== 'string' || config.windFarm.length > 120 || config.windFarm.includes('\0')) throw failure('风场编号最多120字，不能包含空字符', 400);
+      body.windFarm = config.windFarm.trim();
+    }
     await ready(); closeSocket();
     snapshotEpoch += 1;
     try { lastStatus = await http('start', 'POST', body); stream(); return envelope(); }
@@ -509,12 +554,13 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     return result;
   }
   async function device(request) {
-    if (!request || net.isIP(request.deviceIp) !== 4 || !['read', 'set', 'autofocus', 'laser_on', 'laser_off'].includes(request.action)) throw failure('无效设备配置请求', 400);
+    if (!request || net.isIP(request.deviceIp) !== 4 || !['read', 'laser_read', 'set', 'autofocus', 'laser_on', 'laser_off'].includes(request.action)) throw failure('无效设备配置请求', 400);
     if (request.action === 'set' && (request.confirmChange !== true || !['velocityRange', 'bandwidth', 'highPass', 'ase'].includes(request.key))) throw failure('请确认修改支持的配置项', 400);
     if (['autofocus', 'laser_on', 'laser_off'].includes(request.action) && request.confirmLaser !== true) throw failure('请确认现场激光安全', 400);
     for (const value of [request.value, request.expected]) if (value !== undefined &&
       !(typeof value === 'string' && value.length <= 120 && !value.includes('\0')) && !(Number.isInteger(value) && [0, 1].includes(value))) throw failure('无效设备配置值', 400);
     await ready();
+    if (request.action === 'laser_read') return http('device', 'POST', { deviceIp: request.deviceIp, action: 'laser_read' });
     const current = await http('status');
     if (current.deviceBusy || current.turntableBusy || current.receiver?.running || ['starting', 'acquiring', 'stopping'].includes(current.state)) throw failure('设备正在使用，请先停止并保存', 409);
     return http('device', 'POST', Object.fromEntries(['deviceIp', 'action', 'key', 'value', 'expected', 'confirmChange', 'confirmLaser']
@@ -550,7 +596,8 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     } finally { snapshotEpoch += 1; }
   }
   async function turntable(request) {
-    if (!request || !['probe', 'test', 'manual_move', 'recall', 'prepare', 'stop', 'reference', 'limits'].includes(request.action) || !isTurntablePort(request.port) ||
+    if (!request || !['probe', 'health', 'test', 'manual_move', 'recall', 'prepare', 'stop', 'reference', 'limits'].includes(request.action) || !isTurntablePort(request.port) ||
+        (request.action === 'health' && request.confirmRecovery === true) ||
         ![1, 2].includes(request.axis) || (['stop', 'test', 'manual_move', 'recall', 'prepare', 'reference', 'limits'].includes(request.action) && request.confirmMotion !== true) ||
         (request.confirmRecovery !== undefined && typeof request.confirmRecovery !== 'boolean') ||
         (request.testSeconds !== undefined && (!Number.isInteger(request.testSeconds) || request.testSeconds < 1 || request.testSeconds > 15))) throw failure('无效转盘检查/试转请求', 400);
@@ -560,8 +607,15 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
       if (!Number.isFinite(request.axis1AngleDeg) || Math.abs(request.axis1AngleDeg) > 35 ||
           !Number.isFinite(request.axis2AngleDeg) || Math.abs(request.axis2AngleDeg) > 180) throw failure('点位需要两轴有效角度，轴1限±35°，轴2限±180°', 400);
       if (request.recordedPort !== request.port || !validPointReference(request.referenceSignature)) throw failure('点位串口或参考位信息缺失/不匹配，请重新标定后回位', 400);
+      const acceleration = {};
+      if (request.maxMoveAccelerationDegS2 !== undefined) {
+        if (typeof request.maxMoveAccelerationDegS2 !== 'number' || !Number.isFinite(request.maxMoveAccelerationDegS2) ||
+            request.maxMoveAccelerationDegS2 < .1 || request.maxMoveAccelerationDegS2 > 120)
+          throw failure('回位加速度上限应为0.1～120 °/s²', 400);
+        acceleration.maxMoveAccelerationDegS2 = request.maxMoveAccelerationDegS2;
+      }
       return { axis1AngleDeg: request.axis1AngleDeg, axis2AngleDeg: request.axis2AngleDeg,
-        recordedPort: request.recordedPort, referenceSignature: request.referenceSignature,
+        recordedPort: request.recordedPort, referenceSignature: request.referenceSignature, ...acceleration,
         speedRpm: turntableConfig({ port: request.port, axis: 1, speedRpm: request.speedRpm, direction: 'forward', durationSeconds: 0, protocol: 'position', targetAngleDeg: request.axis1AngleDeg }).speedRpm };
     })() : {};
     await ready();

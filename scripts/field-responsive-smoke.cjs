@@ -44,7 +44,7 @@ require.cache[require.resolve(serviceModule)] = { id: serviceModule, filename: s
       fixture.factories += 1;
       return { start: async () => snapshot(), status: async () => snapshot(), frame: async () => snapshot(),
         serviceInfo, recordings: async () => ({ recordings: [] }),
-        begin: async () => { fixture.beginCalls += 1; throw Error('Responsive QA MUST NOT start acquisition'); },
+        begin: async () => { fixture.beginCalls += 1; return snapshot(); },
         stop: async () => { fixture.stopCalls += 1; fixture.active = false; return snapshot(); },
         shutdown: async () => { fixture.active = false; } };
     },
@@ -240,32 +240,15 @@ app.on('browser-window-created', (_event, win) => {
           return { viewport, top, bottom };
         });
 
-        await check(`${size.name}: confirmation dialog safety checks and footer reachable`, async () => {
+        await check(`${size.name}: start is direct with no confirmation controls`, async () => {
           const start = button('.field-capture-inputs', '开始采集');
           assert.equal((await reach(start)).disabled, false);
+          const before = fixture.beginCalls;
           await js(`${start}.click()`);
-          await waitFor(() => js("Boolean(document.querySelector('dialog[open]'))"), 'start confirmation dialog');
-          await reach("document.querySelector('dialog .dialog-heading h2')");
-          for (let index = 0; index < 3; index++) {
-            const checkbox = `document.querySelectorAll('dialog input[type=checkbox]')[${index}]`;
-            await reach(checkbox);
-            await js(`${checkbox}.click()`);
-          }
-          const confirm = button('dialog', '确认并开始采集');
-          assert.equal((await reach(confirm)).disabled, false);
-          await reach(button('dialog', '取消'));
-          await reach("document.querySelector('dialog .dialog-heading h2')", false);
-          await reach("document.querySelector('dialog .dialog-heading button')", false);
-          await reach(confirm, false);
-          const dialog = await layout('dialog');
-          assert.ok(dialog.rect.y >= -2 && dialog.rect.y + dialog.rect.height <= size.height / size.zoom + 2,
-            `Dialog exceeds viewport: ${JSON.stringify(dialog)}`);
+          await waitFor(() => fixture.beginCalls === before + 1, 'test-only start called directly');
+          assert.equal(await js("Boolean(document.querySelector('dialog[open]'))"), false);
           await assertNoHorizontalOverflow();
-          await screenshot(`${size.name}-dialog-bottom`);
-          await js(`${button('dialog', '取消')}.click()`);
-          await waitFor(() => js("!document.querySelector('dialog[open]')"), 'confirmation dismissed without starting');
-          assert.equal(fixture.beginCalls, 0);
-          return dialog;
+          return { mockStarts: fixture.beginCalls, realStartCalls: 0 };
         });
 
         await check(`${size.name}: settings buttons reachable and empty records fit`, async () => {
@@ -288,6 +271,7 @@ app.on('browser-window-created', (_event, win) => {
 
         await check(`${size.name}: sticky stop stays reachable at bottom of active workspace`, async () => {
           await navigate('数据采集', '采集任务');
+          const startsBeforeStop = fixture.beginCalls;
           fixture.active = true;
           await waitFor(async () => (await body()).includes('正在采集'), 'explicit active UI fixture');
           await scrollMain(1);
@@ -307,8 +291,8 @@ app.on('browser-window-created', (_event, win) => {
           await js(`${sticky}.click()`);
           await waitFor(() => fixture.stopCalls === before + 1 && !fixture.active, 'test-only stop action');
           await waitFor(async () => !(await body()).includes('正在采集'), 'idle UI restored after fixture stop');
-          assert.equal(fixture.beginCalls, 0);
-          return { mockStops: fixture.stopCalls, realStartCalls: fixture.beginCalls, reachableTabs: ['acquisition', 'service', 'recordings'] };
+          assert.equal(fixture.beginCalls, startsBeforeStop);
+          return { mockStops: fixture.stopCalls, mockStarts: fixture.beginCalls, realStartCalls: 0, reachableTabs: ['acquisition', 'service', 'recordings'] };
         });
       }
       finish();

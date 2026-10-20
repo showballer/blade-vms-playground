@@ -73,6 +73,10 @@ function singlePointRequest(value, { captureSessionId } = {}) {
       if (typeof text !== 'string' || text.length > 120 || text.includes('\0') || (key === 'name' && !text.trim())) throw invalid('请填写有效采集任务信息');
       body.capture[key] = text.trim();
     }
+    if (capture.windFarm !== undefined) {
+      if (typeof capture.windFarm !== 'string' || capture.windFarm.length > 120 || capture.windFarm.includes('\0')) throw invalid('无效风场编号');
+      body.capture.windFarm = capture.windFarm.trim();
+    }
     if (captureSessionId !== undefined) {
       if (typeof captureSessionId !== 'string' || !/^[a-f0-9]{32}$/.test(captureSessionId)) throw invalid('无效上传会话编号');
       body.capture.captureSessionId = captureSessionId;

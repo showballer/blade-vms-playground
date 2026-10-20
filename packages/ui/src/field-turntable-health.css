@@ -1,0 +1,15 @@
+.field-turntable-heading { display: flex; align-items: center; flex-wrap: wrap; gap: var(--field-ui-space-3); }
+.field-health-control { display: inline-flex; }
+.field-health-alert-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--field-ui-danger); }
+.field-turntable-health { display: grid; gap: var(--field-ui-space-4); padding: var(--field-ui-space-6); }
+.field-health-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--field-ui-space-3); }
+.field-health-heading .field-subtext { margin-bottom: 0; overflow-wrap: anywhere; }
+.field-health-axes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--field-ui-space-3); }
+.field-health-axis, .field-health-trajectory, .field-health-issues { padding: var(--field-ui-space-4); border: 1px solid var(--field-ui-line); border-radius: var(--field-ui-control-radius); background: var(--field-ui-subtle); min-width: 0; }
+.field-turntable-health h3 { margin: 0 0 var(--field-ui-space-3); font-size: var(--field-ui-body); color: var(--field-ui-text); }
+.field-turntable-health dl { margin: 0; display: grid; gap: var(--field-ui-space-2); }
+.field-turntable-health dl > div { display: flex; justify-content: space-between; flex-wrap: wrap; gap: var(--field-ui-space-1) var(--field-ui-space-3); }
+.field-turntable-health dt { color: var(--field-ui-muted); }
+.field-turntable-health dd { margin: 0; color: var(--field-ui-text); text-align: right; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.field-health-issues ul { margin: 0; padding-left: var(--field-ui-space-4); color: var(--field-ui-secondary); display: grid; gap: var(--field-ui-space-2); }
+@media (max-width: 640px) { .field-health-axes { grid-template-columns: minmax(0, 1fr); } .field-turntable-health { padding: var(--field-ui-space-4); } }

@@ -36,7 +36,7 @@ export function bladePassUnavailableReason(record: BladePassRecording): string |
   const metadata = bladePassMetadata(record);
   if (!metadata) return null;
   if (record.status !== "complete") return "记录尚未完整上传或保存";
-  if (metadata.mode !== "automatic_stations") return "旧点位记录缺少自动站位信息";
+  if (metadata.mode !== "automatic_stations") return "旧点位记录缺少自动点位信息";
   if (typeof metadata.collectionId !== "string" || metadata.collectionId.length !== 32 || !/^[a-f0-9]{32}$/.test(metadata.collectionId)) return "缺少有效任务归属";
   if (typeof metadata.bladeId !== "string" || !metadata.bladeId.trim()) return "缺少叶片编号";
   if (typeof metadata.radialPointId !== "string" || !metadata.radialPointId.trim()) return "缺少径向测点编号";

@@ -51,7 +51,7 @@ class TurntableConfig(BaseModel):
 
 
 class TurntableRequest(TurntableConfig):
-    action: Literal["probe", "test", "manual_move", "recall", "prepare", "stop", "reference", "limits"] = "probe"
+    action: Literal["probe", "health", "test", "manual_move", "recall", "prepare", "stop", "reference", "limits"] = "probe"
     testSeconds: StrictInt = Field(default=3, ge=1, le=15)
     confirmMotion: StrictBool = False
     confirmRecovery: StrictBool = False
@@ -59,14 +59,17 @@ class TurntableRequest(TurntableConfig):
     axis2AngleDeg: float | None = Field(default=None, allow_inf_nan=False)
     referenceSignature: str | None = Field(default=None, max_length=512)
     recordedPort: SerialPort | None = None
+    maxMoveAccelerationDegS2: float = Field(default=3, ge=0.1, le=120, allow_inf_nan=False)
 
-    @field_validator("axis1AngleDeg", "axis2AngleDeg", mode="before")
+    @field_validator("axis1AngleDeg", "axis2AngleDeg", "maxMoveAccelerationDegS2", mode="before")
     @classmethod
     def recall_numeric(cls, value):
         return cls.numeric(value)
 
     @model_validator(mode="after")
     def recall_targets(self):
+        if self.action == "health" and self.confirmRecovery:
+            raise ValueError("状态检查只读，不能同时确认恢复")
         if self.action == "recall":
             if self.recordedPort is None or self.referenceSignature is None:
                 raise ValueError("历史点位缺少串口或参考位信息，请重新标定后回位")
@@ -101,6 +104,8 @@ class PointCyclePoint(BaseModel):
     radialPointId: str | None = Field(default=None, min_length=1, max_length=80)
     radialPointName: str | None = Field(default=None, min_length=1, max_length=120)
     radiusM: float | None = Field(default=None, gt=0, le=1000, allow_inf_nan=False)
+    rootRadiusM: float | None = Field(default=None, ge=0, le=1000, allow_inf_nan=False)
+    bladeLengthM: float | None = Field(default=None, gt=0, le=1000, allow_inf_nan=False)
     azimuthDeg: float | None = Field(default=None, ge=0, lt=360, allow_inf_nan=False)
 
     @field_validator("name", "pointId", "bladeId", "radialPointId", "radialPointName")
@@ -113,7 +118,7 @@ class PointCyclePoint(BaseModel):
             raise ValueError("循环点位名称不能为空")
         return value
 
-    @field_validator("axis1AngleDeg", "axis2AngleDeg", "radiusM", "azimuthDeg", mode="before")
+    @field_validator("axis1AngleDeg", "axis2AngleDeg", "radiusM", "rootRadiusM", "bladeLengthM", "azimuthDeg", mode="before")
     @classmethod
     def point_angle(cls, value):
         if value is None:
@@ -126,6 +131,11 @@ class PointCyclePoint(BaseModel):
     def point_limits(self):
         validate_output_angle(1, self.axis1AngleDeg)
         validate_output_angle(2, self.axis2AngleDeg)
+        if self.radiusM is not None and self.rootRadiusM is not None:
+            if self.radiusM < self.rootRadiusM:
+                raise ValueError("测点半径不能位于叶根以内")
+            if self.bladeLengthM is not None and self.radiusM > self.rootRadiusM + self.bladeLengthM:
+                raise ValueError("测点距叶根距离不能超过叶片长度")
         if self.referenceSignature is not None:
             try:
                 signature = json.loads(self.referenceSignature)
@@ -176,10 +186,18 @@ class PointCycleConfig(BaseModel):
     port: SerialPort
     points: list[PointCyclePoint] = Field(min_length=1, max_length=200)
     mode: Literal["legacy", "automatic_stations"] = "legacy"
+    # Explicit calibrated-point contract: verify the first pose, never move to it.
+    # The default preserves initial positioning for computed/legacy routes.
+    startAtCurrentPose: StrictBool = False
+    # Already established software zero in absolute device coordinates. This is
+    # a normal positioning move, never a controller homing/reference command.
+    returnToOrigin: PointCyclePoint | None = None
+    routeOrder: Literal["configured", "shortest_safe"] = "shortest_safe"
     # Associates separately started radial points without reusing a run/session ID.
     collectionId: str | None = Field(default=None, min_length=32, max_length=32, pattern=r"^[a-f0-9]{32}$")
-    nominalPeriodSeconds: float = Field(default=30, ge=0.5, le=3600, allow_inf_nan=False)
+    nominalPeriodSeconds: float = Field(default=30, ge=0, le=3600, allow_inf_nan=False)
     maxMoveRpm: float = Field(default=0.6, ge=0.02, le=10, allow_inf_nan=False)
+    maxMoveAccelerationDegS2: float = Field(default=3, ge=0.1, le=120, allow_inf_nan=False)
     geometry: PointCycleGeometry | None = None
     cycles: StrictInt = Field(default=1, ge=1, le=100)
     dwellSeconds: float = Field(default=2, ge=1, le=3600, allow_inf_nan=False)
@@ -195,8 +213,8 @@ class PointCycleConfig(BaseModel):
     rssiExitSpread: float = Field(default=3, ge=0, lt=100, allow_inf_nan=False)
     rssiEnterConfirmMs: float = Field(default=20, ge=10, le=1000, allow_inf_nan=False)
     rssiMotionMarginMs: float = Field(default=200, ge=0, le=5000, allow_inf_nan=False)
-    # Keep the laser running across point captures by default. The cycle
-    # coordinator turns it off once the whole task ends or is cancelled.
+    # Accepted for older clients. Linked capture now keeps light on during the
+    # session but closes/creates each station's DAQ and RSSI gate independently.
     keepLaserOnBetweenPoints: StrictBool = True
     # Accepted for older clients only; never used as a microsecond debounce.
     rssiConfirmSamples: StrictInt = Field(default=3, ge=1, le=1000)
@@ -205,7 +223,7 @@ class PointCycleConfig(BaseModel):
     @field_validator("dwellSeconds", "speedRpm", "rssiLeaveThresholdPercent", "rssiMinimumSeconds",
                      "rssiBaselineRatio", "rssiSmoothingMs", "rssiConfirmMs", "rssiMotionMarginMs",
                      "rssiEnterSpread", "rssiExitSpread", "rssiEnterConfirmMs", "nominalPeriodSeconds",
-                     "maxMoveRpm", mode="before")
+                     "maxMoveRpm", "maxMoveAccelerationDegS2", mode="before")
     @classmethod
     def cycle_numeric(cls, value):
         if value is None:
@@ -216,10 +234,18 @@ class PointCycleConfig(BaseModel):
 
     @model_validator(mode="after")
     def bounded_total(self):
+        if 0 < self.nominalPeriodSeconds < .5:
+            raise ValueError("叶轮周期须为0（手动转叶片）或不少于0.5秒")
+        if self.startAtCurrentPose and self.mode != "automatic_stations":
+            raise ValueError("首个点位原地等待仅适用于已校准的自动点位采集")
+        if self.routeOrder == "configured" and not self.rssiTriggerEnabled:
+            raise ValueError("按配置顺序换点必须确认叶片进入和离开")
         if self.collectionId is not None and self.mode != "automatic_stations":
-            raise ValueError("叶片采集任务编号仅用于自动站位记录")
+            raise ValueError("叶片采集任务编号仅用于自动点位记录")
         if any(point.port != self.port for point in self.points):
             raise ValueError("点位记录串口与当前循环串口不同，请重新标定")
+        if self.returnToOrigin is not None and self.returnToOrigin.port != self.port:
+            raise ValueError("作业原点串口与当前循环串口不同，请重新读取原点")
         if len(self.points) * self.cycles > 2000:
             raise ValueError("循环采集最多生成 2000 条独立记录")
         if self.rssiExitSpread >= self.rssiEnterSpread:
@@ -230,7 +256,7 @@ class PointCycleConfig(BaseModel):
             if not self.rssiTriggerEnabled:
                 raise ValueError("自动驻留换点必须确认RSSI进入及离开，不能按定时时长换点")
             if self.geometry is None:
-                raise ValueError("自动站位需要真实六点方向标定及完整几何参数")
+                raise ValueError("自动点位需要真实六点方向标定及完整几何参数")
             if self.speedRpm > self.maxMoveRpm:
                 raise ValueError("自动换点转速超过配置上限")
             if not math.isclose(self.speedRpm / .02, round(self.speedRpm / .02), abs_tol=1e-8):
@@ -238,14 +264,14 @@ class PointCycleConfig(BaseModel):
             groups, used, previous_group, finished_groups = {}, set(), None, set()
             for point in self.points:
                 if not point.pointId or not all((point.bladeId, point.radialPointId, point.radialPointName)) or point.radiusM is None or point.azimuthDeg is None:
-                    raise ValueError("自动站位必须包含叶片、径向测点、半径、方位及唯一站位编号")
+                    raise ValueError("自动点位必须包含叶片、径向测点、半径、方位及唯一点位编号")
                 if point.pointId in used:
-                    raise ValueError("自动站位编号不能重复")
+                    raise ValueError("自动点位编号不能重复")
                 used.add(point.pointId)
                 group = (point.bladeId, point.radialPointId)
                 if group != previous_group:
                     if group in finished_groups:
-                        raise ValueError("同一径向点的圆周站位须连续排列，不能交叉混入其他测点")
+                        raise ValueError("同一径向点的圆周点位须连续排列，不能交叉混入其他测点")
                     if previous_group is not None:
                         finished_groups.add(previous_group)
                     previous_group = group
@@ -257,7 +283,7 @@ class PointCycleConfig(BaseModel):
                 shape["angles"].add(point.azimuthDeg)
                 expected = self.geometry.angles(point.radiusM, point.azimuthDeg)
                 if abs(point.axis1AngleDeg - expected[0]) > 0.002 or abs(point.axis2AngleDeg - expected[1]) > 0.002:
-                    raise ValueError("自动站位角度与六点方向几何标定不一致")
+                    raise ValueError("自动点位角度与六点方向几何标定不一致")
         return self
 
 
@@ -279,6 +305,54 @@ def probe_motion_capability(motor):
             "status": asdict(status) if status is not None else None}
 
 
+def station_timing_plan(cycle: PointCycleConfig, start, target: PointCyclePoint,
+                        motion_mode: str, source: PointCyclePoint | None = None):
+    """Budget one stopped station handoff without claiming rotor synchronization.
+
+    Only two stations of the same operator-assigned blade/radial point provide a
+    meaningful rotor interval. Initial positioning and older multi-group routes
+    keep the configured ceiling. Half the nominal interval is reserved for
+    observation/setup; a missed budget never raises that ceiling or bypasses RSSI.
+    """
+    if cycle.mode == "automatic_stations" and cycle.nominalPeriodSeconds == 0:
+        speed = round(math.floor((min(cycle.speedRpm, cycle.maxMoveRpm) + 1e-10) / .02) * .02, 6)
+        distances = (abs(target.axis1AngleDeg - start[0]), abs(target.axis2AngleDeg - start[1]))
+        if motion_mode == "dual_axis_timed":
+            _, move = station_move_plan(start, (target.axis1AngleDeg, target.axis2AngleDeg), speed,
+                                        acceleration=cycle.maxMoveAccelerationDegS2)
+            planned = move["plannedSeconds"]
+        else:
+            planned = sum(distances) / (6 * speed)
+        return speed, {"sourceStationId": source.pointId if source else None, "targetStationId": target.pointId,
+                       "nominalPeriodSeconds": 0, "speedLimitRpm": speed, "configuredCeilingRpm": speed,
+                       "plannedMoveSeconds": planned, "timingBasis": "manual_blade_pass", "identityVerified": False}
+    if (cycle.mode != "automatic_stations" or source is None or
+            (source.bladeId, source.radialPointId) != (target.bladeId, target.radialPointId)):
+        return cycle.speedRpm, None
+    gap = (target.azimuthDeg - source.azimuthDeg) % 360 or 360
+    interval = cycle.nominalPeriodSeconds * gap / 360
+    budget = interval * .5
+    distances = (abs(target.axis1AngleDeg - start[0]), abs(target.axis2AngleDeg - start[1]))
+    travel = max(distances) if motion_mode == "dual_axis_timed" else sum(distances)
+    factor = 1.5 * 1.05 if motion_mode == "dual_axis_timed" else 1
+    required = max(.02, math.ceil((travel * factor / (6 * budget) - 1e-10) / .02) * .02)
+    ceiling = math.floor((min(cycle.speedRpm, cycle.maxMoveRpm) + 1e-10) / .02) * .02
+    speed = round(min(ceiling, required), 6)
+    if motion_mode == "dual_axis_timed":
+        _, move = station_move_plan(start, (target.axis1AngleDeg, target.axis2AngleDeg), speed,
+                                    acceleration=cycle.maxMoveAccelerationDegS2)
+        planned = move["plannedSeconds"]
+    else:
+        planned = travel / (6 * speed)
+    return speed, {"sourceStationId": source.pointId, "targetStationId": target.pointId,
+                   "azimuthGapDeg": gap, "nominalPeriodSeconds": cycle.nominalPeriodSeconds,
+                   "nominalIntervalSeconds": interval, "moveBudgetSeconds": budget,
+                   "requiredRpm": round(required, 6), "speedLimitRpm": speed,
+                   "configuredCeilingRpm": round(ceiling, 6), "plannedMoveSeconds": planned,
+                   "mayMissNextPass": planned > budget + 1e-9,
+                   "timingBasis": "nominal_period_station_gap", "identityVerified": False}
+
+
 def station_move_plan(start, target, speed_rpm, *, acceleration=3.0):
     """A stopped-to-stopped joint move, not optical tracking of a moving blade.
 
@@ -289,6 +363,11 @@ def station_move_plan(start, target, speed_rpm, *, acceleration=3.0):
     values = (*start, *target, speed_rpm, acceleration)
     if not all(math.isfinite(value) for value in values) or speed_rpm <= 0 or acceleration <= 0:
         raise ValueError("双轴换点参数必须为有限正速度及有效角度")
+    # The upload header carries milli-degrees/s². Never plan faster than the
+    # controller's quantized constraint, or silently round the requested cap up.
+    acceleration = math.floor((acceleration + 1e-10) * 1000) / 1000
+    if acceleration <= 0:
+        raise ValueError("双轴换点加速度低于控制器精度")
     distance = max(abs(b - a) for a, b in zip(start, target))
     duration = math.ceil(max(1.0, 1.5 * distance / (6 * speed_rpm),
                              math.sqrt(6 * distance / acceleration)) * 1.05 * 1000) / 1000
@@ -383,19 +462,36 @@ def require_ready(value):
             raise MotorError("轴反馈存在故障或停止待确认")
 
 
-def require_position_ready(value, config):
-    require_ready(value)
+def _require_position_bounds(value, config):
+    """Axis 1 needs soft protection; axis 2 may use the controller's no-soft policy.
+
+    A disabled axis-2 range is not a command to modify the controller. The
+    product's absolute coordinate envelope still applies independently, while
+    any enabled controller range is checked exactly as read back.
+    """
     axis = value["axes"][str(config.axis)]
     guard = axis["guard"]
     limit = 35 if config.axis == 1 else 180
-    if axis["output_angle_deg"] is None:
+    if axis["output_angle_deg"] is None or not axis["flags"] & 1:
         raise MotorError("请先为当前轴建立参考位，角度无效时禁止定位")
-    if not guard["soft_enabled"] or guard["minimum_deg"] < -limit or guard["maximum_deg"] > limit:
-        raise MotorError(f"请先应用当前轴±{limit}°软限位")
-    if not guard["minimum_deg"] <= config.targetAngleDeg <= guard["maximum_deg"]:
-        raise MotorError("目标角度超出下位机软限位")
-    if not guard["minimum_deg"] <= axis["output_angle_deg"] <= guard["maximum_deg"]:
-        raise MotorError("当前位置超出软范围，请现场核查参考位")
+    if not math.isfinite(axis["output_angle_deg"]) or abs(axis["output_angle_deg"]) > limit:
+        raise MotorError(f"轴{config.axis}当前位置超出±{limit}°产品范围")
+    if config.axis == 1 and not guard["soft_enabled"]:
+        raise MotorError("请先应用当前轴±35°软限位")
+    if guard["soft_enabled"]:
+        lo, hi = guard["minimum_deg"], guard["maximum_deg"]
+        if (not math.isfinite(lo) or not math.isfinite(hi) or not lo < hi or
+                not axis["flags"] & 2 or config.axis == 1 and not -35 <= lo < hi <= 35):
+            raise MotorError(f"轴{config.axis}软限位范围或反馈无效")
+        if not lo <= config.targetAngleDeg <= hi:
+            raise MotorError("目标角度超出下位机软限位")
+        if not lo <= axis["output_angle_deg"] <= hi:
+            raise MotorError("当前位置超出软范围，请现场核查参考位")
+
+
+def require_position_ready(value, config):
+    require_ready(value)
+    _require_position_bounds(value, config)
 
 
 def require_manual_position_ready(value, config):
@@ -405,16 +501,9 @@ def require_manual_position_ready(value, config):
     if value["limitFlags"] not in (None, 0):
         raise MotorError("当前轴限位触发、停止未确认或保护状态异常")
     axis = value["axes"][str(config.axis)]
-    limit = 35 if config.axis == 1 else 180
-    guard = axis["guard"]
-    if axis["output_angle_deg"] is None:
-        raise MotorError(f"轴{config.axis}尚未建立有效参考位")
     if axis["motor_rpm"] != 0 or axis["fault"] or axis["flags"] & 16:
         raise MotorError(f"轴{config.axis}反馈仍在运动或存在故障")
-    if not guard["soft_enabled"] or guard["minimum_deg"] < -limit or guard["maximum_deg"] > limit:
-        raise MotorError(f"请先应用轴{config.axis}±{limit}°软限位")
-    if not guard["minimum_deg"] <= config.targetAngleDeg <= guard["maximum_deg"]:
-        raise MotorError("目标角度超出当前轴软限位")
+    _require_position_bounds(value, config)
 
 
 def require_manual_axis_ready(value, config):
@@ -461,6 +550,7 @@ def check_position_motion(value, config, *, allow_other_axis_motion: bool = Fals
             (not allow_other_axis_motion and (other["motor_rpm"] != 0 or other["flags"] & 16 or
                                                other["fault"] or other["home_phase"] not in (0, 7, 8)))):
         raise MotorError("定位反馈无效、超界、故障或另一轴意外运动，已结束当前动作")
+    _require_position_bounds(value, config)
 
 
 def position_timeout(value, config):
@@ -473,6 +563,27 @@ def reference_key(value):
     fields = ("origin_counts", "display_mode", "command_counts_per_rev", "encoder_bits")
     return {axis: {**{key: data[key] for key in fields}, "valid": data["output_angle_deg"] is not None}
             for axis, data in value["axes"].items()}
+
+
+def reference_check(before, value, phase):
+    """Explain an exact identity comparison; never normalize or tolerate a change."""
+    after = reference_key(value)
+    labels = {"origin_counts": "参考计数", "display_mode": "显示计数模式",
+              "command_counts_per_rev": "每转指令计数 PA11", "encoder_bits": "编码器位数 PA95",
+              "valid": "参考角度有效性"}
+    changes = [{"axis": int(axis), "field": field, "label": label,
+                "before": before.get(axis, {}).get(field), "after": after.get(axis, {}).get(field)}
+               for axis in ("1", "2") for field, label in labels.items()
+               if before.get(axis, {}).get(field) != after.get(axis, {}).get(field)]
+    return {"phase": phase, "observedAt": value.get("observedAt"),
+            "before": {axis: dict(data) for axis, data in before.items()},
+            "after": after, "changes": changes}
+
+
+def reference_change_message(context, check):
+    details = "；".join(f"轴{item['axis']} {item['label']}（{item['field']}）"
+                        f"{item['before']}→{item['after']}" for item in check["changes"])
+    return f"{context}：{details}" if details else context
 
 
 class PositionProgress:
@@ -512,6 +623,7 @@ class ManualPositionProgress:
         axis = value["axes"][str(self.axis)]
         if axis["output_angle_deg"] is None or axis["fault"] or axis["flags"] & 16 or axis["home_phase"] not in (0, 7, 8):
             raise MotorError(f"轴{self.axis}定位反馈无效或存在故障")
+        _require_position_bounds(value, config)
         if reference_key(value)[str(self.axis)] != self.reference:
             raise MotorError(f"轴{self.axis}参考位或反馈单位已变化")
         now = time.monotonic()

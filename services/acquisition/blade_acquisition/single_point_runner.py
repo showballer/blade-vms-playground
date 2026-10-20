@@ -219,6 +219,10 @@ class SinglePointSession:
             value = anchors[f"axis{axis}AngleDeg"]
             if value is None:
                 raise RuntimeError(f"轴{axis}尚未建立有效参考位")
+            # This isolated legacy short-arc runner still requires both soft
+            # ranges; do not start its DAQ/motion using the newer station policy.
+            if not feedback["axes"][str(axis)]["guard"]["soft_enabled"]:
+                raise RuntimeError(f"旧单点短弧功能仍要求轴{axis}开启软限位")
             require_position_ready(feedback, self._axis_config(axis, value))
         if bind:
             self.anchor, self.references = anchors, reference_key(feedback)

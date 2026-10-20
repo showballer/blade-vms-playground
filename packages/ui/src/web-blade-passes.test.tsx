@@ -13,7 +13,7 @@ function record(id: string, point = "P1", task = collection, blade = "2"): Blade
   return { id, name: "叶片检测", samples: 1000, sampleRate: 1000, startedAt: 1000, status: "complete", source: "polytec_ivs500",
     pointCycle: { mode: "automatic_stations", collectionId: task, sessionId: id.padEnd(32, "0"), bladeId: blade,
       radialPointId: point, radialPointName: point, radiusM: point === "P1" ? .31 : .5, azimuthDeg: 0, stationIndex: 1, stationCount: 4,
-      lapIndex: 1, cycle: 1, cycles: 1, pointIndex: 1, pointName: "站位1", dwellSeconds: 30, targetAxis1AngleDeg: 0, targetAxis2AngleDeg: 0 } };
+      lapIndex: 1, cycle: 1, cycles: 1, pointIndex: 1, pointName: "点位1", dwellSeconds: 30, targetAxis1AngleDeg: 0, targetAxis2AngleDeg: 0 } };
 }
 const metrics = { rmsVelocityMps: .002, peakVelocityMps: .003, peakToPeakVelocityMps: .006 };
 const source: BladePassSource = { recordingId: "r1", name: "P1原记录", sessionId: "b".repeat(32), radialPointId: "P1", radialPointName: "P1",
@@ -41,7 +41,7 @@ check("旧记录或归属缺失给出明确原因，不静默跨任务合并", (
   const legacy = record("legacy"); legacy.pointCycle!.mode = "legacy";
   assert.equal(bladePassUnavailableReason(missing), "缺少有效任务归属");
   assert.equal(bladePassUnavailableReason(incomplete), "记录尚未完整上传或保存");
-  assert.equal(bladePassUnavailableReason(legacy), "旧点位记录缺少自动站位信息");
+  assert.equal(bladePassUnavailableReason(legacy), "旧点位记录缺少自动点位信息");
   assert.equal(bladePassTasks([missing, incomplete, legacy]).length, 0);
   const malformed = record("malformed"); malformed.pointCycle!.bladeId = 2 as unknown as string;
   assert.equal(bladePassUnavailableReason(malformed), "缺少叶片编号"); assert.equal(bladePassTasks([malformed]).length, 0);

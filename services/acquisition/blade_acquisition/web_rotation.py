@@ -183,7 +183,7 @@ def imported_record_metadata(metadata: dict, samples: int, sample_rate: float, f
 
     bounded(metadata)
     result = {}
-    for key in ("object", "turbine"):
+    for key in ("windFarm", "object", "turbine"):
         if key in metadata:
             if not isinstance(metadata[key], str) or len(metadata[key]) > 180:
                 raise ValueError(f"{key} 无效。")
@@ -238,20 +238,22 @@ def imported_record_metadata(metadata: dict, samples: int, sample_rate: float, f
         if key in cycle:
             text(cycle[key], f"点位 {key}")
     if "stationId" in cycle and "pointId" in cycle and cycle["stationId"] != cycle["pointId"]:
-        raise ValueError("点位编号与站位编号不一致。")
+        raise ValueError("点位编号与点位编号不一致。")
     for key in ("stationIndex", "stationCount", "lapIndex", "cycle", "pointIndex", "cycles"):
         if key in cycle:
             number(cycle[key], f"点位 {key}", 1, 1_000_000, integer=True)
     if "stationIndex" in cycle and "stationCount" in cycle and cycle["stationIndex"] > cycle["stationCount"]:
-        raise ValueError("站位序号超出站位总数。")
+        raise ValueError("点位序号超出点位总数。")
     if "radiusM" in cycle:
         number(cycle["radiusM"], "测点半径", 1e-12, 1000)
     if "azimuthDeg" in cycle:
-        number(cycle["azimuthDeg"], "站位角", 0, 360)
+        number(cycle["azimuthDeg"], "点位角", 0, 360)
         if cycle["azimuthDeg"] == 360:
-            raise ValueError("站位角必须小于 360 度。")
+            raise ValueError("点位角必须小于 360 度。")
     if "nominalPeriodSeconds" in cycle and cycle["nominalPeriodSeconds"] is not None:
-        number(cycle["nominalPeriodSeconds"], "叶轮周期", 1e-12)
+        # Zero is an explicitly operator-driven pass, not a measured period or
+        # a substitute RPM. Keep it when importing a full automatic-station record.
+        number(cycle["nominalPeriodSeconds"], "叶轮周期", 0 if mode == "automatic_stations" else 1e-12)
     if mode == "automatic_stations":
         for key in ("sessionId", "bladeId", "radialPointId", "radiusM", "azimuthDeg", "stationIndex", "stationCount", "lapIndex"):
             if key not in cycle:
@@ -627,7 +629,7 @@ def import_file(store: RecordingStore, payload: dict):
         auxiliary, overrange = point.pop("auxiliary"), point.pop("overrange")
         count = len(values)
         writer = store.create({**point, "sourceFile": filename, "sourceSha256": source_hash,
-                               "sourceDataPreserved": True, "object": point.get("object", ""), "turbine": point.get("turbine", "")})
+                               "sourceDataPreserved": True, "windFarm": point.get("windFarm", ""), "object": point.get("object", ""), "turbine": point.get("turbine", "")})
         try:
             origin = time.time()
             writer.ready(point["sampleRate"], origin)

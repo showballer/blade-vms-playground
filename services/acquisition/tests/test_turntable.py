@@ -18,6 +18,7 @@ from blade_acquisition.turntable import MotionGuard, TurntableConfig, PositionPr
 from blade_acquisition.turntable_driver.motor_controller import MotorStatus
 from blade_acquisition.turntable_driver.motor_controller import MotorController, MotorError, PositionFeedback, GuardConfig, MotionAccepted
 from blade_acquisition.turntable_driver.protocol import Response
+from laser_fixture import FakeLaserPanel
 
 
 TOKEN = "turntable-test-token-012345678901234567890123456789"
@@ -65,7 +66,8 @@ class FakeMotor:
         rpm = round(self.actual_rpm * 50) if self.started and axis == self.active_axis else 0
         return PositionFeedback(position, position, 0, 3, 10000, 17,
                                 self.angles[axis] if self.reference_valid else None,
-                                1 if self.reference_valid else 0, 0, 0, 0, 0, self.origins[axis], rpm)
+                                (1 if self.reference_valid else 0) | (2 if self.get_guard_config(axis).soft_enabled else 0),
+                                0, 0, 0, 0, self.origins[axis], rpm)
 
     def get_guard_config(self, axis):
         limit = 35 if axis == 1 else 180
@@ -200,6 +202,9 @@ class TurntableTests(unittest.TestCase):
             self.assertFalse(MotionGuard(Path(directory)).warning)
 
     def make_client(self, motor):
+        laser_panel = patch("blade_acquisition.service.DevicePanel", FakeLaserPanel)
+        laser_panel.start()
+        self.addCleanup(laser_panel.stop)
         self.temp = tempfile.TemporaryDirectory()
         app = create_app(Settings(TOKEN, 8765, Path(self.temp.name)), ReadyReceiver, lambda *args, **kwargs: motor)
         client = TestClient(app, base_url="http://127.0.0.1:8765", headers={"Authorization": f"Bearer {TOKEN}"})
@@ -207,6 +212,32 @@ class TurntableTests(unittest.TestCase):
         self.addCleanup(client.__exit__, None, None, None)
         self.addCleanup(self.temp.cleanup)
         return client
+
+    def test_health_reads_both_drive_alarms_and_faults_without_motion_or_reset(self):
+        motor = FakeMotor()
+        get_status, get_feedback = motor.get_status, motor.get_feedback
+        reads = []
+        def status(axis):
+            reads.append(axis)
+            return replace(get_status(axis), alarm_code=12 if axis == 2 else 0)
+        def feedback(axis):
+            value = get_feedback(axis)
+            return replace(value, output_angle_deg=None, fault=3, flags=18) if axis == 1 else value
+        motor.get_status, motor.get_feedback = status, feedback
+        client = self.make_client(motor)
+        result = client.post("/api/field/turntable", json={"action": "health", "port": "COM6", "axis": 1})
+        self.assertEqual(result.status_code, 200, result.text)
+        snapshot = result.json()["turntable"]
+        self.assertEqual(reads, [1, 2])
+        self.assertTrue(snapshot["health"]["readOnly"])
+        self.assertEqual(snapshot["health"]["axes"]["1"]["alarmCode"], 0)
+        self.assertEqual(snapshot["health"]["axes"]["2"]["alarmCode"], 12)
+        self.assertEqual(snapshot["feedback"]["axes"]["1"]["fault"], 3)
+        self.assertEqual(motor.start_calls, 0)
+        self.assertEqual(motor.stop_calls, 0)
+        self.assertEqual(client.get("/api/field/recordings").json()["recordings"], [])
+        rejected = client.post("/api/field/turntable", json={"action": "health", "port": "COM6", "axis": 1, "confirmRecovery": True})
+        self.assertEqual(rejected.status_code, 422)
 
     def test_mac_port_probe_uses_exact_path_and_preserves_motion_guards(self):
         motor = FakeMotor(reference_valid=False, soft_enabled=False)
@@ -225,6 +256,102 @@ class TurntableTests(unittest.TestCase):
         self.assertEqual(checked["turntable"]["state"], "error")
         self.assertIn("参考", checked["turntable"]["error"])
         self.assertEqual(motor.start_calls, 0)
+
+    def test_synchronous_turntable_responses_follow_close_busy_clear_and_lock_release(self):
+        for action in ("probe", "prepare", "reference", "limits", "stop"):
+            with self.subTest(action=action):
+                motor = FakeMotor()
+                client = self.make_client(motor)
+                controller = client.app.state.controller
+                events, status_calls = [], []
+                def close(stop=False):
+                    self.assertFalse(stop)
+                    events.append("closed")
+                motor.close = close
+                original_status = controller.status
+                def observed_status():
+                    available = controller.operation_lock.acquire(blocking=False)
+                    if available:
+                        controller.operation_lock.release()
+                    status_calls.append((bool(events), controller.turntable_busy, available))
+                    return original_status()
+                controller.status = observed_status
+                body = {"port": "COM6", "axis": 1, "action": action}
+                if action != "probe":
+                    body["confirmMotion"] = True
+                if action == "prepare":
+                    body.update(protocol="position", targetAngleDeg=10)
+                response = client.post("/api/field/turntable", json=body)
+                self.assertEqual(response.status_code, 200, response.text)
+                result = response.json()
+                self.assertFalse(result["turntableBusy"])
+                self.assertEqual(events, ["closed"])
+                self.assertEqual(status_calls[-1], (True, False, True))
+                self.assertEqual(motor.start_calls, 0)
+                if action == "probe":
+                    self.assertEqual(result["turntable"]["state"], "checked")
+                    self.assertEqual(motor.references, [])
+                    self.assertEqual(motor.guard_configs, {})
+                    self.assertEqual(motor.stop_calls, 0)
+                elif action == "prepare":
+                    self.assertTrue(result["turntablePreparation"]["ready"])
+
+    def test_asynchronous_turntable_handoffs_return_busy_until_worker_finishes(self):
+        for action in ("test", "manual_move", "recall"):
+            with self.subTest(action=action):
+                motor = FakeMotor()
+                entered, release = threading.Event(), threading.Event()
+                def connect():
+                    entered.set()
+                    if not release.wait(3):
+                        raise RuntimeError("fixture coordinator not released")
+                    return motor
+                motor.connect = connect
+                client = self.make_client(motor)
+                controller = client.app.state.controller
+                body = {"port": "COM6", "axis": 1, "action": action, "confirmMotion": True}
+                if action == "manual_move":
+                    body.update(protocol="position", targetAngleDeg=10)
+                elif action == "recall":
+                    body.update(recordedPort="COM6", referenceSignature="[[0,3,10000,17],[0,3,10000,17]]",
+                                axis1AngleDeg=10, axis2AngleDeg=2)
+                try:
+                    response = client.post("/api/field/turntable", json=body)
+                    self.assertEqual(response.status_code, 200, response.text)
+                    self.assertTrue(response.json()["turntableBusy"])
+                    self.assertTrue(entered.wait(1))
+                    self.assertFalse(controller.operation_lock.acquire(blocking=False))
+                    self.assertEqual(motor.start_calls, 0)
+                finally:
+                    controller.test_stop.set()
+                    release.set()
+                    if controller.test_thread:
+                        controller.test_thread.join(3)
+                self.assertFalse(controller.turntable_busy)
+                self.assertTrue(controller.operation_lock.acquire(blocking=False))
+                controller.operation_lock.release()
+                self.assertEqual(motor.start_calls, 0)
+
+    def test_synchronous_probe_error_is_not_masked_and_still_releases_owner(self):
+        motor = FakeMotor()
+        closed = []
+        motor.close = lambda stop=False: closed.append(stop)
+        def fail_probe():
+            raise RuntimeError("fixture original capability failure")
+        motor.probe_trajectory = fail_probe
+        client = self.make_client(motor)
+        controller = client.app.state.controller
+        response = client.post("/api/field/turntable", json={"port": "COM6", "axis": 1, "action": "probe"})
+        self.assertEqual(response.status_code, 503, response.text)
+        self.assertIn("fixture original capability failure", response.json()["detail"])
+        self.assertEqual(closed, [False])
+        self.assertFalse(controller.turntable_busy)
+        self.assertTrue(controller.operation_lock.acquire(blocking=False))
+        controller.operation_lock.release()
+        self.assertEqual(controller.turntable_snapshot["state"], "error")
+        self.assertEqual(motor.start_calls, 0)
+        self.assertEqual(motor.references, [])
+        self.assertEqual(motor.guard_configs, {})
 
     def start_body(self, config=None):
         body = {"deviceIp": "192.168.104.50", "hostIp": "192.168.104.10", "name": "joint", "object": "blade",
@@ -259,15 +386,15 @@ class TurntableTests(unittest.TestCase):
             time.sleep(0.01)
         self.fail("independent test did not finish")
 
-    def test_joint_capture_starts_after_ready_and_exports_telemetry(self):
+    def test_joint_capture_starts_after_stopped_arrival_and_exports_telemetry(self):
         motor = FakeMotor()
         client = self.make_client(motor)
-        config = {"port": "COM6", "axis": 1, "speedRpm": 0.2, "direction": "forward", "durationSeconds": 0}
-        self.prepare(client, config)
+        config = self.position_config()
+        self.assertEqual(client.post("/api/field/turntable", json={**config, "action": "prepare", "confirmMotion": True}).status_code, 200)
         response = client.post("/api/field/start", json=self.start_body(config))
         self.assertEqual(response.status_code, 200, response.text)
-        self.wait_state(client, "running")
-        self.assertEqual(motor.start_calls, 2)
+        self.wait_state(client, "holding")
+        self.assertEqual(motor.start_calls, 1)
         stopped = client.post("/api/field/stop")
         self.assertEqual(stopped.status_code, 200, stopped.text)
         self.assertEqual(stopped.json()["recording"]["status"], "complete")
@@ -281,10 +408,10 @@ class TurntableTests(unittest.TestCase):
     def test_limit_feedback_blocks_joint_start(self):
         motor = FakeMotor()
         client = self.make_client(motor)
-        config = {"port": "COM6", "axis": 1, "speedRpm": 0.2, "direction": "forward", "durationSeconds": 1}
-        self.prepare(client, config)
+        config = self.position_config()
+        self.assertEqual(client.post("/api/field/turntable", json={**config, "action": "prepare", "confirmMotion": True}).status_code, 200)
         motor.limit_flags = 1
-        response = client.post("/api/field/start", json=self.start_body({"port": "COM6", "axis": 1, "speedRpm": 0.2, "direction": "forward", "durationSeconds": 1}))
+        response = client.post("/api/field/start", json=self.start_body(config))
         self.assertEqual(response.status_code, 200)
         deadline = time.monotonic() + 3
         while time.monotonic() < deadline:
@@ -292,7 +419,7 @@ class TurntableTests(unittest.TestCase):
             if status["state"] == "error":
                 break
             time.sleep(0.01)
-        self.assertEqual(motor.start_calls, 1)
+        self.assertEqual(motor.start_calls, 0)
         self.assertEqual(status["recording"]["status"], "error")
 
     def test_legacy_firmware_can_recover_run_and_save_without_limit_feedback(self):
@@ -305,14 +432,14 @@ class TurntableTests(unittest.TestCase):
         self.assertEqual(recovered.status_code, 200, recovered.text)
         self.assertIsNone(recovered.json()["turntableWarning"])
         self.assertIsNone(recovered.json()["turntable"]["feedback"]["limitFlags"])
-        config = {"port": "COM6", "axis": 1, "speedRpm": 0.2, "direction": "forward", "durationSeconds": 0}
-        self.prepare(client, config)
+        config = self.position_config()
+        self.assertEqual(client.post("/api/field/turntable", json={**config, "action": "prepare", "confirmMotion": True}).status_code, 200)
         self.assertEqual(client.post("/api/field/start", json=self.start_body(config)).status_code, 200)
-        self.wait_state(client, "running")
+        self.wait_state(client, "holding")
         # Pass multiple telemetry polls to detect a runtime-only missing-flags rejection.
         time.sleep(0.6)
-        self.assertTrue(motor.started)
-        self.assertEqual(client.get("/api/field/status").json()["turntable"]["state"], "running")
+        self.assertFalse(motor.started)
+        self.assertEqual(client.get("/api/field/status").json()["turntable"]["state"], "holding")
         stopped = client.post("/api/field/stop")
         self.assertEqual(stopped.status_code, 200, stopped.text)
         value = stopped.json()
@@ -325,10 +452,10 @@ class TurntableTests(unittest.TestCase):
     def test_reported_limit_during_legacy_capture_stops_joint_task(self):
         motor = FakeMotor(limit_flags=None)
         client = self.make_client(motor)
-        config = {"port": "COM6", "axis": 1, "speedRpm": 0.2, "direction": "forward", "durationSeconds": 0}
-        self.prepare(client, config)
+        config = self.position_config()
+        self.assertEqual(client.post("/api/field/turntable", json={**config, "action": "prepare", "confirmMotion": True}).status_code, 200)
         self.assertEqual(client.post("/api/field/start", json=self.start_body(config)).status_code, 200)
-        self.wait_state(client, "running")
+        self.wait_state(client, "holding")
         motor.limit_flags = 1
         deadline = time.monotonic() + 3
         while time.monotonic() < deadline:
@@ -358,8 +485,10 @@ class TurntableTests(unittest.TestCase):
             self.assertEqual(client.post("/api/field/start", json=self.start_body({**config, **changes})).status_code, 409)
         changed = {**config, "durationSeconds": 10}
         self.assertEqual(client.post("/api/field/turntable", json={**changed, "action": "prepare", "confirmMotion": True}).status_code, 200)
-        self.assertEqual(client.post("/api/field/start", json=self.start_body(changed)).status_code, 200)
-        self.wait_state(client, "running")
+        blocked = client.post("/api/field/start", json=self.start_body(changed))
+        self.assertEqual(blocked.status_code, 409)
+        self.assertIn("定位停稳", blocked.json()["detail"])
+        self.assertIsNone(client.get("/api/field/status").json()["recording"])
         self.assertEqual(client.post("/api/field/stop").status_code, 200)
 
     def test_speed_feedback_without_position_change_does_not_pass(self):
@@ -448,7 +577,7 @@ class TurntableTests(unittest.TestCase):
             self.assertEqual(response.json()["turntable"]["feedback"]["outputAngleDeg"], expected)
             self.assertIsNone(response.json()["turntablePreparation"])
         self.assertEqual(motor.references, [1, 2])
-        config = self.position_config()
+        config = self.position_config(axis=1)
         self.assertEqual(client.post("/api/field/turntable", json={**config, "action": "prepare", "confirmMotion": True}).status_code, 503)
         motor.guard_configs[2] = replace(motor.get_guard_config(2), minimum_deg=-90, maximum_deg=90)
         response = client.post("/api/field/turntable", json={"port": "COM6", "axis": 2, "action": "limits", "confirmMotion": True})
@@ -480,6 +609,55 @@ class TurntableTests(unittest.TestCase):
         self.assertEqual(motor.start_calls, 1)
         self.assertEqual(motor.stopped_axes, [1])
         self.assertIsNone(status["turntablePreparation"])
+
+    def test_manual_horizontal_position_accepts_reference_without_soft_range(self):
+        motor = FakeMotor()
+        # Stale range values do not become active bounds when the policy is off.
+        motor.guard_configs[2] = replace(motor.get_guard_config(2), soft_enabled=False, minimum_deg=0, maximum_deg=0)
+        client = self.make_client(motor)
+        config = self.position_config(axis=2, target=12)
+        response = client.post("/api/field/turntable", json={**config, "action": "manual_move", "confirmMotion": True})
+        self.assertEqual(response.status_code, 200, response.text)
+        status = self.wait_test(client)
+        self.assertTrue(status["turntableTest"]["passed"], status)
+        self.assertEqual(motor.angles[2], 12)
+        self.assertEqual(motor.start_calls, 1)
+        self.assertEqual(status["turntable"]["feedback"]["axes"]["2"]["flags"], 1)
+        self.assertFalse(motor.get_guard_config(2).soft_enabled)
+        self.assertEqual(motor.references, [])
+
+    def test_horizontal_optional_soft_policy_keeps_reference_fault_and_coordinate_guards(self):
+        for failure in ("reference", "reference_flag", "alarm", "pending", "moving", "outside_product", "enabled_bounds", "invalid_bounds"):
+            with self.subTest(failure=failure):
+                motor = FakeMotor()
+                motor.guard_configs[2] = replace(motor.get_guard_config(2), soft_enabled=False, minimum_deg=0, maximum_deg=0)
+                if failure == "reference":
+                    motor.reference_valid = False
+                elif failure == "reference_flag":
+                    original = motor.get_feedback
+                    motor.get_feedback = lambda axis: replace(original(axis), flags=0) if axis == 2 else original(axis)
+                elif failure == "alarm":
+                    motor.alarm_code = 2
+                elif failure == "pending":
+                    original = motor.get_feedback
+                    motor.get_feedback = lambda axis: replace(original(axis), flags=17) if axis == 2 else original(axis)
+                elif failure == "moving":
+                    motor.started, motor.active_axis = True, 2
+                elif failure == "outside_product":
+                    motor.angles[2] = 181
+                elif failure == "enabled_bounds":
+                    motor.guard_configs[2] = replace(motor.get_guard_config(2), soft_enabled=True, minimum_deg=-2, maximum_deg=2)
+                elif failure == "invalid_bounds":
+                    motor.guard_configs[2] = replace(motor.get_guard_config(2), soft_enabled=True, minimum_deg=0, maximum_deg=0)
+                value = snapshot(motor, 2)
+                with self.assertRaises(MotorError):
+                    require_manual_position_ready(value, TurntableConfig(**self.position_config(axis=2, target=12)))
+                self.assertEqual(motor.start_calls, 0)
+
+    def test_manual_pitch_still_requires_soft_range(self):
+        motor = FakeMotor(soft_enabled=False)
+        with self.assertRaisesRegex(MotorError, "软限位"):
+            require_manual_position_ready(snapshot(motor, 1), TurntableConfig(**self.position_config(axis=1, target=12)))
 
     def test_stop_confirmation_does_not_require_other_axis_feedback(self):
         motor = Axis2InvalidReferenceMotor()
@@ -520,20 +698,34 @@ class TurntableTests(unittest.TestCase):
         client = self.make_client(motor)
         for changes in ({"axis1AngleDeg": 36.7}, {"axis2AngleDeg": -180.001}, {"axis2AngleDeg": None},
                         {"axis1AngleDeg": True}, {"confirmMotion": False}, {"referenceSignature": "broken"},
-                        {"referenceSignature": None}, {"recordedPort": None}, {"recordedPort": "COM7"}):
+                        {"referenceSignature": None}, {"recordedPort": None}, {"recordedPort": "COM7"},
+                        *({"maxMoveAccelerationDegS2": value} for value in (0, .099, 120.001, True, "30", None))):
             response = client.post("/api/field/turntable", json=self.recall_body(**changes))
             self.assertEqual(response.status_code, 422, response.text)
         self.assertEqual(motor.start_calls, 0)
 
-    def test_recall_checks_axis2_soft_limit_before_axis1_moves(self):
+    def test_recall_checks_enabled_axis2_soft_limit_before_axis1_moves(self):
         motor = FakeMotor()
-        motor.guard_configs[2] = replace(motor.get_guard_config(2), soft_enabled=False)
+        motor.guard_configs[2] = replace(motor.get_guard_config(2), minimum_deg=-2, maximum_deg=2)
         client = self.make_client(motor)
         client.post("/api/field/turntable", json=self.recall_body())
         status = self.wait_test(client)
         self.assertEqual(motor.start_calls, 0)
         self.assertEqual(status["turntable"]["recall"]["state"], "error")
         self.assertIn("软限位", status["turntable"]["error"])
+
+    def test_legacy_recall_accepts_axis2_without_soft_and_preserves_policy(self):
+        motor = FakeMotor()
+        motor.guard_configs[2] = replace(motor.get_guard_config(2), soft_enabled=False, minimum_deg=0, maximum_deg=0)
+        client = self.make_client(motor)
+        response = client.post("/api/field/turntable", json=self.recall_body())
+        self.assertEqual(response.status_code, 200, response.text)
+        status = self.wait_test(client)
+        self.assertEqual(status["turntable"]["recall"]["state"], "complete", status)
+        self.assertEqual(status["turntable"]["recall"]["completedAxes"], [1, 2])
+        self.assertEqual(motor.start_calls, 2)
+        self.assertFalse(motor.get_guard_config(2).soft_enabled)
+        self.assertEqual(motor.references, [])
 
     def test_recall_rejects_changed_recorded_reference_before_motion(self):
         motor = FakeMotor()
@@ -616,11 +808,11 @@ class TurntableTests(unittest.TestCase):
                                       "action": "stop", "confirmMotion": True})
         self.assertEqual(response.status_code, 503, response.text)
         self.assertIn("轴2", response.json()["detail"])
-        self.assertIn("0x0011", response.json()["detail"])
+        self.assertIn("0x0013", response.json()["detail"])
         status = client.get("/api/field/status").json()
         self.assertTrue(status["turntableWarning"])
         self.assertFalse(status["turntable"]["stopConfirmed"])
-        self.assertEqual(status["turntable"]["feedback"]["axes"]["2"]["flags"], 17)
+        self.assertEqual(status["turntable"]["feedback"]["axes"]["2"]["flags"], 19)
         self.assertEqual(motor.stopped_axes, [2])
 
     def test_stationary_fault_is_visible_after_stop_and_still_blocks_motion(self):

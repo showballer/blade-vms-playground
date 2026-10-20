@@ -5,6 +5,10 @@ import "@blade/ui/styles.css";
 import "../../../packages/ui/src/field-styles.css";
 import "../../../packages/ui/src/field-realtime.css";
 import "../../../packages/ui/src/field-turntable.css";
+import "../../../packages/ui/src/field-header-laser.css";
+import "../../../packages/ui/src/field-turntable-health.css";
+import "../../../packages/ui/src/field-cycle-motion.css";
+import "../../../packages/ui/src/field-auto-capture-list.css";
 import "../../../packages/ui/src/field-auto-follow.css";
 import "../../../packages/ui/src/field-blade-summary.css";
 createRoot(document.getElementById("root")!).render(

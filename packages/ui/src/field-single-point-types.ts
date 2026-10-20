@@ -43,7 +43,7 @@ export type FieldSinglePointStatus = {
   events?: { sequence?: number; at: number; phase?: string; message?: string; error?: string }[];
   phaseLocked: false; identityConfirmed: false; motionModel: "position_chord_approximation"; quality: "manual_unverified";
 };
-export type FieldSinglePointCapture = { name: string; deviceIp: string; hostIp: string; port: string; object?: string; turbine?: string; point?: string; captureSessionId?: string };
+export type FieldSinglePointCapture = { name: string; deviceIp: string; hostIp: string; port: string; windFarm?: string; object?: string; turbine?: string; point?: string; captureSessionId?: string };
 export type FieldSinglePointRequest =
   | { action: "preview"; config: FieldSinglePointConfig }
   | { action: "prepare"; sessionId: string; commandId: string; config: FieldSinglePointConfig; capture: FieldSinglePointCapture; confirmStaticPoint: true; confirmGeometry: true; confirmLaser: true }

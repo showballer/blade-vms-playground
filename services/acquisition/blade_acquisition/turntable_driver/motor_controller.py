@@ -20,10 +20,10 @@ from .protocol import (
     Response, ResponseParser, build_request, build_move_output_relative,
     build_motion_profile,
     CMD_TRAJECTORY_BEGIN, CMD_TRAJECTORY_POINT, CMD_TRAJECTORY_SEAL, CMD_TRAJECTORY_START,
-    CMD_TRAJECTORY_STATUS, CMD_TRAJECTORY_STOP, CMD_TRAJECTORY_KEEPALIVE,
+    CMD_TRAJECTORY_STATUS, CMD_TRAJECTORY_STOP, CMD_TRAJECTORY_KEEPALIVE, CMD_READ_AXES,
     build_trajectory_begin, build_trajectory_point, validate_trajectory_session,
 )
-from .trajectory import TrajectoryPoint, TrajectoryStatus, decode_status, validate_points
+from .trajectory import TrajectoryPoint, TrajectoryStatus, decode_status, decode_axes, validate_points
 
 
 class MotorError(RuntimeError):
@@ -186,7 +186,7 @@ class MotorController:
             if self._faulted:
                 raise CommunicationError("上次通信结果不确定，请关闭并重连；不要自动重发运动")
             read_commands = (CMD_READ_PA, CMD_READ_SPEED, CMD_READ_POSITION, CMD_READ_ALARM,
-                             CMD_READ_FEEDBACK, CMD_READ_GUARD)
+                             CMD_READ_FEEDBACK, CMD_READ_GUARD, CMD_READ_AXES)
             if (self._trajectory_session is not None and frame[4] not in read_commands and
                     not CMD_TRAJECTORY_BEGIN <= frame[4] <= CMD_TRAJECTORY_KEEPALIVE and frame[4] != CMD_STOP):
                 raise MotorError("两轴轨迹已准备或运行，请先停止轨迹后再发送其他运动或配置")
@@ -483,6 +483,29 @@ class MotorController:
         """Read MCU cached state; never use this as a live angle before sampling."""
         return self._trajectory_data(self._request(build_request(1, CMD_TRAJECTORY_STATUS)))
 
+    def get_axis_positions(self):
+        """Read vendor dual-axis observations without full drive queries in motion.
+
+        New firmware reuses its control samples while moving and reports each
+        sample's age. It refreshes from the drives while idle. Neither this read
+        nor its capability probe changes references, guards, speed or position.
+        """
+        packet = self._request(build_request(1, CMD_READ_AXES))
+        try:
+            return decode_axes(self._data(packet, 40))
+        except ValueError as exc:
+            self._faulted = True
+            raise CommunicationError(str(exc)) from exc
+
+    def probe_axis_positions(self):
+        """Only UNKNOWN_COMMAND permits an older-firmware telemetry fallback."""
+        try:
+            return self.get_axis_positions()
+        except CommandRejected as exc:
+            if exc.status == 7:
+                return None
+            raise
+
     def probe_trajectory(self) -> TrajectoryStatus | None:
         """Only an explicit UNKNOWN_COMMAND proves legacy firmware. No write fallback."""
         try:
@@ -504,16 +527,22 @@ class MotorController:
             if feedback.output_angle_deg is None or not feedback.flags & 1:
                 raise MotorError(f"轴{axis}没有可信参考位，不能执行两轴轨迹")
             limit = 35 if axis == 1 else 180
-            if (not guard.soft_enabled or not feedback.flags & 2 or not
-                    -limit <= guard.minimum_deg < guard.maximum_deg <= limit):
-                raise MotorError(f"轴{axis}软范围未开启或超出机械范围")
+            if axis == 1 and not guard.soft_enabled:
+                raise MotorError("轴1软范围未开启，不能执行两轴轨迹")
+            if guard.soft_enabled and (not feedback.flags & 2 or
+                    not math.isfinite(guard.minimum_deg) or not math.isfinite(guard.maximum_deg) or
+                    not guard.minimum_deg < guard.maximum_deg or
+                    axis == 1 and not -35 <= guard.minimum_deg < guard.maximum_deg <= 35):
+                raise MotorError(f"轴{axis}软范围或反馈无效")
             channels = (guard.negative, guard.positive, guard.home) if guard.home_at_end else (guard.negative, guard.positive)
             if any(ch is not None and not 0 <= ch <= 5 for ch in channels):
                 raise MotorError(f"轴{axis}限位输入配置无效")
             if guard.hardware_enabled and any(ch is not None and feedback.active_inputs & (1 << ch) for ch in channels):
                 raise MotorError(f"轴{axis}端点限位已触发")
             angles = [feedback.output_angle_deg, *(getattr(p, f"axis{axis}_deg") for p in points)]
-            if any(not guard.minimum_deg <= angle <= guard.maximum_deg for angle in angles):
+            if any(not math.isfinite(angle) or abs(angle) > limit for angle in angles):
+                raise MotorError(f"轴{axis}当前位置或轨迹目标超出±{limit}°产品范围")
+            if guard.soft_enabled and any(not guard.minimum_deg <= angle <= guard.maximum_deg for angle in angles):
                 raise MotorError(f"轴{axis}当前位置或轨迹目标超出实际软范围")
             if target is not None and abs(feedback.output_angle_deg - getattr(target, f"axis{axis}_deg")) > tolerance + 1e-9:
                 raise MotorError(f"轴{axis}未到轨迹要求位置，禁止自动补移或继续")
@@ -549,6 +578,8 @@ class MotorController:
                 raise MotorError("当前转盘固件不支持两轴缓冲轨迹")
             if current.active:
                 raise MotorError("转盘已有运行任务，请先停止并核查，不会覆盖原任务")
+            if current.state == 7 or current.fault not in (0, 1):
+                raise MotorError(f"转盘轨迹仍有故障：{current.fault_text}，请先核查并恢复")
             references = self._trajectory_axes(points, cancel=cancel)
             self._trajectory_cancelled(cancel)
             self._trajectory_session = session  # Lost BEGIN/START replies still require group cancellation.

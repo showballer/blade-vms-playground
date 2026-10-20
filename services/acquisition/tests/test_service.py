@@ -22,6 +22,7 @@ from blade_acquisition.service import Settings, create_app
 from blade_acquisition.turntable import PointCyclePoint
 from blade_acquisition.storage import HEADER, RECORD, RecordingStore, RecordingWriter
 from export_csv import export
+from laser_fixture import FakeLaserPanel
 
 TOKEN = "unit-test-only-0123456789abcdef0123456789abcdef"
 POINT_REFERENCE = {"port": "COM6", "referenceSignature": "[[0,3,10000,17],[0,3,10000,17]]"}
@@ -53,6 +54,9 @@ class FixtureReceiver:
 
 class ApiTests(unittest.TestCase):
     def setUp(self):
+        laser_panel = patch("blade_acquisition.service.DevicePanel", FakeLaserPanel)
+        laser_panel.start()
+        self.addCleanup(laser_panel.stop)
         self.temporary = tempfile.TemporaryDirectory()
         self.settings = Settings(TOKEN, 8765, Path(self.temporary.name))
         self.app = create_app(self.settings, FixtureReceiver)
@@ -99,7 +103,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.client.post("/api/field/start", json=missing).status_code, 422)
 
     def test_raw_capture_is_complete_but_frame_is_bounded(self):
-        self.assertEqual(self.client.post("/api/field/start", json=START).status_code, 200)
+        self.assertEqual(self.client.post("/api/field/start", json={**START, "windFarm": "  WF-001  "}).status_code, 200)
         frame = self.wait_for_samples()
         self.assertEqual(frame["recording"]["samples"], 5000)
         self.assertEqual(len(frame["waveform"]["values"]), 2048)
@@ -114,6 +118,7 @@ class ApiTests(unittest.TestCase):
         stopped = self.client.post("/api/field/stop").json()
         self.assertEqual(stopped["state"], "idle")
         self.assertEqual(stopped["recording"]["status"], "complete")
+        self.assertEqual(stopped["recording"]["windFarm"], "WF-001")
         record_id = stopped["recording"]["id"]
         directory = Path(self.temporary.name) / "recordings" / record_id
         chunks = list(directory.glob("*.bin"))
@@ -122,6 +127,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.client.get("/api/field/recordings").json()["recordings"][0]["id"], record_id)
         preview = self.client.get(f"/api/field/recordings/{record_id}").json()
         self.assertEqual(len(preview["waveform"]["values"]), 2048)
+        self.assertEqual(preview["recording"]["windFarm"], "WF-001")
         self.assertEqual(preview["recording"]["missingRssiSamples"], 1)
         self.assertEqual(self.client.post("/api/field/stop").status_code, 200)
 
@@ -129,7 +135,7 @@ class ApiTests(unittest.TestCase):
         from test_turntable import FakeMotor
         motor = FakeMotor()
         self.app.state.controller.motor_factory = lambda *args, **kwargs: motor
-        request = {**START, "confirmMotion": True, "captureSessionId": "a" * 32,
+        request = {**START, "windFarm": "WF-002", "confirmMotion": True, "captureSessionId": "a" * 32,
                    "pointCycle": {"port": "COM6", "cycles": 2, "dwellSeconds": 1, "speedRpm": 0.5,
                                   "points": [{**POINT_REFERENCE, "name": "m01", "axis1AngleDeg": 0, "axis2AngleDeg": 0},
                                              {**POINT_REFERENCE, "name": "m06", "axis1AngleDeg": 10, "axis2AngleDeg": 5}]}}
@@ -143,6 +149,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(result["state"], "idle", result)
         records = self.client.get("/api/field/recordings").json()["recordings"]
         self.assertEqual(len(records), 4)
+        self.assertTrue(all(record["windFarm"] == "WF-002" for record in records))
         self.assertTrue(all(record["status"] == "complete" for record in records))
         self.assertTrue(all(record["captureSessionId"] == "a" * 32 for record in records))
         self.assertTrue(all(record["pointCycle"]["recordedPort"] == "COM6" for record in records))
@@ -215,7 +222,8 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(motor.start_calls, 0)
         records = self.app.state.controller.store.list()
         self.assertEqual(len(records), 1)
-        self.assertEqual(records[0]["status"], "complete")
+        self.assertEqual(records[0]["status"], "error")
+        self.assertGreater(records[0]["samples"], 0)
 
     def test_point_cycle_stop_keeps_completed_records_and_reports_cancelled(self):
         from test_turntable import FakeMotor
@@ -236,7 +244,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(result["pointCycle"]["state"], "cancelled")
         self.assertLess(result["pointCycle"]["completedRecords"], 3)
 
-    def test_rssi_handoff_moves_before_receiver_closes_and_resets_each_point(self):
+    def test_rssi_handoff_waits_for_receiver_close_before_motion_and_resets_each_point(self):
         from test_turntable import FakeMotor
         from test_rssi_handoff import batch as echo_batch, blade_values
         events = []
@@ -259,7 +267,7 @@ class ApiTests(unittest.TestCase):
                 ready(1000, 1700000000)
                 receive(echo_batch([high] * 700 + blade_values(100) + [high] * 100))
                 self_stopped = stop.wait(2)
-                self_moved = commanded.wait(2)
+                self_moved = commanded.is_set()
                 events.append(("closed", number, self_stopped, self_moved))
                 # Deliberate late shutdown data: it must not enter the record.
                 receive(echo_batch([1] * 100, start=900))
@@ -295,14 +303,24 @@ class ApiTests(unittest.TestCase):
             self.assertIn("record_saved", phases)
             self.assertLessEqual(handoff["observedAt"], handoff["motionCommandAt"])
             self.assertLessEqual(handoff["motionCommandAt"], handoff["arrivedAt"])
-        self.assertTrue(all(event[2:] == (True, True) for event in events if event[0] == "closed"))
+        self.assertTrue(all(event[2:] == (True, False) for event in events if event[0] == "closed"))
+        first_close = next(index for index, event in enumerate(events) if event[0] == "closed")
+        first_move = next(index for index, event in enumerate(events) if event[0] == "move")
+        self.assertLess(first_close, first_move)
 
     def test_rssi_wait_timeout_does_not_blindly_move_to_next_point(self):
         from test_turntable import FakeMotor
+        from test_rssi_handoff import batch as echo_batch
+        class StaticReceiver(FixtureReceiver):
+            def run(self, stop, ready, receive):
+                ready(1000, 1700000000)
+                receive(echo_batch([80] * 900))
+                stop.wait(3)
+        self.app.state.controller.receiver_factory = StaticReceiver
         motor = FakeMotor()
         self.app.state.controller.motor_factory = lambda *args, **kwargs: motor
         request = {**START, "confirmMotion": True,
-                   "pointCycle": {"port": "COM6", "dwellSeconds": 1, "rssiTriggerEnabled": True,
+                   "pointCycle": {"port": "COM6", "dwellSeconds": 1, "rssiTriggerEnabled": True, "routeOrder": "configured",
                                   "points": [{**POINT_REFERENCE, "name": "m01", "axis1AngleDeg": 0, "axis2AngleDeg": 0},
                                              {**POINT_REFERENCE, "name": "m02", "axis1AngleDeg": 4, "axis2AngleDeg": 6}]}}
         self.assertEqual(self.client.post("/api/field/start", json=request).status_code, 200)
@@ -348,6 +366,79 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(motor.angles[2], 0)
         self.assertEqual(len(controller.store.list()), 1)
         self.assertIsNone(controller.motion_guard.warning)
+
+    def test_configured_manual_route_keeps_order_and_echo_boundaries(self):
+        from test_turntable import FakeMotor
+        from test_rssi_handoff import batch as echo_batch, blade_values
+        class Receiver(FixtureReceiver):
+            def run(self, stop, ready, receive):
+                ready(1000, 1700000000)
+                receive(echo_batch([80] * 700 + blade_values(100) + [60] * 100))
+                stop.wait(3)
+                # Late receiver shutdown data must not enter a moving record.
+                receive(echo_batch([1] * 100, start=900))
+        motor = FakeMotor()
+        controller = self.app.state.controller
+        controller.motor_factory = lambda *args, **kwargs: motor
+        controller.receiver_factory = Receiver
+        points = [{**POINT_REFERENCE, "pointId": f"m{index}", "name": f"m{index}",
+                   "axis1AngleDeg": angle, "axis2AngleDeg": 0}
+                  for index, angle in enumerate([0, 20, -5, 1])]
+        request = {**START, "confirmMotion": True, "pointCycle": {
+            "port": "COM6", "routeOrder": "configured", "cycles": 1,
+            "dwellSeconds": 3, "speedRpm": .5, "rssiTriggerEnabled": True, "points": points}}
+        self.assertEqual(self.client.post("/api/field/start", json=request).status_code, 200)
+        controller.thread.join(12)
+        self.assertFalse(controller.thread.is_alive())
+        result = controller.status()
+        self.assertEqual(result["state"], "idle", result)
+        self.assertEqual(result["pointCycle"]["plannedOrder"], [p["name"] for p in points])
+        self.assertEqual(result["pointCycle"]["completedRecords"], 4)
+        self.assertEqual(motor.angles[1], 1)  # No unrequested final return movement.
+        records = controller.store.list()
+        self.assertEqual(len(records), 4)
+        for record in records:
+            self.assertEqual(record["status"], "complete")
+            self.assertEqual(record["samples"], 900)
+            meta = record["pointCycle"]
+            self.assertEqual(meta["completion"], "confirmed_pass")
+            self.assertEqual(meta["handoff"]["reason"], "blade_left")
+            self.assertLess(meta["entrySampleIndex"], meta["exitSampleIndex"])
+            self.assertEqual(meta["referenceSignature"], POINT_REFERENCE["referenceSignature"])
+        # Saving a timed route cannot bypass the enter/leave requirement.
+        request["pointCycle"]["rssiTriggerEnabled"] = False
+        self.assertEqual(self.client.post("/api/field/start", json=request).status_code, 422)
+
+    def test_sequential_point_cycle_accepts_axis2_reference_without_soft_policy(self):
+        from dataclasses import replace
+        from test_turntable import FakeMotor
+        from test_automatic_stations import PassReceiver
+        motor = FakeMotor()
+        motor.guard_configs[2] = replace(motor.get_guard_config(2), soft_enabled=False,
+                                         minimum_deg=0, maximum_deg=0)
+        controller = self.app.state.controller
+        controller.motor_factory = lambda *args, **kwargs: motor
+        controller.receiver_factory = PassReceiver
+        request = {**START, "confirmMotion": True, "pointCycle": {
+            "port": "COM6", "mode": "legacy", "routeOrder": "configured", "cycles": 1,
+            "dwellSeconds": 3, "rssiTriggerEnabled": True, "points": [
+                {**POINT_REFERENCE, "name": "P1", "axis1AngleDeg": 0, "axis2AngleDeg": 0},
+                {**POINT_REFERENCE, "name": "P2", "axis1AngleDeg": 2, "axis2AngleDeg": 3}]}}
+        self.assertEqual(self.client.post("/api/field/start", json=request).status_code, 200)
+        controller.thread.join(5)
+        result = controller.status()
+        self.assertEqual(result["state"], "idle", result)
+        self.assertEqual(result["pointCycle"]["motionMode"], "sequential")
+        self.assertEqual(result["pointCycle"]["completedRecords"], 2)
+        self.assertEqual(motor.angles, {1: 2, 2: 3})
+        self.assertEqual(motor.start_calls, 2)
+        self.assertEqual(motor.get_feedback(2).flags, 1)
+        self.assertFalse(motor.get_guard_config(2).soft_enabled)
+        self.assertEqual(motor.references, [])
+        records = controller.store.list()
+        self.assertEqual(len(records), 2)
+        self.assertTrue(all(record["status"] == "complete" and
+            record["pointCycle"]["completion"] == "confirmed_pass" for record in records))
 
     def test_point_cycle_plans_nearest_safe_route_without_axis2_wrap(self):
         controller = self.app.state.controller
@@ -729,6 +820,47 @@ class LegacyDestinationSdk(FakeSdk):
 
 
 class ReceiverTests(unittest.TestCase):
+    def test_late_cleanup_failure_or_abort_never_claims_a_normal_keep_on_boundary(self):
+        for boundary in ("acquisition", "communication", "late_abort"):
+            with self.subTest(boundary=boundary):
+                stop, cancelled = threading.Event(), threading.Event()
+                class ClosingSdk(FakeSdk):
+                    def PolyCloseDataAcquisition(self, *_):
+                        super().PolyCloseDataAcquisition()
+                        if boundary == "acquisition":
+                            raise OSError("fixture CloseDAQ failed")
+                    def PolyCloseCommunication(self, *_):
+                        super().PolyCloseCommunication()
+                        if boundary == "communication":
+                            raise OSError("fixture CloseCommunication failed")
+                        if boundary == "late_abort":
+                            cancelled.set()
+                sdk = ClosingSdk()
+                receiver = PolytecReceiver(ReceiverConfig(START["deviceIp"], START["hostIp"], "fixture-only"))
+                def receive(_):
+                    stop.set()
+                with patch.object(receiver, "_load_api", return_value=sdk):
+                    if boundary != "late_abort":
+                        with self.assertRaisesRegex(RuntimeError, "fixture Close"):
+                            receiver.run(stop, lambda *_: None, receive, keep_laser_on=True, abort=cancelled)
+                    else:
+                        receiver.run(stop, lambda *_: None, receive, keep_laser_on=True, abort=cancelled)
+                if boundary == "acquisition":
+                    # CloseDAQ failed while the original control handle is
+                    # still open, so the owner can immediately confirm OFF.
+                    self.assertEqual(sdk.laser_commands, [1, 0])
+                    self.assertEqual(receiver.laser_status["fields"]["laser"]["value"], 0)
+                else:
+                    # Once close has happened or failed, never reuse that
+                    # uncertain handle; service cleanup must independently OFF
+                    # after join and must not proceed to the next station.
+                    self.assertEqual(sdk.laser_commands, [1])
+                    self.assertIsNone(receiver.laser_status["readAt"])
+                    self.assertFalse(receiver.laser_status["fields"]["laser"]["supported"])
+                    self.assertTrue(receiver.laser_status["fields"]["laser"]["error"])
+                self.assertIsNone(receiver.api)
+                self.assertEqual(sdk.closed, ["acquisition", "communication"])
+
     def test_laser_persistence_only_survives_normal_point_boundary(self):
         for failure, abort in ((False, False), (True, False), (False, True)):
             with self.subTest(failure=failure, abort=abort):

@@ -80,7 +80,17 @@ class DevicePanel(PolytecReceiver):
             if hi.value <= lo.value:
                 raise ValueError("信号强度量程无效")
             result["percent"] = (value - lo.value) * 100 / (hi.value - lo.value)
+        if key == "laser" and value not in (0, 1):
+            raise ValueError("设备返回无效激光状态；未使用关闭状态替代")
         return result
+
+    def laser_snapshot(self):
+        """Read only command 46; polling must not enumerate all device settings."""
+        value = self.integer(SENSOR_HEAD, 46)
+        if value not in (0, 1):
+            raise ValueError("设备返回无效激光状态；未使用关闭状态替代")
+        return {"deviceIp": self.config.device_ip, "readAt": time.time(),
+                "fields": {"laser": {"supported": True, "value": value, "writable": False}}, "source": "device-readback"}
 
     def snapshot(self):
         fields = {}
@@ -95,12 +105,15 @@ class DevicePanel(PolytecReceiver):
         return {"deviceIp": self.config.device_ip, "readAt": time.time(), "fields": fields,
                 "source": "device-readback", "samplingNote": "采样率在采集启动时从 SDK 数据流读取；不是带宽。"}
 
-    def run_command(self, action="read", key=None, value=None, expected=None):
+    def run_command(self, action="read", key=None, value=None, expected=None, *, laser_only=False):
         opened = False
         try:
             self.api = self._load_api()
-            self._check(self.api.PolyOpenUdpEthernetCommunication(C.byref(self.communication), self.config.device_ip.encode("ascii"), 1500), "Open settings communication")
+            self._check(self.api.PolyOpenUdpEthernetCommunication(C.byref(self.communication), self.config.device_ip.encode("ascii"),
+                                                               500 if action == "laser_read" else 1500), "Open settings communication")
             opened = True
+            if action == "laser_read":
+                return self.laser_snapshot()
             if action == "set":
                 if key not in WRITABLE:
                     raise ValueError("此配置项不可修改。")
@@ -124,12 +137,20 @@ class DevicePanel(PolytecReceiver):
                 self.set_integer(SENSOR_HEAD, 46, 1)
                 if self.integer(SENSOR_HEAD, 46) != 1:
                     raise RuntimeError("激光开启读回未确认。")
+                if laser_only:
+                    return {"deviceIp": self.config.device_ip, "readAt": time.time(), "source": "device-readback",
+                            "fields": {"laser": {"supported": True, "value": 1, "writable": False}}}
             elif action == "laser_off":
                 if not self.has(SENSOR_HEAD, 46):
                     raise ValueError("设备不支持激光控制。")
                 self.set_integer(SENSOR_HEAD, 46, 0)
                 if self.integer(SENSOR_HEAD, 46) != 0:
                     raise RuntimeError("激光关闭读回未确认。")
+                if laser_only:
+                    # Internal session cleanup: do not delay a verified OFF
+                    # result by enumerating unrelated configuration fields.
+                    return {"deviceIp": self.config.device_ip, "readAt": time.time(), "source": "device-readback",
+                            "fields": {"laser": {"supported": True, "value": 0, "writable": False}}}
             elif action == "autofocus":
                 self.autofocus()
             elif action != "read":

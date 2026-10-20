@@ -17,6 +17,7 @@ require.cache[require.resolve(bootstrap)] = { id: bootstrap, filename: bootstrap
 const fixture = { active: false, frames: 0, stops: 0, starts: 0, frameWindows: [], waveRequests: [], deviceRequests: [] };
 const record = { id: 'a'.repeat(32), name: 'TEST ONLY · 波形浏览交互验证', samples: 500000, sampleRate: 218750,
   sampleOrigin: 1700000000, startedAt: 1699999999, status: 'complete', velocityRangeMps: 0.5 };
+const panelRequests = () => fixture.deviceRequests.filter(request => request.action !== 'laser_read');
 const fields = { velocityRange: { supported: true, writable: true, value: '500 mm/s', options: ['500 mm/s', '100 mm/s'] },
   bandwidth: { supported: true, writable: true, value: '10 kHz', options: ['10 kHz', '5 kHz'] },
   highPass: { supported: true, writable: true, value: 'Off', options: ['Off', '13 Hz'] },
@@ -48,7 +49,9 @@ require.cache[require.resolve(moduleFile)] = { id: moduleFile, filename: moduleF
     stop: async () => { fixture.stops++; fixture.active = false; return snapshot(); }, shutdown: async () => {},
     recordings: async id => id ? { recording: record, waveform: wave(497952, 500000) } : { recordings: [record] },
     waveform: async (id, start = 0, end = 500000) => { fixture.waveRequests.push({ id, start, end }); await new Promise(r => setTimeout(r, 80)); return { recording: record, waveform: wave(start, end) }; },
-    device: async request => { fixture.deviceRequests.push(request); if (request.action === 'set') fields[request.key].value = request.value;
+    device: async request => { fixture.deviceRequests.push(request);
+      if (request.action === 'laser_read') return { deviceIp: request.deviceIp, state: 'off', laser: 0, readAt: Date.now()/1000, source: 'explicit-test-fixture', busy: false };
+      if (request.action === 'set') fields[request.key].value = request.value;
       return { deviceIp: request.deviceIp, readAt: 1700000000, source: 'explicit-test-fixture', fields: structuredClone(fields) }; },
   }),
 } };
@@ -162,19 +165,20 @@ app.on('browser-window-created', (_event, win) => {
         wc.sendInputEvent({ type: 'mouseUp', button: 'left', clickCount: 1, x: x+35, y });
         await waitFor(() => fixture.waveRequests.at(-1).start !== 80000 || fixture.waveRequests.at(-1).end !== 82188, 'overview drag');
       });
+      await js('document.querySelector("dialog button[aria-label=关闭弹窗]").click()');
       await click('设备与服务'); await set('[aria-label="配置设备 IP"]', '192.0.2.10'); await click('读取实际配置');
       await check('device options come from readback and changing a draft does not write', async () => {
         await waitFor(async () => (await body()).includes('上次读回'), 'settings read');
-        assert.equal(fixture.deviceRequests.length, 1); assert.equal(fixture.deviceRequests[0].action, 'read');
+        assert.equal(panelRequests().length, 1); assert.equal(panelRequests()[0].action, 'read');
         await select('带宽', '5 kHz');
-        assert.equal(fixture.deviceRequests.length, 1);
+        assert.equal(panelRequests().length, 1);
         await click('应用此项');
         assert.equal(await js('[...document.querySelectorAll("button")].find(b=>b.textContent.trim()==="确认执行").disabled'), true);
         await js('document.querySelector(".field-confirm input[type=checkbox]").click()');
         await click('确认执行');
-        await waitFor(() => fixture.deviceRequests.length === 2, 'setting confirmed');
-        assert.equal(fixture.deviceRequests[1].confirmChange, true);
-        assert.equal(fixture.deviceRequests[1].key, 'bandwidth');
+        await waitFor(() => panelRequests().length === 2, 'setting confirmed');
+        assert.equal(panelRequests()[1].confirmChange, true);
+        assert.equal(panelRequests()[1].key, 'bandwidth');
         await waitFor(async () => (await body()).includes('已修改并读回确认'), 'verified setting');
         await capture('04-device-settings');
       });
@@ -183,7 +187,7 @@ app.on('browser-window-created', (_event, win) => {
         assert.equal(await js('[...document.querySelectorAll("button")].find(b=>b.textContent.trim()==="确认执行").disabled'), true);
         assert.ok((await body()).includes('临时开启真实设备激光'));
         await click('取消');
-        assert.equal(fixture.deviceRequests.length, 2); assert.equal(fixture.starts, 0);
+        assert.equal(panelRequests().length, 2); assert.equal(fixture.starts, 0);
       });
       await check('new settings and waveform controls fit 853x480 with vertical scrolling', async () => {
         win.setMinimumSize(360,240); win.setContentSize(853,480); await pause(250);

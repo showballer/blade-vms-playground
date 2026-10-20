@@ -46,7 +46,7 @@ def stream_csv(manifest, chunks):
                 "point": manifest.get("point", ""), "position": simulation.get("position"),
                 "rpm": simulation.get("rpm"), "dataLossAssessment": manifest.get("dataLossAssessment", "unverified")}
     # Full exports retain task/point identity and sample-index gates, not only the display name.
-    for key in ("object", "turbine", "pointCycle", "turntable", "sampleOrigin", "sourceSampleOrigin",
+    for key in ("windFarm", "object", "turbine", "pointCycle", "turntable", "sampleOrigin", "sourceSampleOrigin",
                 "sourceRecordingId", "sourceTimeStart", "rssiSampleStride", "rssiSampleRate",
                 "startedAt", "endedAt", "sourceStartedAt", "sourceEndedAt", "deviceSettings"):
         if manifest.get(key) is not None:

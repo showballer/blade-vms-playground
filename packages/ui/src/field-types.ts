@@ -35,6 +35,7 @@ export type FieldConfig = {
   deviceIp: string;
   hostIp: string;
   name: string;
+  windFarm?: string;
   object: string;
   turbine: string;
   point: string;
@@ -47,8 +48,9 @@ export type FieldAutoFollowGeometry = {
   anchorAxis1AngleDeg: number; anchorAxis2AngleDeg: number;
 };
 export type FieldPointCyclePoint = { pointId?: string; name: string; axis1AngleDeg: number; axis2AngleDeg: number; port?: string; referenceSignature?: string;
-  bladeId?: string; radialPointId?: string; radialPointName?: string; radiusM?: number; azimuthDeg?: number };
-export type FieldPlannedStation = { pointId: string; bladeId: string; radialPointId: string; radialPointName: string; radiusM: number; azimuthDeg: number; stationIndex: number; stationCount: number };
+  bladeId?: string; radialPointId?: string; radialPointName?: string; radiusM?: number; azimuthDeg?: number; rootRadiusM?: number; bladeLengthM?: number };
+export type FieldPlannedStation = { pointId: string; bladeId: string; radialPointId: string; radialPointName: string; radiusM: number; azimuthDeg: number; stationIndex: number; stationCount: number;
+  name?: string; axis1AngleDeg?: number; axis2AngleDeg?: number; rootRadiusM?: number; bladeLengthM?: number; distanceFromRootM?: number };
 export type FieldAutomaticRecord = {
   mode?: "automatic_stations" | "legacy"; collectionId?: string; sessionId?: string; bladeId?: string; radialPointId?: string; radialPointName?: string;
   radiusM?: number; azimuthDeg?: number; stationIndex?: number; stationCount?: number; lapIndex?: number;
@@ -58,10 +60,17 @@ export type FieldAutomaticRecord = {
 };
 export type FieldPointCycleConfig = {
   port: string; points: FieldPointCyclePoint[]; cycles: number; dwellSeconds: number; speedRpm: number;
-  mode?: "automatic_stations" | "legacy"; collectionId?: string; nominalPeriodSeconds?: number; maxMoveRpm?: number; geometry?: FieldAutoFollowGeometry;
+  startAtCurrentPose?: boolean;
+  /** Absolute controller coordinates of the existing work zero; return only on normal completion. */
+  returnToOrigin?: FieldPointCyclePoint;
+  /** Joint-trajectory acceleration limit in output degrees/s²; older clients default to 3. */
+  maxMoveAccelerationDegS2?: number;
+  /** nominalPeriodSeconds=0 means real blade passes are operator-driven, without a nominal phase schedule. */
+  mode?: "automatic_stations" | "legacy"; routeOrder?: "configured" | "shortest_safe"; collectionId?: string; nominalPeriodSeconds?: number; maxMoveRpm?: number; geometry?: FieldAutoFollowGeometry;
   rssiTriggerEnabled?: boolean; rssiThresholdMode?: "adaptive" | "absolute"; rssiLeaveThresholdPercent?: number;
   rssiBaselineRatio?: number; rssiSmoothingMs?: number; rssiConfirmMs?: number; rssiMotionMarginMs?: number; rssiMinimumSeconds?: number;
   rssiEnterSpread?: number; rssiExitSpread?: number; rssiEnterConfirmMs?: number;
+  /** Light stays on during motion and normal completion; stopped arrival starts blade detection. Errors/cancellation switch it off. */
   keepLaserOnBetweenPoints?: boolean;
 };
 export type FieldCycleProcessEvent = { sequence: number; phase: string; at: number; cycle: number; point?: string | null; fromPoint?: string; sampleIndex?: number | null; sampleElapsedSeconds?: number | null; rssiSpread?: number | null; error?: string | null };
@@ -99,7 +108,11 @@ export type FieldTurntableMove = {
   timingBasis?: "controller_timed_joint_move"; measurementDuringMotion?: false;
   session?: number; status?: Record<string, unknown>; state?: string; error?: string; stopError?: string;
 };
-export type FieldTurntableStatus = { state: string; port?: string; axis?: number; connected?: boolean; effectiveRpm?: number; positionDelta?: number; motionCapability?: FieldTurntableMotionCapability; motionMode?: FieldMotionMode; lastMove?: FieldTurntableMove; recall?: { state: "moving" | "complete" | "cancelled" | "error"; targets: [number, number]; completedAxes: number[]; motionMode?: FieldMotionMode; lastMove?: FieldTurntableMove }; feedback?: { outputRpm: number; motorRpm: number; runState?: number; alarmCode: number; limitFlags: number | null; positionRaw: number; outputAngleDeg?: number | null; axes?: Record<string, FieldAxisFeedback>; observedAt?: number }; error?: string };
+export type FieldTurntableHealthRead = {
+  readAt: number; readOnly: true; referenceChangedDuringRead: boolean;
+  axes: Record<string, { alarmCode: number | null; runState: number | null; limitFlags: number | null; observedAt: number }>;
+};
+export type FieldTurntableStatus = { health?: FieldTurntableHealthRead; state: string; port?: string; axis?: number; connected?: boolean; effectiveRpm?: number; positionDelta?: number; motionCapability?: FieldTurntableMotionCapability; motionMode?: FieldMotionMode; lastMove?: FieldTurntableMove; recall?: { state: "moving" | "complete" | "cancelled" | "error"; targets: [number, number]; completedAxes: number[]; motionMode?: FieldMotionMode; lastMove?: FieldTurntableMove }; feedback?: { outputRpm: number; motorRpm: number; runState?: number; alarmCode: number; limitFlags: number | null; positionRaw: number; outputAngleDeg?: number | null; axes?: Record<string, FieldAxisFeedback>; observedAt?: number }; error?: string };
 /** A probe releases the serial port afterwards; capability is not a live connection indicator. */
 export function fieldTurntableMotionMode(turntable: FieldTurntableStatus | undefined, port: string): FieldMotionMode | "unknown" {
   if (!port || turntable?.port !== port) return "unknown";
@@ -153,8 +166,12 @@ export type FieldDeviceSettings = {
   deviceIp: string; readAt: number; source: string; error?: string;
   fields: Record<string, { supported: boolean; writable?: boolean; value?: string | number; options?: (string | number)[]; percent?: number; error?: string }>;
 };
+export type FieldLaserStatus = {
+  deviceIp: string; state: "on" | "off" | "unknown"; readAt: number | null;
+  source: "device-readback" | "unavailable"; error?: string; busy: boolean;
+};
 export type FieldDeviceRequest = {
-  deviceIp: string; action: "read" | "set" | "autofocus" | "laser_on" | "laser_off"; key?: string;
+  deviceIp: string; action: "read" | "set" | "autofocus" | "laser_on" | "laser_off" | "laser_read"; key?: string;
   value?: string | number; expected?: string | number; confirmChange?: true; confirmLaser?: true;
 };
 export type FieldRssiCalibrationRequest = { deviceIp: string; hostIp: string; state: "background" | "blade_on" | "blade_pass"; durationSeconds: number; confirmLaser: true };
@@ -165,6 +182,7 @@ export type FieldRecording = {
   simulation?: FieldSimulation & { position?: number; rpm?: number };
   id: string;
   name: string;
+  windFarm?: string;
   object?: string;
   turbine?: string;
   point?: string;
@@ -208,8 +226,9 @@ export type FieldStatus = {
   turntableWarning?: string | null;
   turntableTest?: { passed: boolean; cancelled?: boolean; config: Omit<FieldTurntableConfig, "durationSeconds">; effectiveRpm?: number; positionDelta: number; testedAt: number; error?: string | null } | null;
   turntablePreparation?: { ready: boolean; config: FieldTurntableConfig; checkedAt: number } | null;
-  pointCycle?: { state: "checking" | "ready" | "positioning" | "holding" | "capturing" | "complete" | "cancelled" | "error"; port?: string; cycles: number; dwellSeconds: number; speedRpm: number; pointCount: number; cycle: number; point: number; currentPoint?: string | null; completedRecords: number; totalRecords: number; routeStrategy?: string; motionMode?: FieldMotionMode; lastMove?: FieldTurntableMove; plannedOrder?: string[]; error?: string | null; rssiTriggerEnabled?: boolean; rssiLeaveThresholdPercent?: number | null; rssiConfirmSamples?: number; rssiMinimumSeconds?: number; latestRssi?: number | null; rssiSamples?: number; rssiBelowSamples?: number; rssiThresholdMode?: "adaptive" | "absolute"; rssiBaselineRatio?: number; rssiConfirmMs?: number; rssiBaseline?: number | null; rssiThreshold?: number | null; rssiPhase?: "waiting_blade" | "confirming_entry" | "blade_present" | "confirming_exit" | "blade_left" | null; rssiSpread?: number | null; rssiEntryMs?: number; rssiEnterSpread?: number; rssiExitSpread?: number; rssiEnterConfirmMs?: number; processPhase?: string; processEvents?: FieldCycleProcessEvent[]; rssiBelowMs?: number; rssiSlope?: number | null; predictedLeaveSeconds?: number | null; requiredLeadSeconds?: number; nextPoint?: string | null; rssiTrigger?: "blade_left" | null } | null;
+  pointCycle?: { returningToOrigin?: boolean; returnToOrigin?: FieldPointCyclePoint | null; returnOrigin?: FieldPointCyclePoint & { confirmedAt: number; actualAngles: Record<string, number> }; sessionId?: string; mode?: "automatic_stations" | "legacy"; plannedStations?: FieldPlannedStation[]; geometry?: FieldAutoFollowGeometry; targetPointId?: string; targetAxis1AngleDeg?: number; targetAxis2AngleDeg?: number; state: "checking" | "ready" | "positioning" | "holding" | "capturing" | "complete" | "cancelled" | "error"; port?: string; cycles: number; dwellSeconds: number; speedRpm: number; pointCount: number; cycle: number; point: number; currentPoint?: string | null; completedRecords: number; totalRecords: number; routeStrategy?: string; motionMode?: FieldMotionMode; lastMove?: FieldTurntableMove; plannedOrder?: string[]; error?: string | null; rssiTriggerEnabled?: boolean; rssiLeaveThresholdPercent?: number | null; rssiConfirmSamples?: number; rssiMinimumSeconds?: number; latestRssi?: number | null; rssiSamples?: number; rssiBelowSamples?: number; rssiThresholdMode?: "adaptive" | "absolute"; rssiBaselineRatio?: number; rssiConfirmMs?: number; rssiBaseline?: number | null; rssiThreshold?: number | null; rssiPhase?: "waiting_blade" | "confirming_entry" | "blade_present" | "confirming_exit" | "blade_left" | null; rssiSpread?: number | null; rssiEntryMs?: number; rssiEnterSpread?: number; rssiExitSpread?: number; rssiEnterConfirmMs?: number; processPhase?: string; processEvents?: FieldCycleProcessEvent[]; rssiBelowMs?: number; rssiSlope?: number | null; predictedLeaveSeconds?: number | null; requiredLeadSeconds?: number; nextPoint?: string | null; rssiTrigger?: "blade_left" | null } | null;
   deviceSettings?: FieldDeviceSettings | null;
+  laserStatus?: FieldLaserStatus | null;
   receiver?: Record<string, unknown>;
   recording?: FieldRecording;
   waveform?: FieldWaveform;
@@ -233,7 +252,7 @@ export type FieldRequestOptions =
   | { action: "rssiCalibration"; request: FieldRssiCalibrationRequest }
   | { action: "singlePoint"; request: FieldSinglePointRequest }
   | { action: "motionTrial"; request: FieldMotionTrialRequest }
-  | { action: "turntable"; request: { action: "probe" | "test" | "manual_move" | "recall" | "prepare" | "stop" | "reference" | "limits"; port: string; axis: 1 | 2; speedRpm?: number; direction?: FieldTurntableConfig["direction"]; durationSeconds?: number; protocol?: FieldTurntableConfig["protocol"]; targetAngleDeg?: number; axis1AngleDeg?: number; axis2AngleDeg?: number; referenceSignature?: string; recordedPort?: string; testSeconds?: number; confirmMotion?: true; confirmRecovery?: boolean } };
+  | { action: "turntable"; request: { action: "probe" | "health" | "test" | "manual_move" | "recall" | "prepare" | "stop" | "reference" | "limits"; port: string; axis: 1 | 2; speedRpm?: number; direction?: FieldTurntableConfig["direction"]; durationSeconds?: number; protocol?: FieldTurntableConfig["protocol"]; targetAngleDeg?: number; axis1AngleDeg?: number; axis2AngleDeg?: number; maxMoveAccelerationDegS2?: number; referenceSignature?: string; recordedPort?: string; testSeconds?: number; confirmMotion?: true; confirmRecovery?: boolean } };
 
 export function fieldTurntableMatches(a: FieldTurntableConfig | Omit<FieldTurntableConfig, "durationSeconds"> | undefined, b: FieldTurntableConfig, duration = true) {
   return !!a && a.port === b.port && a.axis === b.axis && a.speedRpm === b.speedRpm && a.direction === b.direction &&
@@ -248,12 +267,14 @@ export function fieldTurntableReady(status: FieldStatus | null, config?: FieldTu
 export function fieldCaptureConfig(config: FieldConfig): FieldConfig {
   const text = (value: unknown) => typeof value === "string" ? value.trim() : "";
   return { name: text(config.name), deviceIp: text(config.deviceIp), hostIp: text(config.hostIp),
+    ...(config.windFarm !== undefined ? { windFarm: text(config.windFarm) } : {}),
     object: text(config.object), turbine: text(config.turbine), point: text(config.point) };
 }
 export type FieldRequest = (options: FieldRequestOptions) => Promise<{ status: number; data: unknown }>;
 
 export function validateFieldConfig(config: FieldConfig): string | null {
   if (!config.name.trim()) return "请填写采集任务名称";
+  if (config.windFarm !== undefined && (typeof config.windFarm !== "string" || config.windFarm.length > 120 || config.windFarm.includes("\0"))) return "风场编号最多120字，不能包含空字符";
   const ipv4 = (value: string) => /^(\d{1,3}\.){3}\d{1,3}$/.test(value) && value.split(".").every((part) => Number(part) <= 255);
   if (!ipv4(config.deviceIp.trim())) return "请填写有效的设备 IPv4 地址";
   if (!ipv4(config.hostIp.trim())) return "请填写本机设备网卡的有效 IPv4 地址";
@@ -277,7 +298,7 @@ export function fieldSampleX(waveform: FieldWaveform, index: number): number {
 }
 
 export function fieldCanStart(status: FieldStatus | null, source: FieldSource = "device"): boolean {
-  return Boolean(status?.service.state === "ready" && (source === "simulation" || status.service.dllConfigured) && !status.deviceBusy && !status.turntableBusy && (source === "simulation" || !status.deviceWarning) && !fieldIsActive(status) && ["idle", "error"].includes(status.state));
+  return Boolean(status?.service.state === "ready" && !status.service.error && (source === "simulation" || status.service.dllConfigured) && !status.deviceBusy && !status.turntableBusy && (source === "simulation" || !status.deviceWarning) && !fieldIsActive(status) && ["idle", "error"].includes(status.state));
 }
 
 export function fieldIsActive(status: FieldStatus | null): boolean {

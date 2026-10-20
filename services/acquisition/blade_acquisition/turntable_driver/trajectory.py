@@ -7,7 +7,37 @@ from .protocol import validate_output_angle
 
 STATES = ("空闲", "上传中", "已校验待启动", "轨迹运行", "终点收敛", "两轴停止确认", "完成", "故障", "已取消")
 FAULTS = ("无", "人工停止", "参考/保护无效", "范围/制动余量不足", "限位触发", "驱动通信故障",
-          "驱动器报警", "跟随误差超限", "调度超过1秒", "3秒心跳丢失", "未停在起点", "轨迹数据错误", "终点收敛超时")
+          "驱动器报警", "跟随误差超限", "调度超过1秒", "3秒心跳丢失", "未停在起点", "轨迹数据错误", "终点收敛超时", "路径推进超时")
+
+
+@dataclass(frozen=True)
+class AxisPosition:
+    """Vendor 0x37 observation; sample age belongs to each individual axis."""
+    angle_deg: float | None
+    actual_counts: int
+    motor_rpm: int
+    flags: int
+    sample_age_ms: int
+    alarm_code: int
+    guard_fault: int
+    source: int  # 0=drive read, 1=controller cache, 2=read failure
+
+    @property
+    def usable(self):
+        return self.angle_deg is not None and self.source != 2 and self.sample_age_ms <= 1000
+
+
+def decode_axes(data: bytes) -> tuple[AxisPosition, AxisPosition]:
+    if len(data) != 40:
+        raise ValueError("两轴位置数据长度错误")
+    axes = []
+    for offset in (0, 20):
+        angle, counts, rpm, flags, age, alarm, fault, source = struct.unpack_from(">iihHIHBB", data, offset)
+        if source > 2:
+            raise ValueError("位置来源字段错误")
+        axes.append(AxisPosition(angle / 1000 if flags & 1 and source != 2 else None,
+                                 counts, rpm, flags, age, alarm, fault, source))
+    return tuple(axes)
 
 
 @dataclass(frozen=True)
@@ -54,7 +84,7 @@ def decode_status(data: bytes) -> TrajectoryStatus:
     if len(data) != 40:
         raise ValueError("轨迹状态长度错误")
     session, state, fault, count, uploaded, elapsed, duration, gap, cycle, a1, a2, e1, e2 = struct.unpack(">HBBHHIIIIiiii", data)
-    if state > 8 or fault > 12 or count > 128 or uploaded > count or duration > 600000:
+    if state > 8 or fault > 13 or count > 128 or uploaded > count or duration > 600000:
         raise ValueError("轨迹状态字段错误")
     return TrajectoryStatus(session, state, fault, count, uploaded, elapsed / 1000, duration / 1000,
                             gap, cycle, a1 / 1000, a2 / 1000, e1 / 1000, e2 / 1000)

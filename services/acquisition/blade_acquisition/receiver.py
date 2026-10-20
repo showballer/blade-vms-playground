@@ -65,6 +65,10 @@ class PolytecReceiver:
         self.communication = C.c_int()
         self.acquisition = C.c_int()
         self._dll_directory = None
+        self.laser_observer = None
+        self.laser_status = None
+        self._laser_monitor_communication = None
+        self._laser_monitor_failed = False
 
     def validate(self) -> None:
         if not self.config.dll_path or not Path(self.config.dll_path).is_file():
@@ -214,9 +218,62 @@ class PolytecReceiver:
 
     def _set_laser(self, enabled: bool) -> None:
         label = "Laser on" if enabled else "Laser off (please verify physically)"
-        self._check(self.api.PolySendSetInt16(self.communication.value, SENSOR_HEAD, 0, LASER_ON, C.c_int16(int(enabled))), label)
-        if self._integer(SENSOR_HEAD, LASER_ON) != int(enabled):
-            raise RuntimeError(f"{label}: 激光状态读回未确认。")
+        try:
+            self._check(self.api.PolySendSetInt16(self.communication.value, SENSOR_HEAD, 0, LASER_ON, C.c_int16(int(enabled))), label)
+            actual = self._integer(SENSOR_HEAD, LASER_ON)
+            if actual != int(enabled):
+                raise RuntimeError(f"{label}: 激光状态读回未确认。")
+            self._publish_laser(actual)
+        except Exception as exc:
+            self._publish_laser(None, str(exc))
+            raise
+
+    def _publish_laser(self, value, error=None):
+        field = {"supported": value in (0, 1), **({"value": value} if value in (0, 1) else {})}
+        if error:
+            field["error"] = error
+        observed_at = time.time()
+        snapshot = {"deviceIp": self.config.device_ip, "readAt": observed_at if field["supported"] else None,
+                    "observedAt": observed_at,
+                    "fields": {"laser": field}, "source": "device-readback" if field["supported"] else "unavailable"}
+        self.laser_status = snapshot
+        if self.laser_observer is not None:
+            self.laser_observer(snapshot)
+
+    def _observe_laser(self):
+        """The DAQ owner alone uses a separate, short-timeout read-only handle.
+
+        The DAQ communication has a 6s command timeout and cannot be changed
+        through the vendor C API. A monitor timeout must not repeat and stall
+        the sample stream, so one failure disables monitoring for this run.
+        """
+        if self._laser_monitor_failed:
+            return
+        try:
+            if self._laser_monitor_communication is None:
+                handle = C.c_int()
+                self._check(self.api.PolyOpenUdpEthernetCommunication(C.byref(handle), self.config.device_ip.encode("ascii"), 500),
+                            "Open laser monitor communication")
+                self._laser_monitor_communication = handle
+            result = C.c_int16()
+            self._check(self.api.PolySendGetInt16(self._laser_monitor_communication.value, SENSOR_HEAD, 0,
+                                                LASER_ON, C.byref(result)), "Read laser monitor")
+            if result.value not in (0, 1):
+                raise ValueError("设备返回无效激光状态")
+            self._publish_laser(result.value)
+        except (OSError, RuntimeError, ValueError) as exc:
+            self._laser_monitor_failed = True
+            error = str(exc)
+            try:
+                self._close_laser_monitor()
+            except (OSError, RuntimeError, ValueError) as close_error:
+                error += f"；关闭状态读取连接失败：{close_error}"
+            self._publish_laser(None, error)
+
+    def _close_laser_monitor(self):
+        handle, self._laser_monitor_communication = self._laser_monitor_communication, None
+        if handle is not None:
+            self.api.PolyCloseCommunication(handle.value)
 
     def _read_channel(self, channel: int, maximum: int) -> list[int]:
         count = C.c_size_t()
@@ -234,9 +291,13 @@ class PolytecReceiver:
         communication_open = acquisition_open = laser_attempted = False
         failure: Exception | None = None
         cleanup_errors: list[str] = []
+        def cancelled():
+            return stop.is_set() or bool(abort and abort.is_set())
         try:
+            if cancelled():
+                return
             self.api = self._load_api()
-            if stop.is_set():
+            if cancelled():
                 return
             self._check(self.api.PolyOpenUdpEthernetCommunication(C.byref(self.communication), self.config.device_ip.encode("ascii"), 6000), "Open UDP")
             communication_open = True
@@ -333,16 +394,19 @@ class PolytecReceiver:
                                         "daqDestination": {"requestedHostIp": self.config.host_ip,
                                                             "status": "firmware_unsupported",
                                                             "warning": destination_warning}}
-            if stop.is_set():
+            if cancelled():
                 return
             # Treat a timed-out laser command as uncertain, not success; cleanup still turns it off.
             laser_attempted = True
             self._set_laser(True)
+            if cancelled():
+                return
             self._check(self.api.PolyStartDataAcquisition(self.acquisition.value), "Start acquisition")
             origin = time.time()
             ready(sample_rate, origin)
             sample_index, last_sample_at = 0, time.monotonic()
-            while not stop.is_set():
+            next_laser_read = time.monotonic() + 1
+            while not cancelled():
                 code = self.api.PolyReadData(self.acquisition.value, read_base_samples, self.config.timeout_ms)
                 if code != TIMEOUT:
                     self._check(code, "Read data")
@@ -359,6 +423,9 @@ class PolytecReceiver:
                                       [bool(flag) for flag in flags], rssi_sample_stride=rssi_stride))
                         sample_index += len(raw)
                         last_sample_at = time.monotonic()
+                if not cancelled() and time.monotonic() >= next_laser_read:
+                    self._observe_laser()
+                    next_laser_read = time.monotonic() + 1
                 if time.monotonic() - last_sample_at > 10:
                     raise TimeoutError("连续 10 秒未收到有效振动样本；已停止采集，请检查设备、网卡和防火墙。")
         except Exception as exc:
@@ -373,12 +440,20 @@ class PolytecReceiver:
                     cleanup_errors.append(str(exc))
             if self.api and acquisition_open:
                 cleanup(lambda: self.api.PolyStopDataAcquisition(self.acquisition.value), "Stop acquisition")
-            if self.api and communication_open and laser_attempted and not (keep_laser_on and not failure and not cleanup_errors and not (abort and abort.is_set())):
-                cleanup(lambda: self._set_laser(False), "Laser off (please verify physically)")
+            if self.api and self._laser_monitor_communication is not None:
+                cleanup(self._close_laser_monitor, "Close laser monitor communication")
             if self.api and acquisition_open:
                 cleanup(lambda: self.api.PolyCloseDataAcquisition(self.acquisition.value), "Close acquisition")
+            kept_laser_on = bool(keep_laser_on and not failure and not cleanup_errors and not (abort and abort.is_set()))
+            if self.api and communication_open and laser_attempted and not kept_laser_on:
+                cleanup(lambda: self._set_laser(False), "Laser off (please verify physically)")
             if self.api and communication_open:
                 cleanup(lambda: self.api.PolyCloseCommunication(self.communication.value), "Close communication")
+            if laser_attempted and kept_laser_on and (cleanup_errors or (abort and abort.is_set())):
+                # Communication is already closed (or its close failed). Do
+                # not reuse the old handle; the session owner must confirm OFF
+                # after joining this thread, and must not hand off to a move.
+                self._publish_laser(None, "; ".join(cleanup_errors) or "采集已取消，激光待任务收尾确认关闭")
             self.api = None
             if self._dll_directory:
                 self._dll_directory.close()

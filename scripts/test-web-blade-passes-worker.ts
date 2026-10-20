@@ -49,7 +49,7 @@ async function main() {
     assert.notEqual(result.sources[0].provenance.storeSampleOrigin, 1700000001);
     assert.equal(result.modalMatch, undefined);
     assert.ok(JSON.stringify(result).length < 8 * 1024 * 1024);
-    await assert.rejects(rotationWorker(user, { action: "rotation", parameters: { recordingIds: [a.id], rpm: 1200 } }), /片段|间歇|站位/);
+    await assert.rejects(rotationWorker(user, { action: "rotation", parameters: { recordingIds: [a.id], rpm: 1200 } }), /片段|间歇|点位/);
     await assert.rejects(rotationWorker({ ...user, id: "other-user" }, { action: "blade-passes", parameters }), /记录|文件|No such file/);
     const duplicate = await upload(1, .31, 0, "a".repeat(32));
     await assert.rejects(rotationWorker(user, { action: "blade-passes", parameters: { recordingIds: [a.id, duplicate.id] } }), /重复|副本|去重/);

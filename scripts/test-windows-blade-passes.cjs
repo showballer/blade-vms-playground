@@ -263,7 +263,7 @@ async function validateWebPaths({ python, temporary, fixtures, exports, captures
     const rejected = await webWorker(python, dataRoot, captureRoot, { action: 'rotation', parameters: { recordingIds: [ids[0]], rpm: 1200 } });
     assert.equal(rejected.ok, false, 'Legacy continuous rotation analysis must refuse sparse station passes');
     assert.equal(rejected.code, 2);
-    assert.match(rejected.error, /片段|间歇|站位/);
+    assert.match(rejected.error, /片段|间歇|点位/);
   }
   return { uploadedNativeValidated: true, offlineCsvAndGzipValidated: true,
     collectionAndSessionsPreserved: true, validSamplesPerRoute: 3600, segmentsPerRoute: 9,

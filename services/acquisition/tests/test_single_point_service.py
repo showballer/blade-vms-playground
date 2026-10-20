@@ -7,6 +7,7 @@ import threading
 import time
 import unittest
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -277,6 +278,20 @@ class SinglePointServiceTests(unittest.TestCase):
         self.assertGreater(saved["samples"], 0)
         self.assertEqual(saved["turntable"]["singlePoint"]["state"], "cancelled")
         self.assertTrue(saved["turntable"]["telemetry"]["sha256"])
+
+    def test_legacy_short_arc_rejects_axis2_soft_off_before_daq_or_motion(self):
+        self.motor.guard_configs[2] = replace(self.motor.get_guard_config(2), soft_enabled=False,
+                                             minimum_deg=0, maximum_deg=0)
+        self.assertEqual(self.motor.get_feedback(2).flags, 1)
+        response = self.client.post("/api/field/single-point", json=self.prepare_data())
+        self.assertEqual(response.status_code, 200, response.text)
+        done = self.wait_state({"error"})
+        self.assertIn("旧单点短弧", done["error"])
+        self.assertEqual(ContinuousReceiver.starts, 0)
+        self.assertEqual(self.motor.commands, [])
+        self.assertEqual(self.motor.start_calls, 0)
+        self.assertFalse(self.motor.get_guard_config(2).soft_enabled)
+        self.assertEqual(self.motor.references, [])
 
     def test_confirmation_and_no_simulation_or_client_timestamp(self):
         for field in ("confirmLaser", "confirmStaticPoint", "confirmGeometry"):

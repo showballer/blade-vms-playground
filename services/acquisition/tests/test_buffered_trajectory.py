@@ -152,6 +152,75 @@ class BufferedTrajectoryTests(unittest.TestCase):
             self.motor.probe_trajectory()
         self.assertTrue(self.motor._faulted)
 
+    def test_fault13_status_is_a_controller_fault_not_a_communication_failure(self):
+        self.serial.state, self.serial.fault = 7, 13
+        status = self.motor.get_trajectory_status()
+        self.assertEqual((status.state, status.fault, status.fault_text), (7, 13, "路径推进超时"))
+        self.assertFalse(self.motor._faulted)
+        self.assertEqual(self.commands(), [STATUS])
+        # A valid fault packet must not poison later read-only communication.
+        self.serial.state, self.serial.fault = 0, 0
+        self.assertEqual(self.motor.get_trajectory_status().fault, 0)
+        self.assertEqual(self.commands(), [STATUS, STATUS])
+
+    def test_fault13_before_prepare_does_not_clear_fault_or_upload(self):
+        for state in (0, 6, 7, 8):
+            with self.subTest(state=state):
+                self.serial.state, self.serial.fault = state, 13
+                previous = len(self.commands())
+                with self.assertRaisesRegex(MotorError, "路径推进超时|故障"):
+                    self.prepare()
+                self.assertEqual(self.commands()[previous:], [STATUS])
+                self.assertFalse(self.motor._faulted)
+                self.assertIsNone(self.motor._trajectory_prepared)
+        self.assertNotIn(BEGIN, self.commands())
+        self.assertNotIn(STOP, self.commands())
+
+    def test_fault_state_is_rejected_but_confirmed_manual_stop_may_prepare_again(self):
+        self.serial.state, self.serial.fault = 7, 1
+        with self.assertRaises(MotorError):
+            self.prepare()
+        self.assertEqual(self.commands(), [STATUS])
+        self.serial.state = 8
+        def clear_cancel_on_begin(command):
+            if command == BEGIN:
+                self.serial.fault = 0
+        self.serial.on_write = clear_cancel_on_begin
+        result = self.prepare()
+        self.assertEqual((result.state, result.fault), (2, 0))
+        self.assertEqual(self.commands().count(BEGIN), 1)
+        self.assertNotIn(START, self.commands())
+
+    def _assert_fault13_during_prepare_stops_without_replaying(self, failed_command, message):
+        def fault_on_write(command):
+            if command == failed_command:
+                self.serial.state, self.serial.fault = 7, 13
+        self.serial.on_write = fault_on_write
+        with self.assertRaisesRegex(MotorError, message):
+            self.prepare()
+        self.assertFalse(self.motor._faulted)
+        self.assertEqual(self.commands().count(failed_command), 1)
+        self.assertEqual(self.commands().count(STOP), 1)
+        self.assertNotIn(START, self.commands())
+        self.assertIsNone(self.motor._trajectory_prepared)
+        self.assertFalse(self.motor._trajectory_started)
+        previous = list(self.commands())
+        with self.assertRaises(MotorError):
+            self.motor.start_trajectory(17)
+        self.assertEqual(self.commands(), previous)
+
+    def test_fault13_in_begin_ack_stops_without_uploading_points(self):
+        self._assert_fault13_during_prepare_stops_without_replaying(BEGIN, "缓存建立应答")
+        self.assertNotIn(POINT, self.commands())
+        self.assertNotIn(SEAL, self.commands())
+
+    def test_fault13_in_point_ack_stops_without_uploading_remaining_points(self):
+        self._assert_fault13_during_prepare_stops_without_replaying(POINT, "上传应答")
+        self.assertNotIn(SEAL, self.commands())
+
+    def test_fault13_in_seal_ack_cannot_arm_a_later_start(self):
+        self._assert_fault13_during_prepare_stops_without_replaying(SEAL, "未完整校验")
+
     def test_prepare_uploads_without_motion_or_stopping_other_task(self):
         result = self.prepare()
         self.assertEqual((result.session, result.state, result.uploaded_count), (17, 2, 2))
@@ -283,6 +352,34 @@ class BufferedTrajectoryTests(unittest.TestCase):
             self.motor.wait_trajectory(17)
         self.assertIn(STOP, self.commands())
 
+    def test_fault13_during_wait_stops_group_without_renewing_or_restarting(self):
+        self.prepare()
+        self.motor.start_trajectory(17)
+        self.serial.state, self.serial.fault = 7, 13
+        statuses = []
+        with self.assertRaisesRegex(MotorError, "路径推进超时"):
+            self.motor.wait_trajectory(17, on_status=statuses.append)
+        self.assertEqual([status.fault for status in statuses], [13])
+        self.assertFalse(self.motor._faulted)
+        self.assertEqual(self.commands().count(START), 1)
+        self.assertEqual(self.commands().count(STOP), 1)
+        self.assertNotIn(RENEW, self.commands())
+        self.assertIsNone(self.motor._trajectory_prepared)
+        previous = list(self.commands())
+        with self.assertRaises(MotorError):
+            self.motor.start_trajectory(17)
+        self.assertEqual(self.commands(), previous)
+
+    def test_done_state_with_fault13_is_not_successful_completion(self):
+        self.prepare()
+        self.motor.start_trajectory(17)
+        self.serial.state, self.serial.fault = 6, 13
+        with self.assertRaisesRegex(MotorError, "路径推进超时"):
+            self.motor.wait_trajectory(17)
+        self.assertIn(STOP, self.commands())
+        self.assertNotIn(RENEW, self.commands())
+        self.assertFalse(self.motor._faulted)
+
     def test_completion_racing_heartbeat_is_resolved_by_status_not_replay(self):
         self.prepare()
         self.motor.start_trajectory(17)
@@ -363,6 +460,19 @@ class BufferedTrajectoryTests(unittest.TestCase):
         raw = struct.pack(">HBBHHIIIIiiii", 17, 9, 0, 2, 2, 0, 2000, 0, 0, 0, 0, 0, 0)
         with self.assertRaises(ValueError):
             decode_status(raw)
+
+    def test_fault13_is_highest_supported_fault_and_unknown_faults_remain_invalid(self):
+        for fault in range(14):
+            raw = struct.pack(">HBBHHIIIIiiii", 17, 7, fault, 2, 2, 0, 2000, 0, 0, 0, 0, 0, 0)
+            self.assertEqual(decode_status(raw).fault, fault)
+        for fault in (14, 15, 127, 255):
+            raw = struct.pack(">HBBHHIIIIiiii", 17, 7, fault, 2, 2, 0, 2000, 0, 0, 0, 0, 0, 0)
+            with self.assertRaises(ValueError):
+                decode_status(raw)
+        self.serial.state, self.serial.fault = 7, 14
+        with self.assertRaises(CommunicationError):
+            self.motor.get_trajectory_status()
+        self.assertTrue(self.motor._faulted)
 
 
 if __name__ == "__main__":

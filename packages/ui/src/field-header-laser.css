@@ -1,0 +1,33 @@
+.field-app .field-header-laser {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--field-ui-space-2);
+  max-width: 100%;
+  min-width: 0;
+  padding: 0 var(--field-ui-space-2);
+  border: 1px solid var(--field-ui-line);
+  border-radius: var(--field-ui-control-radius);
+  background: var(--field-ui-subtle);
+  font-size: var(--field-ui-caption);
+  line-height: 1.5;
+}
+.field-header-laser-state { display: inline-flex; align-items: center; gap: var(--field-ui-space-1); white-space: nowrap; color: var(--field-ui-secondary); }
+.field-header-laser-state strong { font-weight: 500; }
+.field-header-laser-dot { width: var(--field-ui-space-2); height: var(--field-ui-space-2); flex: none; border-radius: 50%; background: var(--field-ui-muted); }
+.field-header-laser[data-state="on"] .field-header-laser-dot { background: var(--field-ui-success); }
+.field-header-laser[data-state="on"] .field-header-laser-state { color: var(--field-ui-success); }
+.field-header-laser[data-state="unknown"] .field-header-laser-dot { background: var(--field-ui-warning); }
+.field-app .field-header-laser.field-servo-ui .btn {
+  flex: 0 0 auto;
+  min-height: var(--field-ui-control-height);
+  padding: var(--field-ui-space-1);
+  border-color: transparent;
+  font-size: var(--field-ui-caption);
+  white-space: nowrap;
+}
+.field-header-laser-error { display: inline-flex; flex: none; color: var(--field-ui-warning); }
+.field-header-laser-message { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+.field-header-laser-confirm { padding: 0 var(--field-ui-space-6) var(--field-ui-space-6); }
+.field-header-laser-confirm p { margin: 0 0 var(--field-ui-space-6); line-height: 1.7; font-size: var(--field-ui-body); }
+.field-header-laser-confirm-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--field-ui-space-2); }
+@media (max-width: 480px) { .field-app .field-header-laser { gap: var(--field-ui-space-1); } }

@@ -66,7 +66,7 @@ class WebRotationTest(unittest.TestCase):
                  "entrySampleIndex": 20, "exitSampleIndex": 199,
                  "handoff": {"entrySampleIndex": 20, "entryConfirmedSampleIndex": 24,
                              "exitSampleIndex": 180, "exitConfirmedSampleIndex": 199}}
-        writer = store.create({"name": "叶片检测", "object": "模型", "turbine": "风机A", "point": "P1 · 90°",
+        writer = store.create({"name": "叶片检测", "windFarm": "WF-001", "object": "模型", "turbine": "风机A", "point": "P1 · 90°",
                                "source": "polytec_ivs500", "pointCycle": cycle})
         writer.ready(1000, 1700000000.25)
         for start in range(0, 256, 4):
@@ -77,6 +77,26 @@ class WebRotationTest(unittest.TestCase):
         manifest, chunks = prepare_export(store, writer.manifest["id"])
         text = "".join(stream_csv(manifest, chunks))
         return manifest, text
+
+    def test_operator_driven_zero_period_import_preserves_real_station_boundaries(self):
+        original, text = self.station_export()
+        first, rows = text.split("\n", 1)
+        metadata = json.loads(first[len("# BladeVMS "):])
+        metadata["pointCycle"]["nominalPeriodSeconds"] = 0
+        manual_text = "# BladeVMS " + json.dumps(metadata) + "\n" + rows
+        imported = dispatch(self.root, {"action": "import", "filename": "manual-P1.csv",
+                                        "bytes": base64.b64encode(manual_text.encode()).decode()})["recordings"][0]
+        self.assertEqual(imported["pointCycle"]["nominalPeriodSeconds"], 0)
+        self.assertEqual(imported["pointCycle"]["handoff"], original["pointCycle"]["handoff"])
+        self.assertFalse(imported["pointCycle"]["identityVerified"])
+        self.assertEqual(imported["source"], "measured")
+        for invalid in (-1, False, float("inf")):
+            with self.subTest(period=invalid):
+                metadata["pointCycle"]["nominalPeriodSeconds"] = invalid
+                bad_text = "# BladeVMS " + json.dumps(metadata) + "\n" + rows
+                with self.assertRaises(ValueError):
+                    dispatch(self.root, {"action": "import", "filename": "bad-P1.csv",
+                                         "bytes": base64.b64encode(bad_text.encode()).decode()})
 
     def test_full_export_and_csv_import_keep_station_identity_gates_and_sparse_rssi(self):
         original, text = self.station_export()
@@ -96,6 +116,7 @@ class WebRotationTest(unittest.TestCase):
                     payload["bytes"] = base64.b64encode(text.encode()).decode()
                 imported = dispatch(root, payload)["recordings"][0]
                 self.assertEqual(imported["pointCycle"], original["pointCycle"])
+                self.assertEqual(imported["windFarm"], "WF-001")
                 self.assertEqual((imported["object"], imported["turbine"]), ("模型", "风机A"))
                 self.assertEqual(imported["sourceRecordingId"], original["id"])
                 self.assertEqual(imported["sourceSampleOrigin"], 1700000000.25)
@@ -111,6 +132,7 @@ class WebRotationTest(unittest.TestCase):
                 second_root = root / "roundtrip"
                 second = dispatch(second_root, {"action": "import", "filename": "P1.csv", "bytes": base64.b64encode(second_export.encode()).decode()})["recordings"][0]
                 self.assertEqual(second["pointCycle"], original["pointCycle"])
+                self.assertEqual(second["windFarm"], "WF-001")
                 self.assertEqual(second["sourceRecordingId"], original["id"])
                 self.assertEqual(second["sourceSampleOrigin"], original["sampleOrigin"])
                 self.assertEqual(second["sourceStartedAt"], original["startedAt"])

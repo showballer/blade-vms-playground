@@ -80,7 +80,7 @@ def _parameters(parameters):
 def _identity(manifest):
     meta = manifest.get("pointCycle")
     if not isinstance(meta, dict) or meta.get("mode") != "automatic_stations":
-        raise ValueError("记录缺少自动站位点位信息；请同步完整原始记录或导入带点位元数据的文件。")
+        raise ValueError("记录缺少自动点位点位信息；请同步完整原始记录或导入带点位元数据的文件。")
     identity = {
         "collectionId": _id(meta.get("collectionId"), "叶片采集任务编号"),
         "bladeId": _text(meta.get("bladeId"), "叶片编号", 80),
@@ -88,18 +88,18 @@ def _identity(manifest):
         "radialPointId": _text(meta.get("radialPointId"), "径向测点编号", 80),
         "radialPointName": _text(meta.get("radialPointName"), "径向测点名称"),
         "radiusM": _number(meta.get("radiusM"), "测点半径", 0, 1000),
-        "azimuthDeg": _number(meta.get("azimuthDeg"), "站位方位", 0, 360),
-        "stationId": _text(meta.get("stationId"), "站位编号"),
-        "lapIndex": _integer(meta.get("lapIndex"), "站位轮次", 1, 100),
-        "stationIndex": _integer(meta.get("stationIndex"), "站位序号", 1, 200),
-        "stationCount": _integer(meta.get("stationCount"), "站位数量", 1, 200),
+        "azimuthDeg": _number(meta.get("azimuthDeg"), "点位方位", 0, 360),
+        "stationId": _text(meta.get("stationId"), "点位编号"),
+        "lapIndex": _integer(meta.get("lapIndex"), "点位轮次", 1, 100),
+        "stationIndex": _integer(meta.get("stationIndex"), "点位序号", 1, 200),
+        "stationCount": _integer(meta.get("stationCount"), "点位数量", 1, 200),
     }
     if identity["radiusM"] <= 0 or identity["azimuthDeg"] >= 360:
-        raise ValueError("测点半径或站位方位无效。")
+        raise ValueError("测点半径或点位方位无效。")
     if identity["stationIndex"] > identity["stationCount"]:
-        raise ValueError("站位序号超出当前测点站位数量。")
+        raise ValueError("点位序号超出当前测点点位数量。")
     if "pointId" in meta and meta["pointId"] != identity["stationId"]:
-        raise ValueError("站位编号与点位编号不一致。")
+        raise ValueError("点位编号与点位编号不一致。")
     if "identityVerified" in meta and type(meta["identityVerified"]) is not bool:
         raise ValueError("叶片身份标记无效。")
     if "identitySource" in meta:
@@ -314,11 +314,11 @@ def analyze_blade_passes(store, parameters) -> dict:
         station_key = identity["sessionId"], identity["stationId"]
         station_definition = point_key, identity["radiusM"], identity["azimuthDeg"], identity["stationIndex"], identity["stationCount"]
         if station_key in stations and stations[station_key] != station_definition:
-            raise ValueError("同一采集批次的站位身份不一致。")
+            raise ValueError("同一采集批次的点位身份不一致。")
         stations[station_key] = station_definition
         pass_key = identity["sessionId"], identity["radialPointId"], identity["stationIndex"], identity["lapIndex"]
         if pass_key in pass_ids:
-            raise ValueError("同一采集批次、轮次与站位出现重复记录，请去重后再分析。")
+            raise ValueError("同一采集批次、轮次与点位出现重复记录，请去重后再分析。")
         pass_ids.add(pass_key)
         total += _integer(manifest.get("samples"), "原始样本数", 0)
         if total > MAX_SAMPLES:
@@ -429,7 +429,7 @@ def analyze_blade_passes(store, parameters) -> dict:
     has_simulation = any(source["simulation"] for source in sources)
     return {"algorithmVersion": VERSION, "parameters": config, "collectionId": collection, "bladeId": blade,
             "phaseAvailable": False, "hasSimulation": has_simulation,
-            "modeShapeUnavailableReason": "分次采集缺少共同相位参考；目前仅提供同站位的速度幅值分布，不能形成带相位的真实振型或模态匹配。",
+            "modeShapeUnavailableReason": "分次采集缺少共同相位参考；目前仅提供同点位的速度幅值分布，不能形成带相位的真实振型或模态匹配。",
             "coverage": {"selectedRecords": len(sources), "includedRecords": included,
                          "excludedRecords": len(sources) - included, "rawSamples": total,
                          "validSamples": sum(source["validSamples"] for source in sources),
@@ -441,9 +441,9 @@ def analyze_blade_passes(store, parameters) -> dict:
                                        for azimuth, values in sorted(distributions.items())],
             "warnings": ["有效段按进入确认后至离开开始筛选；原始记录完整保留，间隙未拼接、未补零。",
                          "RMS、峰值和峰峰值均为所选去趋势处理后的速度指标（m/s），不是位移振幅。",
-                         "同测点、同站位的跨批次 RMS 按有效时长加权，采样率较高的记录不会获得额外权重。",
+                         "同测点、同点位的跨批次 RMS 按有效时长加权，采样率较高的记录不会获得额外权重。",
                          "RSSI 阈值只作用于真实 RSSI 采样对应的区间；默认不另设绝对强度阈值。",
                          "各连续段独立计算频谱；长段频谱使用中部最多 262144 点，实际频率分辨率由该窗口时长决定。",
-                         "叶片身份由操作人员指定，站位圈次与方位不是实测叶轮相位；不同方位不合成同一条空间曲线。",
-                         "当前指标为激光视线方向速度；即使同一站位，姿态投影与跨批次工况变化也尚未补偿。"] +
+                         "叶片身份由操作人员指定，点位圈次与方位不是实测叶轮相位；不同方位不合成同一条空间曲线。",
+                         "当前指标为激光视线方向速度；即使同一点位，姿态投影与跨批次工况变化也尚未补偿。"] +
                         (["所选记录含模拟数据；相关结果不能作为真实设备测量结论。"] if has_simulation else [])}

@@ -50,6 +50,10 @@ async function harness(t, hooks = {}) {
       if (request.action === 'cancel') return this.stop();
       return snapshot;
     },
+    async device(request) {
+      await hooks.device?.(request);
+      return { deviceIp: request.deviceIp, state: 'unknown', readAt: null, source: 'unavailable', busy: true };
+    },
     async stop() {
       if (snapshot.recording) recording(parseInt(snapshot.recording.id, 16), 'complete');
       snapshot = { service: { state: 'ready' }, state: 'idle', receiver: { running: false },
@@ -154,4 +158,24 @@ test('single-point preparation blocks account mutations while cancellation bypas
   assert.deepEqual(actions, ['prepare', 'cancel']);
   release(); await preparing;
   assert.equal((await logout).status, 409, 'The active service prevents logout after prepare resolves');
+});
+
+test('read-only laser monitoring bypasses a pending device write while other writes stay serialized', async t => {
+  let release;
+  const pending = new Promise(resolve => { release = resolve; });
+  const actions = [];
+  const h = await harness(t, { device: async request => {
+    actions.push(request.action);
+    if (request.action === 'autofocus') await pending;
+  } });
+  const focusing = h.invoke({ action: 'device', request: { action: 'autofocus', deviceIp: '192.168.106.90', confirmLaser: true } });
+  await waitFor(() => actions.includes('autofocus'));
+  const closing = h.invoke({ action: 'device', request: { action: 'laser_off', deviceIp: '192.168.106.90', confirmLaser: true } });
+  const read = await h.invoke({ action: 'device', request: { action: 'laser_read', deviceIp: '192.168.106.90' } });
+  assert.equal(read.source, 'unavailable');
+  assert.equal(read.busy, true);
+  assert.deepEqual(actions, ['autofocus', 'laser_read']);
+  release();
+  await Promise.all([focusing, closing]);
+  assert.deepEqual(actions, ['autofocus', 'laser_read', 'laser_off']);
 });

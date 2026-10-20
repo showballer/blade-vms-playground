@@ -100,6 +100,30 @@ test("device bridge requires explicit consent and refuses modifying an active ca
   await assert.rejects(active.service.device({ deviceIp: '192.168.104.50', action: 'read' }), { status: 409 });
   assert.ok(active.requests.every(request => request.route !== 'device'));
 });
+
+test('validated window frame recovers a status transport failure without erasing a capture error', async t => {
+  let statusFailed = false, malformed = false;
+  const f = fixture(t, { fetch: ({ route }) => {
+    if (route === 'status' && statusFailed) return response({ detail: 'temporary status transport failure' }, 503);
+    if (route === 'frame') return response({ ...idle(), state: 'error', error: 'previous motion failed',
+      waveform: malformed ? { values: 'invalid' } : waveform([]) });
+    return response(idle());
+  } });
+  await f.service.start();
+  statusFailed = true;
+  const failed = await f.service.status();
+  assert.equal(failed.service.state, 'ready');
+  assert.equal(failed.service.error, 'temporary status transport failure');
+  malformed = true;
+  await assert.rejects(f.service.frame(1000));
+  assert.equal(f.service.serviceInfo().error, 'temporary status transport failure');
+  malformed = false;
+  const recovered = await f.service.frame(1000);
+  assert.equal(recovered.service.state, 'ready');
+  assert.equal(recovered.service.error, null);
+  assert.equal(recovered.state, 'error');
+  assert.equal(recovered.error, 'previous motion failed');
+});
 function deferred() {
   let resolve, reject;
   const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
@@ -117,6 +141,23 @@ test("manual laser commands and RSSI calibration reach the desktop service", asy
   assert.equal(f.requests.at(-1).route, 'rssi-calibration');
   assert.deepEqual(JSON.parse(f.requests.at(-1).options.body), request);
   await assert.rejects(f.service.rssiCalibration({ ...request, confirmLaser: false }), { status: 400 });
+});
+
+test('laser monitor reads bypass active-capture prechecks and forward only a read request', async t => {
+  const status = { deviceIp: '192.168.104.50', state: 'on', readAt: Date.now() / 1000,
+    source: 'device-readback', busy: true };
+  const f = fixture(t, { fetch: ({ route }) => response(route === 'device' ? status : acquiring()) });
+  await f.service.start();
+  f.requests.length = 0;
+  const result = await f.service.device({ deviceIp: status.deviceIp, action: 'laser_read',
+    key: 'laser', value: 1, confirmLaser: true, arbitrary: 'never-forward' });
+  assert.deepEqual(result, status);
+  assert.equal(f.requests.length, 1);
+  assert.equal(f.requests[0].route, 'device');
+  assert.deepEqual(JSON.parse(f.requests[0].options.body), { deviceIp: status.deviceIp, action: 'laser_read' });
+  for (const action of ['laser_on', 'laser_off'])
+    await assert.rejects(f.service.device({ deviceIp: status.deviceIp, action, confirmLaser: true }), { status: 409 });
+  assert.equal(f.requests.filter(request => request.route === 'device').length, 1);
 });
 const response = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, text: async () => JSON.stringify(data) });
 
@@ -350,24 +391,47 @@ test("laser and acquisition require complete explicit confirmation before any st
   await assert.rejects(f.service.begin(config), error => error.status === 400);
   await assert.rejects(f.service.begin({ ...config, confirmLaser: true, hostIp: "example.com" }), error => error.status === 400);
   await assert.rejects(f.service.begin({ ...config, confirmLaser: true, name: "" }), error => error.status === 400);
+  for (const windFarm of [42, 'x'.repeat(121), 'WF\0bad']) await assert.rejects(f.service.begin({ ...config, confirmLaser: true, windFarm }), { status: 400 });
   assert.equal(f.children.length, 0);
   assert.equal(f.requests.length, 0);
-  await f.service.begin({ ...config, confirmLaser: true });
+  await f.service.begin({ ...config, confirmLaser: true, windFarm: ' WF-001 ' });
+  assert.equal(JSON.parse(f.requests.find(request => request.route === 'start').options.body).windFarm, 'WF-001');
   assert.equal(f.requests.filter(request => request.route === "start").length, 1);
 });
 
-test("point cycle forwards entry and exit RSSI controls through the desktop bridge", async t => {
+test("point cycle forwards entry, exit and work-zero return coordinates through the desktop bridge", async t => {
   const f = fixture(t);
   const config = { deviceIp: "192.168.0.10", hostIp: "192.168.0.2", name: "回波换点", object: "", turbine: "", point: "",
     confirmLaser: true, confirmMotion: true, pointCycle: { port: "COM6", cycles: 1, dwellSeconds: 60, speedRpm: 2,
       points: [{ port: "COM6", referenceSignature: "[[0,3,10000,17],[0,3,10000,17]]", name: "M01", axis1AngleDeg: 2, axis2AngleDeg: 6 }], rssiTriggerEnabled: true,
       rssiThresholdMode: "adaptive", rssiBaselineRatio: .9, rssiConfirmMs: 25, rssiSmoothingMs: 10,
       rssiMinimumSeconds: .5, rssiMotionMarginMs: 200,
-      rssiEnterSpread: 9, rssiExitSpread: 2, rssiEnterConfirmMs: 40 } };
+      rssiEnterSpread: 9, rssiExitSpread: 2, rssiEnterConfirmMs: 40,
+      returnToOrigin: { name: "作业原点", port: "COM6", referenceSignature: "[[0,3,10000,17],[0,3,10000,17]]", axis1AngleDeg: -.47, axis2AngleDeg: -16.73 } } };
+  for (const change of [null, { ...config.pointCycle.returnToOrigin, port: 'COM7' },
+    { ...config.pointCycle.returnToOrigin, axis1AngleDeg: 36 }, { ...config.pointCycle.returnToOrigin, axis2AngleDeg: true },
+    { ...config.pointCycle.returnToOrigin, axis2AngleDeg: NaN }, { ...config.pointCycle.returnToOrigin, referenceSignature: '[]' },
+    { ...config.pointCycle.returnToOrigin, referenceSignature: '[[1,3,10000,17],[0,3,10000,17]]' }]) {
+    await assert.rejects(f.service.begin({ ...config, pointCycle: { ...config.pointCycle, returnToOrigin: change } }), { status: 400 });
+  }
   for (const change of [{ rssiConfirmMs: 0 }, { rssiBaselineRatio: NaN }, { rssiTriggerEnabled: "true" },
     { rssiThresholdMode: "absolute" }, { rssiMinimumSeconds: 61 }, { rssiEnterSpread: 2 },
     { rssiEnterSpread: true }, { rssiExitSpread: NaN }, { rssiExitSpread: 9 },
     { rssiEnterConfirmMs: 0 }]) {
+    await assert.rejects(f.service.begin({ ...config, pointCycle: { ...config.pointCycle, ...change } }), { status: 400 });
+  }
+  assert.equal(f.children.length, 0);
+  await f.service.begin(config);
+  const sent = JSON.parse(f.requests.find(request => request.route === "start").options.body);
+  assert.deepEqual(sent.pointCycle, config.pointCycle);
+});
+
+test("manual configured route preserves order and requires echo handoff before hardware", async t => {
+  const f = fixture(t);
+  const points = [0, 20, -5, 1].map((angle, index) => ({ port: "COM6", referenceSignature: "[[0,3,10000,17],[0,3,10000,17]]", pointId: `p${index}`, name: `M${index}`, axis1AngleDeg: angle, axis2AngleDeg: 0 }));
+  const config = { deviceIp: "192.168.0.10", hostIp: "192.168.0.2", name: "手动点位联动", object: "", turbine: "", point: "",
+    confirmLaser: true, confirmMotion: true, pointCycle: { port: "COM6", routeOrder: "configured", points, cycles: 1, dwellSeconds: 60, speedRpm: .2, rssiTriggerEnabled: true } };
+  for (const change of [{ routeOrder: "guess" }, { routeOrder: true }, { rssiTriggerEnabled: false }]) {
     await assert.rejects(f.service.begin({ ...config, pointCycle: { ...config.pointCycle, ...change } }), { status: 400 });
   }
   assert.equal(f.children.length, 0);
@@ -397,20 +461,51 @@ test('automatic stations preserve physical geometry and multi-point classificati
   const f = fixture(t);
   const pointCycle = { mode: 'automatic_stations', port: 'COM6', cycles: 2, dwellSeconds: 60, speedRpm: .52,
     collectionId: 'c'.repeat(32),
-    nominalPeriodSeconds: 30, maxMoveRpm: .6, rssiTriggerEnabled: true,
+    nominalPeriodSeconds: 30, maxMoveRpm: .6, maxMoveAccelerationDegS2: 30, rssiTriggerEnabled: true,
     geometry: { distanceM: 2.86, hubHeightDeltaM: 1.46, rotationDirection: 'clockwise', axis1Sign: 1, axis2Sign: 1,
       anchorRadiusM: .31, anchorAxis1AngleDeg: 10, anchorAxis2AngleDeg: 0 },
     points: [{ pointId: 'p1-s1', name: 'P1 · 0°', port: 'COM6', referenceSignature: '[[0,3,10000,17],[0,3,10000,17]]',
-      axis1AngleDeg: 10, axis2AngleDeg: 0, bladeId: '2', radialPointId: 'p1', radialPointName: 'P1', radiusM: .31, azimuthDeg: 0 }] };
+      axis1AngleDeg: 10, axis2AngleDeg: 0, bladeId: '2', radialPointId: 'p1', radialPointName: 'P1', radiusM: .31,
+      rootRadiusM: .1, bladeLengthM: .7, azimuthDeg: 0 }] };
   const config = { source: 'device', deviceIp: '192.168.106.90', hostIp: '192.168.106.10', name: '分站采集', object: '', turbine: '', point: '', confirmLaser: true, confirmMotion: true, pointCycle };
-  for (const change of [{ mode: 'unknown' }, { mode: 'legacy' }, { collectionId: '' }, { collectionId: 'c'.repeat(32) + '\n' }, { collectionId: true }, { collectionId: null }, { collectionId: 'C'.repeat(32) }, { rssiTriggerEnabled: false }, { nominalPeriodSeconds: 0 }, { maxMoveRpm: .2 }, { speedRpm: .231, maxMoveRpm: .231 },
+  for (const change of [{ mode: 'unknown' }, { mode: 'legacy' }, { collectionId: '' }, { collectionId: 'c'.repeat(32) + '\n' }, { collectionId: true }, { collectionId: null }, { collectionId: 'C'.repeat(32) }, { rssiTriggerEnabled: false }, { nominalPeriodSeconds: .1 }, { nominalPeriodSeconds: -1 }, { nominalPeriodSeconds: true }, { maxMoveRpm: .2 }, { speedRpm: .231, maxMoveRpm: .231 },
+    ...[0, -.1, .099, 120.001, NaN, Infinity, true, '30', null].map(maxMoveAccelerationDegS2 => ({ maxMoveAccelerationDegS2 })),
     { geometry: { ...pointCycle.geometry, axis1Sign: true } }, { geometry: { ...pointCycle.geometry, calibrated: true } },
-    { points: [{ ...pointCycle.points[0], radialPointId: '' }] }, { points: [{ ...pointCycle.points[0], azimuthDeg: 360 }] }]) {
+    { points: [{ ...pointCycle.points[0], radialPointId: '' }] }, { points: [{ ...pointCycle.points[0], azimuthDeg: 360 }] },
+    ...[{ rootRadiusM: true }, { rootRadiusM: -.1 }, { rootRadiusM: .4 }, { rootRadiusM: Infinity },
+      { bladeLengthM: 0 }, { bladeLengthM: '1' }, { bladeLengthM: .1 }].map(change => ({ points: [{ ...pointCycle.points[0], ...change }] }))]) {
     await assert.rejects(f.service.begin({ ...config, pointCycle: { ...pointCycle, ...change } }), { status: 400 });
   }
   assert.equal(f.requests.length, 0);
   await f.service.begin({ ...config, pointCycle: { ...pointCycle, sessionId: 'invented', identityVerified: true } });
   assert.deepEqual(JSON.parse(f.requests.find(request => request.route === 'start').options.body).pointCycle, pointCycle);
+  const operator = { ...pointCycle, nominalPeriodSeconds: 0, speedRpm: .22, maxMoveRpm: .22, dwellSeconds: 60 };
+  await f.service.begin({ ...config, pointCycle: operator });
+  assert.deepEqual(JSON.parse(f.requests.filter(request => request.route === 'start').at(-1).options.body).pointCycle, operator);
+});
+
+test('calibrated first-station hold is a strict automatic-only opt-in forwarded unchanged', async t => {
+  const f = fixture(t);
+  const pointCycle = { mode: 'automatic_stations', port: 'COM6', cycles: 1, dwellSeconds: 60, speedRpm: .52,
+    nominalPeriodSeconds: 30, maxMoveRpm: .6, rssiTriggerEnabled: true,
+    geometry: { distanceM: 2.86, hubHeightDeltaM: 1.46, rotationDirection: 'clockwise', axis1Sign: 1, axis2Sign: 1,
+      anchorRadiusM: .31, anchorAxis1AngleDeg: 10, anchorAxis2AngleDeg: 2 },
+    points: [{ pointId: 'p1-s1', name: 'P1 · 0°', port: 'COM6', referenceSignature: '[[0,3,10000,17],[0,3,10000,17]]',
+      axis1AngleDeg: 10, axis2AngleDeg: 2, bladeId: '2', radialPointId: 'p1', radialPointName: 'P1', radiusM: .31, azimuthDeg: 0 }] };
+  const config = { source: 'device', deviceIp: '192.168.106.90', hostIp: '192.168.106.10', name: '首个点位原地等待', object: '', turbine: '', point: '', confirmLaser: true, confirmMotion: true, pointCycle };
+  for (const value of ['true', 'false', 1, 0, null])
+    await assert.rejects(f.service.begin({ ...config, pointCycle: { ...pointCycle, startAtCurrentPose: value } }), { status: 400 });
+  await assert.rejects(f.service.begin({ ...config, pointCycle: { ...pointCycle, mode: 'legacy', startAtCurrentPose: true } }), { status: 400 });
+  assert.equal(f.requests.length, 0);
+  assert.equal(f.children.length, 0);
+  for (const value of [undefined, false, true]) {
+    const next = { ...pointCycle, ...(value === undefined ? {} : { startAtCurrentPose: value }) };
+    await f.service.begin({ ...config, pointCycle: next });
+    const sent = JSON.parse(f.requests.filter(request => request.route === 'start').at(-1).options.body).pointCycle;
+    assert.deepEqual(sent, next);
+    assert.equal(sent.points[0].axis1AngleDeg, 10);
+    assert.equal(sent.geometry.anchorAxis2AngleDeg, 2);
+  }
 });
 
 test("explicit simulation starts without DLL, device addresses or laser consent and forwards only simulation controls", async (t) => {
@@ -491,6 +586,16 @@ test("turntable telemetry export accepts JSONL and uses the dedicated route", as
   assert.deepEqual(await f.service.exportRecording("a".repeat(32), file), { saved: true, fileName: "turntable.jsonl" });
   assert.equal(fs.readFileSync(file, "utf8"), '{"event":"finished"}\\n');
   assert.equal(f.requests.at(-1).route, `recordings/${"a".repeat(32)}/turntable-export`);
+});
+
+test("turntable health is a read-only request and cannot confirm recovery or send motion settings", async t => {
+  const f = fixture(t);
+  await assert.rejects(f.service.turntable({ action: 'health', port: 'COM6', axis: 1, confirmRecovery: true }), { status: 400 });
+  assert.equal(f.requests.length, 0);
+  await f.service.turntable({ action: 'health', port: 'COM6', axis: 1, speedRpm: 5, confirmMotion: true });
+  const body = JSON.parse(f.requests.find(call => call.route === 'turntable').options.body);
+  assert.equal(body.action, 'health'); assert.equal(body.confirmRecovery, false);
+  assert.equal(body.speedRpm, undefined); assert.equal(body.targetAngleDeg, undefined);
 });
 
 test("turntable standalone test validates consent, limits and protocol before any device call", async t => {
@@ -754,9 +859,10 @@ test("position bridge preserves independent axis targets and rejects unsafe angl
 
 test("recorded point recall validates both targets and forwards both angles and reference signature", async t => {
   const f = fixture(t);
-  const request = { action: 'recall', port: 'COM6', recordedPort: 'COM6', axis: 1, speedRpm: 0.2, axis1AngleDeg: 25.935, axis2AngleDeg: -6.994, confirmMotion: true,
+  const request = { action: 'recall', port: 'COM6', recordedPort: 'COM6', axis: 1, speedRpm: 5, maxMoveAccelerationDegS2: 30, axis1AngleDeg: 25.935, axis2AngleDeg: -6.994, confirmMotion: true,
     referenceSignature: '[[0,3,10000,17],[0,3,10000,17]]' };
-  for (const changes of [{ confirmMotion: false }, { axis1AngleDeg: 36.7 }, { axis2AngleDeg: -180.001 }, { axis1AngleDeg: true }, { axis2AngleDeg: undefined }]) {
+  for (const changes of [{ confirmMotion: false }, { axis1AngleDeg: 36.7 }, { axis2AngleDeg: -180.001 }, { axis1AngleDeg: true }, { axis2AngleDeg: undefined },
+    ...[0, .099, 120.001, NaN, Infinity, true, '30', null].map(maxMoveAccelerationDegS2 => ({ maxMoveAccelerationDegS2 }))]) {
     await assert.rejects(f.service.turntable({ ...request, ...changes }), { status: 400 });
   }
   assert.equal(f.requests.length, 0);
@@ -767,6 +873,7 @@ test("recorded point recall validates both targets and forwards both angles and 
   assert.equal(body.axis2AngleDeg, -6.994);
   assert.equal(body.referenceSignature, request.referenceSignature);
   assert.equal(body.recordedPort, request.port);
+  assert.equal(body.speedRpm, 5); assert.equal(body.maxMoveAccelerationDegS2, 30);
   for (const changes of [{ recordedPort: undefined }, { recordedPort: 'COM7' }, { referenceSignature: undefined },
     { referenceSignature: '[null,null]' }, { referenceSignature: '[[0,3,10000,17],[0.5,3,10000,17]]' }]) {
     await assert.rejects(f.service.turntable({ ...request, ...changes }), { status: 400 });

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { loadSharedTurntablePoints, saveSharedTurntablePoints, sharedTurntablePointKey,
-  normalizeSharedTurntablePoints, pointReferenceSignature, turntableReferenceSignature, turntablePointMotionError } from "./field-turntable-points";
+  normalizeSharedTurntablePoints, pointReferenceSignature, turntableReferenceSignature, turntablePointMotionError, turntableAxisLimitsError } from "./field-turntable-points";
 import type { FieldAxisFeedback } from "./field-types";
 import { isTurntablePort, normalizeTurntablePort } from "./field-turntable-port";
 import { readFileSync } from "node:fs";
@@ -115,4 +115,33 @@ test("参考签名仅接受完整有效两轴，角度缺失/越界及当前软�
   assert.match(turntablePointMotionError({ ...saved, axis1AngleDeg: 35.01 }, axes, "COM6"), /轴1.*±35/);
   assert.match(turntablePointMotionError({ ...saved, axis2AngleDeg: null }, axes, "COM6"), /轴2有效角度/);
   assert.match(turntablePointMotionError(saved, { ...axes, "1": { ...axis, guard: { ...axis.guard, maximum_deg: 10 } } }, "COM6"), /当前软限位/);
+});
+
+test("水平轴软限位可关闭，俯仰保护和两轴产品角度范围不变", () => {
+  const horizontal = { ...axes["2"], guard: { ...axes["2"].guard, soft_enabled: false, minimum_deg: NaN, maximum_deg: NaN } };
+  assert.equal(turntableAxisLimitsError(horizontal, 2, -180), "");
+  assert.equal(turntableAxisLimitsError(horizontal, 2, 180), "");
+  assert.match(turntableAxisLimitsError(horizontal, 2, 180.001), /目标.*±180/);
+  assert.match(turntableAxisLimitsError({ ...horizontal, output_angle_deg: -180.001 }, 2, 0), /当前位置.*±180/);
+  assert.match(turntableAxisLimitsError({ ...axis, guard: { ...axis.guard, soft_enabled: false } }, 1, 0), /轴1.*软限位/);
+  const saved = { ...point, referenceSignature: signature };
+  assert.equal(turntablePointMotionError(saved, { ...axes, "2": horizontal }, "COM6"), "");
+  assert.match(turntablePointMotionError(saved, { ...axes, "2": { ...horizontal, output_angle_deg: null } }, "COM6"), /有效参考位/);
+  assert.match(turntablePointMotionError(saved, { ...axes, "2": { ...horizontal, origin_counts: 1 } }, "COM6"), /参考位.*变化/);
+});
+
+test("启用水平软限位后严格检查实际范围，未知或损坏限位不能当作关闭", () => {
+  const horizontal = axes["2"];
+  for (const [minimum_deg, maximum_deg] of [[NaN, 10], [-10, Infinity], [10, -10], [0, 0]]) {
+    assert.match(turntableAxisLimitsError({ ...horizontal, guard: { ...horizontal.guard, minimum_deg, maximum_deg } }, 2, 0), /软限位/);
+  }
+  const narrow = { ...horizontal, guard: { ...horizontal.guard, minimum_deg: -5, maximum_deg: 5 } };
+  assert.equal(turntableAxisLimitsError(narrow, 2, 5), "");
+  assert.match(turntableAxisLimitsError(narrow, 2, 5.001), /超出当前软限位/);
+  assert.match(turntableAxisLimitsError({ ...narrow, output_angle_deg: -5.001 }, 2, 0), /当前位置.*软限位/);
+  assert.match(turntableAxisLimitsError({ ...horizontal, guard: undefined } as unknown as FieldAxisFeedback, 2, 0), /软限位/);
+  const wide = { ...horizontal, guard: { ...horizontal.guard, minimum_deg: -360, maximum_deg: 360 } };
+  assert.equal(turntableAxisLimitsError(wide, 2, 180), "");
+  assert.match(turntableAxisLimitsError(wide, 2, 181), /±180/);
+  assert.match(turntablePointMotionError({ ...point, referenceSignature: signature }, { ...axes, "2": narrow }, "COM6"), /超出当前软限位/);
 });

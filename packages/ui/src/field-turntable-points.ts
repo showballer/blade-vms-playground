@@ -32,6 +32,24 @@ export function turntableReferenceSignature(axes: Record<string, FieldAxisFeedba
   return signature(JSON.stringify(values));
 }
 
+/** Axis 2 may have no controller soft limits; the product angle envelope still applies. */
+export function turntableAxisLimitsError(value: FieldAxisFeedback | undefined, axis: 1 | 2, target?: number): string {
+  const limit = axis === 1 ? 35 : 180, guard = value?.guard;
+  const enabled = guard?.soft_enabled;
+  if (enabled !== true && !(axis === 2 && enabled === false)) return `请应用轴${axis}有效软限位`;
+  if (enabled && (!Number.isFinite(guard!.minimum_deg) || !Number.isFinite(guard!.maximum_deg) ||
+      guard!.minimum_deg >= guard!.maximum_deg || axis === 1 && (guard!.minimum_deg < -35 || guard!.maximum_deg > 35))) return `请应用轴${axis}有效软限位`;
+  const current = value?.output_angle_deg;
+  if (current == null || !Number.isFinite(current)) return `轴${axis}当前位置无效，请读取有效参考位`;
+  if (Math.abs(current) > limit) return `轴${axis}当前位置超出 ±${limit}°范围`;
+  if (enabled && (current < guard!.minimum_deg || current > guard!.maximum_deg)) return `轴${axis}当前位置超出软限位，请核查姿态和参考位`;
+  if (target !== undefined) {
+    if (!Number.isFinite(target) || Math.abs(target) > limit) return `轴${axis}目标角度超出 ±${limit}°范围`;
+    if (enabled && (target < guard!.minimum_deg || target > guard!.maximum_deg)) return `记录轴${axis}角度超出当前软限位`;
+  }
+  return "";
+}
+
 export function normalizeSharedTurntablePoints(raw: unknown): FieldBladePoint[] {
   if (!Array.isArray(raw)) return [];
   return raw.filter(point => point && typeof point === "object" && !Array.isArray(point) && typeof point.name === "string").map((point, index) => {
@@ -75,8 +93,6 @@ export function turntablePointMotionError(point: Pick<FieldBladePoint, "axis1Ang
     const limit = axis === 1 ? 35 : 180;
     if (angle == null || !Number.isFinite(angle)) return `记录缺少轴${axis}有效角度`;
     if (Math.abs(angle) > limit) return `记录轴${axis}角度超出 ±${limit}°`;
-    const guard = axes?.[String(axis)]?.guard;
-    if (guard?.soft_enabled && (angle < guard.minimum_deg || angle > guard.maximum_deg)) return `记录轴${axis}角度超出当前软限位`;
   }
   if (point.port && point.port !== port) return "记录串口与当前串口不同，请切换至记录串口或重新标定此点";
   const recorded = pointReferenceSignature(point);
@@ -85,5 +101,9 @@ export function turntablePointMotionError(point: Pick<FieldBladePoint, "axis1Ang
   const current = turntableReferenceSignature(axes);
   if (!current) return "请读取两轴有效参考位反馈后再执行点位运动";
   if (recorded !== current) return "记录后参考位或反馈单位已变化，请重新标定此点";
+  for (const axis of [1, 2] as const) {
+    const error = turntableAxisLimitsError(axes?.[String(axis)], axis, (axis === 1 ? point.axis1AngleDeg : point.axis2AngleDeg)!);
+    if (error) return error;
+  }
   return "";
 }

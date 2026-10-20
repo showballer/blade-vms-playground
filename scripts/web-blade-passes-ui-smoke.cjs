@@ -43,10 +43,10 @@ app.whenReady().then(async()=>{try{
   await waitFor('document.querySelectorAll(".blade-pass-results").length===1');
   assert.ok(await run('document.querySelector(".blade-pass-results").textContent.includes("缺少叶片离开")'));
  });
- await check('不同圆周站位的多点分布独立，缺相位不生成振型动画',async()=>{
+ await check('不同圆周点位的多点分布独立，缺相位不生成振型动画',async()=>{
   await waitFor('window.__bladePassFixture.chartOptions().every(item=>item.option)');
   let chart=await run('window.__bladePassFixture.chartOptions()[0].option');assert.deepEqual(chart.series[0].data,[[.31,2],[.5,4]]);
-  await choose('幅值分布圆周站位','90°');chart=await run('window.__bladePassFixture.chartOptions()[0].option');assert.deepEqual(chart.series[0].data,[[.31,6],[.5,12]]);
+  await choose('幅值分布圆周点位','90°');chart=await run('window.__bladePassFixture.chartOptions()[0].option');assert.deepEqual(chart.series[0].data,[[.31,6],[.5,12]]);
   assert.ok(await run('document.querySelector(".blade-pass-boundary").textContent.includes("不能据此生成实测振型")'));
   assert.equal(await run('!!'+button('播放动画')),false);
  });

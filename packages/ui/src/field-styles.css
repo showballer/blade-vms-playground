@@ -159,7 +159,16 @@
 .field-recordings-empty { padding: 55px 25px; display: flex; flex-direction: column; align-items: center; gap: 14px; text-align: center; color: #a8b5c6; }
 .field-recordings-empty h3 { color: #6d7f96; font-weight: 500; margin: 0; }
 .field-recordings-empty p { font-size: 11px; line-height: 1.8; }
-.field-recording-preview { margin-top: 17px; }
+.field-records-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--field-ui-space-3); margin-bottom: var(--field-ui-space-4); }
+.field-records-tabs[data-active="summary"]::before { transform: translateX(100%); }
+.field-records-workspace > [role="tabpanel"][hidden] { display: none; }
+.field-recording-dialog > .dialog { padding: 0; overflow: hidden; width: 1240px; max-width: calc(100vw - 32px); }
+.field-recording-dialog > .dialog[open] { display: flex; flex-direction: column; }
+.field-recording-dialog .dialog-heading { margin: 0; padding: var(--field-ui-space-4); gap: var(--field-ui-space-4); flex: none; }
+.field-recording-dialog .dialog-heading h2 { min-width: 0; overflow-wrap: anywhere; font-size: var(--field-ui-body); }
+.field-recording-dialog .dialog-heading > .btn { flex: none; }
+.field-recording-preview { margin: 0; padding: var(--field-ui-space-4); min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.field-recording-preview > .field-error { display: flex; flex-wrap: wrap; align-items: center; gap: var(--field-ui-space-3); }
 .field-recording-preview > .field-subtext { margin-top: 10px; }
 .field-form-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
 .field-app .dialog[open] { display: flex; flex-direction: column; max-width: calc(100vw - 24px); max-height: calc(100vh - 24px); max-height: calc(100dvh - 24px); overflow: hidden; padding: 0; }
@@ -334,7 +343,7 @@
 .field-capture-workspace { display: grid; gap: 16px; }
 .field-capture-setup { padding: 18px 22px; }
 .field-capture-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px 18px; min-height: 46px; padding: 2px 0; background: transparent; border: 0; box-shadow: none; }
-.field-capture-inputs { border: 0; padding: 0; margin: 0; display: grid; grid-template-columns: minmax(180px,1.4fr) minmax(165px,1fr) minmax(165px,1fr) auto; align-items: end; gap: 16px; }
+.field-capture-inputs { border: 0; padding: 0; margin: 0; display: grid; grid-template-columns: minmax(140px,.9fr) minmax(180px,1.4fr) minmax(150px,1fr) minmax(150px,1fr) auto; align-items: end; gap: 16px; }
 .field-capture-inputs label { font-size: 13px; color: #526780; min-width: 0; display: block; }
 .field-capture-inputs input { display: block; margin-top: 7px; width: 100%; min-width: 0; min-height: 40px; border: 1px solid #d5dfeb; border-radius: 6px; background: #fbfcfe; color: #293c57; font: inherit; padding: 8px 11px; }
 .field-capture-inputs .custom-select { display: grid; margin-top: 7px; width: 100%; min-width: 0; }
@@ -390,6 +399,9 @@
 @media (max-width: 1050px) { .field-capture-grid { grid-template-columns: minmax(0,1fr); } .field-capture-aside { grid-template-columns: repeat(2,minmax(0,1fr)); } .field-capture-tip { grid-column: 1 / -1; } .field-capture-inputs { grid-template-columns: 1fr 1fr; } .field-task-name { grid-column: 1 / -1; } .field-capture-inputs > .btn { grid-column: 1 / -1; } .field-display-controls { padding: 0; } }
 @media (max-width: 760px) { .field-workspace { grid-template-columns: minmax(0,1fr); } .field-sidebar { flex-direction: row; padding: 7px 12px; gap: 8px; border-right: 0; border-bottom: 1px solid #dfe6ef; overflow-x: auto; } .field-sidebar > p, .field-sidebar-note { display: none; } .field-sidebar > button { font-size: 12px; padding: 10px; white-space: nowrap; } .field-header { padding: 10px 16px; } .field-local-label { display: none; } .field-content { padding: 16px 12px 28px; } .field-capture-setup { padding: 16px; } .field-capture-aside { grid-template-columns: minmax(0,1fr); } .field-capture-toolbar { padding: 0; gap: 10px 12px; } .field-capture-toolbar .field-display-controls { max-width: 100%; flex-wrap: wrap; justify-content: flex-end; padding: 0; } .field-view-tabs button { padding-inline: 12px; font-size: 13px; } .field-page-tools { flex-basis: 100%; justify-content: space-between; } .field-statusbar > span:nth-child(2) { display: none; } }
 @media (max-width: 520px) { .field-capture-toolbar .field-view-tabs { width: 100%; flex-basis: 100%; } .field-capture-toolbar .field-display-controls { width: 100%; justify-content: flex-end; } }
+@media (max-width: 1250px) and (min-width: 1051px) { .field-capture-inputs { grid-template-columns: repeat(2, minmax(0, 1fr)); } .field-capture-inputs > .btn { grid-column: 1 / -1; justify-self: end; } }
+@media (max-width: 1050px) { .field-capture-inputs .field-task-name { grid-column: auto; } }
+@media (max-width: 520px) { .field-capture-inputs { grid-template-columns: minmax(0, 1fr); } }
 @media (prefers-reduced-motion: reduce) { .field-view-tabs::before, .field-view-tabs button { transition: none; } }
 @media (prefers-reduced-motion: reduce) { .field-app *, .field-app *::before, .field-app *::after { scroll-behavior: auto !important; transition-duration: 0s !important; } }
 .field-record-actions { display: flex; flex-wrap: wrap; gap: 8px; min-width: 200px; }

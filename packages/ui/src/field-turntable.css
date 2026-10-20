@@ -146,6 +146,25 @@
   margin-top: var(--field-ui-space-4);
   padding-top: var(--field-ui-space-4);
 }
+.field-work-origin {
+  padding: var(--field-ui-space-3) var(--field-ui-space-4);
+  margin-bottom: var(--field-ui-space-4);
+  border: 1px solid var(--field-ui-line);
+  border-radius: var(--field-ui-panel-radius);
+  background: var(--field-ui-panel);
+}
+.field-work-origin-row, .field-work-origin-actions, .field-work-origin-angles {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--field-ui-space-2) var(--field-ui-space-3);
+  min-width: 0;
+}
+.field-work-origin-row { justify-content: space-between; }
+.field-work-origin-angles { color: var(--field-ui-secondary); font-size: var(--field-ui-label); }
+.field-work-origin-angles output { color: var(--field-ui-text); font-variant-numeric: tabular-nums; }
+.field-work-origin .field-subtext { margin-top: var(--field-ui-space-2); }
+.field-work-origin .field-error { margin-bottom: 0; }
 .field-turntable-actions {
   display: flex;
   align-items: center;
@@ -288,3 +307,16 @@
 @media (max-width: 520px) {
   .field-app .field-servo-ui .field-config-grid, .field-app .field-servo-ui .field-motion-block .field-config-grid, .field-app .field-servo-ui .field-joint-inputs, .field-app .field-servo-ui .field-feedback-block .field-details { grid-template-columns: minmax(0, 1fr); }
 }
+
+.field-capture-link { margin-top: var(--field-ui-space-3); padding-top: var(--field-ui-space-3); border-top: 1px solid var(--field-ui-line); min-width: 0; }
+.field-capture-link-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--field-ui-space-2); }
+.field-capture-link-heading .field-turntable-toggle { margin: 0; align-items: center; }
+.field-capture-link-heading .field-turntable-toggle input[type="checkbox"] { margin-top: 0; }
+.field-route-order { color: var(--field-ui-primary); margin: var(--field-ui-space-3) 0; font-size: var(--field-ui-body); overflow-wrap: anywhere; }
+.field-link-blockers { margin-top: var(--field-ui-space-3); color: var(--field-ui-secondary); font-size: var(--field-ui-caption); }
+.field-link-blockers ul { margin: var(--field-ui-space-2) 0 0; padding-left: var(--field-ui-space-4); }
+.field-app .field-servo-ui .field-route-settings { margin-top: var(--field-ui-space-3); background: var(--field-ui-subtle); }
+.field-route-advanced { margin-top: var(--field-ui-space-4); }
+.field-route-advanced summary { cursor: pointer; color: var(--field-ui-secondary); font-size: var(--field-ui-caption); }
+.field-points-block input[type="checkbox"] { accent-color: var(--field-ui-primary); width: 16px; height: 16px; }
+.field-point-row-actions { flex-wrap: wrap; min-width: 180px; }

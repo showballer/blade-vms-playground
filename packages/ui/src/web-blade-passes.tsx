@@ -16,7 +16,7 @@ function chartBase() {
     dataZoom: [{ type: "inside", filterMode: "none" }, { type: "slider", height: 16, bottom: 8, left: 62, right: 22, brushSelect: false, showDataShadow: false }],
     yAxis: { type: "value", name: "mm/s", nameGap: 12, axisLabel: { hideOverlap: true } } };
 }
-const station = (angle: number | undefined) => Number.isFinite(angle) ? `${number(angle)}°` : "站位未知";
+const station = (angle: number | undefined) => Number.isFinite(angle) ? `${number(angle)}°` : "点位未知";
 const sourceLabel = (source: BladePassSource) => `${source.radialPointName || source.radialPointId} · ${station(source.azimuthDeg)} · ${source.sessionId?.slice(0, 8) || source.recordingId.slice(0, 8)}`;
 
 export function WebBladePasses({ canAnalyze, refreshKey, preferredIds, onError }: Props) {
@@ -94,12 +94,12 @@ export function WebBladePasses({ canAnalyze, refreshKey, preferredIds, onError }
           const count = point.records.filter(record => selected.includes(record.id)).length;
           return <label key={point.id} className={count ? "selected" : ""}><input type="checkbox" aria-label={`选择测点 ${point.name}`} checked={count > 0} disabled={!count && chosen.length >= BLADE_PASS_RECORD_LIMIT} onChange={event => selectRecords(point.records.map(record => record.id), event.target.checked)} /><span><strong>{point.name}</strong><small>半径 {number(point.radius)} m · 已选 {count}/{point.records.length} 条</small></span></label>;
         })}</fieldset>
-        <details className="blade-pass-records"><summary>批次与站位记录 · 已选 {chosen.length} / {task.records.length}</summary><div className="field-table-scroll"><table className="field-table"><thead><tr><th>选择</th><th>测点 / 批次</th><th>站位 / 轮次</th><th>原始样本</th><th>经过状态</th></tr></thead><tbody>{task.records.map(record => {
+        <details className="blade-pass-records"><summary>批次与点位记录 · 已选 {chosen.length} / {task.records.length}</summary><div className="field-table-scroll"><table className="field-table"><thead><tr><th>选择</th><th>测点 / 批次</th><th>点位 / 轮次</th><th>原始样本</th><th>经过状态</th></tr></thead><tbody>{task.records.map(record => {
           const metadata = bladePassMetadata(record)!; const checked = selected.includes(record.id);
           const labels: Record<string, string> = { confirmed_pass: "已记录进入与离开", missing_entry: "缺少进入", missing_exit: "缺少离开", signal_gap: "回波中断", cancelled: "已取消", device_error: "设备异常" };
           return <tr key={record.id}><td><input type="checkbox" aria-label={`选择记录 ${record.id}`} checked={checked} disabled={!checked && chosen.length >= BLADE_PASS_RECORD_LIMIT} onChange={event => selectRecords([record.id], event.target.checked)} /></td><td><strong>{metadata.radialPointName || metadata.radialPointId}</strong><small>{metadata.sessionId?.slice(0, 8) || "批次未知"} · {record.id.slice(0, 8)}</small></td><td>{station(metadata.azimuthDeg)} · 第 {metadata.lapIndex ?? "—"} 轮</td><td>{record.samples.toLocaleString()}<small>{number(record.sampleRate)} Hz</small></td><td>{labels[metadata.completion || ""] || "边界待校验"}</td></tr>;
         })}</tbody></table></div></details>
-        {task.records.length > BLADE_PASS_RECORD_LIMIT && <p className="blade-pass-note">一次最多分析 64 条记录；可在批次与站位中调整选择。</p>}
+        {task.records.length > BLADE_PASS_RECORD_LIMIT && <p className="blade-pass-note">一次最多分析 64 条记录；可在批次与点位中调整选择。</p>}
       </>}
       <details className="blade-pass-advanced"><summary>筛选与预处理设置</summary><div className="blade-pass-advanced-fields"><label>预处理<CustomSelect value={detrend} onChange={event => { invalidate(); setDetrend(event.target.value); }}><option value="constant">去均值</option><option value="linear">去线性趋势</option><option value="none">不去趋势</option></CustomSelect></label><label>RSSI 下限 · %<input aria-label="RSSI 下限百分比" type="number" min={0} max={100} step="any" placeholder="不设强度阈值" value={rssi} onChange={event => { invalidate(); setRssi(event.target.value); }} /></label></div><p className="blade-pass-note">保留原始时间和片段间隙，频谱按单个连续有效段计算。更改设置后需重新分析。</p></details>
     </form>
@@ -120,7 +120,7 @@ export function BladePassResults({ result }: { result: BladePassResult }) {
       <p className="blade-pass-boundary">没有共同相位参考，当前结果为幅值分布，不能据此生成实测振型。</p>
       {result.warnings.length > 0 && <details className="blade-pass-detail"><summary>数据说明 · {result.warnings.length} 项</summary><ul>{result.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul></details>}
     </section>
-    {distribution && <section className="field-card"><div className="field-section-heading"><div><h2>多点幅值分布</h2><p>同一圆周站位下，比较不同径向测点的有效段速度 RMS。</p></div><label className="blade-pass-inline">圆周站位<CustomSelect aria-label="幅值分布圆周站位" value={azimuthIndex} onChange={event => setAzimuthIndex(Number(event.target.value))}>{result.amplitudeDistributions.map((item, index) => <option key={item.azimuthDeg} value={index}>{station(item.azimuthDeg)}</option>)}</CustomSelect></label></div>
+    {distribution && <section className="field-card"><div className="field-section-heading"><div><h2>多点幅值分布</h2><p>同一圆周点位下，比较不同径向测点的有效段速度 RMS。</p></div><label className="blade-pass-inline">圆周点位<CustomSelect aria-label="幅值分布圆周点位" value={azimuthIndex} onChange={event => setAzimuthIndex(Number(event.target.value))}>{result.amplitudeDistributions.map((item, index) => <option key={item.azimuthDeg} value={index}>{station(item.azimuthDeg)}</option>)}</CustomSelect></label></div>
       <Chart height={280} label="径向测点速度 RMS 分布，非相位振型" option={{ ...chartBase(), xAxis: { type: "value", name: "测点半径 / m", nameLocation: "middle", nameGap: 30, axisLabel: { hideOverlap: true } }, series: [{ type: "line", showSymbol: true, symbolSize: 7, lineStyle: { type: "dashed" }, data: [...distribution.points].sort((a, b) => a.radiusM - b.radiusM).map(point => [point.radiusM, point.value * 1000]) }] }} />
       <div className="field-table-scroll blade-pass-values"><table className="field-table"><thead><tr><th>测点</th><th>半径 m</th><th>速度 RMS mm/s</th><th>有效样本</th></tr></thead><tbody>{distribution.points.map(point => <tr key={point.radialPointId}><td>{point.radialPointName || point.radialPointId}</td><td>{number(point.radiusM)}</td><td>{number(point.value * 1000)}</td><td>{point.validSamples.toLocaleString()}</td></tr>)}</tbody></table></div>
     </section>}
