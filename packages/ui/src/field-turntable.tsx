@@ -88,6 +88,9 @@ export function FieldTurntableManual({ status, disabled, request, onBusy, onStat
   const canMove = axisReady && isTurntablePort(port) && !status?.turntableWarning &&
     Number.isFinite(speedRpm) && speedRpm >= 0.02 && speedRpm <= 100 && target != null && Number.isFinite(target) &&
     !manualAxisMotionError(axisFeedback, axis, target);
+  const canMoveToDeviceZero = axisReady && isTurntablePort(port) && !status?.turntableWarning &&
+    Number.isFinite(speedRpm) && speedRpm >= 0.02 && speedRpm <= 100 &&
+    !manualAxisMotionError(axisFeedback, axis, 0);
   const recall = status?.turntable?.port === port ? status.turntable.recall : undefined;
   const motionMode = fieldTurntableMotionMode(status?.turntable, port);
   const lastMove = status?.turntable?.port === port ? status.turntable.lastMove : undefined;
@@ -153,6 +156,19 @@ export function FieldTurntableManual({ status, disabled, request, onBusy, onStat
     void call<FieldStatus>({ action: "turntable", request: { ...positioning, durationSeconds: 0, action: "manual_move", confirmMotion: true } });
   };
   const stop = () => void call<FieldStatus>({ action: "turntable", request: { action: "stop", port, axis: stopAxis, confirmMotion: true } });
+  const captureReference = async () => {
+    const result = await call<FieldStatus>({ action: "turntable", request: { action: "reference", port, axis, confirmMotion: true } });
+    if (result) onStatus?.(result);
+  };
+  const moveToDeviceZero = async () => {
+    if (!canMoveToDeviceZero) return;
+    // This is the manufacturer's absolute coordinate, never the optical/work zero.
+    const result = await call<FieldStatus>({ action: "turntable", request: {
+      action: "manual_move", port, axis, protocol: "position", targetAngleDeg: 0,
+      speedRpm, durationSeconds: 0, confirmMotion: true,
+    } });
+    if (result) onStatus?.(result);
+  };
   const recallPoint = (point: ManualPoint) => {
     const reason = manualPointRecallError(point, axes, port) || recallBlocked;
     if (reason) { setError(reason); return; }
@@ -203,7 +219,8 @@ export function FieldTurntableManual({ status, disabled, request, onBusy, onStat
     <div className="field-manual-layout">
       <section className="field-turntable-block field-motion-block" aria-label="连接与定位"><h3>连接与定位</h3>
 <div className="field-config-grid"><label>转盘串口<input disabled={locked} aria-label="手动控制转盘串口" list="manual-turntable-ports" placeholder="COM6 或 /dev/cu.usbserial-…" value={port} onChange={event => setPort(normalizeTurntablePort(event.target.value))} /><datalist id="manual-turntable-ports">{ports.map(item => <option key={item.port} value={item.port}>{item.description}</option>)}</datalist></label><label>微调步长（°）<input disabled={locked} aria-label="手动控制微调步长" type="number" min={0.001} max={35} step={0.001} value={step} onChange={event => setStep(Math.max(0.001, Number(event.target.value) || 0.001))} /></label><label>目标角度（°）<input disabled={locked} aria-label="手动控制目标角度" type="number" min={targetBounds.min} max={targetBounds.max} step={0.001} value={toWorkAngle(target, axis, origin) ?? ""} onChange={event => setTarget(event.target.value === "" ? undefined : toDeviceAngle(Number(event.target.value), axis, origin))} /></label><label>定位转速（rpm）<input disabled={locked} aria-label="手动定位转速" type="number" min={0.02} max={100} step={0.02} value={Number.isFinite(speedRpm) ? speedRpm : ""} onChange={event => setSpeedRpm(event.currentTarget.valueAsNumber)} /></label></div>
-    <div className="field-turntable-actions"><Button type="button" disabled={locked} onClick={() => void call<{ ports?: { port: string; description: string }[] }>({ action: "turntablePorts" }).then(result => { if (result?.ports) setPorts(result.ports); })}>刷新串口</Button><Button type="button" disabled={locked || !isTurntablePort(port)} onClick={read}>读取反馈</Button><Button type="button" variant="danger" disabled={stopLocked} onClick={stop}>{recalling ? "停止两轴回位" : "停止当前轴"}</Button><Button type="button" disabled={locked || !isTurntablePort(port) || !axisFeedback} onClick={() => void call<FieldStatus>({ action: "turntable", request: { action: "reference", port, axis, confirmMotion: true } })}>{axis === 1 ? "确认当前为+25°参考" : "确认当前为0°参考"}</Button><Button type="button" disabled={locked || !isTurntablePort(port) || !axisFeedback} onClick={() => void call<FieldStatus>({ action: "turntable", request: { action: "limits", port, axis, confirmMotion: true } })}>应用当前轴 ±{axis === 1 ? 35 : 180}°软限位</Button></div>
+    <div className="field-turntable-actions"><Button type="button" disabled={locked} onClick={() => void call<{ ports?: { port: string; description: string }[] }>({ action: "turntablePorts" }).then(result => { if (result?.ports) setPorts(result.ports); })}>刷新串口</Button><Button type="button" disabled={locked || !isTurntablePort(port)} onClick={read}>读取反馈</Button><Button type="button" variant="danger" disabled={stopLocked} onClick={stop}>{recalling ? "停止两轴回位" : "停止当前轴"}</Button><Button type="button" disabled={locked || !isTurntablePort(port) || !axisFeedback} onClick={() => void captureReference()}>{axis === 1 ? "确认当前为+25°参考" : "确认当前为0°参考"}</Button><Button type="button" disabled={locked || !canMoveToDeviceZero} onClick={() => void moveToDeviceZero()}>{axis === 1 ? "俯仰回水平0°" : "水平回设备0°"}</Button><Button type="button" disabled={locked || !isTurntablePort(port) || !axisFeedback} onClick={() => void call<FieldStatus>({ action: "turntable", request: { action: "limits", port, axis, confirmMotion: true } })}>应用当前轴 ±{axis === 1 ? 35 : 180}°软限位</Button></div>
+    <p className="field-subtext">{axis === 1 ? "在厂家规定的 +25°姿态确认参考后，可回到水平0°。" : "确认参考会将当前姿态定义为水平轴的设备0°。"}回设备0°沿用上方定位转速，与顶部“回到原点”的作业坐标分开。</p>
     <div className="field-turntable-actions" role="group" aria-label="独立单轴微调"><Button type="button" disabled={locked} aria-pressed={axis === 1} variant={axis === 1 ? "primary" : undefined} onClick={() => selectAxis(1)}>轴1 · 俯仰</Button><Button type="button" disabled={locked} aria-pressed={axis === 2} variant={axis === 2 ? "primary" : undefined} onClick={() => selectAxis(2)}>轴2 · 水平</Button><Button type="button" disabled={locked || !axisReady} onClick={() => adjust(axis, -1)}>当前轴 −步长</Button><Button type="button" disabled={locked || !axisReady} onClick={() => adjust(axis, 1)}>当前轴 +步长</Button></div>
     <label className="field-turntable-toggle"><input type="checkbox" disabled={locked} checked={motionConsent} onChange={event => setMotionConsent(event.target.checked)} />允许当前选中轴移动到目标角度，另一轴保持不动</label>
 <div className="field-turntable-actions"><Button type="button" variant="primary" disabled={locked || !canMove || !motionConsent} onClick={move}>移动到目标点</Button></div>

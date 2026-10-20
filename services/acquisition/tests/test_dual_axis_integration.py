@@ -12,7 +12,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from blade_acquisition.service import Settings, create_app
-from blade_acquisition.turntable import MotionGuard, PointCycleConfig, station_move_plan, station_timing_plan
+from blade_acquisition.turntable import MotionGuard, PointCycleConfig, TurntableRequest, station_move_plan, station_timing_plan
 from blade_acquisition.turntable_driver import TrajectoryStatus, MotorController, MotorError, TrajectoryPoint
 from blade_acquisition.turntable_driver.trajectory import AxisPosition
 from test_turntable import FakeMotor
@@ -192,7 +192,65 @@ class DualAxisIntegrationTests(unittest.TestCase):
         self.assertFalse(evidence["measurementDuringMotion"])
         self.assertEqual(evidence["status"]["state"], 6)
         self.assertEqual(self.motor.options["max_speed"], 3)
+        self.assertTrue(self.motor.options["adaptive"])
+        self.assertEqual(self.motor.options["cycle_ms"], 100)
+        self.assertEqual(self.motor.options["max_error"], .75)
+        self.assertEqual(self.motor.options["tolerance"], .1)
+        self.assertEqual(evidence["waitTimeoutSeconds"], evidence["plannedSeconds"] * 4 + 35)
         self.assertIsNone(self.controller.motion_guard.warning)
+
+    def test_adaptive_delay_keeps_waiting_without_starting_daq_or_restarting_motion(self):
+        original = self.motor.wait_trajectory
+        def delayed(session, **kwargs):
+            plan = self.controller.turntable_snapshot["lastMove"]
+            # Past the former plan+15 timeout, but still within app(3)'s bound.
+            elapsed = plan["plannedSeconds"] + 20
+            self.assertGreater(kwargs["timeout"], elapsed)
+            kwargs["on_status"](replace(self.motor.status(3), elapsed_s=elapsed))
+            self.assertEqual(self.controller.turntable_snapshot["state"], "positioning")
+            self.assertFalse(self.controller.status()["receiver"]["running"])
+            self.assertEqual(self.controller.store.list(), [])
+            return original(session, **kwargs)
+        self.motor.wait_trajectory = delayed
+        reached, completed, _ = self.move()
+        self.assertTrue(reached)
+        self.assertEqual(completed, [1, 2])
+        self.assertEqual(self.motor.calls.count("start"), 1)
+
+    def test_follow_error_protection_remains_and_reports_actual_axis_error(self):
+        def failed(session, **kwargs):
+            kwargs["on_status"](replace(self.motor.status(5), fault=7, error1_deg=.817, error2_deg=-.003))
+            raise MotorError("轨迹两轴停止确认：跟随误差超限")
+        self.motor.wait_trajectory = failed
+        with self.assertRaisesRegex(RuntimeError, r"俯仰轴误差 0.817°.*保护限 0.75°"):
+            self.move()
+        self.assertEqual(self.motor.calls.count("start"), 1)
+        self.assertEqual(self.motor.calls[-1], "group_stop")
+        self.assertEqual(self.motor.options["max_error"], .75)
+        self.assertFalse(self.controller.status()["receiver"]["running"])
+        self.assertEqual(self.controller.store.list(), [])
+
+    def test_configured_follow_limit_is_validated_and_fault_reports_the_sent_value(self):
+        for limit in (0, .499, 10.001, True, "1", None, float("inf"), float("nan")):
+            with self.subTest(limit=limit):
+                with self.assertRaises(ValueError):
+                    TurntableRequest(port="COM6", followErrorLimitDeg=limit)
+                with self.assertRaises(ValueError):
+                    PointCycleConfig(port="COM6", points=[{**POINT_REFERENCE, "name": "P1",
+                        "axis1AngleDeg": 5, "axis2AngleDeg": 9}], followErrorLimitDeg=limit)
+        self.assertEqual(TurntableRequest(port="COM6").followErrorLimitDeg, .75)
+        cycle, point = self.point()
+        cycle.followErrorLimitDeg = 1.2
+        def failed(session, **kwargs):
+            kwargs["on_status"](replace(self.motor.status(5), fault=7, error1_deg=1.224, error2_deg=.013))
+            raise MotorError("controller follow error")
+        self.motor.wait_trajectory = failed
+        with self.assertRaisesRegex(RuntimeError, r"1.224°.*保护限 1.2°.*清除旧轨迹"):
+            self.controller._cycle_move_point(self.motor, cycle, point)
+        self.assertEqual(self.motor.options["max_error"], 1.2)
+        self.assertEqual(self.motor.options["tolerance"], .1)
+        self.assertEqual(self.motor.calls.count("start"), 1)
+        self.assertFalse(self.controller.status()["receiver"]["running"])
 
     def test_real_soft_bound_is_checked_before_trajectory_upload(self):
         self.motor.guard_configs[2] = replace(self.motor.get_guard_config(2), minimum_deg=-3, maximum_deg=3)
@@ -277,11 +335,12 @@ class DualAxisIntegrationTests(unittest.TestCase):
         self.assertEqual(self.motor.options["max_accel"], 3)
 
     def test_manual_origin_return_uses_requested_speed_acceleration_and_keeps_target(self):
-        for speed, acceleration in ((5, 30), (1, 10)):
+        for speed, acceleration, follow_limit in ((5, 30, .75), (1, 10, .5), (5, 90, 1.2), (10, 120, 10)):
             self.motor = BufferedMotor()
             result = self.client.post("/api/field/turntable", json={"action": "recall", "port": "COM6",
                 "recordedPort": "COM6", "confirmMotion": True, "speedRpm": speed,
-                "maxMoveAccelerationDegS2": acceleration, "referenceSignature": POINT_REFERENCE["referenceSignature"],
+                "maxMoveAccelerationDegS2": acceleration, "followErrorLimitDeg": follow_limit,
+                "referenceSignature": POINT_REFERENCE["referenceSignature"],
                 "axis1AngleDeg": 5, "axis2AngleDeg": 9})
             self.assertEqual(result.status_code, 200, result.text)
             self.controller.test_thread.join(5)
@@ -289,6 +348,9 @@ class DualAxisIntegrationTests(unittest.TestCase):
             self.assertEqual(recall["state"], "complete")
             self.assertEqual(self.motor.options["max_speed"], speed * 6)
             self.assertEqual(self.motor.options["max_accel"], acceleration)
+            self.assertEqual(self.motor.options["max_error"], follow_limit)
+            self.assertEqual(self.motor.options["tolerance"], .1)
+            self.assertEqual(recall["lastMove"]["followErrorLimitDeg"], follow_limit)
             expected, evidence = station_move_plan((0, 0), (5, 9), speed, acceleration=acceleration)
             self.assertEqual(self.motor.points, expected)
             self.assertEqual(recall["lastMove"]["plannedSeconds"], evidence["plannedSeconds"])
@@ -419,11 +481,11 @@ class DualAxisIntegrationTests(unittest.TestCase):
         prepared = []
         prepare = self.motor.prepare_trajectory
         def observe(points, **kwargs):
-            prepared.append(kwargs["max_accel"])
+            prepared.append((kwargs["max_accel"], kwargs["max_error"], kwargs["tolerance"]))
             return prepare(points, **kwargs)
         self.motor.prepare_trajectory = observe
         config = automatic_config(nominalPeriodSeconds=0, speedRpm=5, maxMoveRpm=5,
-            maxMoveAccelerationDegS2=30,
+            maxMoveAccelerationDegS2=30, followErrorLimitDeg=1.2,
             returnToOrigin={**POINT_REFERENCE, "name": "origin", "axis1AngleDeg": 0, "axis2AngleDeg": 0})
         result = self.client.post("/api/field/start", json={**START, "confirmMotion": True,
                                   "captureSessionId": "b" * 32, "pointCycle": config})
@@ -433,13 +495,14 @@ class DualAxisIntegrationTests(unittest.TestCase):
         self.assertEqual(status["state"], "idle", status)
         self.assertEqual(status["pointCycle"]["state"], "complete", status)
         self.assertEqual(self.motor.angles, {1: 0, 2: 0})
-        self.assertEqual(prepared, [30] * 5, "Initial, three handoffs and normal return all use the saved value")
+        self.assertEqual(prepared, [(30, 1.2, .1)] * 5, "Initial, three handoffs and normal return all use the saved values")
         self.assertEqual(status["pointCycle"]["lastMove"]["accelerationLimitDegS2"], 30)
         records = self.controller.store.list()
         self.assertEqual(len(records), 4, "Return does not create a measurement record")
         for record in records:
             self.assertEqual(record["pointCycle"]["completion"], "confirmed_pass")
             self.assertEqual(record["pointCycle"]["arrivalMove"]["accelerationLimitDegS2"], 30)
+            self.assertEqual(record["pointCycle"]["arrivalMove"]["followErrorLimitDeg"], 1.2)
 
     def test_dynamic_station_speed_reaches_controller_and_quantized_evidence(self):
         config = PointCycleConfig(**automatic_config(azimuths=(0, 30, 180)))

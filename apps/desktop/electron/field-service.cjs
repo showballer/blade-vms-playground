@@ -46,6 +46,12 @@ function pointCycleConfig(value) {
   if (value.mode !== undefined && !['legacy', 'automatic_stations'].includes(value.mode)) throw failure('无效自动跟随模式', 400);
   const automatic = value.mode === 'automatic_stations';
   const follow = {};
+  if (value.followErrorLimitDeg !== undefined) {
+    if (typeof value.followErrorLimitDeg !== 'number' || !Number.isFinite(value.followErrorLimitDeg) ||
+        value.followErrorLimitDeg < .5 || value.followErrorLimitDeg > 10)
+      throw failure('运动中跟随误差上限应为0.5～10°', 400);
+    follow.followErrorLimitDeg = value.followErrorLimitDeg;
+  }
   if (value.maxMoveAccelerationDegS2 !== undefined) {
     if (typeof value.maxMoveAccelerationDegS2 !== 'number' || !Number.isFinite(value.maxMoveAccelerationDegS2) ||
         value.maxMoveAccelerationDegS2 < 0.1 || value.maxMoveAccelerationDegS2 > 120)
@@ -596,8 +602,12 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     } finally { snapshotEpoch += 1; }
   }
   async function turntable(request) {
-    if (!request || !['probe', 'health', 'test', 'manual_move', 'recall', 'prepare', 'stop', 'reference', 'limits'].includes(request.action) || !isTurntablePort(request.port) ||
+    if (!request || !['probe', 'health', 'test', 'manual_move', 'recall', 'prepare', 'stop', 'reference', 'limits', 'clear_trajectory_fault', 'clear_guard_fault', 'reset_alarm', 'cancel_trajectory'].includes(request.action) || !isTurntablePort(request.port) ||
         (request.action === 'health' && request.confirmRecovery === true) ||
+        (['clear_trajectory_fault', 'clear_guard_fault', 'reset_alarm', 'cancel_trajectory'].includes(request.action) && request.confirmRecovery !== true) ||
+        (request.action === 'cancel_trajectory' && (!Number.isInteger(request.expectedTrajectorySession) || request.expectedTrajectorySession < 1 || request.expectedTrajectorySession > 65535)) ||
+        (request.action === 'clear_trajectory_fault' && request.expectedTrajectorySession !== undefined &&
+          (!Number.isInteger(request.expectedTrajectorySession) || request.expectedTrajectorySession < 1 || request.expectedTrajectorySession > 65535)) ||
         ![1, 2].includes(request.axis) || (['stop', 'test', 'manual_move', 'recall', 'prepare', 'reference', 'limits'].includes(request.action) && request.confirmMotion !== true) ||
         (request.confirmRecovery !== undefined && typeof request.confirmRecovery !== 'boolean') ||
         (request.testSeconds !== undefined && (!Number.isInteger(request.testSeconds) || request.testSeconds < 1 || request.testSeconds > 15))) throw failure('无效转盘检查/试转请求', 400);
@@ -608,6 +618,12 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
           !Number.isFinite(request.axis2AngleDeg) || Math.abs(request.axis2AngleDeg) > 180) throw failure('点位需要两轴有效角度，轴1限±35°，轴2限±180°', 400);
       if (request.recordedPort !== request.port || !validPointReference(request.referenceSignature)) throw failure('点位串口或参考位信息缺失/不匹配，请重新标定后回位', 400);
       const acceleration = {};
+      if (request.followErrorLimitDeg !== undefined) {
+        if (typeof request.followErrorLimitDeg !== 'number' || !Number.isFinite(request.followErrorLimitDeg) ||
+            request.followErrorLimitDeg < .5 || request.followErrorLimitDeg > 10)
+          throw failure('回位运动中跟随误差上限应为0.5～10°', 400);
+        acceleration.followErrorLimitDeg = request.followErrorLimitDeg;
+      }
       if (request.maxMoveAccelerationDegS2 !== undefined) {
         if (typeof request.maxMoveAccelerationDegS2 !== 'number' || !Number.isFinite(request.maxMoveAccelerationDegS2) ||
             request.maxMoveAccelerationDegS2 < .1 || request.maxMoveAccelerationDegS2 > 120)
@@ -625,6 +641,8 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     try {
       lastStatus = await http('turntable', 'POST', { ...config, ...recall, action: request.action, port: request.port, axis: request.axis,
         ...(request.testSeconds !== undefined ? { testSeconds: request.testSeconds } : {}),
+        ...(['cancel_trajectory', 'clear_trajectory_fault'].includes(request.action) && request.expectedTrajectorySession !== undefined
+          ? { expectedTrajectorySession: request.expectedTrajectorySession } : {}),
         confirmMotion: request.confirmMotion === true, confirmRecovery: request.confirmRecovery === true });
       return envelope();
     } finally { snapshotEpoch += 1; }

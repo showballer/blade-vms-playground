@@ -40,6 +40,9 @@ check("默认30秒模型只生成输入，没有参考位与隐式开机请求",
   assert.match(html, /aria-label="叶轮每圈时间 · s"[^>]*min="0"/);
   assert.ok(html.includes("填 0 表示人手转动叶片"));
   assert.match(html, /aria-label="换点加速度上限 · °\/s²"[^>]*min="0.1"[^>]*max="120"/);
+  assert.match(html, /aria-label="运动中跟随误差上限 · °"[^>]*min="0.5"[^>]*max="10"/);
+  assert.ok(html.includes("到位精度仍为0.1°"));
+  assert.ok(html.includes("不能设为0关闭"));
   assert.ok(!html.includes("待校准")); assert.ok(!html.includes("设备与服务设置")); assert.ok(!html.includes("连续轨迹"));
   assert.ok(!html.includes("手动瞄准"));
   assert.ok(html.includes("其修正量用于此测点的全部圆周点位"));

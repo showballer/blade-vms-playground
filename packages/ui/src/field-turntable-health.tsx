@@ -3,9 +3,9 @@ import React, { useEffect, useRef, useState } from "react";
 import { Activity, LoaderCircle, RefreshCw } from "lucide-react";
 import { Button, Dialog } from "./common";
 import { isTurntablePort } from "./field-turntable-port";
-import { fieldIsActive, type FieldRequestOptions, type FieldStatus } from "./field-types";
+import { fieldIsActive, type FieldRequestOptions, type FieldStatus, type FieldTurntableRecoveryAction } from "./field-types";
 
-// Vendor app(2)/debug_panel.py and trajectory.py use separate fault namespaces.
+// Vendor app(3) keeps axis protection, drive alarms and trajectory faults separate.
 const axisFaults = ["无", "输入触发／无法退出", "超行程预算", "反馈单位变化／计数不连续", "超时／心跳丢失", "驱动通信异常", "驱动器报警", "人工取消"];
 const trajectoryStates = ["空闲", "上传中", "已校验待启动", "轨迹运行", "终点收敛", "两轴停止确认", "完成", "故障", "已取消"];
 const trajectoryFaults = ["无", "人工停止", "参考／保护无效", "范围／制动余量不足", "限位触发", "驱动通信故障", "驱动器报警", "跟随误差超限", "调度超过1秒", "3秒心跳丢失", "未停在起点", "轨迹数据错误", "终点收敛超时", "路径推进超时"];
@@ -27,6 +27,8 @@ export function turntableHealthReport(status: FieldStatus | null, port: string) 
   const axes = ([1, 2] as const).map(axis => {
     const name = axis === 1 ? "俯仰轴" : "水平轴", value = controller?.feedback?.axes?.[String(axis)];
     const drive = health?.axes?.[String(axis)];
+    const profile = health?.motionProfiles?.[String(axis)];
+    const milliseconds = (value: unknown) => finite(value) ? `${value} ms` : "未读取";
     const reference = !!value && Number.isInteger(value.flags) && !!(value.flags & 1) && finite(value.output_angle_deg);
     const pending = !!value && Number.isInteger(value.flags) && !!(value.flags & 16);
     if (!value) unknown.push(`${name}反馈缺失。`);
@@ -52,7 +54,9 @@ export function turntableHealthReport(status: FieldStatus | null, port: string) 
     return { axis, name, angle: reference ? `${value!.output_angle_deg!.toFixed(3)}°` : "无有效角度",
       rpm: finite(value?.motor_rpm) ? `${value.motor_rpm} rpm` : "未读取", reference: reference ? "有效" : "无效／未读取",
       stop: !value || !finite(value.motor_rpm) ? "未读取" : pending ? "停机待确认" : value.motor_rpm !== 0 ? "运动中" : "反馈零速",
-      fault: codeText(axisFaults, value?.fault), alarm: drive?.alarmCode != null ? String(drive.alarmCode) : "未读取" };
+      fault: codeText(axisFaults, value?.fault), alarm: drive?.alarmCode != null ? String(drive.alarmCode) : "未读取",
+      profile: { acceleration: milliseconds(profile?.accel_ms), deceleration: milliseconds(profile?.decel_ms),
+        smoothing: milliseconds(profile?.s_curve_ms), unavailable: profile?.unavailable } };
   });
   const capability = controller?.motionCapability;
   if (capability?.supported && capability.probe === "confirmed") {
@@ -75,26 +79,60 @@ export function turntableHealthReport(status: FieldStatus | null, port: string) 
 
 type Props = { port: string; status: FieldStatus | null; disabled?: boolean; pollUnavailable?: boolean;
   request: <T>(options: FieldRequestOptions) => Promise<T>; onStatus: (status: FieldStatus) => void; onBusy: (busy: boolean) => void };
+export function turntableRecoveryOptions(status: FieldStatus | null, port: string) {
+  const controller = status?.turntable?.port === port ? status.turntable : undefined;
+  const health = controller?.health, state = controller?.motionCapability?.status?.state;
+  const positions = [1, 2].map(axis => controller?.feedback?.axes?.[String(axis)]);
+  const stopped = health?.readOnly === true && !health.referenceChangedDuringRead && positions.every(p =>
+    p && p.motor_rpm === 0 && [0, 7, 8].includes(p.home_phase));
+  const supported = controller?.motionCapability?.probe === "confirmed";
+  const terminal = supported && typeof state === "number" && [0, 6, 7, 8].includes(state);
+  const session = controller?.motionCapability?.status?.session;
+  return { cancelPending: !!stopped && supported && state === 2 && controller?.motionCapability?.status?.fault === 0 && finite(session) && Number.isInteger(session) && session >= 1 && session <= 65535,
+    trajectory: !!stopped && supported && typeof state === "number" && [5, 6, 7, 8].includes(state),
+    axes: ([1, 2] as const).map(axis => {
+      const value = positions[axis - 1], drive = health?.axes[String(axis)];
+      // Older replies omit the extended drive flags (stored explicitly as null).
+      // The axis feedback still has its own stop-pending flag; missing drive
+      // data (undefined) is not equivalent to this supported legacy response.
+      const settled = !!stopped && !!value && !(value.flags & 16) &&
+        (drive?.limitFlags === 0 || drive?.limitFlags === null);
+      const reference = !!value && !!(value.flags & 1) && finite(value.output_angle_deg);
+      const inRange = reference && (!value.guard.soft_enabled ||
+        value.output_angle_deg! >= value.guard.minimum_deg && value.output_angle_deg! <= value.guard.maximum_deg);
+      return { axis, guard: settled && terminal && reference && inRange && drive?.alarmCode === 0 && value!.fault > 0,
+        alarm: settled && (terminal || controller?.motionCapability?.probe === "legacy-command-unsupported") &&
+          finite(drive?.alarmCode) && drive.alarmCode > 0 };
+    }) };
+}
 export function FieldTurntableHealth({ port, status, disabled = false, pollUnavailable = false, request, onStatus, onBusy }: Props) {
-  const [open, setOpen] = useState(false), [checking, setChecking] = useState(false), [error, setError] = useState("");
+  const [open, setOpen] = useState(false), [checking, setChecking] = useState(false), [error, setError] = useState(""), [notice, setNotice] = useState("");
   const alive = useRef(false), sequence = useRef(0), inFlight = useRef(false);
   const latest = useRef({ port, status, disabled, pollUnavailable }); latest.current = { port, status, disabled, pollUnavailable };
   const report = turntableHealthReport(status, port);
+  const recovery = turntableRecoveryOptions(status, port);
   const blocked = disabled || pollUnavailable || status?.service.state !== "ready" || !isTurntablePort(port) ||
     fieldIsActive(status) || !!status?.turntableBusy || !!status?.deviceBusy;
   useEffect(() => { alive.current = true; return () => { alive.current = false; sequence.current++; onBusy(false); }; }, [onBusy]);
-  useEffect(() => { sequence.current++; setError(""); }, [port, status?.service.generation]);
-  async function inspect() {
+  useEffect(() => { sequence.current++; setError(""); setNotice(""); }, [port, status?.service.generation]);
+  async function inspect(action: "health" | FieldTurntableRecoveryAction = "health", axis: 1 | 2 = 1) {
     if (blocked || inFlight.current) return;
+    const pendingSession = status?.turntable?.motionCapability?.status?.session;
+    if (action === "cancel_trajectory" && (!recovery.cancelPending || !finite(pendingSession))) return;
     const token = ++sequence.current, selectedPort = port, generation = status?.service.generation;
-    inFlight.current = true; setChecking(true); setError(""); onBusy(true);
+    inFlight.current = true; setChecking(true); setError(""); setNotice(""); onBusy(true);
     try {
-      const next = await request<FieldStatus>({ action: "turntable", request: { action: "health", port: selectedPort, axis: 1 } });
+      const next = await request<FieldStatus>({ action: "turntable", request: { action, port: selectedPort, axis,
+        ...(action === "cancel_trajectory" && finite(pendingSession) ? { expectedTrajectorySession: pendingSession } : {}),
+        ...(action !== "health" ? { confirmRecovery: true } : {}) } });
       const live = latest.current;
       if (!alive.current || token !== sequence.current || live.port !== selectedPort || live.status?.service.generation !== generation ||
           next.service.generation !== generation || live.pollUnavailable || fieldIsActive(live.status)) return;
       if (next.turntable?.port !== selectedPort || next.turntable.health?.readOnly !== true) throw new Error("未收到完整的转盘检查结果，请完全重启客户端后再试。");
+      if (action !== "health" && (next.turntable.recovery?.verified !== true || next.turntable.recovery.action !== action || next.turntable.recovery.axis !== axis))
+        throw new Error("未收到恢复操作的有效读回，请重新检查。");
       onStatus(next);
+      if (action !== "health") setNotice(action === "cancel_trajectory" ? "待执行轨迹已取消，未修改作业原点和参考位。" : "本项恢复已读回确认，请检查其余状态。采集任务不会自动续跑。");
     } catch (cause) {
       if (alive.current && token === sequence.current) setError(cause instanceof Error ? cause.message : "转盘检查失败");
     } finally {
@@ -117,11 +155,24 @@ export function FieldTurntableHealth({ port, status, disabled = false, pollUnava
         <div><dt>当前角度</dt><dd>{axis.angle}</dd></div><div><dt>电机转速</dt><dd>{axis.rpm}</dd></div>
         <div><dt>角度参考</dt><dd>{axis.reference}</dd></div><div><dt>停止反馈</dt><dd>{axis.stop}</dd></div>
         <div><dt>轴故障</dt><dd>{axis.fault}</dd></div><div><dt>驱动器报警码</dt><dd>{axis.alarm}</dd></div>
-      </dl></section>)}</div>
+        <div><dt>驱动加速 PA40</dt><dd>{axis.profile.acceleration}</dd></div>
+        <div><dt>驱动减速 PA41</dt><dd>{axis.profile.deceleration}</dd></div>
+        <div><dt>驱动平滑 PA42</dt><dd>{axis.profile.smoothing}</dd></div>
+        {axis.profile.unavailable && <div><dt>驱动参数</dt><dd>{axis.profile.unavailable}</dd></div>}
+      </dl><div className="field-health-recovery-actions">
+        <Button type="button" disabled={checking || blocked || !!error || !recovery.axes[axis.axis - 1].guard} onClick={() => void inspect("clear_guard_fault", axis.axis)}>清除{axis.name}故障</Button>
+        <Button type="button" disabled={checking || blocked || !!error || !recovery.axes[axis.axis - 1].alarm} onClick={() => void inspect("reset_alarm", axis.axis)}>复位驱动报警</Button>
+      </div></section>)}</div>
+      <p className="field-subtext">PA40／PA41是驱动器加减速时间常数，PA42是平滑时间，均为实际读值；与换点加速度 °/s² 分别生效，检查不会修改这些参数。</p>
       <section className="field-health-trajectory"><h3>双轴轨迹</h3><dl><div><dt>轨迹状态</dt><dd>{report.trajectoryState}</dd></div><div><dt>轨迹故障</dt><dd>{report.trajectoryFault}</dd></div>
-        <div><dt>轨迹快照误差（俯仰／水平）</dt><dd>{report.errors.join(" / ")}</dd></div></dl></section>
+        <div><dt>轨迹快照误差（俯仰／水平）</dt><dd>{report.errors.join(" / ")}</dd></div></dl>
+        <div className="field-health-recovery-actions"><Button type="button" disabled={checking || blocked || !!error || !recovery.cancelPending} onClick={() => void inspect("cancel_trajectory")}>取消待执行轨迹</Button>
+          <Button type="button" disabled={checking || blocked || !!error || !recovery.trajectory} onClick={() => void inspect("clear_trajectory_fault")}>清除旧轨迹</Button></div></section>
+      {notice && <p className="field-notice" role="status">{notice}</p>}
+      {!!status?.turntable?.health?.issues?.length && status.turntable.port === port && <div className="field-health-issues"><h3>处理建议</h3>{status.turntable.health.issues.map((issue, index) =>
+        <div key={`${issue.domain}-${issue.code}-${issue.motor_id}-${index}`}><strong>{issue.motor_id ? `${issue.motor_id === 1 ? "俯仰轴" : "水平轴"} · ` : ""}{issue.title}</strong><ul>{issue.steps.map((step, i) => <li key={i}>{step}</li>)}</ul></div>)}</div>}
       {(report.problems.length > 0 || report.unknown.length > 0) && <div className="field-health-issues"><h3>需要处理或核实</h3><ul>{[...new Set([...report.problems, ...report.unknown])].map(text => <li key={text}>{text}</li>)}</ul></div>}
-      <p className="field-subtext">检查只读取状态，不会停止、清故障、修改参考位或启动运动。轴故障与轨迹故障分别显示；零转速不等于已恢复定位条件。</p>
+      <p className="field-subtext">取消待执行轨迹只撤销预载，不修改作业原点或参考位。重新检查只读状态；排除原因并停稳后，再点击对应恢复按钮。参考失效需先按真实姿态重新建立参考。独立清除轨迹需要配套 v3.4 或更新固件。</p>
     </div></Dialog>}
   </div>;
 }

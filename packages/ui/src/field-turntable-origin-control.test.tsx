@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { FieldTurntableOriginControl, checkedOriginReturnMotion, originReturnArrivalError, originReturnTargetError, originStopError } from "./field-turntable-origin-control";
+import { FieldTurntableOriginControl, checkedOriginReturnMotion, originReturnArrivalError, originReturnTargetError, originStopError, originTrajectoryRecoverySession } from "./field-turntable-origin-control";
 import { createWorkOrigin } from "./field-turntable-origin";
 import type { FieldAxisFeedback, FieldStatus } from "./field-types";
 
@@ -20,13 +20,15 @@ const changed = (mutate: (status: FieldStatus) => void) => { const value = ready
 
 check("回原点使用有效配置，按控制器精度向下取整且不回退固定低速", () => {
   assert.deepEqual(checkedOriginReturnMotion({ speedRpm: 5, maxMoveAccelerationDegS2: 30 }),
-    { speedRpm: 5, maxMoveAccelerationDegS2: 30 });
-  assert.deepEqual(checkedOriginReturnMotion({ speedRpm: .231, maxMoveAccelerationDegS2: 3.14159 }),
-    { speedRpm: .22, maxMoveAccelerationDegS2: 3.141 });
+    { speedRpm: 5, maxMoveAccelerationDegS2: 30, followErrorLimitDeg: .75 });
+  assert.deepEqual(checkedOriginReturnMotion({ speedRpm: .231, maxMoveAccelerationDegS2: 3.14159, followErrorLimitDeg: 1.23459 }),
+    { speedRpm: .22, maxMoveAccelerationDegS2: 3.141, followErrorLimitDeg: 1.234 });
   for (const speedRpm of [NaN, Infinity, 0, .019, 10.001, true, "5", null])
     assert.throws(() => checkedOriginReturnMotion({ speedRpm: speedRpm as number, maxMoveAccelerationDegS2: 30 }));
   for (const acceleration of [NaN, Infinity, 0, .099, 120.001, true, "30", null])
     assert.throws(() => checkedOriginReturnMotion({ speedRpm: 5, maxMoveAccelerationDegS2: acceleration as number }));
+  for (const limit of [NaN, Infinity, 0, .499, 10.001, true, "1", null])
+    assert.throws(() => checkedOriginReturnMotion({ speedRpm: 5, maxMoveAccelerationDegS2: 30, followErrorLimitDeg: limit as number }));
 });
 
 check("公共光学原点回位保持绝对姿态，匹配参考且当前与目标都在真实范围", () => {
@@ -87,5 +89,27 @@ check("停止核验不要求运动软限位就绪，仍严格确认两轴实际�
     const moving = structuredClone(limitsOff); Object.assign(moving.turntable!.feedback!.axes!["2"], patch);
     assert.ok(originStopError(moving, "COM3", 2));
   }
+});
+check("故障轨迹提供就地清除入口，保留原点且不把清故障视为允许运动", () => {
+  const failed = changed(value => { value.turntable!.motionCapability!.status = { state: 7, fault: 7, session: 42 }; });
+  assert.equal(originTrajectoryRecoverySession(failed, "COM3"), 42);
+  assert.match(originReturnTargetError(origin, failed, "COM3"), /清除旧轨迹.*无需重新设置归零/);
+  let calls = 0;
+  const html = renderToStaticMarkup(<FieldTurntableOriginControl port="COM3" status={failed}
+    disabled={false} origin={origin} request={async <T,>() => { calls++; throw new Error("No hardware"); }}
+    onOrigin={() => { throw new Error("Origin must remain unchanged"); }} onStatus={() => {}} onBusy={() => {}} />);
+  assert.ok(html.includes("清除旧轨迹")); assert.ok(html.includes("原点坐标已保留"));
+  assert.equal(calls, 0);
+  for (const mutate of [
+    (value: FieldStatus) => { value.turntable!.motionCapability!.status!.state = 3; },
+    (value: FieldStatus) => { value.turntable!.motionCapability!.status!.fault = 2; },
+    (value: FieldStatus) => { value.turntable!.motionCapability!.status!.session = 0; },
+    (value: FieldStatus) => { value.state = "acquiring"; },
+    (value: FieldStatus) => { value.turntableBusy = true; },
+  ]) {
+    const other = structuredClone(failed); mutate(other);
+    assert.equal(originTrajectoryRecoverySession(other, "COM3"), null);
+  }
+  assert.equal(originTrajectoryRecoverySession(failed, "COM4"), null);
 });
 console.log(`PASS ${checks} return-origin pure/markup checks; hardware not used`);

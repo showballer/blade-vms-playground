@@ -78,6 +78,9 @@ class FakeMotor:
         self.references.append(axis)
         self.reference_valid = True
         self.angles[axis] = 25.0 if axis == 1 else 0.0
+        if axis == 1:
+            self.set_soft_range(axis, -35, 35)
+            self.set_guard_policy(axis, hardware=self.get_guard_config(axis).hardware_enabled, soft=True)
         return self.get_feedback(axis)
 
     def set_soft_range(self, axis, lo, hi):
@@ -578,13 +581,13 @@ class TurntableTests(unittest.TestCase):
             self.assertIsNone(response.json()["turntablePreparation"])
         self.assertEqual(motor.references, [1, 2])
         config = self.position_config(axis=1)
-        self.assertEqual(client.post("/api/field/turntable", json={**config, "action": "prepare", "confirmMotion": True}).status_code, 503)
+        self.assertEqual(client.post("/api/field/turntable", json={**config, "action": "prepare", "confirmMotion": True}).status_code, 200)
         motor.guard_configs[2] = replace(motor.get_guard_config(2), minimum_deg=-90, maximum_deg=90)
         response = client.post("/api/field/turntable", json={"port": "COM6", "axis": 2, "action": "limits", "confirmMotion": True})
         self.assertEqual(response.status_code, 200, response.text)
         guard = motor.get_guard_config(2)
         self.assertEqual((guard.minimum_deg, guard.maximum_deg, guard.soft_enabled, guard.hardware_enabled), (-180, 180, True, True))
-        self.assertFalse(motor.get_guard_config(1).soft_enabled)
+        self.assertTrue(motor.get_guard_config(1).soft_enabled)
 
     def test_invalid_reference_blocks_position_preparation_and_test(self):
         motor = FakeMotor(reference_valid=False)

@@ -29,6 +29,7 @@ CMD_READ_FEEDBACK = 0x20
 CMD_CONFIG_GUARD = 0x21
 CMD_SET_ZERO = 0x22
 CMD_READ_GUARD = 0x24
+CMD_SET_REFERENCE = 0x25
 CMD_TRAJECTORY_BEGIN = 0x30
 CMD_TRAJECTORY_POINT = 0x31
 CMD_TRAJECTORY_SEAL = 0x32
@@ -37,6 +38,7 @@ CMD_TRAJECTORY_STATUS = 0x34
 CMD_TRAJECTORY_STOP = 0x35
 CMD_TRAJECTORY_KEEPALIVE = 0x36
 CMD_READ_AXES = 0x37
+CMD_TRAJECTORY_CLEAR = 0x38
 
 
 STATUS_TEXT = {
@@ -60,6 +62,16 @@ def validate_output_angle(axis: int, angle: float) -> None:
     limit = 35 if axis == 1 else 180
     if isinstance(angle, bool) or not math.isfinite(angle) or not -limit <= angle <= limit:
         raise ValueError(f"轴{axis}坐标必须在±{limit}°内")
+
+
+def build_set_reference(device_id: int, angle_deg: float = 0) -> bytes:
+    """Capture this physical pose as the supplied output-axis angle; no movement."""
+    if type(device_id) is not int or device_id not in (1,2):raise ValueError("电机编号须为1或2")
+    if isinstance(angle_deg, bool) or not isinstance(angle_deg, (int, float)) or not math.isfinite(angle_deg) or not -36000<=angle_deg<=36000:
+        raise ValueError("参考角度须为有限值，范围±36000°")
+    if device_id==1 and not -35<=angle_deg<=35:
+        raise ValueError("电机1参考必须对应真实水平坐标且在±35°内")
+    return build_request(device_id,CMD_SET_REFERENCE,struct.pack(">i",round(angle_deg*1000)),parameter=0x5246)
 
 
 def build_soft_range(axis: int, minimum: float, maximum: float) -> bytes:
@@ -108,17 +120,19 @@ def validate_trajectory_session(session: int) -> None:
 
 def build_trajectory_begin(session: int, count: int, *, cycle_ms: int = 250,
                            max_speed: float = 3.6, max_accel: float = 3,
-                           max_error: float = 0.75, tolerance: float = 0.1) -> bytes:
+                           max_error: float = 0.75, tolerance: float = 0.1, adaptive: bool = False) -> bytes:
     validate_trajectory_session(session)
-    if type(count) is not int or not 2 <= count <= 128 or type(cycle_ms) is not int or not 250 <= cycle_ms <= 500:
-        raise ValueError("轨迹须为2～128点，控制周期250～500ms")
+    if type(count) is not int or not 2 <= count <= 128 or type(cycle_ms) is not int or not 50 <= cycle_ms <= 500:
+        raise ValueError("轨迹须为2～128点，控制周期50～500ms（小于250ms需要配套新固件）")
+    if type(adaptive) is not bool:
+        raise ValueError("adaptive必须是布尔值")
     values = (max_speed, max_accel, max_error, tolerance)
     if any(isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(x) for x in values):
         raise ValueError("轨迹约束必须为有限数字")
     v, a, e, tol = (round(x * 1000) for x in values)
     if not 1 <= v <= 60000 or not 1 <= a <= 120000 or not 500 <= e <= 10000 or not 50 <= tol <= 1000 or tol >= e:
         raise ValueError("轨迹速度≤60°/秒，加速度≤120°/秒²，误差0.5～10°，容差0.05～1°且小于误差限")
-    return build_request(1, CMD_TRAJECTORY_BEGIN, struct.pack(">HHiiii", count, cycle_ms, v, a, e, tol), parameter=session)
+    return build_request(1, CMD_TRAJECTORY_BEGIN, struct.pack(">HHiiii", count, cycle_ms | (0x8000 if adaptive else 0), v, a, e, tol), parameter=session)
 
 
 def build_trajectory_point(session: int, index: int, time_ms: int, axis1: float, axis2: float) -> bytes:

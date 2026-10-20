@@ -65,6 +65,8 @@ export type FieldPointCycleConfig = {
   returnToOrigin?: FieldPointCyclePoint;
   /** Joint-trajectory acceleration limit in output degrees/s²; older clients default to 3. */
   maxMoveAccelerationDegS2?: number;
+  /** In-motion joint following-error limit in degrees; omitted older settings default to 0.75. Arrival tolerance stays 0.1. */
+  followErrorLimitDeg?: number;
   /** nominalPeriodSeconds=0 means real blade passes are operator-driven, without a nominal phase schedule. */
   mode?: "automatic_stations" | "legacy"; routeOrder?: "configured" | "shortest_safe"; collectionId?: string; nominalPeriodSeconds?: number; maxMoveRpm?: number; geometry?: FieldAutoFollowGeometry;
   rssiTriggerEnabled?: boolean; rssiThresholdMode?: "adaptive" | "absolute"; rssiLeaveThresholdPercent?: number;
@@ -105,14 +107,20 @@ export type FieldTurntableMotionCapability = {
 export type FieldTurntableMove = {
   mode: FieldMotionMode; plannedSeconds?: number; actualSeconds?: number; speedLimitRpm?: number;
   accelerationLimitDegS2?: number; targets?: [number, number]; pointCount?: number;
+  adaptiveFollow?: boolean; cycleMs?: number; followErrorLimitDeg?: number;
+  arrivalToleranceDeg?: number; waitTimeoutSeconds?: number;
   timingBasis?: "controller_timed_joint_move"; measurementDuringMotion?: false;
   session?: number; status?: Record<string, unknown>; state?: string; error?: string; stopError?: string;
 };
+export type FieldTurntableRecoveryAction = "clear_trajectory_fault" | "clear_guard_fault" | "reset_alarm" | "cancel_trajectory";
+export type FieldTurntableFaultAdvice = { domain: string; code: number | string; title: string; steps: string[]; motor_id: number | null; detail?: string; execution_unknown?: boolean };
 export type FieldTurntableHealthRead = {
+  issues?: FieldTurntableFaultAdvice[];
+  motionProfiles?: Record<string, { accel_ms?: number; decel_ms?: number; s_curve_ms?: number; unavailable?: string }>;
   readAt: number; readOnly: true; referenceChangedDuringRead: boolean;
   axes: Record<string, { alarmCode: number | null; runState: number | null; limitFlags: number | null; observedAt: number }>;
 };
-export type FieldTurntableStatus = { health?: FieldTurntableHealthRead; state: string; port?: string; axis?: number; connected?: boolean; effectiveRpm?: number; positionDelta?: number; motionCapability?: FieldTurntableMotionCapability; motionMode?: FieldMotionMode; lastMove?: FieldTurntableMove; recall?: { state: "moving" | "complete" | "cancelled" | "error"; targets: [number, number]; completedAxes: number[]; motionMode?: FieldMotionMode; lastMove?: FieldTurntableMove }; feedback?: { outputRpm: number; motorRpm: number; runState?: number; alarmCode: number; limitFlags: number | null; positionRaw: number; outputAngleDeg?: number | null; axes?: Record<string, FieldAxisFeedback>; observedAt?: number }; error?: string };
+export type FieldTurntableStatus = { recovery?: { action: FieldTurntableRecoveryAction; axis: number; verified: true; completedAt: number }; health?: FieldTurntableHealthRead; state: string; port?: string; axis?: number; connected?: boolean; effectiveRpm?: number; positionDelta?: number; motionCapability?: FieldTurntableMotionCapability; motionMode?: FieldMotionMode; lastMove?: FieldTurntableMove; recall?: { state: "moving" | "complete" | "cancelled" | "error"; targets: [number, number]; completedAxes: number[]; motionMode?: FieldMotionMode; lastMove?: FieldTurntableMove }; feedback?: { outputRpm: number; motorRpm: number; runState?: number; alarmCode: number; limitFlags: number | null; positionRaw: number; outputAngleDeg?: number | null; axes?: Record<string, FieldAxisFeedback>; observedAt?: number }; error?: string };
 /** A probe releases the serial port afterwards; capability is not a live connection indicator. */
 export function fieldTurntableMotionMode(turntable: FieldTurntableStatus | undefined, port: string): FieldMotionMode | "unknown" {
   if (!port || turntable?.port !== port) return "unknown";
@@ -252,7 +260,7 @@ export type FieldRequestOptions =
   | { action: "rssiCalibration"; request: FieldRssiCalibrationRequest }
   | { action: "singlePoint"; request: FieldSinglePointRequest }
   | { action: "motionTrial"; request: FieldMotionTrialRequest }
-  | { action: "turntable"; request: { action: "probe" | "health" | "test" | "manual_move" | "recall" | "prepare" | "stop" | "reference" | "limits"; port: string; axis: 1 | 2; speedRpm?: number; direction?: FieldTurntableConfig["direction"]; durationSeconds?: number; protocol?: FieldTurntableConfig["protocol"]; targetAngleDeg?: number; axis1AngleDeg?: number; axis2AngleDeg?: number; maxMoveAccelerationDegS2?: number; referenceSignature?: string; recordedPort?: string; testSeconds?: number; confirmMotion?: true; confirmRecovery?: boolean } };
+  | { action: "turntable"; request: { action: "probe" | "health" | "test" | "manual_move" | "recall" | "prepare" | "stop" | "reference" | "limits" | FieldTurntableRecoveryAction; port: string; axis: 1 | 2; speedRpm?: number; direction?: FieldTurntableConfig["direction"]; durationSeconds?: number; protocol?: FieldTurntableConfig["protocol"]; targetAngleDeg?: number; axis1AngleDeg?: number; axis2AngleDeg?: number; maxMoveAccelerationDegS2?: number; followErrorLimitDeg?: number; referenceSignature?: string; recordedPort?: string; testSeconds?: number; confirmMotion?: true; confirmRecovery?: boolean; expectedTrajectorySession?: number } };
 
 export function fieldTurntableMatches(a: FieldTurntableConfig | Omit<FieldTurntableConfig, "durationSeconds"> | undefined, b: FieldTurntableConfig, duration = true) {
   return !!a && a.port === b.port && a.axis === b.axis && a.speedRpm === b.speedRpm && a.direction === b.direction &&

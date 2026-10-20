@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { FieldTurntableHealth, turntableHealthReport } from "./field-turntable-health";
+import { FieldTurntableHealth, turntableHealthReport, turntableRecoveryOptions } from "./field-turntable-health";
 import type { FieldAxisFeedback, FieldStatus } from "./field-types";
 
 const axis = (angle: number, limit: number): FieldAxisFeedback => ({ output_angle_deg: angle, motor_rpm: 0,
@@ -63,5 +63,67 @@ check("静态入口不执行查询或故障恢复", () => {
   const html = renderToStaticMarkup(<FieldTurntableHealth port="COM3" status={ready()} request={async <T,>() => { calls++; throw Error("No hardware"); }} onStatus={() => {}} onBusy={() => {}} />);
   assert.ok(html.includes('aria-label="检查转盘状态"')); assert.equal(calls, 0);
   assert.ok(!html.includes("一键恢复")); assert.ok(!html.includes("自动复位"));
+});
+check("恢复按故障分项，不允许无参考强清、运动中恢复或误用另一端口", () => {
+  const value = ready(); value.turntable!.motionCapability!.status = { state: 7, fault: 7 };
+  Object.assign(value.turntable!.feedback!.axes!["1"], { fault: 3, flags: 18, output_angle_deg: null });
+  let result = turntableRecoveryOptions(value, "COM3");
+  assert.equal(result.trajectory, true); assert.equal(result.axes[0].guard, false);
+  Object.assign(value.turntable!.feedback!.axes!["1"], { flags: 3, output_angle_deg: 12 });
+  result = turntableRecoveryOptions(value, "COM3"); assert.equal(result.axes[0].guard, true);
+  value.turntable!.health!.axes["1"].alarmCode = 1;
+  result = turntableRecoveryOptions(value, "COM3"); assert.equal(result.axes[0].guard, false); assert.equal(result.axes[0].alarm, true);
+  value.turntable!.feedback!.axes!["2"].motor_rpm = 1;
+  assert.equal(turntableRecoveryOptions(value, "COM3").trajectory, false);
+  assert.equal(turntableRecoveryOptions(value, "COM3").axes[0].alarm, false);
+  assert.equal(turntableRecoveryOptions(value, "COM4").trajectory, false);
+});
+check("兼容未返回扩展限位标志的设备，待启动轨迹和真实停止异常仍禁用恢复", () => {
+  const value = ready(); value.turntable!.feedback!.axes!["2"].fault = 2;
+  value.turntable!.health!.axes["2"].limitFlags = null;
+  assert.equal(turntableRecoveryOptions(value, "COM3").axes[1].guard, true);
+  value.turntable!.health!.axes["2"].alarmCode = 1;
+  assert.equal(turntableRecoveryOptions(value, "COM3").axes[1].alarm, true);
+  value.turntable!.motionCapability!.status = { state: 2, fault: 0 };
+  assert.equal(turntableRecoveryOptions(value, "COM3").axes[1].alarm, false);
+  assert.equal(turntableRecoveryOptions(value, "COM3").axes[1].guard, false);
+  value.turntable!.motionCapability!.status = { state: 0, fault: 0 };
+  value.turntable!.feedback!.axes!["2"].flags |= 16;
+  assert.equal(turntableRecoveryOptions(value, "COM3").axes[1].alarm, false);
+  value.turntable!.feedback!.axes!["2"].flags &= ~16;
+  value.turntable!.health!.axes["2"].limitFlags = 2;
+  assert.equal(turntableRecoveryOptions(value, "COM3").axes[1].alarm, false);
+  delete value.turntable!.health!.axes["2"];
+  assert.equal(turntableRecoveryOptions(value, "COM3").axes[1].alarm, false);
+});
+check("只允许取消已读取且两轴静止的待启动会话，不能取消其他轨迹或伪造会话", () => {
+  const value = ready();
+  for (const state of [0, 1, 3, 4, 5, 6, 7, 8]) {
+    value.turntable!.motionCapability!.status = { state, fault: 0, session: 42 };
+    assert.equal(turntableRecoveryOptions(value, "COM3").cancelPending, false);
+  }
+  value.turntable!.motionCapability!.status = { state: 2, fault: 0, session: 42 };
+  assert.equal(turntableRecoveryOptions(value, "COM3").cancelPending, true);
+  assert.equal(turntableRecoveryOptions(value, "COM3").trajectory, false);
+  assert.equal(turntableRecoveryOptions(value, "COM4").cancelPending, false);
+  value.turntable!.motionCapability!.status!.fault = 7;
+  assert.equal(turntableRecoveryOptions(value, "COM3").cancelPending, false);
+  value.turntable!.motionCapability!.status!.fault = 0;
+  for (const session of [undefined, 0, 65536, 2.5]) {
+    value.turntable!.motionCapability!.status!.session = session;
+    assert.equal(turntableRecoveryOptions(value, "COM3").cancelPending, false);
+  }
+  value.turntable!.motionCapability!.status!.session = 42;
+  value.turntable!.feedback!.axes!["2"].motor_rpm = 1;
+  assert.equal(turntableRecoveryOptions(value, "COM3").cancelPending, false);
+});
+check("驱动器加减速读取值与换点加速度分开显示，不从默认值推断", () => {
+  const value = ready();
+  assert.equal(turntableHealthReport(value, "COM3").axes[0].profile.acceleration, "未读取");
+  value.turntable!.health!.motionProfiles = { "1": { accel_ms: 1500, decel_ms: 800, s_curve_ms: 100 }, "2": { unavailable: "固件不支持" } };
+  const report = turntableHealthReport(value, "COM3");
+  assert.deepEqual(report.axes[0].profile, { acceleration: "1500 ms", deceleration: "800 ms", smoothing: "100 ms", unavailable: undefined });
+  assert.equal(report.axes[1].profile.acceleration, "未读取");
+  assert.equal(report.axes[1].profile.unavailable, "固件不支持");
 });
 console.log(`${checks} health presentation checks passed; no hardware accessed.`);

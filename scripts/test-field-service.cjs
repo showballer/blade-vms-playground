@@ -598,6 +598,71 @@ test("turntable health is a read-only request and cannot confirm recovery or sen
   assert.equal(body.speedRpm, undefined); assert.equal(body.targetAngleDeg, undefined);
 });
 
+test("turntable recovery requires explicit action and keeps motion parameters out of the request", async t => {
+  const f = fixture(t);
+  for (const action of ['clear_trajectory_fault', 'clear_guard_fault', 'reset_alarm']) {
+    await assert.rejects(f.service.turntable({ action, port: 'COM6', axis: 1 }), { status: 400 });
+    await f.service.turntable({ action, port: 'COM6', axis: 2, confirmRecovery: true, speedRpm: 100 });
+    const call = f.requests.filter(call => call.route === 'turntable').at(-1);
+    assert.deepEqual(JSON.parse(call.options.body), { action, port: 'COM6', axis: 2, confirmMotion: false, confirmRecovery: true });
+  }
+});
+test("pending trajectory cancellation forwards a verified session on Mac and Windows without motion settings", async t => {
+  const f = fixture(t);
+  for (const port of ['COM6', '/dev/cu.usbserial-110']) {
+    const request = { action: 'cancel_trajectory', port, axis: 1, confirmRecovery: true };
+    for (const session of [undefined, null, true, 0, 65536, 2.5, '42']) {
+      await assert.rejects(f.service.turntable({ ...request, expectedTrajectorySession: session }), { status: 400 });
+    }
+    await assert.rejects(f.service.turntable({ ...request, confirmRecovery: false, expectedTrajectorySession: 42 }), { status: 400 });
+    await f.service.turntable({ ...request, expectedTrajectorySession: 42, speedRpm: 100, targetAngleDeg: 10 });
+    const body = JSON.parse(f.requests.filter(call => call.route === 'turntable').at(-1).options.body);
+    assert.deepEqual(body, { ...request, expectedTrajectorySession: 42, confirmMotion: false });
+  }
+});
+
+test("clearing an old trajectory can bind recovery to its verified session on Mac and Windows", async t => {
+  const f = fixture(t);
+  for (const port of ['COM6', '/dev/cu.usbserial-110']) {
+    const request = { action: 'clear_trajectory_fault', port, axis: 1, confirmRecovery: true };
+    for (const expectedTrajectorySession of [null, true, 0, 65536, 2.5, '42'])
+      await assert.rejects(f.service.turntable({ ...request, expectedTrajectorySession }), { status: 400 });
+    await f.service.turntable({ ...request, expectedTrajectorySession: 42, speedRpm: 100, followErrorLimitDeg: 9 });
+    const body = JSON.parse(f.requests.filter(call => call.route === 'turntable').at(-1).options.body);
+    assert.deepEqual(body, { ...request, expectedTrajectorySession: 42, confirmMotion: false });
+  }
+});
+
+test("following-error settings pass through point cycles and recall without a disable sentinel", async t => {
+  const f = fixture(t);
+  const referenceSignature = '[[0,3,10000,17],[0,3,10000,17]]';
+  for (const port of ['COM6', '/dev/cu.usbserial-110']) {
+    const point = { name: 'P1', port, referenceSignature, axis1AngleDeg: 25, axis2AngleDeg: 0 };
+    const config = { source: 'device', deviceIp: '192.168.106.90', hostIp: '192.168.106.10',
+      name: '误差设置透传', object: '', turbine: '', point: '', confirmLaser: true, confirmMotion: true,
+      pointCycle: { port, points: [point], cycles: 1, dwellSeconds: 1, speedRpm: .2 } };
+    const recall = { action: 'recall', port, recordedPort: port, axis: 1, speedRpm: .2,
+      axis1AngleDeg: 25, axis2AngleDeg: 0, referenceSignature, confirmMotion: true };
+    for (const followErrorLimitDeg of [0, -.5, .499, 10.001, NaN, Infinity, true, '1.5', null]) {
+      await assert.rejects(f.service.begin({ ...config, pointCycle: { ...config.pointCycle, followErrorLimitDeg } }), { status: 400 });
+      await assert.rejects(f.service.turntable({ ...recall, followErrorLimitDeg }), { status: 400 });
+    }
+    for (const followErrorLimitDeg of [.5, .75, 1.5, 10]) {
+      await f.service.begin({ ...config, pointCycle: { ...config.pointCycle, followErrorLimitDeg } });
+      const cycle = JSON.parse(f.requests.filter(call => call.route === 'start').at(-1).options.body).pointCycle;
+      assert.equal(cycle.followErrorLimitDeg, followErrorLimitDeg);
+      await f.service.turntable({ ...recall, followErrorLimitDeg });
+      const returned = JSON.parse(f.requests.filter(call => call.route === 'turntable').at(-1).options.body);
+      assert.equal(returned.followErrorLimitDeg, followErrorLimitDeg);
+      assert.equal(returned.axis1AngleDeg, 25);
+    }
+    await f.service.begin(config);
+    assert.equal(JSON.parse(f.requests.filter(call => call.route === 'start').at(-1).options.body).pointCycle.followErrorLimitDeg, undefined);
+    await f.service.turntable(recall);
+    assert.equal(JSON.parse(f.requests.filter(call => call.route === 'turntable').at(-1).options.body).followErrorLimitDeg, undefined);
+  }
+});
+
 test("turntable standalone test validates consent, limits and protocol before any device call", async t => {
   const f = fixture(t);
   const config = { port: 'COM6', axis: 2, speedRpm: 0.2, direction: 'reverse', durationSeconds: 0, protocol: 'continuous' };

@@ -13,7 +13,7 @@ import time
 import uuid
 from collections import OrderedDict, deque
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from itertools import islice
 from typing import Literal
@@ -32,6 +32,8 @@ from .storage import DISPLAY_LIMIT, RecordingStore, atomic_json, empty_waveform,
 from .waveform import WaveformReader, make_wave
 from .device import DevicePanel, WRITABLE
 from .simulation import SimulationConfig, SimulationReceiver, simulation_catalog
+from .turntable_driver.faults import get_fault_advice
+from .turntable_driver.timing import trace_event
 from .turntable import (TurntableConfig, TurntableRequest, PointCycleConfig, PointCyclePoint, MotionGuard, TelemetryWriter,
                         DEFAULT_MOTOR_FACTORY, snapshot as motor_snapshot, require_ready,
                         start_motor, renew_motor, test_key, require_position_ready,
@@ -39,10 +41,14 @@ from .turntable import (TurntableConfig, TurntableRequest, PointCycleConfig, Poi
                         check_position_motion,
                         reference_check, reference_change_message,
                         require_manual_position_ready, require_manual_axis_ready, require_stop_confirmed,
+                        require_reference_capture_ready, require_reference_captured,
                         probe_motion_capability, station_move_plan, station_timing_plan)
 
 MOTOR_STARTUP_SECONDS = 10.0
 DAQ_READY_SECONDS = 30.0
+JOINT_CYCLE_MS = 100
+DEFAULT_JOINT_FOLLOW_ERROR_DEG = .75
+JOINT_ARRIVAL_TOLERANCE_DEG = .1
 
 
 @dataclass(frozen=True)
@@ -472,6 +478,12 @@ class AcquisitionController:
             self.operation_lock.release()
 
     def turntable_operation(self, request: TurntableRequest):
+        trace_event("service_turntable_request", action=request.action, axis=request.axis,
+                    targetAngleDeg=request.targetAngleDeg, axis1AngleDeg=request.axis1AngleDeg,
+                    axis2AngleDeg=request.axis2AngleDeg, speedRpm=request.speedRpm,
+                    accelerationDegS2=request.maxMoveAccelerationDegS2,
+                    followErrorLimitDeg=request.followErrorLimitDeg)
+        recovering = request.action in ("clear_trajectory_fault", "clear_guard_fault", "reset_alarm", "cancel_trajectory")
         if request.action in ("stop", "test", "manual_move", "recall", "prepare", "reference", "limits") and not request.confirmMotion:
             raise HTTPException(422, "请明确确认试转/停止，或确认已观察到实际转动并完成设置")
         with self.lock:
@@ -529,14 +541,91 @@ class AcquisitionController:
                         self._persist_pending_axes(request.port, pending_axes)
                     motor.stop(request.axis)
             feedback = motor_snapshot(motor, request.axis)
+            recovery = None
+            if recovering:
+                # Recovery never changes coordinates, resumes capture, or replays a session.
+                # Read BOTH drives, not just the selected axis. All writes remain under
+                # the same operation/serial owner as this fresh preflight.
+                if self.motion_guard.warning and self.motion_guard.identity and self.motion_guard.identity[0] != request.port:
+                    raise RuntimeError("请选择上次停止未确认的同一串口恢复")
+                capability = probe_motion_capability(motor)
+                trajectory = capability.get("status")
+                if request.action == "cancel_trajectory":
+                    if not trajectory or trajectory["state"] != 2 or trajectory["fault"] or trajectory["session"] != request.expectedTrajectorySession:
+                        raise RuntimeError("待执行轨迹已变化或不再待启动，请重新检查；未发送取消命令")
+                elif trajectory and trajectory["state"] in (1, 2, 3, 4):
+                    raise RuntimeError("已有上传、待启动或运行轨迹，请先停止两轴")
+                if request.action != "clear_trajectory_fault" and trajectory and trajectory["state"] == 5:
+                    raise RuntimeError("两轴停止尚未确认，请先停止两轴")
+                observations = {request.axis: feedback, 3 - request.axis: motor_snapshot(motor, 3 - request.axis)}
+                for axis, observation in observations.items():
+                    position = observation["axes"][str(axis)]
+                    if observation["motorRpm"] or position["motor_rpm"] or position["home_phase"] not in (0, 7, 8):
+                        raise RuntimeError("两轴仍在运动或回零，请先停止两轴，不能恢复故障")
+                if reference_key(observations[1]) != reference_key(observations[2]):
+                    raise RuntimeError("恢复前参考位读数不一致，请重新检查")
+                before_reference = reference_key(feedback)
+                before_guards = {axis: value["guard"] for axis, value in feedback["axes"].items()}
+                if request.action == "cancel_trajectory":
+                    self._persist_pending_axes(request.port, [1, 2], "dual_axis_timed")
+                    motor.cancel_pending_trajectory(request.expectedTrajectorySession)
+                elif request.action == "clear_trajectory_fault":
+                    if not capability.get("supported"):
+                        raise RuntimeError("当前固件不支持独立清除轨迹，请使用配套 v3.4 或更新固件")
+                    if request.expectedTrajectorySession is not None:
+                        if not trajectory or trajectory["session"] != request.expectedTrajectorySession:
+                            raise RuntimeError("轨迹会话已变化，请重新检查；未清除其他轨迹")
+                        motor.clear_trajectory_fault(expected_session=request.expectedTrajectorySession)
+                    else:
+                        motor.clear_trajectory_fault()
+                elif request.action == "clear_guard_fault":
+                    motor.clear_guard_fault(request.axis)
+                else:
+                    # Alarm reset is not an encoder reset. Refuse limit/stop-pending
+                    # conditions rather than treating the reset as a universal fix.
+                    selected = feedback["axes"][str(request.axis)]
+                    if selected["flags"] & 16 or feedback["limitFlags"] not in (None, 0):
+                        raise RuntimeError("限位或停止状态异常，请先停止并排除原因")
+                    if "reset_alarm" not in get_fault_advice("drive", feedback["alarmCode"]).apis:
+                        raise RuntimeError("该驱动器报警未识别或无需复位，请先核对报警码和驱动器手册")
+                    if motor.reset_alarm(request.axis):
+                        raise RuntimeError("驱动器报警仍存在，未恢复运动")
+                feedback = motor_snapshot(motor, request.axis)
+                if reference_key(feedback) != before_reference or any(
+                        value["guard"] != before_guards[axis] for axis, value in feedback["axes"].items()):
+                    raise RuntimeError("恢复后参考位、反馈单位或保护配置发生变化，请重新核查；未恢复运动")
+                if request.action == "clear_guard_fault" and feedback["axes"][str(request.axis)]["fault"]:
+                    raise RuntimeError("单轴故障未清除，未恢复运动")
+                # A successful recovery may resolve an old stop warning, but only
+                # after separately confirming BOTH drives stopped on this port.
+                for axis in (1, 2):
+                    stopped = motor_snapshot(motor, axis)
+                    require_stop_confirmed(stopped, request.model_copy(update={"axis": axis}))
+                    if reference_key(stopped) != before_reference:
+                        raise RuntimeError("恢复后参考位读回发生变化，请重新核查")
+                if self.motion_guard.warning:
+                    for axis in (1, 2):
+                        self._confirm_turntable_axis(request.model_copy(update={"axis": axis}))
+                recovery = {"action": request.action, "axis": request.axis, "verified": True, "completedAt": time.time()}
             if request.action in ("reference", "limits"):
                 if self.motion_guard.warning:
-                    raise RuntimeError(self.motion_guard.warning)
-                require_manual_axis_ready(feedback, request)
+                    identity = self.motion_guard.identity
+                    pending = self._pending_turntable_axes(request.port)
+                    # Only a physically confirmed reference capture may repair
+                    # the same axis' fault-3 stop latch. The SDK first STOPs and
+                    # verifies zero speed; keep the warning until final readback.
+                    if (request.action != "reference" or not identity or identity[0] != request.port or
+                            (request.axis not in pending and identity[1] != request.axis)):
+                        raise RuntimeError(self.motion_guard.warning)
                 self.turntable_test = None
                 if request.action == "reference":
+                    trajectory = probe_motion_capability(motor).get("status")
+                    if trajectory and trajectory["state"] in (1, 2, 3, 4, 5):
+                        raise RuntimeError("控制器仍有上传、待执行或未停稳轨迹，请先取消待执行轨迹或停止两轴，再建立参考")
+                    require_reference_capture_ready(feedback, request)
                     motor.set_current_reference(request.axis)
                 else:
+                    require_manual_axis_ready(feedback, request)
                     guard = motor.get_guard_config(request.axis)
                     limit = 35 if request.axis == 1 else 180
                     motor.set_soft_range(request.axis, -limit, limit)
@@ -544,8 +633,11 @@ class AcquisitionController:
                                            home_direction=guard.home_direction, confirmed=guard.confirmed,
                                            home_at_end=guard.home_at_end)
                 feedback = motor_snapshot(motor, request.axis)
-                if request.action == "reference" and feedback["outputAngleDeg"] is None:
-                    raise RuntimeError("下位机未返回有效参考位")
+                if request.action == "reference":
+                    require_reference_captured(feedback, request)
+                    if self.motion_guard.warning:
+                        require_stop_confirmed(feedback, request)
+                        self._confirm_turntable_axis(request)
                 if request.action == "limits":
                     guard = feedback["axes"][str(request.axis)]["guard"]
                     if not guard["soft_enabled"] or guard["minimum_deg"] != -limit or guard["maximum_deg"] != limit:
@@ -571,7 +663,7 @@ class AcquisitionController:
                 if self.motion_guard.warning and identity and identity != (request.port, request.axis):
                     raise RuntimeError("请选择上次未确认停止的同一端口和轴进行恢复")
                 self._confirm_turntable_axis(request)
-            elif request.confirmRecovery:
+            elif request.confirmRecovery and not recovering:
                 if self._pending_motion_mode(request.port) == "dual_axis_timed":
                     raise RuntimeError("上次双轴轨迹停止未确认，请先执行停止，两轴确认后才能恢复")
                 require_ready(feedback)
@@ -580,7 +672,7 @@ class AcquisitionController:
                     raise RuntimeError("请选择上次未确认停止的同一端口和轴进行恢复")
                 self._confirm_turntable_axis(request)
             health = None
-            if request.action == "health":
+            if request.action == "health" or recovering:
                 observations = {request.axis: feedback}
                 other = 2 if request.axis == 1 else 1
                 observations[other] = motor_snapshot(motor, other)
@@ -589,13 +681,40 @@ class AcquisitionController:
                           "axes": {str(axis): {key: observations[axis].get(key) for key in
                                    ("alarmCode", "runState", "limitFlags", "observedAt")}
                                    for axis in (1, 2)}}
-            capability = probe_motion_capability(motor) if request.action in ("probe", "health") else None
+                # Read only while the operation owner holds an idle serial port.
+                # Never rewrite PA40/41/42 to make a trajectory appear faster.
+                if request.action == "health" and hasattr(motor, "get_motion_profile"):
+                    health["motionProfiles"] = {}
+                    for axis in (1, 2):
+                        try:
+                            health["motionProfiles"][str(axis)] = asdict(motor.get_motion_profile(axis))
+                        except MotorError as exc:
+                            if getattr(exc, "status", None) != 7:
+                                raise
+                            health["motionProfiles"][str(axis)] = {"unavailable": "当前固件不支持读取驱动器加减速参数"}
+            capability = probe_motion_capability(motor) if request.action in ("probe", "health") or recovering else None
+            if health is not None:
+                issues = []
+                for axis in (1, 2):
+                    position = feedback["axes"][str(axis)]
+                    alarm = health["axes"][str(axis)]["alarmCode"]
+                    if alarm:
+                        issues.append(asdict(get_fault_advice("drive", alarm, motor_id=axis)))
+                    if position["fault"]:
+                        issues.append(asdict(get_fault_advice("guard", position["fault"], motor_id=axis)))
+                    if position["output_angle_deg"] is None:
+                        issues.append(asdict(get_fault_advice("trajectory", 2, motor_id=axis)))
+                if (capability and capability.get("status") and capability["status"]["fault"] and
+                        (capability["status"]["state"], capability["status"]["fault"]) != (8, 1)):
+                    issues.append(asdict(get_fault_advice("trajectory", capability["status"]["fault"])))
+                health["issues"] = issues
             with self.lock:
                 self.turntable_snapshot = {"state": "prepared" if request.action == "prepare" else "stopped" if request.action == "stop" else "checked", "port": request.port,
                                            "axis": request.axis, "feedback": feedback,
                                            "connected": False, "error": None,
                                            **({"motionCapability": capability} if capability is not None else {}),
                                            **({"health": health} if health is not None else {}),
+                                           **({"recovery": recovery} if recovery is not None else {}),
                                            **({"stopConfirmed": True} if request.action == "stop" else {})}
         except HTTPException:
             raise
@@ -653,12 +772,15 @@ class AcquisitionController:
         return motor._blade_motion_capability
 
     def _execute_dual_axis_move(self, motor, configs, feedback, cancel, update, on_command=None,
-                               *, acceleration=3.0):
+                               *, acceleration=3.0, follow_error_limit=DEFAULT_JOINT_FOLLOW_ERROR_DEG):
         """Own the buffered group move until BOTH axes are verified stopped."""
         from dataclasses import asdict
 
         if configs[0].speedRpm > 10:
             raise ValueError("双轴轨迹换点速度不能超过10 rpm，请降低回位速度")
+        if (isinstance(follow_error_limit, bool) or not isinstance(follow_error_limit, (int, float)) or
+                not math.isfinite(follow_error_limit) or not .5 <= follow_error_limit <= 10):
+            raise ValueError("轨迹跟随误差保护应为0.5～10°，不能关闭")
         references = reference_key(feedback)
         capability = self._motion_capability(motor)
         current = motor.get_trajectory_status()
@@ -670,6 +792,14 @@ class AcquisitionController:
         start = tuple(feedback["axes"][str(axis)]["output_angle_deg"] for axis in (1, 2))
         targets = tuple(config.targetAngleDeg for config in configs)
         points, evidence = station_move_plan(start, targets, configs[0].speedRpm, acceleration=acceleration)
+        # app(3) v3.2+: the controller may slow BOTH axes on its shared path.
+        # Keep fault protection and a bounded timeout; an extended move never
+        # means the blade gate may run before stopped arrival is verified.
+        wait_seconds = evidence["plannedSeconds"] * 4 + 35
+        evidence.update(adaptiveFollow=True, cycleMs=JOINT_CYCLE_MS,
+                        followErrorLimitDeg=follow_error_limit,
+                        arrivalToleranceDeg=JOINT_ARRIVAL_TOLERANCE_DEG,
+                        waitTimeoutSeconds=wait_seconds)
         evidence["referenceBefore"] = copy.deepcopy(references)
         evidence["referenceChecks"] = []
         def verify_reference(value, phase, context):
@@ -697,7 +827,9 @@ class AcquisitionController:
                    connected=True, stopConfirmed=False)
             prepared = motor.prepare_trajectory(points, max_speed=configs[0].speedRpm * 6,
                                                  max_accel=evidence["accelerationLimitDegS2"],
-                                                 max_error=.75, tolerance=.1, cancel=cancel)
+                                                 cycle_ms=JOINT_CYCLE_MS, adaptive=True,
+                                                 max_error=follow_error_limit,
+                                                 tolerance=JOINT_ARRIVAL_TOLERANCE_DEG, cancel=cancel)
             if cancel.is_set():
                 raise RuntimeError("双轴换点已取消")
             evidence["session"] = prepared.session
@@ -718,11 +850,14 @@ class AcquisitionController:
             motor.start_trajectory(prepared.session, cancel=cancel)
 
             last_feedback_at = -math.inf
+            # Explicit local timing diagnostics sample the same cached 0x37
+            # feed more often; production keeps its one-second observation.
+            position_interval = .1 if os.environ.get("BLADE_TURNTABLE_TIMING_LOG") else 1.0
             def observed(status):
                 nonlocal last_feedback_at, feedback
                 evidence["status"] = asdict(status)
                 extra = {}
-                if status.state in (3, 4) and not status.fault and time.monotonic() - last_feedback_at >= 1:
+                if status.state in (3, 4) and not status.fault and time.monotonic() - last_feedback_at >= position_interval:
                     query_started_at = time.time()
                     supported = getattr(motor, "_blade_axis_positions_supported", None)
                     positions = (motor.probe_axis_positions() if supported is None else
@@ -746,7 +881,7 @@ class AcquisitionController:
                 update("positioning", motionMode="dual_axis_timed", lastMove=copy.deepcopy(evidence), **extra)
 
             finished = motor.wait_trajectory(prepared.session,
-                                             timeout=evidence["plannedSeconds"] + 15,
+                                             timeout=wait_seconds,
                                              cancel=cancel, on_status=observed)
             evidence.update(status=asdict(finished), state="complete",
                             actualSeconds=time.monotonic() - started_at)
@@ -762,6 +897,14 @@ class AcquisitionController:
                    feedback=feedback, stopConfirmed=True)
             return not cancel.is_set(), [1, 2], feedback
         except Exception as exc:
+            observed_fault = evidence.get("status", {})
+            if observed_fault.get("fault") == 7:
+                errors = [(axis, observed_fault.get(f"error{axis}_deg")) for axis in (1, 2)]
+                details = [f"{'俯仰' if axis == 1 else '水平'}轴误差 {abs(error):.3f}°"
+                           for axis, error in errors if isinstance(error, (int, float)) and math.isfinite(error)]
+                exc = RuntimeError(f"跟随误差超限：{'，'.join(details) or '控制器已触发保护'}；"
+                                   f"保护限 {follow_error_limit:g}°，本次定位已停止；"
+                                   "停稳后清除旧轨迹，再重新定位，无需重新设置归零")
             evidence.update(state="cancelled" if cancel.is_set() else "error", error=str(exc))
             if started_at is not None:
                 evidence["actualSeconds"] = time.monotonic() - started_at
@@ -784,7 +927,7 @@ class AcquisitionController:
                    feedback=feedback, stopConfirmed=not bool(self.motion_guard.warning))
             if cancel.is_set() and not self.motion_guard.warning:
                 return False, [], feedback
-            raise
+            raise exc
 
     @staticmethod
     def _trajectory_position_feedback(previous, positions, configs, query_started_at, received_at):
@@ -992,7 +1135,8 @@ class AcquisitionController:
             if capability["supported"]:
                 passed, completed, feedback = self._execute_dual_axis_move(
                     motor, configs, feedback, self.test_stop, update,
-                    acceleration=request.maxMoveAccelerationDegS2)
+                    acceleration=request.maxMoveAccelerationDegS2,
+                    follow_error_limit=request.followErrorLimitDeg)
                 return
             for config in configs:
                 if self.test_stop.is_set():
@@ -1875,7 +2019,8 @@ class AcquisitionController:
                     self._cycle_update(state, currentPoint=point.name, **extra)
                 return self._execute_dual_axis_move(motor, configs, feedback, self.stop_event,
                                                    dual_update, on_command,
-                                                   acceleration=cycle.maxMoveAccelerationDegS2)
+                                                   acceleration=cycle.maxMoveAccelerationDegS2,
+                                                   follow_error_limit=cycle.followErrorLimitDeg)
             planned = sum(abs(config.targetAngleDeg - feedback["axes"][str(config.axis)]["output_angle_deg"])
                           for config in configs) / (6 * speed)
             evidence = {"mode": "sequential", "plannedSeconds": planned, "speedLimitRpm": speed,

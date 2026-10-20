@@ -108,4 +108,15 @@ check("移动保持激光的策略不冒充实测开关状态，到位前不显�
   ] } }} />);
   assert.ok(log.includes("激光已开启")); assert.ok(log.includes("激光已关闭"));
 });
+check("本段展示实际下发的共同减速策略和保护上限，不以草稿或默认值冒充", () => {
+  const value = structuredClone(status);
+  value.pointCycle!.lastMove = { mode: "dual_axis_timed", speedLimitRpm: 1.72, accelerationLimitDegS2: 30,
+    adaptiveFollow: true, followErrorLimitDeg: .75, cycleMs: 100 };
+  const html = renderToStaticMarkup(<FieldCycleMotion status={value} route={route} config={{ name: "任务", deviceIp: "192.0.2.90", hostIp: "192.0.2.10", object: "", turbine: "", point: "" }} />);
+  for (const label of ["本段下发上限", "1.72", "30", "两轴共同减速，时间可延长", "跟随保护 0.75°"]) assert.ok(html.includes(label), label);
+  value.pointCycle!.lastMove.followErrorLimitDeg = 1.5;
+  const adjusted = renderToStaticMarkup(<FieldCycleMotion status={value} route={route} config={{ name: "任务", deviceIp: "192.0.2.90", hostIp: "192.0.2.10", object: "", turbine: "", point: "" }} />);
+  assert.ok(adjusted.includes("跟随保护 1.5°"));
+  assert.ok(!adjusted.includes("跟随保护 0.75°"));
+});
 console.log(`PASS ${count} feedback-driven motion checks; no hardware used`);

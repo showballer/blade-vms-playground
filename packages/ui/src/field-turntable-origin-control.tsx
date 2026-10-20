@@ -8,14 +8,19 @@ import { turntablePointMotionError, turntableReferenceSignature } from "./field-
 import { fieldIsActive, type FieldRequestOptions, type FieldStatus } from "./field-types";
 import { autoFollowDefaults } from "./field-auto-follow-plan";
 
-export type FieldOriginReturnMotion = { speedRpm: number; maxMoveAccelerationDegS2: number };
+export type FieldOriginReturnMotion = { speedRpm: number; maxMoveAccelerationDegS2: number; followErrorLimitDeg?: number };
 export function checkedOriginReturnMotion(value: FieldOriginReturnMotion): FieldOriginReturnMotion {
+  const followErrorLimitDeg = value.followErrorLimitDeg === undefined ? autoFollowDefaults.followErrorLimitDeg : value.followErrorLimitDeg;
   if (typeof value.speedRpm !== "number" || !Number.isFinite(value.speedRpm) || value.speedRpm < .02 || value.speedRpm > 10 ||
       typeof value.maxMoveAccelerationDegS2 !== "number" || !Number.isFinite(value.maxMoveAccelerationDegS2) ||
       value.maxMoveAccelerationDegS2 < .1 || value.maxMoveAccelerationDegS2 > 120)
     throw new Error("请检查自动跟随的换点转速（0.02～10 rpm）和加速度（0.1～120 °/s²）");
+  if (typeof followErrorLimitDeg !== "number" || !Number.isFinite(followErrorLimitDeg) ||
+      followErrorLimitDeg < .5 || followErrorLimitDeg > 10)
+    throw new Error("运动中跟随误差上限应为0.5～10°，不能设为0关闭；到位精度仍为0.1°");
   return { speedRpm: Number((Math.floor((value.speedRpm + 1e-10) / .02) * .02).toFixed(6)),
-    maxMoveAccelerationDegS2: Math.floor((value.maxMoveAccelerationDegS2 + 1e-10) * 1000) / 1000 };
+    maxMoveAccelerationDegS2: Math.floor((value.maxMoveAccelerationDegS2 + 1e-10) * 1000) / 1000,
+    followErrorLimitDeg: Math.floor((followErrorLimitDeg + 1e-10) * 1000) / 1000 };
 }
 
 type Props = {
@@ -63,6 +68,17 @@ export function originStopError(status: FieldStatus, port: string, generation: n
   return "";
 }
 
+/** A recovery offer is not motion permission: the click must obtain a new
+ * health read and the backend must match the exact stopped session. */
+export function originTrajectoryRecoverySession(status: FieldStatus | null, port: string): number | null {
+  if (!status || status.turntable?.port !== port || fieldIsActive(status) ||
+      status.turntableBusy || status.deviceBusy) return null;
+  const value = status.turntable.motionCapability?.status;
+  return value && [5, 7].includes(Number(value.state)) && value.fault === 7 &&
+    Number.isInteger(value.session) && Number(value.session) >= 1 && Number(value.session) <= 65535
+    ? Number(value.session) : null;
+}
+
 function feedbackAuthority(status: FieldStatus | null, port: string): string {
   const turntable = status?.turntable?.port === port ? status.turntable : undefined;
   const feedback = turntable?.feedback, axes = feedback?.axes, trajectory = turntable?.motionCapability?.status;
@@ -92,9 +108,10 @@ export function FieldTurntableOriginControl({ port, status, disabled, origin, op
   const optical = matchingWorkOrigin(opticalOrigin, status, port);
   const saved = opticalOrigin || origin;
   const returnCandidate = saved?.port === port ? saved : null;
+  const recoverySession = originTrajectoryRecoverySession(status, port);
   let motion: FieldOriginReturnMotion | null = null, motionError = "";
   try { motion = checkedOriginReturnMotion(returnMotion ?? { speedRpm: autoFollowDefaults.maxMoveRpm,
-    maxMoveAccelerationDegS2: autoFollowDefaults.maxMoveAccelerationDegS2 }); }
+    maxMoveAccelerationDegS2: autoFollowDefaults.maxMoveAccelerationDegS2, followErrorLimitDeg: autoFollowDefaults.followErrorLimitDeg }); }
   catch (cause) { motionError = cause instanceof Error ? cause.message : "回原点运动参数无效"; }
   const missingOpticalOrigin = opticalOriginRequired && !optical && !current;
   const axes = status?.turntable?.port === port ? status.turntable.feedback?.axes : undefined;
@@ -115,6 +132,46 @@ export function FieldTurntableOriginControl({ port, status, disabled, origin, op
       onStatus(next); onOrigin(workOrigin);
     } catch (cause) {
       if (alive.current && token === operation.current) setError(cause instanceof Error ? cause.message : "设置归零失败，请重新读取反馈");
+    } finally {
+      inFlight.current = false;
+      if (alive.current) { setPending(false); onBusy(false); }
+    }
+  }
+
+  async function clearFailedOriginTrajectory() {
+    if (disabled || inFlight.current || recoverySession === null || returnPhase) return;
+    const token = ++operation.current, requestedPort = port, generation = status?.service.generation;
+    const expected = recoverySession;
+    inFlight.current = true; setPending(true); setError(""); setReturnNotice(""); onBusy(true);
+    const currentRequest = () => alive.current && token === operation.current &&
+      latest.current.port === requestedPort && latest.current.generation === generation &&
+      !fieldIsActive(latest.current.status);
+    try {
+      const checked = await request<FieldStatus>({ action: "turntable",
+        request: { action: "health", port: requestedPort, axis: 1 } });
+      if (!currentRequest() || checked.service.generation !== generation) throw new Error("连接已变化，请重新检查");
+      onStatus(checked);
+      if (originTrajectoryRecoverySession(checked, requestedPort) !== expected)
+        throw new Error("故障轨迹已变化，请重新检查；未清除其他任务");
+      if (checked.turntable?.health?.readOnly !== true || checked.turntable.health.referenceChangedDuringRead)
+        throw new Error("未取得完整的转盘状态，请重新检查");
+      const invalid = originStopError(checked, requestedPort, generation!);
+      if (invalid) throw new Error(invalid);
+      const cleared = await request<FieldStatus>({ action: "turntable", request: {
+        action: "clear_trajectory_fault", port: requestedPort, axis: 1,
+        confirmRecovery: true, expectedTrajectorySession: expected } });
+      if (!currentRequest() || cleared.service.generation !== generation || cleared.turntable?.port !== requestedPort)
+        throw new Error("连接已变化，清除结果尚未确认，请重新检查");
+      onStatus(cleared);
+      if (cleared.turntable.recovery?.action !== "clear_trajectory_fault" || !cleared.turntable.recovery.verified ||
+          cleared.turntable.motionCapability?.status?.state !== 0 || cleared.turntable.motionCapability.status.fault !== 0 ||
+          turntableReferenceSignature(cleared.turntable.feedback?.axes) !== turntableReferenceSignature(checked.turntable.feedback?.axes))
+        throw new Error("旧轨迹或参考位尚未核验，请重新检查");
+      const stopped = originStopError(cleared, requestedPort, generation!);
+      if (stopped) throw new Error(stopped);
+      setReturnNotice("旧轨迹已清除，原点坐标和参考位已保留。请检查运动参数后再点击“回到原点”。");
+    } catch (cause) {
+      if (currentRequest()) setError(cause instanceof Error ? cause.message : "清除旧轨迹失败");
     } finally {
       inFlight.current = false;
       if (alive.current) { setPending(false); onBusy(false); }
@@ -182,16 +239,19 @@ export function FieldTurntableOriginControl({ port, status, disabled, origin, op
       if (!runCurrent(run)) throw new Error("服务或串口已变化，已取消回原点，请现场核查状态");
       if (run.cancelled) { setReturnNotice("已取消回原点，未发送运动指令。"); return; }
       if (latest.current.authority !== initialAuthority && latest.current.authority !== feedbackAuthority(checked, run.port)) throw new Error("读取期间转盘反馈已变化，已取消回原点，请重新读取");
+      // Surface the freshly read fault so recovery is available beside the
+      // origin controls even when validation refuses the new return command.
+      apply(checked);
       run.origin = revalidateWorkOrigin(run.origin, checked, run.port);
       const invalid = originReturnTargetError(run.origin, checked, run.port);
       if (invalid) throw new Error(invalid);
       if (fieldIsActive(latest.current.status) || latest.current.status?.deviceBusy) throw new Error("设备已被其他任务接管，已取消回原点");
-      apply(checked);
       onVerifiedOrigin?.(run.origin);
       run.started = true; setReturnPhase("moving");
       const started = await request<FieldStatus>({ action: "turntable", request: { action: "recall", port: run.port, recordedPort: run.origin.port, axis: 1,
         axis1AngleDeg: run.origin.axis1AngleDeg, axis2AngleDeg: run.origin.axis2AngleDeg, referenceSignature: run.origin.referenceSignature,
-        speedRpm: run.motion.speedRpm, maxMoveAccelerationDegS2: run.motion.maxMoveAccelerationDegS2, confirmMotion: true } });
+        speedRpm: run.motion.speedRpm, maxMoveAccelerationDegS2: run.motion.maxMoveAccelerationDegS2,
+        followErrorLimitDeg: run.motion.followErrorLimitDeg, confirmMotion: true } });
       apply(started);
       while (runCurrent(run)) {
         if (run.cancelled) {
@@ -271,7 +331,12 @@ export function FieldTurntableOriginControl({ port, status, disabled, origin, op
     </div>
     <p className="field-subtext">{current || optical ? "公共光学零点已设置。未校准测点先按尺寸定位，已校准测点沿用其首个点位；恢复设备坐标仅切换角度显示。" : returnCandidate ? "已保留原点坐标；回到原点前会重新读取并核验两轴参考位，无需在当前位置重新归零。" : missingOpticalOrigin ? "请重新将激光调至水平并正对叶轮中线，再设置归零；未单独校准的测点暂不能开始。" : "先将激光调至水平并正对叶轮中线，再设置归零。所有测点共用，归零不会校准某个测点，也不会移动转盘。"}</p>
     {returnCandidate && <p className="field-subtext" aria-label="保存的原点坐标">保存的原点（设备坐标）：俯仰 {angleText(returnCandidate.axis1AngleDeg)} · 水平 {angleText(returnCandidate.axis2AngleDeg)}</p>}
-    {returnCandidate && motion && <p className="field-subtext" aria-label="回原点运动参数">回原点沿用自动跟随设置：转速上限 {motion.speedRpm} rpm · 加速度上限 {motion.maxMoveAccelerationDegS2} °/s²。修改后下次点击生效。</p>}
+    {returnCandidate && motion && <p className="field-subtext" aria-label="回原点运动参数">回原点沿用自动跟随设置：转速上限 {motion.speedRpm} rpm · 加速度上限 {motion.maxMoveAccelerationDegS2} °/s² · 运动中误差上限 {motion.followErrorLimitDeg}°。到位精度仍为0.1°，修改后下次点击生效。</p>}
+    {recoverySession !== null && <div className="field-notice warning" role="status">
+      <span>上次轨迹触发跟随误差保护。原点坐标已保留，先清除旧轨迹后再定位。</span>{" "}
+      <Button type="button" variant="outline" disabled={disabled || pending || !!returnPhase}
+        onClick={() => void clearFailedOriginTrajectory()}>清除旧轨迹</Button>
+    </div>}
     {motionError && <p className="field-error" role="alert">{motionError}</p>}
     {returnPhase && <p className="field-notice" role="status">{returnPhase === "checking" ? "正在检查两轴参考位与运动范围…" : returnPhase === "stopping" ? "正在停止回原点并核查停稳…" : returnPhase === "unconfirmed" ? "停止尚未确认，请现场核查；连接可用后可重试停止。" : "正在返回公共光学原点，请等待两轴停稳。"}</p>}
     {returnNotice && <p className="field-success" role="status">{returnNotice}</p>}

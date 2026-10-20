@@ -2,6 +2,7 @@
 import struct
 import threading
 import unittest
+from dataclasses import replace
 from unittest.mock import patch
 
 from blade_acquisition.turntable_driver import MotorController, MotorError, CommunicationError, TrajectoryPoint
@@ -351,6 +352,29 @@ class BufferedTrajectoryTests(unittest.TestCase):
         with self.assertRaises(MotorError):
             self.motor.wait_trajectory(17)
         self.assertIn(STOP, self.commands())
+
+    def test_default_wait_allows_adaptive_delay_past_30_seconds_and_checks_real_endpoint(self):
+        self.prepare(adaptive=True, cycle_ms=100)
+        self.motor.start_trajectory(17)
+        running = self.motor.get_trajectory_status()
+        clock, reads = [0.0], [0]
+        def read_status():
+            reads[0] += 1
+            if reads[0] == 1:
+                clock[0] = 31
+                return running
+            clock[0] = 32
+            self.serial.angles = {1: 10.2, 2: .2}
+            self.serial.state = 6
+            return replace(running, state=6, fault=0)
+        with patch('blade_acquisition.turntable_driver.motor_controller.time.monotonic', side_effect=lambda: clock[0]), \
+                patch.object(self.motor, 'get_trajectory_status', side_effect=read_status), \
+                patch.object(self.motor, 'renew_trajectory', return_value=running):
+            result = self.motor.wait_trajectory(17)
+        self.assertEqual(result.state, 6)
+        self.assertEqual(reads[0], 2)
+        self.assertEqual(self.commands().count(START), 1)
+        self.assertNotIn(STOP, self.commands())
 
     def test_fault13_during_wait_stops_group_without_renewing_or_restarting(self):
         self.prepare()

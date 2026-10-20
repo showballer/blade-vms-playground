@@ -51,7 +51,7 @@ class TurntableConfig(BaseModel):
 
 
 class TurntableRequest(TurntableConfig):
-    action: Literal["probe", "health", "test", "manual_move", "recall", "prepare", "stop", "reference", "limits"] = "probe"
+    action: Literal["probe", "health", "test", "manual_move", "recall", "prepare", "stop", "reference", "limits", "clear_trajectory_fault", "clear_guard_fault", "reset_alarm", "cancel_trajectory"] = "probe"
     testSeconds: StrictInt = Field(default=3, ge=1, le=15)
     confirmMotion: StrictBool = False
     confirmRecovery: StrictBool = False
@@ -60,8 +60,10 @@ class TurntableRequest(TurntableConfig):
     referenceSignature: str | None = Field(default=None, max_length=512)
     recordedPort: SerialPort | None = None
     maxMoveAccelerationDegS2: float = Field(default=3, ge=0.1, le=120, allow_inf_nan=False)
+    followErrorLimitDeg: float = Field(default=0.75, ge=0.5, le=10, allow_inf_nan=False)
+    expectedTrajectorySession: StrictInt | None = Field(default=None, ge=1, le=65535)
 
-    @field_validator("axis1AngleDeg", "axis2AngleDeg", "maxMoveAccelerationDegS2", mode="before")
+    @field_validator("axis1AngleDeg", "axis2AngleDeg", "maxMoveAccelerationDegS2", "followErrorLimitDeg", mode="before")
     @classmethod
     def recall_numeric(cls, value):
         return cls.numeric(value)
@@ -70,6 +72,10 @@ class TurntableRequest(TurntableConfig):
     def recall_targets(self):
         if self.action == "health" and self.confirmRecovery:
             raise ValueError("状态检查只读，不能同时确认恢复")
+        if self.action in ("clear_trajectory_fault", "clear_guard_fault", "reset_alarm", "cancel_trajectory") and not self.confirmRecovery:
+            raise ValueError("故障恢复必须由用户明确发起")
+        if self.action == "cancel_trajectory" and self.expectedTrajectorySession is None:
+            raise ValueError("取消待执行轨迹需要最近读取的轨迹会话号")
         if self.action == "recall":
             if self.recordedPort is None or self.referenceSignature is None:
                 raise ValueError("历史点位缺少串口或参考位信息，请重新标定后回位")
@@ -198,6 +204,7 @@ class PointCycleConfig(BaseModel):
     nominalPeriodSeconds: float = Field(default=30, ge=0, le=3600, allow_inf_nan=False)
     maxMoveRpm: float = Field(default=0.6, ge=0.02, le=10, allow_inf_nan=False)
     maxMoveAccelerationDegS2: float = Field(default=3, ge=0.1, le=120, allow_inf_nan=False)
+    followErrorLimitDeg: float = Field(default=0.75, ge=0.5, le=10, allow_inf_nan=False)
     geometry: PointCycleGeometry | None = None
     cycles: StrictInt = Field(default=1, ge=1, le=100)
     dwellSeconds: float = Field(default=2, ge=1, le=3600, allow_inf_nan=False)
@@ -223,7 +230,7 @@ class PointCycleConfig(BaseModel):
     @field_validator("dwellSeconds", "speedRpm", "rssiLeaveThresholdPercent", "rssiMinimumSeconds",
                      "rssiBaselineRatio", "rssiSmoothingMs", "rssiConfirmMs", "rssiMotionMarginMs",
                      "rssiEnterSpread", "rssiExitSpread", "rssiEnterConfirmMs", "nominalPeriodSeconds",
-                     "maxMoveRpm", "maxMoveAccelerationDegS2", mode="before")
+                     "maxMoveRpm", "maxMoveAccelerationDegS2", "followErrorLimitDeg", mode="before")
     @classmethod
     def cycle_numeric(cls, value):
         if value is None:
@@ -376,7 +383,7 @@ def station_move_plan(start, target, speed_rpm, *, acceleration=3.0):
             raise ValueError("当前距离和转速需要超过600秒，请分段设置点位")
         # Approximately one point per controller cycle avoids excessive angular
         # rounding noise. Validate the actual wire values, not only the cubic.
-        segments = min(32, max(2, int(duration / .25)))
+        segments = min(32, max(2, int(duration / .1)))
         points = []
         for index in range(segments + 1):
             fraction = index / segments
@@ -507,7 +514,7 @@ def require_manual_position_ready(value, config):
 
 
 def require_manual_axis_ready(value, config):
-    """Axis-only preflight for reference/soft-limit setup in the standalone panel."""
+    """Axis-only preflight for soft-limit setup in the standalone panel."""
     if value["motorRpm"] != 0 or value["alarmCode"]:
         raise MotorError("当前轴仍在运动或驱动器报警")
     if value["limitFlags"] not in (None, 0):
@@ -515,6 +522,48 @@ def require_manual_axis_ready(value, config):
     axis = value["axes"][str(config.axis)]
     if axis["motor_rpm"] != 0 or axis["fault"] or axis["flags"] & 16 or axis["home_phase"] not in (0, 7, 8):
         raise MotorError(f"轴{config.axis}反馈仍在运动、回零或存在故障")
+
+
+def require_reference_capture_ready(value, config):
+    """Capture a physically confirmed reference, including after power loss.
+
+    Invalid reference / guard fault 3 is the condition being repaired. It must
+    not block this explicit action, but cannot relax the normal motion gates.
+    The SDK sends STOP and waits for two zero-speed samples before capture.
+    """
+    if value["motorRpm"] != 0 or value["alarmCode"]:
+        raise MotorError("当前轴仍在运动或驱动器报警，不能建立参考")
+    flags = value["limitFlags"]
+    selected = value["axes"][str(config.axis)]
+    # A feedback fault can latch stop-pending. Active limits and bypass remain
+    # disallowed; STOP plus the post-capture read must clear pending afterwards.
+    if flags not in (None, 0) and not (flags == 2 and selected["fault"] == 3):
+        raise MotorError("当前轴限位触发或保护状态异常，不能建立参考")
+    for axis in value["axes"].values():
+        if axis["motor_rpm"] != 0 or axis["home_phase"] not in (0, 7, 8):
+            raise MotorError("两轴必须停稳且不能正在回零，才能建立参考")
+    if selected["fault"] not in (0, 3):
+        raise MotorError(f"轴{config.axis}故障码 {selected['fault']}，请先排除原因，不能用参考标定清除")
+    if selected["flags"] & 16 and selected["fault"] != 3:
+        raise MotorError("当前轴停止尚未确认，请先停止并重新读取反馈")
+    if (selected["display_mode"] != 3 or selected["command_counts_per_rev"] <= 0 or
+            not 1 <= selected["encoder_bits"] <= 32):
+        raise MotorError("当前轴反馈计数单位无效，请先核对驱动器配置")
+
+
+def require_reference_captured(value, config):
+    """A command acknowledgment alone is not a restored coordinate system."""
+    require_manual_axis_ready(value, config)
+    selected = value["axes"][str(config.axis)]
+    expected = 25 if config.axis == 1 else 0
+    angle = selected["output_angle_deg"]
+    if (angle is None or not math.isfinite(angle) or not selected["flags"] & 1 or
+            abs(angle - expected) > 0.001 or selected["display_mode"] != 3 or
+            selected["command_counts_per_rev"] <= 0):
+        raise MotorError(f"参考位读回不一致，应为{expected:+g}°，未发送定位动作")
+    if config.axis == 1 and (not selected["guard"]["soft_enabled"] or not selected["flags"] & 2):
+        raise MotorError("俯仰轴参考已写入但软限位未开启，禁止定位，请检查控制板固件")
+    _require_position_bounds(value, config.model_copy(update={"targetAngleDeg": expected}))
 
 
 def require_stop_confirmed(value, config):

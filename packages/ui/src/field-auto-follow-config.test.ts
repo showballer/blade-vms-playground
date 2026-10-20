@@ -12,6 +12,27 @@ const blade = (id = "blade-a", name = "A", points = [point()]) => ({ id, name, p
 const v3 = (): AutoFollowSurvey => ({ ...defaultAutoFollowSurvey(), blades: [blade("a", "A"), blade("b", "B", [point("p2", "P2", .5)])],
   selectedBladeId: "b", selectedPointId: "p2" });
 
+check("各版本旧配置保留0.75度默认，跟随误差新设置持久化，非法值不会悄悄变成默认", () => {
+  for (const version of [1, 2, 3]) {
+    const values = { ...autoFollowDefaults } as Record<string, unknown>;
+    delete values.followErrorLimitDeg;
+    const old = version === 1 ? { draft: values } : { ...v3(), version, settings: values };
+    const restored = read(old);
+    assert.equal(surveyDraft(restored).followErrorLimitDeg, .75);
+    restored.settings.followErrorLimitDeg = 1.5;
+    const reloaded = read(restored);
+    assert.equal(surveyDraft(reloaded).followErrorLimitDeg, 1.5);
+    assert.deepEqual(reloaded.blades, restored.blades);
+    assert.equal(reloaded.selectedPointId, restored.selectedPointId);
+    for (const invalid of [0, .49, 10.01, null, "1.5", true]) {
+      const broken = read({ ...restored, settings: { ...restored.settings, followErrorLimitDeg: invalid } });
+      const plan = planAutoFollow(surveyDraft(broken), null, "dual_axis_timed", "COM3");
+      assert.ok(plan.errors.some(error => error.includes("跟随误差上限")));
+      assert.equal(plan.pointCycle, undefined);
+    }
+  }
+});
+
 check("旧配置沿用3度加速度，新设置持久保存且不改动测点", () => {
   for (const version of [1, 2]) {
     const values = { ...autoFollowDefaults } as Record<string, unknown>;

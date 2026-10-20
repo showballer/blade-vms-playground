@@ -22,6 +22,14 @@ assert.equal(model.pointCycle?.rssiTriggerEnabled, true);
 assert.equal(model.pointCycle?.keepLaserOnBetweenPoints, true);
 assert.equal(model.pointCycle?.dwellSeconds, 60);
 assert.equal(model.pointCycle?.speedRpm, model.speedRpm);
+assert.equal(model.pointCycle?.followErrorLimitDeg, .75);
+const adjustedProtection = planAutoFollow({ ...draft(), followErrorLimitDeg: 1.5 }, anchor, "dual_axis_timed");
+assert.equal(adjustedProtection.pointCycle?.followErrorLimitDeg, 1.5);
+assert.deepEqual(adjustedProtection.points, model.points, "Following-error protection must not move targets");
+for (const value of [0, -.1, .499, 10.001, NaN, Infinity, true, "1.5", null]) {
+  assert.match(planAutoFollow({ ...draft(), followErrorLimitDeg: value as number }, anchor).errors.join(" "), /跟随误差上限/);
+}
+for (const value of [.5, 10]) assert.equal(planAutoFollow({ ...draft(), followErrorLimitDeg: value }, anchor).pointCycle?.followErrorLimitDeg, value);
 assert.ok(model.speedRpm <= 0.6);
 near(model.speedRpm / 0.02, Math.round(model.speedRpm / 0.02));
 const reverse = planAutoFollow({ ...draft(), direction: "counterclockwise" }, anchor);

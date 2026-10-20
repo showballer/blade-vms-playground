@@ -114,3 +114,23 @@ def validate_points(points):
     if normalized[0].time_s != 0 or normalized[-1].time_s < 1:
         raise ValueError("轨迹首点时间须为0，持续至少1秒")
     return tuple(normalized)
+
+
+def business_trajectory(points, *, max_speed=1.5, max_accel=3):
+    """Retain path geometry; retime to the supplied output-axis limits."""
+    if (any(isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(x) for x in (max_speed,max_accel)) or
+            not 0.001<=max_speed<=60 or not 0.001<=max_accel<=120):
+        raise ValueError("轨迹速度需在0.001～60°/秒，加速度0.001～120°/秒²")
+    points=validate_points(points);factor=1.0
+    for field in ("axis1_deg","axis2_deg"):
+        previous=None;previous_dt=0
+        for a,b in zip(points,points[1:]):
+            dt=b.time_s-a.time_s;velocity=(getattr(b,field)-getattr(a,field))/dt
+            factor=max(factor,abs(velocity)/max_speed)
+            if previous is not None:
+                accel=abs(velocity-previous)*2/(dt+previous_dt)
+                factor=max(factor,math.sqrt(accel/max_accel))
+            previous=velocity;previous_dt=dt
+    if factor<=1:return points
+    factor*=1.01
+    return validate_points(TrajectoryPoint(p.time_s*factor,p.axis1_deg,p.axis2_deg) for p in points)
