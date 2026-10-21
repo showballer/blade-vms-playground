@@ -90,6 +90,7 @@ class StartRequest(BaseModel):
     turntable: TurntableConfig | None = None
     pointCycle: PointCycleConfig | None = None
     confirmMotion: StrictBool = False
+    clientRequestedAt: float | None = Field(default=None, ge=0, allow_inf_nan=False)
 
     @field_validator("deviceIp", "hostIp")
     @classmethod
@@ -266,6 +267,9 @@ class AcquisitionController:
         self.test_stop = threading.Event()
         self.point_cycle = None
         self.rssi_handoff = None
+        self.cycle_receiver = None
+        self.cycle_prepare_thread = None
+        self.cycle_prepare_error = None
         self.rssi_event = threading.Event()
         self.rssi_calibration_lock = threading.Lock()
         self.rssi_calibration_path = settings.data_dir / "rssi-calibration.json"
@@ -281,7 +285,8 @@ class AcquisitionController:
             return {"state": self.state, "error": self.error,
                     "receiver": {"source": self.source, "simulation": copy.deepcopy(self.simulation),
                                  "unit": "m/s", "running": bool((self.thread and self.thread.is_alive()) or
-                                                                (self.capture_thread and self.capture_thread.is_alive())),
+                                                                (self.capture_thread and self.capture_thread.is_alive()) or
+                                                                self.cycle_receiver is not None),
                                  "deviceIp": self.device_ip, "hostIp": self.host_ip,
                                  "dataPort": 60113 if self.source == "polytec_ivs500" else None,
                                  "sampleRate": self.writer.manifest["sampleRate"] if self.writer else None,
@@ -1691,6 +1696,7 @@ class AcquisitionController:
                             "currentPoint": None, "error": None}
         self.turntable_snapshot = {"state": "checking", "port": cycle.port, "axis": 1,
                                    "feedback": None, "pointCycle": copy.deepcopy(self.point_cycle)}
+        self._cycle_process("start_requested", clientRequestedAt=request.clientRequestedAt)
         self.thread = threading.Thread(target=self._run_point_cycle, args=(request, receiver),
                                         name="blade-point-cycle", daemon=True)
         self.thread.start()
@@ -1956,6 +1962,51 @@ class AcquisitionController:
                          "stationIndex": indices[group], "stationCount": groups[group]})
         return plan
 
+    def _await_cycle_receiver(self):
+        thread = self.cycle_prepare_thread
+        if thread is not None:
+            deadline = time.monotonic() + 30
+            while thread.is_alive():
+                if self.stop_event.is_set():
+                    raise RuntimeError(self.cycle_prepare_error or "采集准备已停止，等待设备连接释放")
+                if time.monotonic() >= deadline:
+                    self.stop_event.set()
+                    raise RuntimeError("测振连接准备超时，未启动转盘；等待设备连接释放")
+                thread.join(.05)
+            self.cycle_prepare_thread = None
+        if self.cycle_prepare_error:
+            raise RuntimeError(self.cycle_prepare_error)
+
+    def _prepare_cycle_receiver(self, receiver):
+        if not getattr(receiver, "supports_reusable_session", False):
+            return
+        receiver.reuse_session = True
+        self.cycle_receiver = receiver
+        self.cycle_prepare_error = None
+        self._cycle_process("preparing_receiver")
+        def prepare():
+            try:
+                receiver.prepare_session(self.stop_event.is_set)
+                if not self.stop_event.is_set():
+                    self._cycle_process("receiver_prepared")
+            except Exception as exc:
+                self.cycle_prepare_error = str(exc)
+                self.stop_event.set()
+            finally:
+                # Cancellation can return before a native connect call does.
+                # Its owning thread releases the late handle; no other thread
+                # may close it while the SDK is still inside preparation.
+                if self.stop_event.is_set():
+                    try:
+                        receiver.close_session(keep_laser_on=True)
+                    except Exception as exc:
+                        self.cycle_prepare_error = str(exc)
+                    with self.lock:
+                        if self.cycle_receiver is receiver:
+                            self.cycle_receiver = None
+        self.cycle_prepare_thread = threading.Thread(target=prepare, name="blade-cycle-prepare", daemon=True)
+        self.cycle_prepare_thread.start()
+
     def _confirm_session_laser(self, request, enabled):
         action, label = ("laser_on", "开启") if enabled else ("laser_off", "关闭")
         target = int(enabled)
@@ -1970,8 +2021,13 @@ class AcquisitionController:
             raise RuntimeError(f"采集接收线程尚未关闭，不能确认激光状态；{suffix}")
         self._cycle_process(action)
         try:
-            result = self._device_command(ReceiverConfig(request.deviceIp, request.hostIp, self.settings.dll_path),
-                                          action, laser_only=True)
+            self._await_cycle_receiver()
+            owner = self.cycle_receiver
+            if owner is not None:
+                result = owner.confirm_session_laser(enabled)
+            else:
+                result = self._device_command(ReceiverConfig(request.deviceIp, request.hostIp, self.settings.dll_path),
+                                              action, laser_only=True)
             laser = result.get("fields", {}).get("laser", {})
             if laser.get("supported") is not True or type(laser.get("value")) is not int or laser["value"] != target:
                 raise RuntimeError(f"激光{label}未获得真实读回")
@@ -2138,8 +2194,10 @@ class AcquisitionController:
                            firstStationMode="hold_current_pose")
         return feedback
 
-    def _cycle_capture_pose(self, motor, cycle, point, *, check_trajectory=True):
-        feedback = motor_snapshot(motor, 1)
+    def _cycle_capture_pose(self, motor, cycle, point, *, check_trajectory=True, arrived_feedback=None):
+        fresh = (arrived_feedback is not None and
+                 0 <= time.time() - arrived_feedback.get("queryStartedAt", 0) <= .5)
+        feedback = arrived_feedback if fresh else motor_snapshot(motor, 1)
         require_ready(feedback)
         references = reference_key(feedback)
         actual = [[references[str(axis)][key] for key in
@@ -2153,7 +2211,7 @@ class AcquisitionController:
             require_position_ready(feedback, config)
             if not position_reached(feedback, config):
                 raise RuntimeError("采集点位角度已变化或尚未到位，未开启下一个点位采集")
-        if check_trajectory and self._motion_capability(motor)["supported"]:
+        if check_trajectory and not fresh and self._motion_capability(motor)["supported"]:
             status = motor.get_trajectory_status()
             if status.state not in (0, 6, 8) or status.fault not in (0, 1):
                 raise RuntimeError("转盘轨迹未停稳或存在故障，未开启下一个点位采集")
@@ -2323,7 +2381,10 @@ class AcquisitionController:
             arrivalMove=copy.deepcopy(self.point_cycle.get("lastMove")),
             identitySource="operator_assigned", identityVerified=False,
             coverageKind="sparse_station_passes",
-            outcome="incomplete")
+            outcome="incomplete",
+            startupEvents=[copy.deepcopy(event) for event in self.point_cycle.get("processEvents", [])
+                           if event["phase"] in ("start_requested", "preparing_receiver", "receiver_prepared")],
+            acquisitionSessionMode="reused_handle" if self.cycle_receiver is not None else "per_station")
         metadata["pointCycle"].update({key: station[key] for key in
             ("rootRadiusM", "bladeLengthM", "distanceFromRootM") if key in station})
         metadata["turntable"] = {"config": cycle.model_dump(exclude={"points"}),
@@ -2387,20 +2448,27 @@ class AcquisitionController:
                     # SDK shutdown/draining must not add moving samples to it.
                     with self.lock:
                         if not capture_stop.is_set():
+                            if not batch.values:
+                                return
                             if (cycle.mode == "automatic_stations" or cycle.routeOrder == "configured") and (
                                     batch.sample_start != writer.manifest["samples"] or
                                     batch.sample_rate != writer.manifest["sampleRate"]):
                                 writer.manifest["pointCycle"].update(completion="signal_gap", outcome="incomplete")
+                                self._receive(batch)
+                                raise RuntimeError("当前点采样序号或采样率不连续，已停止采集")
+                            if not ready.is_set():
+                                self._cycle_process("waiting_blade" if cycle.rssiTriggerEnabled else "capturing", point=point.name)
+                                writer.manifest["pointCycle"]["firstSampleAt"] = time.time()
+                                ready.set()
                             self._receive(batch)
-                # Every station closes DAQ before movement, but normal station
+                # Every station stops DAQ before movement, but normal station
                 # boundaries keep the laser on. Abort/errors still force OFF.
                 run_kwargs = ({"keep_laser_on": True, "abort": self.stop_event}
                               if getattr(receiver, "supports_laser_persistence", False) else {})
                 def on_ready(rate, origin):
                     self._ready(rate, origin, receiver)
-                    self._cycle_process("waiting_blade" if cycle.rssiTriggerEnabled else "capturing",
-                                        point=point.name)
-                    ready.set()
+                    self._cycle_process("waiting_samples", point=point.name)
+                    writer.manifest["pointCycle"]["daqStartedAt"] = time.time()
                 receiver.run(capture_stop, on_ready, receive_batch, **run_kwargs)
             except Exception as exc:
                 capture_errors.append(str(exc))
@@ -2494,7 +2562,10 @@ class AcquisitionController:
                 self.rssi_event.clear()
                 self.point_cycle.update(rssiPhase=None, latestRssi=None)
             if trigger is not None:
-                trigger["receiverClosedAt"] = time.time()
+                trigger["receiverPausedAt"] = time.time()
+                if self.cycle_receiver is None:
+                    trigger["receiverClosedAt"] = trigger["receiverPausedAt"]
+                trigger["receiverSessionReused"] = self.cycle_receiver is not None
                 writer.manifest["pointCycle"]["handoff"].update(trigger)
                 if on_handoff is not None:
                     on_handoff(trigger)
@@ -2533,6 +2604,8 @@ class AcquisitionController:
         try:
             if cycle is None:
                 raise RuntimeError("缺少多点循环参数")
+            self._prepare_cycle_receiver(first_receiver)
+            self._cycle_process("checking")
             motor = self.motor_factory(cycle.port, timeout=2.0, gear_ratio=50.0)
             motor.connect()
             feedback = motor_snapshot(motor, 1)
@@ -2566,7 +2639,8 @@ class AcquisitionController:
                 # last pose. This prevents a fixed order from forcing a long
                 # return jump between the last point of one circle and the
                 # first point of the next circle.
-                feedback = motor_snapshot(motor, 1)
+                if cycle_index > 1:
+                    feedback = motor_snapshot(motor, 1)
                 planned_points = (list(cycle.points) if cycle.mode == "automatic_stations" or cycle.routeOrder == "configured" else
                                   self._plan_point_order(feedback, cycle.points, anchor))
                 planned_names = [point.name for point in planned_points]
@@ -2592,7 +2666,7 @@ class AcquisitionController:
                             on_command=lambda: self._cycle_process("moving", point=point.name))
                         if not reached:
                             raise RuntimeError(f"点位 {point.name} 未完成两轴到位确认")
-                        final_feedback = motor_snapshot(motor, 1)
+                        final_feedback = feedback
                     else:
                         final_feedback, prefetched_feedback = prefetched_feedback, None
                     self._cycle_process("arrived", point=point.name)
@@ -2634,7 +2708,7 @@ class AcquisitionController:
                                                               keep_laser_on=True,
                                                               before_capture=(lambda: self._cycle_verify_initial_pose(
                                                                   motor, cycle, point, "before_daq")) if initial_hold else
-                                                              (lambda: self._cycle_capture_pose(motor, cycle, point)),
+                                                              (lambda: self._cycle_capture_pose(motor, cycle, point, arrived_feedback=final_feedback)),
                                                               feedback_poll=lambda: self._cycle_capture_pose(
                                                                   motor, cycle, point, check_trajectory=False))
                     with self.lock:
@@ -2643,7 +2717,7 @@ class AcquisitionController:
                                        currentPoint=point.name,
                                        completedRecords=self.point_cycle["completedRecords"],
                                        plannedOrder=planned_names)
-                    if cycle_index != cycle.cycles or point_index != len(cycle.points):
+                    if self.cycle_receiver is None and (cycle_index != cycle.cycles or point_index != len(cycle.points)):
                         receiver = self._device_receiver(ReceiverConfig(request.deviceIp, request.hostIp, self.settings.dll_path))
                         receiver.validate()
                 # Historical open clients finish every circle at the first configured point. This is
@@ -2696,6 +2770,25 @@ class AcquisitionController:
                 except Exception as finish_error:
                     failures.append(f"记录收尾失败：{finish_error}")
         finally:
+            owner = self.cycle_receiver
+            if owner is not None:
+                try:
+                    self._await_cycle_receiver()
+                except Exception as exc:
+                    failures.append(str(exc))
+                # A stuck receiver must retain ownership; never close its SDK
+                # handles from another thread or allow a new task to start.
+                if ((self.capture_thread and self.capture_thread.is_alive()) or
+                        (self.cycle_prepare_thread and self.cycle_prepare_thread.is_alive())):
+                    failures.append("采集线程未退出，保留 SDK 所有权；请停止服务后检查设备")
+                else:
+                    try:
+                        owner.close_session(keep_laser_on=not failures and not self.stop_event.is_set())
+                    except Exception as exc:
+                        failures.append(str(exc))
+                    self.cycle_receiver = None
+            if self.cycle_prepare_error and self.cycle_prepare_error not in failures:
+                failures.append(self.cycle_prepare_error)
             if motor:
                 try:
                     motor.close(stop=False)

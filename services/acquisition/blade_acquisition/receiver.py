@@ -59,6 +59,7 @@ class Batch:
 
 class PolytecReceiver:
     supports_laser_persistence = True
+    supports_reusable_session = True
     def __init__(self, config: ReceiverConfig):
         self.config = config
         self.api: Any = None
@@ -69,6 +70,10 @@ class PolytecReceiver:
         self.laser_status = None
         self._laser_monitor_communication = None
         self._laser_monitor_failed = False
+        self.reuse_session = False
+        self._stream_context = None
+        self._communication_open = self._acquisition_open = False
+        self._daq_start_attempted = self._laser_attempted = False
 
     def validate(self) -> None:
         if not self.config.dll_path or not Path(self.config.dll_path).is_file():
@@ -286,21 +291,20 @@ class PolytecReceiver:
         self._check(self.api.PolyGetInt32Data(self.acquisition.value, channel, 0, values, count.value), "GetInt32Data")
         return list(values)
 
-    def run(self, stop: threading.Event, ready: Callable, receive: Callable[[Batch], None],
-            *, keep_laser_on: bool = False, abort: threading.Event | None = None) -> None:
-        communication_open = acquisition_open = laser_attempted = False
-        failure: Exception | None = None
-        cleanup_errors: list[str] = []
-        def cancelled():
-            return stop.is_set() or bool(abort and abort.is_set())
+    def prepare_session(self, cancelled=lambda: False):
+        """Open/configure once on either native SDK, without laser writes or DAQ start.
+
+        The cycle owner serializes preparation, station runs, and final close.
+        A retained session never grants motion permission or restores a run.
+        """
+        if self._stream_context is not None or cancelled():
+            return
         try:
-            if cancelled():
-                return
             self.api = self._load_api()
             if cancelled():
                 return
             self._check(self.api.PolyOpenUdpEthernetCommunication(C.byref(self.communication), self.config.device_ip.encode("ascii"), 6000), "Open UDP")
-            communication_open = True
+            self._communication_open = True
             self.protocol = self._integer(SIGNAL_PROCESSING, DAQ_PROTOCOL)
             if self.protocol not in (3, 4, 5, 30):
                 raise RuntimeError(f"当前 SDK 未支持此采集协议：{self.protocol}。")
@@ -340,7 +344,7 @@ class PolytecReceiver:
                 raise RuntimeError("VFX 设备未提供采样基率，未启动采集。")
             buffer_base_samples = max(1, self.config.buffer_capacity // anticipated_stride)
             self._check(self.api.PolyOpenDataAcquisition(C.byref(self.acquisition), self.communication.value, buffer_base_samples), "Open acquisition")
-            acquisition_open = True
+            self._acquisition_open = True
             self._check(self.api.PolyStopDataAcquisition(self.acquisition.value), "Initial stop")
             self._prepare_streaming()
             rate, velocity_max, rssi_max = C.c_double(), C.c_int32(), C.c_int32()
@@ -396,11 +400,90 @@ class PolytecReceiver:
                                                             "warning": destination_warning}}
             if cancelled():
                 return
-            # Treat a timed-out laser command as uncertain, not success; cleanup still turns it off.
-            laser_attempted = True
-            self._set_laser(True)
+            self._stream_context = (sample_rate, rssi_stride, read_base_samples, scale, velocity_max.value, rssi_max.value)
+            self._session_range_text = range_text
+            self._session_headroom = headroom.value
+        except Exception:
+            self.close_session(keep_laser_on=True)
+            raise
+
+    def _verify_session_format(self):
+        # Reuse the transport and channel decoder, never stale physical units.
+        # A change by the front panel/another application requires a new task.
+        base = C.c_double()
+        self._check(self.api.PolyBaseSampleRateInHz(self.acquisition.value, C.byref(base)), "Check base sample rate")
+        rate, stride = self._sample_timing(base.value)
+        range_buffer = C.create_string_buffer(256)
+        self._check(self.api.PolyItemListGetCurrentItem(self.communication.value, VELOCITY_DECODER_DIGITAL,
+                    0, 10, range_buffer, len(range_buffer)), "Check velocity range")
+        headroom = C.c_float()
+        self._check(self.api.PolySendGetFloat(self.communication.value, VELOCITY_DECODER_DIGITAL, 0,
+                    HEADROOM_DIGITAL_OUT, C.byref(headroom)), "Check headroom")
+        if ((rate, stride) != self._stream_context[:2] or
+                range_buffer.value.decode(errors="replace") != self._session_range_text or
+                headroom.value != self._session_headroom):
+            raise RuntimeError("点位间设备采样率或速度量程已变化，请重新开始采集")
+
+    def confirm_session_laser(self, enabled=True):
+        if self._stream_context is None or self._daq_start_attempted:
+            raise RuntimeError("采集会话尚未就绪或仍在接收，不能操作激光")
+        self._laser_attempted = True
+        self._set_laser(enabled)
+        return self.laser_status
+
+    def close_session(self, *, keep_laser_on=False, abort=None):
+        """Called only after the station receiver exited; idempotent, no motion."""
+        errors = []
+        def cleanup(call, label):
+            try:
+                result = call()
+                if result is not None:
+                    self._check(result, label)
+            except Exception as exc:
+                errors.append(str(exc))
+        if self.api and self._acquisition_open:
+            if self._daq_start_attempted:
+                cleanup(lambda: self.api.PolyStopDataAcquisition(self.acquisition.value), "Stop acquisition")
+            if self._laser_monitor_communication is not None:
+                cleanup(self._close_laser_monitor, "Close laser monitor communication")
+            cleanup(lambda: self.api.PolyCloseDataAcquisition(self.acquisition.value), "Close acquisition")
+        if self.api and self._communication_open and self._laser_attempted and (not keep_laser_on or errors or bool(abort and abort.is_set())):
+            cleanup(lambda: self._set_laser(False), "Laser off (please verify physically)")
+        before_close = len(errors)
+        if self.api and self._communication_open:
+            cleanup(lambda: self.api.PolyCloseCommunication(self.communication.value), "Close communication")
+        # A successful OFF readback survives an earlier DAQ close failure.
+        # A late control-close failure/abort cannot leave a confirmed-ON badge.
+        if len(errors) > before_close or (keep_laser_on and abort and abort.is_set()):
+            self._publish_laser(None, "; ".join(errors) or "采集结束边界收到停止请求，需重新核查激光状态")
+        self.api = None
+        self._stream_context = None
+        self._communication_open = self._acquisition_open = self._daq_start_attempted = False
+        if self._dll_directory:
+            self._dll_directory.close()
+            self._dll_directory = None
+        if errors:
+            raise RuntimeError("; ".join(errors))
+
+    def run(self, stop: threading.Event, ready: Callable, receive: Callable[[Batch], None],
+            *, keep_laser_on: bool = False, abort: threading.Event | None = None) -> None:
+        failure = None
+        def cancelled():
+            return stop.is_set() or bool(abort and abort.is_set())
+        try:
+            resumed = self._stream_context is not None
+            self.prepare_session(cancelled)
             if cancelled():
                 return
+            if resumed:
+                self._verify_session_format()
+            sample_rate, rssi_stride, read_base_samples, scale, velocity_max, rssi_max = self._stream_context
+            self.confirm_session_laser(True)
+            if cancelled():
+                return
+            # SDK StartAcquisition clears its ring buffer before enabling the
+            # device. Never carry stationary/moving samples into a later point.
+            self._daq_start_attempted = True
             self._check(self.api.PolyStartDataAcquisition(self.acquisition.value), "Start acquisition")
             origin = time.time()
             ready(sample_rate, origin)
@@ -418,8 +501,8 @@ class PolytecReceiver:
                         flags = (C.c_uint8 * len(raw))()
                         self._check(self.api.PolyGetOverrange(self.acquisition.value, VELOCITY, 0, flags, len(raw)), "Get overrange")
                         receive(Batch(sample_index, sample_rate, origin, raw,
-                                      [value * scale / velocity_max.value for value in raw],
-                                      rssi_raw, [100.0 * value / rssi_max.value for value in rssi_raw],
+                                      [value * scale / velocity_max for value in raw],
+                                      rssi_raw, [100.0 * value / rssi_max for value in rssi_raw],
                                       [bool(flag) for flag in flags], rssi_sample_stride=rssi_stride))
                         sample_index += len(raw)
                         last_sample_at = time.monotonic()
@@ -431,32 +514,18 @@ class PolytecReceiver:
         except Exception as exc:
             failure = exc
         finally:
-            def cleanup(call, label):
+            errors = []
+            if self.api and self._daq_start_attempted:
                 try:
-                    result = call()
-                    if result is not None:
-                        self._check(result, label)
+                    self._check(self.api.PolyStopDataAcquisition(self.acquisition.value), "Stop acquisition")
+                    self._daq_start_attempted = False
                 except Exception as exc:
-                    cleanup_errors.append(str(exc))
-            if self.api and acquisition_open:
-                cleanup(lambda: self.api.PolyStopDataAcquisition(self.acquisition.value), "Stop acquisition")
-            if self.api and self._laser_monitor_communication is not None:
-                cleanup(self._close_laser_monitor, "Close laser monitor communication")
-            if self.api and acquisition_open:
-                cleanup(lambda: self.api.PolyCloseDataAcquisition(self.acquisition.value), "Close acquisition")
-            kept_laser_on = bool(keep_laser_on and not failure and not cleanup_errors and not (abort and abort.is_set()))
-            if self.api and communication_open and laser_attempted and not kept_laser_on:
-                cleanup(lambda: self._set_laser(False), "Laser off (please verify physically)")
-            if self.api and communication_open:
-                cleanup(lambda: self.api.PolyCloseCommunication(self.communication.value), "Close communication")
-            if laser_attempted and kept_laser_on and (cleanup_errors or (abort and abort.is_set())):
-                # Communication is already closed (or its close failed). Do
-                # not reuse the old handle; the session owner must confirm OFF
-                # after joining this thread, and must not hand off to a move.
-                self._publish_laser(None, "; ".join(cleanup_errors) or "采集已取消，激光待任务收尾确认关闭")
-            self.api = None
-            if self._dll_directory:
-                self._dll_directory.close()
-                self._dll_directory = None
-            if failure or cleanup_errors:
-                raise RuntimeError("; ".join(([str(failure)] if failure else []) + cleanup_errors)) from failure
+                    errors.append(str(exc))
+            keep = bool(keep_laser_on and not failure and not errors and not (abort and abort.is_set()))
+            if not self.reuse_session or not keep:
+                try:
+                    self.close_session(keep_laser_on=keep, abort=abort)
+                except Exception as exc:
+                    errors.append(str(exc))
+            if failure or errors:
+                raise RuntimeError("; ".join(([str(failure)] if failure else []) + errors)) from failure

@@ -14,7 +14,7 @@ import { FieldAnalysis } from "./field-analysis";
 import { FieldAcquisition } from "./field-acquisition";
 import { FieldTurntableWorkspace, autoFollowCollection, autoFollowCollectionContext } from "./field-auto-follow";
 import { autoFollowStorageKey, readAutoFollowSurvey } from "./field-auto-follow-config";
-import { captureRouteBlockers, prepareCaptureRoute, type FieldCaptureRoute } from "./field-capture-route";
+import { captureRouteBlockers, prepareCaptureStartRoute, type FieldCaptureRoute } from "./field-capture-route";
 import { moveToCapturePreset, presetPositionError } from "./field-preset-position";
 import { FieldBladeSummary } from "./field-blade-summary";
 import { FieldTaskRecords } from "./field-recording-tasks";
@@ -390,6 +390,7 @@ export function FieldDesktopApp() {
   }
   function requestCapture(targetKey?: string) {
     if (presetRun.current || captureStarting.current || busy || stoppingCapture || fieldIsActive(status) || status?.turntableBusy || turntableOperationBusy) return;
+    const clientRequestedAt = Date.now() / 1000;
     let route = linkEnabled ? currentRoute : null;
     let capture = fieldCaptureConfig(config);
     if (linkEnabled && routeMode === "auto") {
@@ -414,11 +415,14 @@ export function FieldDesktopApp() {
         const latestRoute = selection.targetKey ? routes.auto?.targets?.find(item => item.key === selection.targetKey)?.route : currentRoute;
         if (!linkEnabled || routeMode !== route.kind || latestRoute?.kind !== route.kind || JSON.stringify(latestRoute) !== JSON.stringify(route) ||
             autoFollowCollectionContext(config) !== autoFollowCollectionContext(normalized)) throw new Error("风机任务或采集路线已变化，请重新核对并开始。");
-        const checked = await fieldCall<FieldStatus>({ action: "turntable", request: { action: "probe", port: pointCycle.port, axis: 1 } });
+        // Bind the displayed reference identity. The service performs the
+        // authoritative fresh checks after Start, in parallel with DAQ setup.
+        // A second renderer-side probe adds latency without granting permission.
+        const prepared = await prepareCaptureStartRoute(route, status, () =>
+          fieldCall<FieldStatus>({ action: "turntable", request: { action: "probe", port: pointCycle!.port, axis: 1 } }));
         if (attempt !== captureAttempt.current || epoch !== generation.current) return;
-        setStatus(checked);
-        const preparedRoute = prepareCaptureRoute(route, checked);
-        pointCycle = structuredClone(preparedRoute.cycle!);
+        if (prepared.probed) setStatus(prepared.status);
+        pointCycle = structuredClone(prepared.route.cycle!);
         if (pointCycle.mode === "automatic_stations") {
           const saved = readAutoFollowSurvey(localStorage.getItem(autoFollowStorageKey));
           const collection = autoFollowCollection(saved, autoFollowCollectionContext(normalized));
@@ -428,7 +432,7 @@ export function FieldDesktopApp() {
         }
       }
       if (attempt !== captureAttempt.current || epoch !== generation.current) return;
-      await fieldCall({ action: "start", config: { ...normalized, confirmLaser: true, ...(pointCycle ? { confirmMotion: true, pointCycle } : {}) } });
+      await fieldCall({ action: "start", config: { ...normalized, clientRequestedAt, confirmLaser: true, ...(pointCycle ? { confirmMotion: true, pointCycle } : {}) } });
       if (attempt !== captureAttempt.current || epoch !== generation.current) return;
       const plain = fieldCaptureConfig(normalized);
       try { localStorage.setItem("blade-field-config-v1", JSON.stringify(plain)); } catch { /* Saving a draft is optional; raw acquisition storage is managed by Python. */ }

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { manualCaptureRoute, manualRouteDefaults, readManualRouteSettings, captureRouteBlockers, prepareCaptureRoute, type FieldCaptureRoute } from "./field-capture-route";
+import { manualCaptureRoute, manualRouteDefaults, readManualRouteSettings, captureRouteBlockers, prepareCaptureRoute, prepareCaptureStartRoute, type FieldCaptureRoute } from "./field-capture-route";
 import { autoFollowDefaults, planAutoFollow } from "./field-auto-follow-plan";
 import { turntableReferenceSignature } from "./field-turntable-points";
 import type { FieldAxisFeedback, FieldBladePoint, FieldStatus } from "./field-types";
@@ -158,3 +158,25 @@ for (const port of ["COM3", "/dev/cu.usbserial-1140"]) {
   assert.ok(prepareCaptureRoute(route, next).cycle!.points.every(point => point.port === port && !!point.referenceSignature));
 }
 console.log("PASS theoretical routes allow a fresh probe, bind checked references once, reject bad hardware feedback and preserve calibrated/manual references");
+
+void (async () => {
+  let probes = 0;
+  const probe = async () => { probes++; return structuredClone(status); };
+  const existing = await prepareCaptureStartRoute(route, status, probe);
+  assert.equal(existing.probed, false);
+  assert.equal(probes, 0, "Pre-positioned/bound routes must not issue a duplicate renderer probe");
+  await assert.rejects(prepareCaptureStartRoute(route, null, probe), /读取设备状态/);
+  await assert.rejects(prepareCaptureStartRoute(route, { ...status, service: { ...status.service, generation: 2 } }, probe), /重启/);
+  assert.equal(probes, 0, "Known identity mismatch must not be silently rebound");
+  const calculated = await prepareCaptureStartRoute(theoretical, noCachedMotor, probe);
+  assert.equal(calculated.probed, true);
+  assert.equal(probes, 1, "An unbound calculated route still reads references once");
+  assert.deepEqual(calculated.route.cycle!.points.map(p => p.referenceSignature), prepared.cycle!.points.map(p => p.referenceSignature));
+  const cached = await prepareCaptureStartRoute(theoretical, status, probe);
+  assert.equal(cached.probed, false);
+  assert.equal(probes, 1, "Existing theoretical reference identity need not be read twice before service validation");
+  const missingCapability = await prepareCaptureStartRoute(theoretical, unsupported, probe);
+  assert.equal(missingCapability.probed, true);
+  assert.equal(probes, 2);
+  console.log("PASS start probe only resolves missing identity/capability; changed service remains blocked");
+})().catch(error => { console.error(error); process.exitCode = 1; });

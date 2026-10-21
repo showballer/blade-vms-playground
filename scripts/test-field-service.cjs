@@ -1053,3 +1053,13 @@ test('capture session id is supplied only by main and validates before starting 
   await f.service.begin(config, { captureSessionId: 'a'.repeat(32) });
   assert.equal(JSON.parse(f.requests.filter(row => row.route === 'start').at(-1).options.body).captureSessionId, 'a'.repeat(32));
 });
+
+
+test('click time survives desktop IPC for readiness diagnostics and rejects invalid clocks', async t => {
+  const f = fixture(t);
+  const config = { source: 'simulation', simulation: { point: 'P1', scenario: 'baseline' }, name: 'timing', object: '', turbine: '', point: '' };
+  for (const value of [-1, Infinity, NaN, '12']) await assert.rejects(f.service.begin({ ...config, clientRequestedAt: value }), { status: 400 });
+  assert.equal(f.children.length, 0);
+  await f.service.begin({ ...config, clientRequestedAt: 1792501200.25 });
+  assert.equal(JSON.parse(f.requests.find(row => row.route === 'start').options.body).clientRequestedAt, 1792501200.25);
+});

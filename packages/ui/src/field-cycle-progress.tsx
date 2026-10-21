@@ -3,7 +3,8 @@ import React from "react";
 import type { FieldStatus } from "./field-types";
 
 const labels: Record<string, string> = {
-  checking: "检查设备", positioning: "核对目标点位", starting_capture: "启动当前点采集", waiting_blade: "等待叶片进入",
+  start_requested: "已收到采集请求", preparing_receiver: "准备测振连接", receiver_prepared: "测振连接已就绪", waiting_samples: "等待首批测振数据",
+  checking: "检查设备", positioning: "核对目标点位", starting_capture: "启动当前点采集", waiting_blade: "已就绪 · 等待叶片进入",
   confirming_entry: "正在确认叶片进入", blade_present: "已确认进入 · 叶片经过中",
   confirming_exit: "正在确认叶片离开", blade_left: "已确认离开 · 准备换点",
   laser_on: "开启激光，准备移动", laser_on_confirmed: "激光已开启", laser_off: "关闭激光", laser_off_confirmed: "激光已关闭", moving: "正在移动到点位", arrived: "已到位", capturing: "定时采集中",

@@ -161,3 +161,16 @@ export function prepareCaptureRoute(route: FieldCaptureRoute, checked: FieldStat
   if (fullErrors.length) throw new Error(fullErrors.join("；"));
   return prepared;
 }
+
+/** An existing reference binding is checked again by the service. Only read
+ * here when the calculated route has no reference identity to bind yet. */
+export async function prepareCaptureStartRoute(route: FieldCaptureRoute, current: FieldStatus | null,
+  probe: () => Promise<FieldStatus>): Promise<{ route: FieldCaptureRoute; status: FieldStatus; probed: boolean }> {
+  if (!current) throw new Error("请先读取设备状态");
+  const axes = current.turntable?.port === route.cycle?.port ? current.turntable?.feedback?.axes : undefined;
+  const capability = current.turntable?.port === route.cycle?.port ? current.turntable?.motionCapability : undefined;
+  const probed = route.referenceMode === "read_at_start" && (!turntableReferenceSignature(axes) || !capability ||
+    capability.probe === "driver-unavailable");
+  const checked = probed ? await probe() : current;
+  return { route: prepareCaptureRoute(route, checked), status: checked, probed };
+}

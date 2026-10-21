@@ -34,6 +34,9 @@ class StartupObservationTests(unittest.TestCase):
         self.serial.finish_on_renew = True
         self.serial.reject[0x37] = 7  # Explicit old-firmware position-command rejection.
         self.motor = MotorController("TEST", timeout=.02, serial_factory=lambda *a, **kw: self.serial)
+        # This suite exercises buffered-trajectory request counts on old
+        # firmware; the native-position default is covered in its own suites.
+        self.motor.drive_internal_position = False
         self.addCleanup(lambda: self.motor.close(stop=False))
         app = create_app(Settings(TOKEN, 8765, Path(self.temp.name)), PassReceiver,
                          lambda *a, **kw: self.motor)

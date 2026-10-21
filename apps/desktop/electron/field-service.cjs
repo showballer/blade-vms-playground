@@ -475,6 +475,10 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
       if (typeof captureSessionId !== 'string' || !/^[a-f0-9]{32}$/.test(captureSessionId)) throw failure('无效采集会话编号', 400);
       body.captureSessionId = captureSessionId;
     }
+    if (config.clientRequestedAt !== undefined) {
+      if (!Number.isFinite(config.clientRequestedAt) || config.clientRequestedAt < 0) throw failure('无效启动时间', 400);
+      body.clientRequestedAt = config.clientRequestedAt;
+    }
     if (config.pointCycle !== undefined) {
       if (simulated || config.confirmMotion !== true) throw failure('多点循环任务必须使用真实采集并确认转盘运动', 400);
       body.pointCycle = pointCycleConfig(config.pointCycle);
