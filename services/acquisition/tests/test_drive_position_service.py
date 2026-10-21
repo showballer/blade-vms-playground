@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
+from dataclasses import replace
 
 from fastapi import HTTPException
 
@@ -93,6 +94,51 @@ class DrivePositionServiceTests(unittest.TestCase):
         self.assertNotIn("group_stop", self.motor.calls)
         self.assertEqual(self.motor.stopped_axes, [])
 
+    def test_prepositioned_point_reads_both_drives_but_never_sends_motion(self):
+        self.motor.angles.update({1: 5, 2: -9})
+        callback = Mock()
+        with patch("blade_acquisition.drive_position.execute_drive_position") as native, \
+             patch.object(self.motor, "get_status", wraps=self.motor.get_status) as drive_status:
+            reached, completed, _ = self.controller._cycle_move_point(self.motor, self.cycle, self.cycle.points[0], callback)
+        self.assertTrue(reached)
+        self.assertEqual(completed, [1, 2])
+        self.assertEqual([call.args[0] for call in drive_status.call_args_list], [1, 2])
+        native.assert_not_called()
+        callback.assert_not_called()
+        self.assertNotIn("prepare", self.motor.calls)
+        self.assertNotIn("start", self.motor.calls)
+        self.assertEqual(self.motor.stopped_axes, [])
+        self.assertFalse(self.controller.motion_guard.path.exists())
+        self.assertFalse(self.controller.turntable_snapshot["lastMove"]["motionCommanded"])
+
+    def test_prepositioned_point_does_not_bypass_axis_two_alarm_or_pending_trajectory(self):
+        self.motor.angles.update({1: 5, 2: -9})
+        original_status = self.motor.get_status
+        with patch.object(self.motor, "get_status", side_effect=lambda axis: replace(
+                original_status(axis), alarm_code=9 if axis == 2 else 0)), \
+             patch("blade_acquisition.drive_position.execute_drive_position") as native:
+            with self.assertRaisesRegex(RuntimeError, "报警"):
+                self.controller._cycle_move_point(self.motor, self.cycle, self.cycle.points[0])
+            native.assert_not_called()
+        self.motor.initial_state = 2
+        with patch("blade_acquisition.drive_position.execute_drive_position") as native:
+            with self.assertRaisesRegex(RuntimeError, "轨迹"):
+                self.controller._cycle_move_point(self.motor, self.cycle, self.cycle.points[0])
+            native.assert_not_called()
+
+    def test_prepositioned_point_reference_change_is_rejected_and_pose_drift_moves_again(self):
+        self.motor.angles.update({1: 5, 2: -9})
+        self.motor.origins[2] += 1
+        with patch("blade_acquisition.drive_position.execute_drive_position") as native:
+            with self.assertRaisesRegex(RuntimeError, "参考位"):
+                self.controller._cycle_move_point(self.motor, self.cycle, self.cycle.points[0])
+            native.assert_not_called()
+        self.motor.origins[2] -= 1
+        self.motor.angles[2] += .2
+        with patch("blade_acquisition.drive_position.execute_drive_position", side_effect=self.success) as native:
+            self.controller._cycle_move_point(self.motor, self.cycle, self.cycle.points[0])
+            native.assert_called_once()
+
     def test_native_confirmed_failure_clears_both_pending_without_extra_stop(self):
         def fail(motor, **kwargs):
             raise DrivePositionError("diagnostic failed", {
@@ -151,12 +197,14 @@ class DrivePositionServiceTests(unittest.TestCase):
         status = self.controller.status()
         self.assertEqual(status["pointCycle"]["state"], "complete", status["pointCycle"])
         self.assertEqual(status["pointCycle"]["completedRecords"], 4)
-        self.assertEqual(native.call_count, 4)
+        self.assertEqual(native.call_count, 3, "Already at the first point: capture directly, move only for the other three")
         self.assertNotIn("group_stop", self.motor.calls)
         self.assertNotIn("start", self.motor.calls)
         self.assertIsNone(self.controller.motion_guard.warning)
         manifests = list(Path(self.temp.name).glob("recordings/*/manifest.json"))
         self.assertEqual(len(manifests), 4)
+        first = min((json.loads(path.read_text()) for path in manifests), key=lambda record: record["pointCycle"]["pointIndex"])
+        self.assertFalse(first["pointCycle"]["arrivalMove"]["motionCommanded"])
         for path in manifests:
             record = json.loads(path.read_text())
             self.assertEqual(record["status"], "complete")

@@ -187,6 +187,7 @@ export type FieldDeviceRequest = {
 export type FieldRssiCalibrationRequest = { deviceIp: string; hostIp: string; state: "background" | "blade_on" | "blade_pass"; durationSeconds: number; confirmLaser: true };
 export type FieldRssiCalibrationResult = { state: FieldRssiCalibrationRequest["state"]; label: string; recordedAt: number; startedAt: number; durationSeconds: number; sampleRate: number | null; sampleCount: number; minimum: number; p10: number; median: number; mean: number; p90: number; maximum: number; samples: number[]; states?: Record<string, FieldRssiCalibrationResult> };
 export type FieldRecording = {
+  captureSessionId?: string;
   turntable?: FieldTurntableStatus & { config: FieldTurntableConfig; telemetry?: { events: number; file: string; sha256: string; cloudSync: string } };
   source?: string;
   simulation?: FieldSimulation & { position?: number; rpm?: number };
@@ -255,6 +256,7 @@ export type FieldRequestOptions =
   | { action: "start"; config: FieldConfig & ({ source?: "device"; confirmLaser: true; confirmMotion?: true; pointCycle?: FieldPointCycleConfig } | { source: "simulation"; simulation: FieldSimulation }) }
   | { action: "recording"; id: string }
   | { action: "exportRecording"; id: string }
+  | { action: "exportTask"; recordingIds: string[]; level: "task" | "blade" | "point" }
   | { action: "waveform"; id: string; start?: number; end?: number }
   | { action: "analysis"; id: string; parameters: Record<string, unknown> }
   | { action: "rotation"; parameters: Record<string, unknown> }

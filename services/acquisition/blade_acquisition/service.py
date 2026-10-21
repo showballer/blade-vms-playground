@@ -20,6 +20,7 @@ from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, StreamingResponse
+from starlette.background import BackgroundTask
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
 from .receiver import Batch, PolytecReceiver, ReceiverConfig
@@ -234,6 +235,7 @@ class AcquisitionController:
         self.receiver_factory = receiver_factory
         self.lock = threading.RLock()
         self.operation_lock = threading.Lock()
+        self.export_lock = threading.Lock()
         self.state, self.error = "idle", None
         self.writer = None
         self.thread: threading.Thread | None = None
@@ -2167,9 +2169,7 @@ class AcquisitionController:
         completed, active = [], None
         feedback = None
         try:
-            initial_snapshots = (joint_snapshots(motor)
-                                 if getattr(motor, "trajectory_start_observer", False) is True
-                                 else (motor_snapshot(motor, 1),) * 2)
+            initial_snapshots = joint_snapshots(motor)
             feedback = initial_snapshots[0]
             require_ready(feedback)
             references = reference_key(feedback)
@@ -2186,6 +2186,23 @@ class AcquisitionController:
             start_angles = tuple(feedback["axes"][str(axis)]["output_angle_deg"] for axis in (1, 2))
             point_mode = capability.get("pointMode") or capability["mode"]
             speed, timing = station_timing_plan(cycle, start_angles, point, point_mode, source_point)
+            if all(position_reached(checked, config) for config, checked in zip(configs, initial_snapshots)):
+                # Prepositioning and capture are separate operations. Trust
+                # fresh drive feedback, never a UI flag or an earlier recall.
+                if capability["supported"]:
+                    trajectory = motor.get_trajectory_status()
+                    if trajectory.state not in (0, 6, 8) or trajectory.fault not in (0, 1):
+                        raise RuntimeError("控制器轨迹仍待执行、运行或存在故障，不能在预设位置开始采集")
+                evidence = {"mode": capability.get("pointMode") or capability["mode"],
+                            "state": "already_at_target", "motionCommanded": False, "stopConfirmed": True,
+                            "plannedSeconds": 0, "actualSeconds": 0,
+                            "targets": [point.axis1AngleDeg, point.axis2AngleDeg],
+                            "timingBasis": "fresh_stopped_pose", "measurementDuringMotion": False}
+                if timing is not None:
+                    evidence["stationTiming"] = timing
+                self._cycle_update("holding", currentPoint=point.name, feedback=feedback, lastMove=evidence,
+                                   motionMode=evidence["mode"], motionCapability=capability)
+                return not self.stop_event.is_set(), [1, 2], feedback
             configs = [config.model_copy(update={"speedRpm": speed}) for config in configs]
             self._cycle_update("positioning", motionCapability=capability, motionMode=point_mode, feedback=feedback,
                                targetPointId=point.pointId, targetAxis1AngleDeg=point.axis1AngleDeg,
@@ -2884,6 +2901,48 @@ def create_app(settings: Settings, receiver_factory=PolytecReceiver, motor_facto
             except ValueError as exc:
                 raise HTTPException(422, str(exc)) from exc
         return {"recordings": records}
+
+    @app.post("/api/field/recordings/export-task")
+    def export_task(parameters: dict):
+        from .task_export import build_task_archive, prepare_task_export
+        if set(parameters) != {"recordingIds", "level"}:
+            raise HTTPException(422, "批量导出仅接受本机记录编号和导出范围。")
+        # Saved records are local files. A disconnected device's header poll
+        # must not block their export or have its hardware lock released here.
+        if not controller.export_lock.acquire(blocking=False):
+            raise HTTPException(409, "另一个数据包正在导出，请稍后重试。")
+        output = None
+        ready = False
+        try:
+            current = controller.status()
+            if (current.get("state") in {"starting", "acquiring", "stopping"} or
+                    current.get("receiver", {}).get("running") or current.get("turntableBusy") or current.get("deviceBusy")):
+                raise HTTPException(409, "请先停止并保存采集，再导出任务。")
+            records = prepare_task_export(controller.store, parameters["recordingIds"], parameters["level"])
+            output = build_task_archive(controller.store, parameters["recordingIds"], parameters["level"])
+            # A new capture may add to the same task while the ZIP is built.
+            # Publish only a complete, unchanged snapshot of the chosen scope.
+            if records != prepare_task_export(controller.store, parameters["recordingIds"], parameters["level"]):
+                raise BlockingIOError("所选范围的记录已变化，请刷新列表后重新导出。")
+            ready = True
+        except (KeyError, FileNotFoundError) as exc:
+            raise HTTPException(404, "任务中的原始记录不存在，请刷新列表。") from exc
+        except BlockingIOError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except (OSError, ValueError, TypeError) as exc:
+            raise HTTPException(422, f"任务导出失败：{exc}") from exc
+        finally:
+            controller.export_lock.release()
+            if output is not None and not ready:
+                output.close()
+        def stream():
+            try:
+                while payload := output.read(65536):
+                    yield payload
+            finally:
+                output.close()
+        return StreamingResponse(stream(), media_type="application/zip", background=BackgroundTask(output.close),
+                                 headers={"Content-Disposition": 'attachment; filename="blade-task.zip"'})
 
     @app.get("/api/field/recordings/{recording_id}")
     def recording(recording_id: str):

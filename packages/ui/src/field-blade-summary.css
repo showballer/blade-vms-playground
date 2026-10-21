@@ -1,13 +1,20 @@
 .field-blade-summary { min-width: 0; }
 .field-blade-tasks { display: grid; gap: var(--field-ui-space-4); }
 .field-blade-task { min-width: 0; }
-.field-blade-task-heading { margin-bottom: var(--field-ui-space-2); }
+.field-blade-task-heading { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: var(--field-ui-space-3); margin-bottom: var(--field-ui-space-2); }
+.field-blade-task-heading > div { flex: 1; min-width: min(100%, 260px); }
+.field-blade-task-heading > button { flex-shrink: 0; }
+.field-task-export-toolbar { display: flex; align-items: flex-end; flex-wrap: wrap; gap: var(--field-ui-space-3); margin-bottom: var(--field-ui-space-4); }
+.field-task-export-toolbar > label { display: grid; flex: 1 1 320px; max-width: 640px; min-width: 0; gap: var(--field-ui-space-2); color: var(--field-ui-secondary); font-size: var(--field-ui-caption); }
+.field-task-export-hint { flex: 1 1 240px; align-self: center; color: var(--field-ui-secondary); font-size: var(--field-ui-caption); }
 .field-blade-task-heading h3 { margin: 0; color: var(--field-ui-text); font-size: var(--field-ui-body); font-weight: 600; overflow-wrap: anywhere; }
 .field-blade-task-heading p { margin: var(--field-ui-space-1) 0 0; color: var(--field-ui-secondary); font-size: var(--field-ui-caption); }
 .field-blade-collection + .field-blade-collection { margin-top: var(--field-ui-space-4); }
 .field-blade-collection-heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: var(--field-ui-space-2); margin: var(--field-ui-space-3) 0 var(--field-ui-space-2); }
 .field-blade-collection-heading h4 { margin: 0; font-size: var(--field-ui-body); color: var(--field-ui-text); font-weight: 600; overflow-wrap: anywhere; }
 .field-blade-collection-heading > span { color: var(--field-ui-secondary); font-size: var(--field-ui-caption); }
+.field-blade-collection-heading > button { margin-left: auto; }
+.field-blade-point-export { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--field-ui-space-2); padding-top: var(--field-ui-space-3); color: var(--field-ui-secondary); font-size: var(--field-ui-caption); }
 .field-blade-totals {
   display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: var(--field-ui-space-3); margin: 0 0 var(--field-ui-space-4);

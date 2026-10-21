@@ -628,6 +628,40 @@ test("recording export streams original CSV into gzip or CSV without buffering v
   assert.match(request.options.headers.Authorization, /^Bearer [a-f0-9]{64}$/);
 });
 
+test("task package export streams ZIP atomically with scoped record IDs", async t => {
+  const payload = Buffer.from('PK\x03\x04test-stream');
+  const f = fixture(t, { fetch: ({ route }) => route === 'recordings/export-task'
+    ? new Response(payload, { headers: { 'Content-Type': 'application/zip' } }) : response(idle()) });
+  for (const level of ['task', 'blade', 'point']) {
+    const file = path.join(f.directory, `${level}.zip`), ids = ['a'.repeat(32), 'b'.repeat(32)];
+    assert.deepEqual(await f.service.exportTask(ids, file, level), { saved: true, fileName: `${level}.zip`, recordCount: 2 });
+    assert.deepEqual(fs.readFileSync(file), payload);
+    const request = f.requests.at(-1);
+    assert.deepEqual(JSON.parse(request.options.body), { recordingIds: ids, level });
+    assert.equal(request.options.method, 'POST');
+    assert.match(request.options.headers.Authorization, /^Bearer [a-f0-9]{64}$/);
+  }
+  assert.ok(!fs.readdirSync(f.directory).some(name => name.endsWith('.tmp')));
+});
+
+test("task package rejects invalid selections before transport and preserves existing files on failure", async t => {
+  let broken = false;
+  const f = fixture(t, { fetch: ({ route }) => route === 'recordings/export-task'
+    ? broken ? new Response(new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array([1])); controller.error(Error('stream interrupted')); } }), { headers: { 'content-type': 'application/zip' } })
+      : Response.json({ detail: '任务记录已变化' }, { status: 409 }) : response(idle()) });
+  const file = path.join(f.directory, 'existing.zip'); fs.writeFileSync(file, 'previous export');
+  for (const ids of [[], ['../secret'], ['a'.repeat(32), 'a'.repeat(32)], Array(1001).fill('a'.repeat(32))])
+    await assert.rejects(f.service.exportTask(ids, file), { status: 400 });
+  await assert.rejects(f.service.exportTask(['a'.repeat(32)], file, 'unknown'), { status: 400 });
+  await assert.rejects(f.service.exportTask(['a'.repeat(32)], 'relative.zip'), { status: 400 });
+  assert.equal(f.requests.length, 0);
+  await assert.rejects(f.service.exportTask(['a'.repeat(32)], file), { status: 409 });
+  broken = true;
+  await assert.rejects(f.service.exportTask(['a'.repeat(32)], file), /stream interrupted/);
+  assert.equal(fs.readFileSync(file, 'utf8'), 'previous export');
+  assert.ok(!fs.readdirSync(f.directory).some(name => name.endsWith('.tmp')));
+});
+
 test("turntable telemetry export accepts JSONL and uses the dedicated route", async (t) => {
   const f = fixture(t, { fetch: ({ route }) => route.endsWith("/turntable-export")
     ? { ok: true, status: 200, body: ReadableStream.from([new TextEncoder().encode('{"event":"finished"}\\n')]) }

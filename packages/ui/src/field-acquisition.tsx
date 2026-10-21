@@ -1,14 +1,14 @@
 "use client";
 import React, { memo, useEffect, useId, useRef, useState } from "react";
-import { Activity, AudioLines, ChevronRight, HardDrive, LoaderCircle, Pause, Play, Square } from "lucide-react";
+import { Activity, AudioLines, ChevronRight, Crosshair, HardDrive, LoaderCircle, Pause, Play, Square } from "lucide-react";
 import { Button } from "./common";
 import { CustomSelect } from "./custom-select";
 import { FieldWaveChart, FieldWaveOptions, hasWave, waveBounds, waveLimit, type TimeMode, type VelocityUnit } from "./field-waveform";
 import { FieldRealtimeAnalysis } from "./field-realtime";
-import { FieldLaserControl } from "./field-device";
 import { FieldCycleProgress } from "./field-cycle-progress";
 import { FieldCycleMotion } from "./field-cycle-motion";
 import type { FieldCaptureRoute } from "./field-capture-route";
+import { presetPositionError } from "./field-preset-position";
 import { FieldAutoCaptureList } from "./field-auto-capture-list";
 import { FieldTurntableFeedback } from "./field-turntable";
 import { fieldCanStart, fieldIsActive, type FieldConfig, type FieldRecording, type FieldRequestOptions, type FieldSimulation, type FieldSimulationInfo, type FieldSource, type FieldStatus } from "./field-types";
@@ -23,6 +23,7 @@ type Props = {
   link?: { enabled: boolean; onEnabled: (value: boolean) => void; route: FieldCaptureRoute | null; errors: string[]; onConfigure: () => void;
     mode?: "manual" | "auto"; onMode?: (mode: "manual" | "auto") => void;
     onSelectTarget?: (key: string) => void; onStartTarget?: (key: string) => void; onConfigureTarget?: (key: string) => void;
+    onPosition?: (key?: string) => void;
     collectionId?: string; recordings?: readonly FieldRecording[] };
   onDeviceStart: () => void; onSimulationStart?: (simulation: FieldSimulation) => void;
   onStop: () => void; onService: () => void; onRecords: () => void;
@@ -58,6 +59,7 @@ export const FieldAcquisition = memo(function FieldAcquisition({ config, onConfi
   const linked = active ? !!status?.pointCycle : !!link?.enabled;
   const linkMode = link?.mode || link?.route?.kind || "manual";
   const autoLinked = source === "device" && linked && linkMode === "auto";
+  const positioningError = presetPositionError(link?.route || null, status) || pollError;
   useEffect(() => { setSetupExpanded(!active); }, [active]);
   useEffect(() => {
     if (active && source === "simulation" && status?.recording?.simulation && restoredRecording.current !== status.recording.id) {
@@ -104,7 +106,10 @@ export const FieldAcquisition = memo(function FieldAcquisition({ config, onConfi
             <label>模拟测点<CustomSelect disabled={active || !!busy} aria-label="模拟测点" value={simulation.point} onChange={event => setSimulation(previous => ({ ...previous, point: event.target.value as FieldSimulation["point"] }))}>{metadata?.points.map(item => <option key={item.id} value={item.id}>{item.label} · {number(item.sampleRate)} Hz</option>) || <option value="P1">正在读取模拟数据…</option>}</CustomSelect></label>
             <label>输入场景<CustomSelect disabled={active || !!busy} aria-label="输入场景" value={simulation.scenario} onChange={event => setSimulation(previous => ({ ...previous, scenario: event.target.value as FieldSimulation["scenario"] }))}>{metadata?.scenarios.map(item => <option key={item.id} value={item.id}>{item.label}</option>) || <option value="baseline">源文件回放</option>}</CustomSelect></label>
           </> : <><label>设备 IP<input required maxLength={15} value={config.deviceIp} onChange={event => update("deviceIp", event.target.value)} placeholder="设备 IPv4 地址" /></label><label>本机网卡 IP<input required maxLength={15} value={config.hostIp} onChange={event => update("hostIp", event.target.value)} placeholder="连接设备的网卡 IPv4 地址" /></label></>}
-          {!autoLinked && <Button type="submit" variant="primary" disabled={!!busy || !canStart}>{busy === "start" ? <LoaderCircle size={16} className="spin" /> : <Play size={16} />}开始采集</Button>}
+          {!autoLinked && <div className="field-capture-start-actions field-servo-ui">
+            {source === "device" && linked && <Button type="button" disabled={!!busy || !!positioningError || !link?.onPosition} title={positioningError || "先移动到路线第一个点位，不开始采集"} onClick={() => link?.onPosition?.()}>{busy === "preposition" ? <LoaderCircle size={16} className="spin" /> : <Crosshair size={16} />}移动到预设位置</Button>}
+            <Button type="submit" variant="primary" disabled={!!busy || !canStart}>{busy === "start" ? <LoaderCircle size={16} className="spin" /> : <Play size={16} />}开始采集</Button>
+          </div>}
         </fieldset>
         {metadataError && source === "simulation" && <p className="field-error" role="alert">{metadataError}<Button type="button" disabled={active || !!busy} onClick={() => setMetadataRevision(value => value + 1)}>重新读取</Button></p>}
         {source === "device" && !status?.service.dllConfigured && <p className="field-capture-driver-note">请先在“设备与服务”中配置设备驱动。</p>}
@@ -121,7 +126,7 @@ export const FieldAcquisition = memo(function FieldAcquisition({ config, onConfi
             {!autoLinked && !link.errors.length && <p className="field-subtext">按配置顺序到位停稳，确认叶片进入并离开后自动换点。</p>}</>}
         </section>}
       </form>
-      {autoLinked && link && <FieldAutoCaptureList targets={link.route?.targets || []} selectedTargetKey={link.route?.selectedTargetKey} collectionId={link.collectionId} recordings={link.recordings} config={config} status={status} busy={busy} pollError={pollError} onSelect={link.onSelectTarget} onStart={link.onStartTarget} onConfigure={link.onConfigureTarget} onConfigureAll={link.onConfigure} onStop={onStop} />}
+      {autoLinked && link && <FieldAutoCaptureList targets={link.route?.targets || []} selectedTargetKey={link.route?.selectedTargetKey} collectionId={link.collectionId} recordings={link.recordings} config={config} status={status} busy={busy} pollError={pollError} onSelect={link.onSelectTarget} onStart={link.onStartTarget} onPosition={link.onPosition} onConfigure={link.onConfigureTarget} onConfigureAll={link.onConfigure} onStop={onStop} />}
     </section>
     {source === "device" && linked && <FieldCycleMotion status={status} route={link?.route} config={config} unavailable={!!pollError} />}
     <div className="field-acquisition-grid field-capture-grid">
@@ -142,7 +147,6 @@ export const FieldAcquisition = memo(function FieldAcquisition({ config, onConfi
       </section>
       <aside className="field-right-column field-capture-aside">
         {status?.pointCycle && <FieldCycleProgress status={status} />}
-        {source === "device" && <FieldLaserControl deviceIp={config.deviceIp} status={status} disabled={!!busy} request={request} />}
         {(recording?.turntable || status?.pointCycle) && <FieldTurntableFeedback status={status} />}
         <section className="field-card"><div className="field-section-heading"><h2>采集状态</h2><span className={`field-badge ${status?.service.state === "error" || status?.state === "error" ? "red" : active ? "green" : ""}`}>{status?.service.state === "error" || status?.state === "error" ? "异常" : active ? "接收中" : "待机"}</span></div><div className="field-metric-grid"><div><span>采样率</span><strong>{number(rate)}<small>Hz</small></strong></div><div><span>当前速度</span><strong>{number(velocity == null ? null : velocity * (unit === "mm/s" ? 1000 : 1))}<small>{unit}</small></strong></div><div><span>回波强度</span><strong>{number(rssi, 4)}<small>%</small></strong></div><div><span>窗口超量程</span><strong>{number(status?.waveform?.overrangeCount ?? status?.waveform?.overrange.filter(Boolean).length)}<small>点</small></strong></div></div></section>
         <section className="field-card field-active-record"><div className="field-section-heading"><h2>本次记录</h2><HardDrive size={17} /></div>{recording ? <><strong className="field-record-title">{recording.name}</strong><span className={`field-badge ${recording.source === "simulation" ? "amber" : ""}`}>{recording.source === "simulation" ? "模拟采集" : "设备采集"}</span><dl className="field-details"><div><dt>原始点数</dt><dd>{recording.samples.toLocaleString("zh-CN")}</dd></div><div><dt>采集时长</dt><dd>{number(duration)} 秒</dd></div><div><dt>保存状态</dt><dd>{recording.status === "complete" ? "已完整保存" : recording.status === "error" ? "记录异常" : "持续写入"}</dd></div></dl>{recording.error && <p className="field-error">{recording.error}</p>}</> : <p className="field-subtext">尚无采集记录。</p>}<Button variant="danger" className="full" disabled={!!busy || !active || status?.state === "stopping"} onClick={onStop}>{busy === "stop" ? <LoaderCircle size={15} className="spin" /> : <Square size={13} />}停止并保存</Button><button type="button" className="field-text-button" onClick={onRecords}>查看本机记录<ChevronRight size={14} /></button></section>

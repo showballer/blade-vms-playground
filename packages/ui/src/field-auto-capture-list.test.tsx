@@ -23,7 +23,7 @@ const target = (bladeId: string, pointId: string): FieldAutoCaptureTarget => ({ 
       port: "COM6", referenceSignature: turntableReferenceSignature(axes), axis1AngleDeg: 0, axis2AngleDeg: 0, azimuthDeg })), cycles: 2, speedRpm: .2, dwellSeconds: 60, rssiTriggerEnabled: true } } });
 const targets = [target("1", "P1"), target("1", "P2"), target("2", "P1")];
 const noop = () => {};
-const props = { targets, selectedTargetKey: targets[0].key, config, status: ready, busy: "", pollError: "", onSelect: noop, onStart: noop, onConfigure: noop, onConfigureAll: noop, onStop: noop };
+const props = { targets, selectedTargetKey: targets[0].key, config, status: ready, busy: "", pollError: "", onSelect: noop, onStart: noop, onPosition: noop, onConfigure: noop, onConfigureAll: noop, onStop: noop };
 const render = (patch: Partial<React.ComponentProps<typeof FieldAutoCaptureList>> = {}) => renderToStaticMarkup(<FieldAutoCaptureList {...props} {...patch} />);
 const startButton = (html: string, blade: string, point: string) => html.match(new RegExp(`<button[^>]*aria-label="开始采集叶片 ${blade} 测点 ${point}"[^>]*>`))?.[0] || "";
 
@@ -43,7 +43,18 @@ check("缺失参数只阻止该行采集，配置入口不再要求光斑校准"
   assert.ok(!startButton(html, "1", "P1").includes("disabled"));
   assert.ok(html.includes("待配置")); assert.ok(html.includes("配置测点"));
   assert.ok(!html.includes("待校准")); assert.ok(!html.includes("去校准"));
-  assert.equal((html.match(/请先填写当前测点参数/g) || []).length, 1, "Each row exposes only one concise title, not a repeated error list");
+  assert.equal((html.match(/请先填写当前测点参数/g) || []).length, 2, "Position and capture each expose their blocker as a button title");
+});
+check("预定位不要求任务名或激光驱动，运行期间不能重复定位或采集", () => {
+  const button = (html: string) => html.match(/<button[^>]*aria-label="移动到预设位置：叶片 1 测点 P1"[^>]*>/)?.[0] || "";
+  const emptyTask = render({ config: { ...config, name: "" }, status: { ...ready, service: { ...ready.service, dllConfigured: false } } });
+  assert.ok(button(emptyTask)); assert.ok(!button(emptyTask).includes("disabled"));
+  assert.ok(startButton(emptyTask, "1", "P1").includes("disabled"));
+  for (const patch of [{ busy: "preposition" }, { status: { ...ready, turntableBusy: true } }, { pollError: "连接失败" }]) {
+    const html = render(patch);
+    assert.ok(button(html).includes("disabled"));
+    assert.ok(startButton(html, "1", "P1").includes("disabled"));
+  }
 });
 check("无光斑校准和缓存反馈的计算路线可开始，仍需服务就绪并禁止已知故障", () => {
   const plan = planAutoFollow(autoFollowDefaults, null, "unknown", "COM6");
@@ -119,7 +130,9 @@ check("数据采集自动模式隐藏重复开始入口，保留普通与手动�
   assert.ok(!automatic.includes("模拟"));
   const manual = renderToStaticMarkup(<FieldAcquisition {...acquisitionProps} link={{ ...acquisitionProps.link!, mode: "manual", route: { ...route, kind: "manual" } }} />);
   assert.ok(manual.includes('type="submit"')); assert.ok(!manual.includes('aria-label="风机叶片逐点采集"'));
+  assert.ok(manual.includes("移动到预设位置"));
   const ordinary = renderToStaticMarkup(<FieldAcquisition {...acquisitionProps} link={{ ...acquisitionProps.link!, enabled: false }} />);
   assert.ok(ordinary.includes('type="submit"')); assert.ok(!ordinary.includes('aria-label="风机叶片逐点采集"'));
+  assert.ok(!ordinary.includes("移动到预设位置"));
 });
 console.log(`${count} acquisition target presentation checks passed; no hardware or user data touched.`);

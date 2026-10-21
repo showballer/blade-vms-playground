@@ -561,6 +561,28 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
       return { saved: true, fileName: path.basename(file) };
     } finally { await fs.promises.unlink(temporary).catch(() => {}); }
   }
+  async function exportTask(recordingIds, file, level = 'task') {
+    if (!['task', 'blade', 'point'].includes(level) || !Array.isArray(recordingIds) || recordingIds.length < 1 || recordingIds.length > 1000 ||
+        recordingIds.some(id => typeof id !== 'string' || !/^[0-9a-f]{32}$/.test(id)) ||
+        new Set(recordingIds).size !== recordingIds.length || typeof file !== 'string' || !path.isAbsolute(file) || !/\.zip$/i.test(file))
+      throw failure('无效任务导出请求', 400);
+    await ready();
+    const current = generation, target = child;
+    const temporary = `${file}.${randomBytes(8).toString('hex')}.tmp`;
+    try {
+      const response = await fetchImpl(`http://127.0.0.1:${port}/api/field/recordings/export-task`, {
+        method: 'POST', redirect: 'error', signal: AbortSignal.timeout(1800000),
+        headers: { Authorization: `Bearer ${secret}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ recordingIds, level }),
+      });
+      if (!response.ok) { const data = await response.json().catch(() => ({})); throw failure(typeof data.detail === 'string' ? data.detail : '任务导出失败', response.status); }
+      if (!response.body || !response.headers.get('content-type')?.startsWith('application/zip')) throw failure('采集服务未返回任务数据包');
+      await pipeline(Readable.fromWeb(response.body), fs.createWriteStream(temporary, { flags: 'wx', mode: 0o600 }));
+      if (current !== generation || target !== child) throw failure('采集服务已变化，请重试导出', 409);
+      await fs.promises.rename(temporary, file);
+      return { saved: true, fileName: path.basename(file), recordCount: recordingIds.length };
+    } finally { await fs.promises.unlink(temporary).catch(() => {}); }
+  }
   function validateWave(wave) {
     if (!wave || !Array.isArray(wave.values) || wave.values.length > 4096 ||
         (wave.envelope !== undefined && (!Array.isArray(wave.envelope) || wave.envelope.length > 1000))) throw failure('采集波形超过安全显示限制');
@@ -710,6 +732,6 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     await ready();
     return http('rotation', 'POST', parameters);
   }
-  return { start, status, frame, begin, stop, recordings, simulation, exportRecording, waveform, analysis, rotation, device, rssiCalibration, turntable, turntablePorts, singlePoint, motionTrial, shutdown, serviceInfo };
+  return { start, status, frame, begin, stop, recordings, simulation, exportRecording, exportTask, waveform, analysis, rotation, device, rssiCalibration, turntable, turntablePorts, singlePoint, motionTrial, shutdown, serviceInfo };
 }
 module.exports = { createFieldService, windowsServiceEnvironment, posixServiceEnvironment, failure };

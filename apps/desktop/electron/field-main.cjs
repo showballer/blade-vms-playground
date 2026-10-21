@@ -135,6 +135,22 @@ async function dispatch(options) {
     case 'recordings': return service.recordings();
     case 'simulation': return service.simulation();
     case 'recording': return service.recordings(options.id);
+    case 'exportTask': {
+      await idleRequired();
+      if (!['task', 'blade', 'point'].includes(options.level) || !Array.isArray(options.recordingIds) || !options.recordingIds.length || options.recordingIds.length > 1000 ||
+          options.recordingIds.some(id => typeof id !== 'string' || !/^[0-9a-f]{32}$/.test(id)) ||
+          new Set(options.recordingIds).size !== options.recordingIds.length) throw failure('请选择有效的采集任务', 400);
+      const detail = await service.recordings(options.recordingIds[0]);
+      const label = { task: '任务', blade: '叶片', point: '测点' }[options.level];
+      const point = detail.recording?.pointCycle || {};
+      const parts = [detail.recording?.name || '采集任务', ...(options.level !== 'task' ? [`叶片${point.bladeId || ''}`] : []),
+        ...(options.level === 'point' ? [point.radialPointName || point.radialPointId || '测点'] : [])];
+      const name = parts.join('-').replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').slice(0, 100);
+      const result = await dialog.showSaveDialog(win, { title: `导出${label}全部已保存数据`, defaultPath: `${name}-${label}数据.zip`, filters: [{ name: '采集数据包 ZIP', extensions: ['zip'] }] });
+      if (result.canceled || !result.filePath) return { canceled: true };
+      await idleRequired();
+      return service.exportTask(options.recordingIds, result.filePath, options.level);
+    }
     case 'exportRecording': {
       await idleRequired();
       const detail = await service.recordings(options.id);

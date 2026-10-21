@@ -15,7 +15,9 @@ import { FieldAcquisition } from "./field-acquisition";
 import { FieldTurntableWorkspace, autoFollowCollection, autoFollowCollectionContext } from "./field-auto-follow";
 import { autoFollowStorageKey, readAutoFollowSurvey } from "./field-auto-follow-config";
 import { captureRouteBlockers, prepareCaptureRoute, type FieldCaptureRoute } from "./field-capture-route";
+import { moveToCapturePreset, presetPositionError } from "./field-preset-position";
 import { FieldBladeSummary } from "./field-blade-summary";
+import { FieldTaskRecords } from "./field-recording-tasks";
 import { FieldAccountPanel, FieldCloudSyncPanel, FieldBindAccountDialog, fieldAccountServerDefault, fieldAccountTime, type FieldBindValues } from "./field-account";
 import {
   fieldCaptureConfig, fieldDate, fieldIsActive, validateFieldConfig,
@@ -191,6 +193,8 @@ export function FieldDesktopApp() {
   const currentRoute = routes[routeMode] || null;
   const routeErrors = captureRouteBlockers(currentRoute, status);
   const captureAttempt = useRef(0);
+  const presetRun = useRef<AbortController | null>(null);
+  const [presetStopping, setPresetStopping] = useState(false);
   const [turntableOperationBusy, setTurntableOperationBusy] = useState(false);
   const [stoppingCapture, setStoppingCapture] = useState(false);
   const stopPending = useRef(false);
@@ -313,6 +317,12 @@ export function FieldDesktopApp() {
     const recording = recordings.find(item => item.id === id);
     if (recording) { setError(""); setNotice(""); setSelected(recording); }
   }
+  function exportTask(recordingIds: string[], level: "task" | "blade" | "point" = "task") {
+    void operate("export-task", async () => {
+      const result = await fieldCall<{ saved?: boolean; fileName?: string; recordCount?: number }>({ action: "exportTask", recordingIds, level });
+      if (result.saved) setNotice(`已导出${{ task: "任务", blade: "叶片", point: "测点" }[level]}数据包 ${result.fileName}，共 ${result.recordCount} 条记录。`);
+    });
+  }
   async function logout() {
     await operate("logout", async () => { await fieldCall({ action: "logout" }); clearSession(); await refreshAccountInfo(); });
   }
@@ -358,8 +368,28 @@ export function FieldDesktopApp() {
     finally { stopPending.current = false; if (mounted.current) setStoppingCapture(false); }
   }
 
+  function requestPresetPosition(targetKey?: string) {
+    if (presetRun.current || captureStarting.current || busy || stoppingCapture || turntableOperationBusy || !linkEnabled || !status || statusPollUnavailable) return;
+    const target = routeMode === "auto" ? routes.auto?.targets?.find(item => item.key === (targetKey || routes.auto?.selectedTargetKey)) : undefined;
+    const route = routeMode === "auto" ? target?.route || null : currentRoute;
+    const invalid = presetPositionError(route, status);
+    if (invalid || !route) { setError(invalid); return; }
+    if (target) setAutoTargetKey(target.key);
+    const run = new AbortController(), epoch = generation.current;
+    presetRun.current = run; setPresetStopping(false);
+    void operate("preposition", async () => {
+      const result = await moveToCapturePreset(structuredClone(route), status, fieldCall, {
+        signal: run.signal, current: () => mounted.current && epoch === generation.current, onStatus: setStatus,
+      });
+      if (!mounted.current || epoch !== generation.current) return;
+      setNotice(result === "complete" ? "已到预设位置并停稳，尚未采集。点击“开始采集”即可；位置未变化时不会重复移动。" : "已取消预定位，未开始采集。");
+    }).finally(() => { if (presetRun.current === run) presetRun.current = null; if (mounted.current) setPresetStopping(false); });
+  }
+  function cancelPresetPosition() {
+    presetRun.current?.abort(); setPresetStopping(true);
+  }
   function requestCapture(targetKey?: string) {
-    if (captureStarting.current || busy || stoppingCapture || fieldIsActive(status) || turntableOperationBusy) return;
+    if (presetRun.current || captureStarting.current || busy || stoppingCapture || fieldIsActive(status) || status?.turntableBusy || turntableOperationBusy) return;
     let route = linkEnabled ? currentRoute : null;
     let capture = fieldCaptureConfig(config);
     if (linkEnabled && routeMode === "auto") {
@@ -421,6 +451,7 @@ export function FieldDesktopApp() {
     }} /> : session.mustChangePassword || changingPassword ? <main className="field-password-shell"><FieldPasswordPanel mandatory={session.mustChangePassword} account={account} busy={Boolean(busy)} error={error} onSave={savePassword} onCancel={() => { if (session.mustChangePassword) void logout(); else { setChangingPassword(false); setError(""); } }} /></main> : <>
       <header className="field-header"><div className="field-brand"><div className="field-brand-icon"><Activity size={19} /></div><span>BladeVMS <small>现场采集工作台</small></span></div><div className="field-header-right"><FieldHeaderLaser deviceIp={config.deviceIp} status={status} disabled={Boolean(busy) || turntableOperationBusy || stoppingCapture} pollUnavailable={statusPollUnavailable} request={fieldCall} onBusy={headerLaserBusyChanged} /><span className={`field-account-header ${account?.offline ? "offline" : ""}`} title={unifiedAccount ? `已绑定 ${account.serverUrl || "Web"}；离线有效期至 ${fieldAccountTime(account.offlineUntil)}` : "原始记录保存在本机"}><ShieldCheck size={13} />{unifiedAccount ? account.offline ? "统一账号 · 离线验证" : "统一账号" : "本机账号"}</span><span className="field-header-user"><span className="field-avatar">{(session.user.name || session.user.username).slice(0, 1).toUpperCase()}</span>{session.user.name || session.user.username}</span><Button variant="ghost" disabled={Boolean(busy) || accountLocked} onClick={openPassword} aria-label={unifiedAccount ? "修改统一密码" : "修改本机密码"}><LockKeyhole size={15} /></Button><Button variant="ghost" disabled={Boolean(busy) || active} onClick={() => void logout()} title={active ? "请先停止并保存采集" : "退出账号"}><LogOut size={15} />退出</Button></div></header>
       {(active || stoppingCapture || busy === "start") && <div className="field-live-controls" aria-label="采集安全控制"><p><strong>{stoppingCapture ? "正在停止并保存" : busy === "start" ? "正在检查并启动采集" : status ? stateLabels[status.state] : "采集服务运行中"}</strong></p><Button type="button" variant="danger" disabled={stoppingCapture} onClick={() => void stopAcquisition()}>{stoppingCapture ? <LoaderCircle className="spin" size={15} /> : <Square size={13} />}停止并保存</Button></div>}
+      {busy === "preposition" && <div className="field-live-controls" aria-label="预定位控制"><p><strong>{presetStopping ? "正在停止预定位" : "正在移动到预设位置"}</strong><span>仅定位，未采集数据</span></p><Button type="button" variant="danger" disabled={presetStopping} onClick={cancelPresetPosition}><Square size={13} />停止定位</Button></div>}
       <div className="field-workspace"><aside className="field-sidebar"><p>现场作业</p><button disabled={turntableOperationBusy} className={screen === "acquisition" ? "active" : ""} onClick={() => setScreen("acquisition")}><Activity size={17} />数据采集</button><button disabled={turntableOperationBusy} className={screen === "turntable" ? "active" : ""} onClick={() => { setTurntableVisited(true); setScreen("turntable"); }}><Settings size={17} />转盘点位</button><button disabled={turntableOperationBusy} className={screen === "recordings" ? "active" : ""} onClick={() => { setScreen("recordings"); void operate("recordings", refreshRecordings); }}><HardDrive size={17} />本机记录</button><button disabled={turntableOperationBusy} className={screen === "service" ? "active" : ""} onClick={() => setScreen("service")}><Settings size={17} />设备与服务</button><p>记录分析</p><button disabled={turntableOperationBusy} className={screen === "analysis" ? "active" : ""} onClick={() => setScreen("analysis")}><AudioLines size={17} />信号处理</button></aside>
         <main className="field-content" ref={contentRef}><div className="field-page-heading"><div className={screen === "turntable" ? "field-turntable-heading field-servo-ui" : undefined}><h1>{screen === "acquisition" ? "数据采集" : screen === "turntable" ? "转盘点位控制" : screen === "recordings" ? "本机记录" : screen === "analysis" ? "信号处理" : "设备与本机服务"}</h1>{screen === "turntable" && <FieldTurntableHealth port={turntablePort} status={status} disabled={Boolean(busy) && busy !== "turntable-health" || turntableOperationBusy} pollUnavailable={statusPollUnavailable} request={fieldCall} onStatus={setStatus} onBusy={turntableHealthBusyChanged} />}</div><div className="field-page-tools"><span className={`field-badge ${status?.state === "acquiring" ? "green" : status?.state === "error" ? "red" : ""}`}><span className="field-status-dot" />{status ? stateLabels[status.state] : "读取状态中"}</span></div></div>
           {(error || pollError) && <div className="field-error field-global-message" role="alert"><AlertTriangle size={17} /><span>{error || pollError}</span></div>}
@@ -438,7 +469,7 @@ export function FieldDesktopApp() {
             windowMs={windowMs} onWindow={setWindowMs} refreshMs={refreshMs} onRefresh={setRefreshMs} request={fieldCall}
             link={{ enabled: linkEnabled, onEnabled: value => { setLinkEnabled(value); if (value) setTurntableVisited(true); }, route: currentRoute, errors: routeErrors,
               mode: routeMode, onMode: value => { setRouteMode(value); setTurntableVisited(true); },
-              onSelectTarget: setAutoTargetKey, onStartTarget: key => requestCapture(key),
+              onSelectTarget: setAutoTargetKey, onStartTarget: key => requestCapture(key), onPosition: key => requestPresetPosition(key),
               onConfigureTarget: key => { setAutoTargetKey(key); setRouteMode("auto"); setTurntableVisited(true); setScreen("turntable"); },
               collectionId, recordings,
               onConfigure: () => { setTurntableVisited(true); setScreen("turntable"); } }}
@@ -455,11 +486,11 @@ export function FieldDesktopApp() {
             </div>
             <div id={`${recordsTabId}-records-panel`} role="tabpanel" aria-labelledby={`${recordsTabId}-records-tab`} tabIndex={0} hidden={recordsTab !== "records"}>
               <section className="field-card">
-                {recordingsLoaded ? <FieldRecordingList recordings={recordings} syncedIds={syncStatus?.items.filter(item => item.state === "synced").map(item => item.recordingId)} onUpload={unifiedAccount ? id => void operate("sync", async () => { await fieldCall({ action: "syncRecording", id }); setSyncStatus(await fieldCall<FieldSyncStatus>({ action: "syncStatus" })); setNotice("已加入 Web 上传队列，可在设备与服务查看进度。"); }) : undefined} busy={Boolean(busy)} selectedId={selected?.id} onExport={id => void operate("export", async () => { const result = await fieldCall<{ saved?: boolean; fileName?: string }>({ action: "exportRecording", id }); if (result.saved) setNotice(`已导出完整原始波形 ${result.fileName}`); })} onSelect={openRecording} /> : <p className="field-notice">记录列表尚未读取成功，请确认采集服务可用后刷新。服务不可用不代表本机没有保存数据。</p>}
+                {recordingsLoaded ? <FieldTaskRecords recordings={recordings} busy={Boolean(busy) || active} exporting={busy === "export-task"} onExportTask={exportTask}>{items => <FieldRecordingList recordings={items} syncedIds={syncStatus?.items.filter(item => item.state === "synced").map(item => item.recordingId)} onUpload={unifiedAccount ? id => void operate("sync", async () => { await fieldCall({ action: "syncRecording", id }); setSyncStatus(await fieldCall<FieldSyncStatus>({ action: "syncStatus" })); setNotice("已加入 Web 上传队列，可在设备与服务查看进度。"); }) : undefined} busy={Boolean(busy)} selectedId={selected?.id} onExport={id => void operate("export", async () => { const result = await fieldCall<{ saved?: boolean; fileName?: string }>({ action: "exportRecording", id }); if (result.saved) setNotice(`已导出完整原始波形 ${result.fileName}`); })} onSelect={openRecording} />}</FieldTaskRecords> : <p className="field-notice">记录列表尚未读取成功，请确认采集服务可用后刷新。服务不可用不代表本机没有保存数据。</p>}
               </section>
             </div>
             <div id={`${recordsTabId}-summary-panel`} role="tabpanel" aria-labelledby={`${recordsTabId}-summary-tab`} tabIndex={0} hidden={recordsTab !== "summary"}>
-              {recordingsLoaded ? <FieldBladeSummary recordings={recordings} syncItems={syncStatus?.items} onOpenRecording={openRecording} /> : <p className="field-notice">记录列表尚未读取成功，请确认采集服务可用后刷新。</p>}
+              {recordingsLoaded ? <FieldBladeSummary recordings={recordings} syncItems={syncStatus?.items} onOpenRecording={openRecording} onExportTask={exportTask} busy={Boolean(busy) || active} exporting={busy === "export-task"} /> : <p className="field-notice">记录列表尚未读取成功，请确认采集服务可用后刷新。</p>}
             </div>
             {selected && <FieldRecordingDialog key={selected.id} recording={selected} load={fieldCall} onError={handleRecordingError} onClose={() => setSelected(null)} />}
           </div>}
@@ -468,6 +499,6 @@ export function FieldDesktopApp() {
       </div><footer className="field-statusbar"><span><span className={`field-status-dot ${status?.service.state === "ready" ? "green" : ""}`} />{status ? serviceLabels[status.service.state] : "正在读取本机状态"}</span><span>原始数据保存在本机</span></footer>
     </>}
     {bindingAccount && session && !session.mustChangePassword && account?.mode === "local" && <FieldBindAccountDialog busy={Boolean(busy)} active={accountLocked} error={error} initialServerUrl={fieldAccountServerDefault(typeof window === "undefined" ? undefined : window.location)} onClose={() => { setBindingAccount(false); setError(""); }} onBind={bindAccount} />}
-    {status?.turntableBusy && !active && status.turntable?.port && status.turntable.axis && <div className="field-live-controls" aria-label="独立试转控制"><p><strong>转盘检查 / 试转进行中 · {status.turntable.port} 轴 {status.turntable.axis}</strong></p><Button type="button" variant="danger" disabled={!!busy || status.turntable.state === "test_stopping"} onClick={() => void operate("turntableStop", async () => { await fieldCall({ action: "turntable", request: { action: "stop", port: status.turntable!.port!, axis: status.turntable!.axis as 1 | 2, confirmMotion: true } }); setStatus(await fieldCall<FieldStatus>({ action: "status" })); })}>停止独立试转</Button></div>}
+    {status?.turntableBusy && busy !== "preposition" && !active && status.turntable?.port && status.turntable.axis && <div className="field-live-controls" aria-label="独立试转控制"><p><strong>转盘检查 / 试转进行中 · {status.turntable.port} 轴 {status.turntable.axis}</strong></p><Button type="button" variant="danger" disabled={!!busy || status.turntable.state === "test_stopping"} onClick={() => void operate("turntableStop", async () => { await fieldCall({ action: "turntable", request: { action: "stop", port: status.turntable!.port!, axis: status.turntable!.axis as 1 | 2, confirmMotion: true } }); setStatus(await fieldCall<FieldStatus>({ action: "status" })); })}>停止独立试转</Button></div>}
   </div>;
 }

@@ -1,5 +1,7 @@
 import React, { useMemo, useState } from "react";
 import type { FieldRecording, FieldSyncItem } from "./field-types";
+import { Download, LoaderCircle } from "lucide-react";
+import { groupRecordingTasks, recordingExportIds } from "./field-recording-tasks";
 import { bladeStationLabel, bladeRecordingTiming, summarizeBladeRecords, type BladeRecordGroup, type BladeStationState } from "./field-blade-summary-data";
 
 const number = (value: number) => value.toLocaleString("zh-CN");
@@ -35,16 +37,28 @@ function uploadLabel(group: BladeRecordGroup) {
   return parts.join(" · ");
 }
 
-export function FieldBladeSummary({ recordings, syncItems = [], onOpenRecording }: {
+export function FieldBladeSummary({ recordings, syncItems = [], onOpenRecording, onExportTask, busy = false, exporting = false }: {
   recordings: readonly FieldRecording[];
   syncItems?: readonly FieldSyncItem[];
   onOpenRecording?: (id: string) => void;
+  onExportTask?: (recordingIds: string[], level?: "task" | "blade" | "point") => void;
+  busy?: boolean; exporting?: boolean;
 }) {
   const summary = useMemo(() => summarizeBladeRecords(recordings, syncItems), [recordings, syncItems]);
+  const exportTasks = useMemo(() => new Map(groupRecordingTasks(recordings).map(task => [task.key, task.records.map(record => record.id)])), [recordings]);
   const [visible, setVisible] = useState(12);
   const totals = summary.groups.reduce((sum, group) => ({ observed: sum.observed + group.observedCount,
     gaps: sum.gaps + group.gapCount, pending: sum.pending + group.pendingCount,
     failures: sum.failures + group.failedCount + group.incompleteCount }), { observed: 0, gaps: 0, pending: 0, failures: 0 });
+  function scopedExport(taskKey: string, bladeId: string, pointId?: string) {
+    const ids = recordingExportIds(recordings, taskKey, bladeId, pointId);
+    const label = pointId === undefined ? "叶片" : "测点";
+    return onExportTask && <button type="button" className="btn outline" disabled={busy || !ids.length}
+      title={`导出该${label}所有已保存轮次和点位记录`} aria-label={`导出叶片 ${bladeId}${pointId === undefined ? "" : ` 测点 ${pointId}`}全部数据`}
+      onClick={() => onExportTask(ids, pointId === undefined ? "blade" : "point")}>
+      {exporting ? <LoaderCircle size={14} className="spin" /> : <Download size={14} />}{exporting ? "正在导出…" : `导出${label} ZIP`}
+    </button>;
+  }
   return <section className="field-card field-servo-ui field-blade-summary" aria-label="叶片采集汇总">
     <div className="field-section-heading"><div><h2>叶片采集汇总</h2><p>按风机任务、叶片和测点归档，每次采集保留独立记录。</p></div>
       <span className="field-badge">{number(summary.taskCount)} 个任务 · {number(summary.collections.length)} 个叶片</span></div>
@@ -57,9 +71,15 @@ export function FieldBladeSummary({ recordings, syncItems = [], onOpenRecording 
       </dl>
       <div className="field-blade-tasks">{summary.tasks.slice(0, visible).map(task => <section className="field-blade-task" key={task.key} aria-label={task.taskName}>
         <div className="field-blade-task-heading"><div><h3>{task.taskName}</h3><p>{task.windFarm && `风场 ${task.windFarm} · `}{task.turbine && `${task.turbine} · `}{task.blades.length} 个叶片 · {task.pointCount} 个测点 · {task.sessionCount} 次采集{task.collectionId ? ` · 任务 ${task.collectionId.slice(0, 8)}` : " · 历史采集批次"}</p>
-          <RecordingTiming records={task.blades.flatMap(blade => blade.groups.flatMap(group => group.stations.flatMap(station => station.records)))} /></div></div>
+          <RecordingTiming records={task.blades.flatMap(blade => blade.groups.flatMap(group => group.stations.flatMap(station => station.records)))} /></div>
+          {onExportTask && <button type="button" className="btn outline" disabled={busy || !exportTasks.has(task.key)} onClick={() => {
+            const ids = exportTasks.get(task.key); if (ids) onExportTask(ids);
+          }} aria-label={`导出任务 ${task.taskName}`} title="导出本任务各叶片、各测点的全部已保存数据">
+            {exporting ? <LoaderCircle size={14} className="spin" /> : <Download size={14} />}{exporting ? "正在导出…" : "导出任务 ZIP"}
+          </button>}</div>
         {task.blades.map(collection => <section className="field-blade-collection" key={collection.key} aria-label={`${collection.taskName} · 叶片 ${collection.bladeId}`}>
-        <div className="field-blade-collection-heading"><h4>叶片 {collection.bladeId}</h4><span>{collection.pointCount} 个测点 · {collection.sessionCount} 次采集</span></div>
+        <div className="field-blade-collection-heading"><h4>叶片 {collection.bladeId}</h4><span>{collection.pointCount} 个测点 · {collection.sessionCount} 次采集</span>
+          {scopedExport(task.key, collection.bladeId)}</div>
         <div className="field-blade-groups">{collection.groups.map(group => <details className="field-blade-group" key={group.key}>
         <summary>
           <div className="field-blade-identity"><strong>叶片 {group.bladeId} · {group.radialPointName}</strong><span>{group.radiusM === null ? "半径未记录" : `半径 ${(group.radiusM * 100).toLocaleString("zh-CN", { maximumFractionDigits: 1 })} cm`} · 第 {group.lapIndex} 轮 · 批次 {group.sessionId.slice(0, 8)}</span></div>
@@ -68,6 +88,7 @@ export function FieldBladeSummary({ recordings, syncItems = [], onOpenRecording 
           <div className="field-blade-state"><span className={`field-badge ${group.failedCount || group.planConflict ? "red" : group.gapCount || group.incompleteCount || group.pendingCount || group.plannedCount === null ? "amber" : "green"}`}>{groupLabel(group)}</span><span>{uploadLabel(group)}</span></div>
         </summary>
         <div className="field-blade-detail">
+          <div className="field-blade-point-export"><span>打包此测点的全部轮次和各点位记录</span>{scopedExport(task.key, group.bladeId, group.radialPointId)}</div>
           <RecordingTiming records={group.stations.flatMap(station => station.records)} />
           {group.hasSimulation && <p className="field-blade-notice">本组含模拟数据，未计为实测回波观测。</p>}
           {group.planConflict && <p className="field-blade-notice">同批次记录的点位计划或位置不一致，请核对原始记录；汇总不视为完整。</p>}

@@ -62,12 +62,12 @@ export function manualCaptureRoute(points: FieldBladePoint[], port: string, sett
       rssiEnterConfirmMs: settings.rssiEnterConfirmMs, rssiConfirmMs: settings.rssiConfirmMs,
       rssiSmoothingMs: 10, rssiMinimumSeconds: 0, keepLaserOnBetweenPoints: true } };
 }
-export function captureRouteBlockers(route: FieldCaptureRoute | null, status: FieldStatus | null): string[] {
+export function captureRouteBlockers(route: FieldCaptureRoute | null, status: FieldStatus | null, motionOnly = false): string[] {
   if (!route) return ["请先到转盘点位配置采集路线"];
   const errors = [...route.errors], cycle = route.cycle;
   const readAtStart = route.referenceMode === "read_at_start";
-  if (!status || status.service.state !== "ready" || !status.service.dllConfigured) errors.push("采集服务或设备驱动尚未就绪");
-  if (status?.deviceWarning) errors.push(status.deviceWarning);
+  if (!status || status.service.state !== "ready" || status.service.error || (!motionOnly && !status.service.dllConfigured)) errors.push("采集服务或设备驱动尚未就绪");
+  if (!motionOnly && status?.deviceWarning) errors.push(status.deviceWarning);
   if (status?.turntableWarning) errors.push(status.turntableWarning);
   if (!cycle) errors.push("请先完善采集测点与路线参数");
   if (!readAtStart && route.generation !== status?.service.generation) errors.push("采集服务已重启，请重新读取转盘反馈并校准路线");
@@ -104,7 +104,7 @@ export function captureRouteBlockers(route: FieldCaptureRoute | null, status: Fi
         const actual = axes?.[String(axis)]?.output_angle_deg;
         const target = axis === 1 ? first.axis1AngleDeg : first.axis2AngleDeg;
         return actual == null || !Number.isFinite(actual) || Math.abs(actual - target) > .1 + 1e-9;
-      })) errors.push("已校准测点的首点位置已变化，请重新手动瞄准并校准；本次不会自动补移");
+      })) errors.push("已校准测点的首点位置已变化，请先移动到预设位置或重新瞄准；本次不会自动补移");
     }
     if (fieldTurntableMotionMode(status?.turntable, cycle.port) === "unknown") errors.push("请在转盘点位读取反馈，确认控制器换点方式");
   }
@@ -142,8 +142,8 @@ function theoreticalRouteErrors(route: FieldCaptureRoute): string[] {
 
 /** Bind a theoretical angle plan to freshly read hardware references, then run
  * the same complete motion checks as a manually calibrated route. No I/O. */
-export function prepareCaptureRoute(route: FieldCaptureRoute, checked: FieldStatus): FieldCaptureRoute {
-  const errors = captureRouteBlockers(route, checked);
+export function prepareCaptureRoute(route: FieldCaptureRoute, checked: FieldStatus, motionOnly = false): FieldCaptureRoute {
+  const errors = captureRouteBlockers(route, checked, motionOnly);
   if (errors.length) throw new Error(errors.join("；"));
   const prepared = structuredClone(route);
   if (route.referenceMode === "read_at_start") {
@@ -157,7 +157,7 @@ export function prepareCaptureRoute(route: FieldCaptureRoute, checked: FieldStat
     prepared.generation = checked.service.generation;
     delete prepared.referenceMode;
   }
-  const fullErrors = captureRouteBlockers(prepared, checked);
+  const fullErrors = captureRouteBlockers(prepared, checked, motionOnly);
   if (fullErrors.length) throw new Error(fullErrors.join("；"));
   return prepared;
 }

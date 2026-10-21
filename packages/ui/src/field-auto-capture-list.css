@@ -1,4 +1,5 @@
 .field-capture-inputs.field-capture-inputs-by-point { grid-template-columns: minmax(140px, .9fr) minmax(180px, 1.4fr) repeat(2, minmax(150px, 1fr)); }
+.field-capture-start-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--field-ui-space-2); }
 .field-link-mode { display: inline-flex; gap: var(--field-ui-space-1); padding: var(--field-ui-space-1); margin-top: var(--field-ui-space-3); border-radius: var(--field-ui-control-radius); background: var(--field-ui-subtle); }
 .field-link-mode button { min-height: var(--field-ui-control-height); border: 0; border-radius: var(--field-ui-control-radius); padding: var(--field-ui-space-1) var(--field-ui-space-4); color: var(--field-ui-secondary); background: transparent; font: inherit; font-size: var(--field-ui-label); cursor: pointer; }
 .field-link-mode button[aria-pressed="true"] { color: var(--field-ui-primary); background: var(--field-ui-panel); box-shadow: var(--field-ui-panel-shadow); font-weight: 600; }
@@ -35,6 +36,9 @@
   .field-capture-inputs.field-capture-inputs-by-point { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .field-capture-inputs-by-point .field-task-name { grid-column: auto; }
   .field-auto-capture-list th, .field-auto-capture-list td { padding-inline: var(--field-ui-space-3); }
+}
+@media (max-width: 1500px) {
+  .field-capture-start-actions { grid-column: 1 / -1; }
 }
 @media (max-width: 600px) {
   .field-capture-inputs.field-capture-inputs-by-point { grid-template-columns: minmax(0, 1fr); }
