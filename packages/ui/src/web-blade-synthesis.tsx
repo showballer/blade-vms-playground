@@ -26,18 +26,26 @@ export function BladeSynthesisResults({ synthesis }: { synthesis: BladeSynthesis
       </div>
       {synthesis.qualityWarnings?.map((warning, index) => <p key={index} className="blade-pass-boundary">{warning}</p>)}
       <div className="field-table-scroll"><table className="field-table"><thead><tr><th>测点</th><th>半径 m</th><th>合并有效秒数</th><th>样本 / 片段</th></tr></thead><tbody>{synthesis.mergedPoints.map(item => <tr key={item.radialPointId}><td>{item.radialPointName}</td><td>{number(item.radiusM)}</td><td>{number(item.durationSeconds)}</td><td>{item.samples.toLocaleString()} / {item.segments.length}</td></tr>)}</tbody></table></div>
-      {point && <Chart key={`merged-${point.radialPointId}`} height={280} label="压缩有效时间上的分段合并波形，异常大单步变化仅在绘图预览中留空" option={{ ...axes,
-        xAxis: { type: "value", name: "压缩有效时间 / s", nameLocation: "middle", nameGap: 30 }, yAxis: { type: "value", name: "mm/s" },
-        series: point.segments.map(segment => ({ type: "line", showSymbol: false, connectNulls: false,
-          name: `${segment.azimuthDeg}° · ${segment.sourceRecordingId?.slice(0, 8) || segment.recordingId.slice(0, 8)}`,
-          data: (segment.plotTimeDomain ?? segment.timeDomain).seconds.map((second, i) => {
-            const value = (segment.plotTimeDomain ?? segment.timeDomain).values[i];
-            return [second - segment.originalStartSeconds + segment.compressedStartSeconds, value == null ? null : value * 1000];
-          }),
-          markLine: { silent: true, symbol: "none", label: { show: false }, lineStyle: { type: "dotted", color: "#888" }, data: [{ xAxis: segment.compressedStartSeconds }] },
-        })), dataZoom: [{ type: "inside", filterMode: "none" }, { type: "slider", height: 16, bottom: 5 }] }} />}
-      {point && point.segments.some(segment => segment.plotFilter?.flaggedSteps) && <p className="blade-pass-note">绘图遮罩：{point.segments.reduce((sum, segment) => sum + (segment.plotFilter?.flaggedSteps ?? 0), 0)} 个异常单步变化，留空 {point.segments.reduce((sum, segment) => sum + (segment.plotFilter?.hiddenTimeBuckets ?? 0), 0)} 个显示时间桶。仅影响图形；原始样本、CSV、RMS、频谱及候选结果均未过滤。</p>}
-      <p className="blade-pass-note">合并轴仅用于整理片段。候选合成使用各原始连续段的谱，不对合并跳变做 FFT；短片段不会因此获得更高频率分辨率。异常大单步变化的遮罩只用于画图。</p>
+      {point?.stitchedWaveform && <Chart key={`merged-${point.radialPointId}`} height={280} label="单个径向测点多角度片段经边界基线偏置对齐后的拼接波形" option={{ ...axes,
+        xAxis: { type: "value", name: "拼接有效时间 / s", nameLocation: "middle", nameGap: 30 }, yAxis: { type: "value", name: "速度 / mm/s" },
+        series: [{ type: "line", showSymbol: false, data: point.stitchedWaveform.seconds.map((second, i) => [second, point.stitchedWaveform!.valuesMps[i] * 1000]),
+          markLine: { silent: true, symbol: "none", label: { show: false }, lineStyle: { type: "dotted", color: "#888" }, data: point.segments.slice(1).map(segment => ({ xAxis: segment.compressedStartSeconds })) } }],
+        dataZoom: [{ type: "inside", filterMode: "none" }, { type: "slider", height: 16, bottom: 5 }] }} />}
+      {point?.stitchedSpectrum && <>
+        <div className="blade-pass-spectrum-heading"><strong>拼接后 FFT 频谱</strong><p>
+          {point.stitchInfo?.segments ?? point.segments.length} 个有效片段 · Δf {number(point.stitchedSpectrum.frequencySpacingHz)} Hz
+          {point.stitchInfo?.resampledSegments ? ` · ${point.stitchInfo.resampledSegments} 段已重采样至 ${number(point.stitchInfo.sampleRate)} Hz` : ` · ${number(point.stitchInfo?.sampleRate ?? point.stitchedSpectrum.sampleRate)} Hz`}
+        </p></div>
+        <Chart key={`stitched-fft-${point.radialPointId}`} height={280} label="单个径向测点的多角度有效片段经边界偏置校正拼接后的 FFT 速度幅值谱" option={{
+          animation: false, tooltip: { trigger: "axis", confine: true }, grid: { left: 65, right: 30, top: 35, bottom: 65 },
+          xAxis: { type: "value", name: "频率 / Hz", nameLocation: "middle", nameGap: 30 },
+          yAxis: { type: "value", name: "速度幅值 / mm/s" },
+          series: [{ type: "line", showSymbol: false, data: point.stitchedSpectrum.frequencies.map((frequency, index) => [frequency, point.stitchedSpectrum!.amplitudesMps[index] * 1000]) }],
+          dataZoom: [{ type: "inside", filterMode: "none" }, { type: "slider", height: 16, bottom: 5 }],
+        }} />
+        <p className="blade-pass-note">为拼接，程序将每段整体平移，使其首样本接到前一段末样本；各段内部波形不改。FFT 使用拼接后全序列、线性去趋势和 Hann 窗。拼接不能恢复各次经过之间未测到的振动相位，段边界和角度差异仍可能形成谱峰；请结合单段频谱判断。</p>
+      </>}
+      <p className="blade-pass-note">上方拼接 FFT 是用于观察的实验结果；空间振型候选仍使用各原始连续段独立计算的谱，避免拼接边界或相位不一致影响候选判断。异常大单步变化的遮罩只用于绘图。</p>
     </section>
     <section className="field-card">
       <div className="field-section-heading"><div><h2>合成振型候选 · 实验</h2><p>共同频带的无符号空间响应幅值，按最大径向幅值归一化。</p></div>

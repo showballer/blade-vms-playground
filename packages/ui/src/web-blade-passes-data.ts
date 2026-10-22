@@ -38,6 +38,7 @@ export type BladeMergedSegment = {
   originalStart: number; originalEnd: number; sampleRate: number;
   mergedStart: number; mergedEnd: number; compressedStartSeconds: number; compressedEndSeconds: number;
   originalStartSeconds: number; originalEndSeconds: number;
+  stitchOffsetMps?: number;
   timeDomain: BladePassSegment["timeDomain"];
   plotTimeDomain?: NonNullable<BladePassSegment["plotTimeDomain"]>;
   plotFilter?: BladePassSegment["plotFilter"];
@@ -46,6 +47,11 @@ export type BladeMergedSegment = {
 export type BladeMergedPoint = {
   radialPointId: string; radialPointName: string; radiusM: number;
   samples: number; durationSeconds: number; segments: BladeMergedSegment[];
+  stitchedSpectrum?: { sampleRate: number; fftSampleRate: number; samples: number; frequencySpacingHz: number;
+    frequencies: number[]; amplitudesMps: number[]; method: string };
+  stitchInfo?: { segments: number; sampleRate: number; resampledSegments: number; fftSamples: number;
+    originalSamples: number; method: string };
+  stitchedWaveform?: { seconds: number[]; valuesMps: number[] };
 };
 export type BladeShapeCandidate = {
   frequencyHz: number; bandHz: [number, number]; frequencyGridHz: number;

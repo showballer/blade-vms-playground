@@ -1,18 +1,20 @@
 """Segment-aware experimental reconstruction from non-synchronous LDV passes.
 
-Compressed time is an export coordinate, never a measured continuous clock.
-Spectra are computed before joining; unknown phase and spatial signs stay unknown.
+Stitched spectra are experimental: segment boundaries are baseline-aligned, but
+the joining does not recover unmeasured time or phase between blade passes.
+Unknown spatial phase and signs stay unknown.
 """
 from __future__ import annotations
 
 import math
+from fractions import Fraction
 
 import numpy as np
 from scipy import signal
 
 from .blade_passes import MAX_FFT_SAMPLES, _number, _plot_curve, _time_curve, analyze_blade_passes
 
-VERSION = "blade-synthesis-1.0.0"
+VERSION = "blade-synthesis-1.1.0"
 
 
 def _linear_windows(values):
@@ -60,7 +62,7 @@ def reconstruct_blade_passes(store, parameters, *, segment_sink=None):
     only during the callback. Returned JSON contains bounded previews, not raw data.
     """
     base, config = _config(parameters)
-    merged, spectra = {}, []
+    merged, spectra, stitched_parts = {}, [], {}
 
     def consume(source, start, end, raw, processed):
         point_id, rate = source["radialPointId"], source["sampleRate"]
@@ -79,6 +81,7 @@ def reconstruct_blade_passes(store, parameters, *, segment_sink=None):
                    "rawSha256": source["provenance"]["rawSha256"],
                    "discontinuityAudit": _jump_audit(raw, start),
                    "timeDomain": _time_curve(processed, start, rate)}
+        stitched_parts.setdefault(point_id, []).append((mapping, processed.copy(), rate))
         point["samples"] += end - start
         point["durationSeconds"] += (end - start) / rate
         point["segments"].append(mapping)
@@ -101,6 +104,64 @@ def reconstruct_blade_passes(store, parameters, *, segment_sink=None):
 
     result = analyze_blade_passes(store, base, segment_consumer=consume)
     points = sorted(merged.values(), key=lambda point: point["radiusM"])
+    for point in points:
+        parts = stitched_parts[point["radialPointId"]]
+        # Resample to the lowest source rate so every joined sample has one
+        # well-defined time step and no higher-rate segment is aliased.
+        rate = min(part_rate for _, _, part_rate in parts)
+        joined, previous_end = [], None
+        for mapping, values, part_rate in parts:
+            if part_rate != rate:
+                ratio = Fraction(rate / part_rate).limit_denominator(1000)
+                values = signal.resample_poly(values, ratio.numerator, ratio.denominator)
+            values = np.asarray(values, dtype=np.float64)
+            offset = 0. if previous_end is None else previous_end - float(values[0])
+            values = values + offset
+            mapping["stitchOffsetMps"] = offset
+            joined.append(values)
+            previous_end = float(values[-1])
+        joined_signal = np.concatenate(joined)
+        stitched = joined_signal
+        original_samples = len(joined_signal)
+        if original_samples > MAX_FFT_SAMPLES:
+            # Fourier resampling retains the full concatenated duration while
+            # respecting the bounded FFT size and its physical frequency grid.
+            stitched = signal.resample(stitched, MAX_FFT_SAMPLES)
+            fft_rate = rate * MAX_FFT_SAMPLES / original_samples
+        else:
+            fft_rate = rate
+        centered = signal.detrend(stitched, type="linear")
+        frequencies, amplitudes = signal.periodogram(centered, fs=fft_rate, window="hann",
+            detrend=False, scaling="spectrum")
+        amplitudes = np.sqrt(np.maximum(amplitudes, 0.))
+        keep = frequencies <= config["maxHz"]
+        frequency_view, amplitude_view = frequencies[keep], amplitudes[keep]
+        if len(frequency_view) > 8192:
+            # Keep local peaks while bounding the JSON payload and chart cost.
+            stride = math.ceil(len(frequency_view) / 8192)
+            peak_indices = [start + int(np.argmax(amplitude_view[start:start + stride]))
+                            for start in range(0, len(frequency_view), stride)]
+            frequency_view, amplitude_view = frequency_view[peak_indices], amplitude_view[peak_indices]
+        point["stitchedSpectrum"] = {
+            "sampleRate": rate, "fftSampleRate": fft_rate, "samples": original_samples,
+            "frequencySpacingHz": fft_rate / len(stitched),
+            "frequencies": frequency_view.tolist(), "amplitudesMps": amplitude_view.tolist(),
+            "method": "joined-segments-offset-aligned-hann-periodogram",
+        }
+        point["stitchInfo"] = {
+            "segments": len(parts), "sampleRate": rate,
+            "resampledSegments": sum(part_rate != rate for _, _, part_rate in parts),
+            "fftSamples": len(stitched), "originalSamples": original_samples,
+            "method": "per-segment-baseline-step-alignment; no phase correction",
+        }
+        step = max(1, math.ceil(original_samples / 512))
+        preview_indices = np.arange(0, original_samples, step, dtype=np.int64)
+        if preview_indices.size == 0 or preview_indices[-1] != original_samples - 1:
+            preview_indices = np.r_[preview_indices, original_samples - 1]
+        point["stitchedWaveform"] = {
+            "seconds": (preview_indices / rate).tolist(),
+            "valuesMps": joined_signal[preview_indices].tolist(),
+        }
     synthesis = _candidates(points, spectra, config)
     synthesis.update(algorithmVersion=VERSION, parameters=config, mergedPoints=points,
         coordinate="compressed-valid-time", measuredPhaseAvailable=False,

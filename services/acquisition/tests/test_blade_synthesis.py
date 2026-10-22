@@ -86,6 +86,22 @@ class BladeSynthesisTests(unittest.TestCase):
         after = {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in self.root.rglob("*") if path.is_file()}
         self.assertEqual(before, after)
 
+    def test_stitched_fft_uses_joined_point_with_boundary_offset_correction(self):
+        first = self.recording(1, frequency=80, phase=0, angle=0, rate=4096)
+        second = self.recording(1, frequency=80, phase=1.2, angle=90, rate=2048)
+        result = self.analyze([first, second])["synthesis"]["mergedPoints"][0]
+        spectrum = result["stitchedSpectrum"]
+        self.assertEqual(spectrum["method"], "joined-segments-offset-aligned-hann-periodogram")
+        self.assertEqual(result["stitchInfo"]["segments"], 2)
+        self.assertEqual(result["stitchInfo"]["resampledSegments"], 1)
+        self.assertEqual(spectrum["samples"], result["stitchInfo"]["originalSamples"])
+        self.assertGreaterEqual(len(spectrum["frequencies"]), 2)
+        peak = int(np.argmax(spectrum["amplitudesMps"]))
+        self.assertAlmostEqual(spectrum["frequencies"][peak], 80, delta=spectrum["frequencySpacingHz"] * 2)
+        self.assertTrue(all(math.isfinite(value) for value in spectrum["amplitudesMps"]))
+        self.assertEqual(len(result["stitchedWaveform"]["seconds"]), len(result["stitchedWaveform"]["valuesMps"]))
+        json.dumps(result, allow_nan=False)
+
     def test_station_weight_does_not_count_retries_as_extra_angles(self):
         ids = []
         for point in range(1, 5):
