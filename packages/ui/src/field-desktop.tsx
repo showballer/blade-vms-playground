@@ -49,7 +49,10 @@ async function fieldCall<T>(options: FieldRequestOptions): Promise<T> {
 // Stable callbacks keep record refreshes independent of status polling renders.
 const localBladeData = {
   listRecordings: () => fieldCall<{ recordings: BladePassRecording[] }>({ action: "recordings" }),
-  analyze: (parameters: Record<string, unknown>) => fieldCall<BladePassResult>({ action: "bladePasses", parameters }),
+  analyze: async (parameters: Record<string, unknown>) => {
+    const sync = await fieldCall<FieldSyncStatus>({ action: "syncStatus" });
+    return fieldCall<BladePassResult>({ action: "bladePasses", parameters: { ...parameters, analysisSampleRate: sync.uploadSampleRate ?? 0 } });
+  },
 };
 const messageOf = (error: unknown) => error instanceof Error ? error.message : "操作失败，请查看服务状态后重试";
 const count = (value: number | undefined | null) => typeof value === "number" && Number.isFinite(value) ? value.toLocaleString("zh-CN") : "—";

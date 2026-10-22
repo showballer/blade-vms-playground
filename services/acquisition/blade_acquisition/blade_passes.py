@@ -10,11 +10,13 @@ import math
 import re
 
 import numpy as np
+from scipy.signal import resample_poly
+from fractions import Fraction
 
 from .analysis import DTYPE
 from .storage import HEADER, MAGIC, RECORD, recording_rssi_stride
 
-VERSION = "blade-passes-1.0.0"
+VERSION = "blade-passes-1.1.0"
 MAX_RECORDS = 64
 MAX_SAMPLES = 8_000_000  # Per record AND across the selection, before allocation.
 MAX_SEGMENTS_PER_RECORD = 64
@@ -59,7 +61,7 @@ def _id(value, label):
 
 
 def _parameters(parameters):
-    if not isinstance(parameters, dict) or set(parameters) - {"recordingIds", "detrend", "rssiThresholdPercent"}:
+    if not isinstance(parameters, dict) or set(parameters) - {"recordingIds", "detrend", "rssiThresholdPercent", "analysisSampleRate"}:
         raise ValueError("叶片有效片段分析参数无效。")
     ids = parameters.get("recordingIds")
     if not isinstance(ids, list) or not 1 <= len(ids) <= MAX_RECORDS:
@@ -74,7 +76,11 @@ def _parameters(parameters):
     threshold = parameters.get("rssiThresholdPercent")
     if threshold is not None:
         _number(threshold, "RSSI 阈值", 0, 100)
-    return {"recordingIds": ids, "detrend": detrend, "rssiThresholdPercent": threshold}
+    analysis_rate = parameters.get("analysisSampleRate", 0)
+    if type(analysis_rate) is not int or (analysis_rate != 0 and not 10_000 <= analysis_rate <= 100_000):
+        raise ValueError("分析采样率应为 10～100 kHz，或 0（按原始/已上传采样率分析）。")
+    return {"recordingIds": ids, "detrend": detrend, "rssiThresholdPercent": threshold,
+            "analysisSampleRate": analysis_rate}
 
 
 def _identity(manifest):
@@ -242,7 +248,7 @@ def _metrics(stats):
     return result
 
 
-def _time_curve(values, start, rate):
+def _time_curve(values, start, rate, *, source_rate=None):
     if len(values) <= MAX_CURVE_POINTS:
         indices = np.arange(len(values))
     else:
@@ -252,12 +258,14 @@ def _time_curve(values, start, rate):
             hi = min(lo + bucket, len(values))
             selected.extend(sorted({lo + int(np.argmin(values[lo:hi])), lo + int(np.argmax(values[lo:hi]))}))
         indices = np.asarray(selected)
-    original = indices + start
-    return {"sampleIndices": original.tolist(), "seconds": (original / rate).tolist(),
+    source_rate = source_rate or rate
+    original = np.rint(indices * source_rate / rate).astype(np.int64) + start
+    seconds = start / source_rate + indices / rate
+    return {"sampleIndices": original.tolist(), "seconds": seconds.tolist(),
             "values": values[indices].tolist(), "representation": "original-index-minmax"}
 
 
-def _plot_curve(values, start, rate):
+def _plot_curve(values, start, rate, *, source_rate=None):
     """Create a bounded display preview with anomalous-step buckets blanked."""
     differences = np.abs(np.diff(values))
     typical = float(np.percentile(differences, 99))
@@ -281,8 +289,11 @@ def _plot_curve(values, start, rate):
         selected = sorted({lo + int(np.argmin(section)), lo + int(np.argmax(section))})
         indices.extend(selected)
         plotted.extend(float(values[index]) for index in selected)
-    original = np.asarray(indices, dtype=np.int64) + start
-    return ({"sampleIndices": original.tolist(), "seconds": (original / rate).tolist(),
+    source_rate = source_rate or rate
+    local_indices = np.asarray(indices, dtype=np.int64)
+    original = np.rint(local_indices * source_rate / rate).astype(np.int64) + start
+    seconds = start / source_rate + local_indices / rate
+    return ({"sampleIndices": original.tolist(), "seconds": seconds.tolist(),
              "values": plotted, "representation": "minmax-with-anomaly-gaps"},
             {"method": "step-over-50-times-p99", "thresholdMps": threshold,
              "flaggedSteps": int(np.count_nonzero(bad_edges)), "hiddenSamples": hidden_samples,
@@ -367,9 +378,17 @@ def analyze_blade_passes(store, parameters, *, segment_consumer=None) -> dict:
         source_kind = "simulation" if simulation else manifest.get("source", "offline")
         if source_kind not in ("simulation", "polytec_ivs500", "device", "measured", "offline"):
             source_kind = "offline"
+        original_rate = manifest.get("sampleRate")
+        configured_rate = config["analysisSampleRate"]
+        rate = min(original_rate, configured_rate) if configured_rate and original_rate else original_rate
         source = {"recordingId": recording_id, "name": manifest.get("name", ""), **identity,
                   "source": source_kind, "simulation": simulation,
-                  "sampleRate": manifest.get("sampleRate"), "sampleOrigin": manifest.get("sourceSampleOrigin", manifest.get("sampleOrigin")),
+                  "sampleRate": rate, "originalSampleRate": original_rate,
+                  "analysisSampling": ({"configuredTargetSampleRate": configured_rate, "sourceSampleRate": original_rate,
+                                        "analysisSampleRate": rate, "resampled": rate < original_rate}
+                                       if configured_rate else None),
+                  "sampleOrigin": manifest.get("sourceSampleOrigin", manifest.get("sampleOrigin")),
+                  "sampling": manifest.get("sampling") if isinstance(manifest.get("sampling"), dict) else None,
                   "status": "excluded", "candidateRange": None, "validRanges": [], "exclusions": [],
                   "validSamples": 0, "validSeconds": 0, "metrics": None, "segments": [],
                   "provenance": {"selection": "confirmed-entry-to-exit-start", "rangeConvention": "[start,end)",
@@ -420,20 +439,27 @@ def analyze_blade_passes(store, parameters, *, segment_consumer=None) -> dict:
             source["reason"] = "no_usable_segment"
             continue
         stats = []
-        rate = manifest["sampleRate"]
+        original_rate = manifest["sampleRate"]
+        rate = source["sampleRate"]
         for start, end in ranges:
             processed = _preprocess(values[start:end], config["detrend"])
+            if rate < original_rate:
+                ratio = Fraction(str(rate)) / Fraction(str(original_rate))
+                if max(ratio.numerator, ratio.denominator) > 100_000:
+                    raise ValueError("记录采样率不能精确转换到系统目标采样率，请选择原始采样率分析。")
+                processed = resample_poly(processed, ratio.numerator, ratio.denominator, window=("kaiser", 8.6))
             plot_data = None
             if segment_consumer is not None:
                 plot_data = segment_consumer(source, start, end, values[start:end], processed)
             item = _statistics(processed)
             stats.append(item)
             source["validRanges"].append({"start": start, "end": end, "samples": end - start})
-            segment = {"start": start, "end": end, "samples": end - start,
-                                       "durationSeconds": (end - start) / rate, "metrics": _metrics(item),
-                                       "timeDomain": _time_curve(processed, start, rate),
+            segment = {"start": start, "end": end, "samples": len(processed),
+                                       "sourceSamples": end - start,
+                                       "durationSeconds": len(processed) / rate, "metrics": _metrics(item),
+                                       "timeDomain": _time_curve(processed, start, rate, source_rate=original_rate),
                                        "spectrum": _spectrum(processed, start, rate)}
-            plot_curve, plot_filter = _plot_curve(processed, start, rate)
+            plot_curve, plot_filter = _plot_curve(processed, start, rate, source_rate=original_rate)
             segment["plotTimeDomain"] = plot_curve
             segment["plotFilter"] = plot_filter
             if isinstance(plot_data, dict) and "plotTimeDomain" in plot_data:
@@ -442,6 +468,7 @@ def analyze_blade_passes(store, parameters, *, segment_consumer=None) -> dict:
             source["segments"].append(segment)
         merged = _merge_statistics(stats)
         source.update(status="included", validSamples=merged["samples"],
+                      sourceValidSamples=sum(end - start for start, end in ranges),
                       validSeconds=merged["samples"] / rate, metrics=_metrics(merged))
         key = identity["radialPointId"], identity["azimuthDeg"]
         group = aggregates.setdefault(key, {"statistics": [], "recordingIds": [], "validSeconds": 0,

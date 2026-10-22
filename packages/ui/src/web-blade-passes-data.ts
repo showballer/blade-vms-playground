@@ -4,7 +4,7 @@ export type BladePassRecording = FieldRecording & { sourceMetadata?: { pointCycl
 export type BladePassTask = { key: string; collectionId: string; bladeId: string; name: string; records: BladePassRecording[] };
 export type BladePassMetrics = { rmsVelocityMps: number; peakVelocityMps: number; peakToPeakVelocityMps: number };
 export type BladePassSegment = {
-  start: number; end: number; samples: number; durationSeconds: number; metrics: BladePassMetrics;
+  start: number; end: number; samples: number; sourceSamples?: number; durationSeconds: number; metrics: BladePassMetrics;
   timeDomain: { sampleIndices: number[]; seconds: number[]; values: number[] };
   plotTimeDomain?: { sampleIndices: number[]; seconds: number[]; values: (number | null)[]; representation?: string };
   plotFilter?: { method: string; thresholdMps: number; flaggedSteps: number; hiddenSamples: number; hiddenTimeBuckets: number; plottedSamples: number; effect: string };
@@ -13,8 +13,11 @@ export type BladePassSegment = {
 export type BladePassSource = {
   recordingId: string; name: string; sessionId: string; radialPointId: string; radialPointName: string;
   radiusM: number; azimuthDeg: number; sampleRate: number; sampleOrigin: number;
+  sampling?: { kind?: string; sourceSampleRate?: number; sourceSamples?: number; targetSampleRate?: number;
+    recommendedMaxFrequencyHz?: number; filter?: string } | null;
   status: "included" | "excluded"; reason?: string; candidateRange?: { start: number; end: number } | null;
-  validRanges: { start: number; end: number; samples: number }[]; exclusions: { reason: string; samples: number }[];
+  validRanges: { start: number; end: number; samples: number }[]; sourceValidSamples?: number;
+  exclusions: { reason: string; samples: number }[];
   metrics?: BladePassMetrics | null; segments: BladePassSegment[]; provenance?: unknown;
   source?: string; simulation?: boolean;
 };
@@ -35,7 +38,7 @@ export type BladePassResult = {
 
 export type BladeMergedSegment = {
   segmentId: string; recordingId: string; sourceRecordingId: string; azimuthDeg: number;
-  originalStart: number; originalEnd: number; sampleRate: number;
+  originalStart: number; originalEnd: number; sampleRate: number; mergedSampleRate?: number; sourceSamples?: number; analysisSamples?: number;
   mergedStart: number; mergedEnd: number; compressedStartSeconds: number; compressedEndSeconds: number;
   originalStartSeconds: number; originalEndSeconds: number;
   stitchOffsetMps?: number;

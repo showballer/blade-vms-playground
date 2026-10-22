@@ -14,7 +14,7 @@ from scipy import signal
 
 from .blade_passes import MAX_FFT_SAMPLES, _number, _plot_curve, _time_curve, analyze_blade_passes
 
-VERSION = "blade-synthesis-1.1.0"
+VERSION = "blade-synthesis-1.2.0"
 
 
 def _linear_windows(values):
@@ -75,17 +75,19 @@ def reconstruct_blade_passes(store, parameters, *, segment_sink=None):
                    "sourceRecordingId": source["provenance"]["sourceRecordingId"],
                    "azimuthDeg": source["azimuthDeg"], "sessionId": source["sessionId"],
                    "originalStart": start, "originalEnd": end, "sampleRate": rate,
-                   "mergedStart": point["samples"], "mergedEnd": point["samples"] + end - start,
-                   "compressedStartSeconds": offset, "compressedEndSeconds": offset + (end - start) / rate,
-                   "originalStartSeconds": start / rate, "originalEndSeconds": end / rate,
+                   "sourceSamples": end - start, "analysisSamples": len(processed),
+                   "mergedStart": point["samples"], "mergedEnd": point["samples"] + len(processed),
+                   "compressedStartSeconds": offset, "compressedEndSeconds": offset + len(processed) / rate,
+                   "originalStartSeconds": start / source["originalSampleRate"],
+                   "originalEndSeconds": end / source["originalSampleRate"],
                    "rawSha256": source["provenance"]["rawSha256"],
                    "discontinuityAudit": _jump_audit(raw, start),
-                   "timeDomain": _time_curve(processed, start, rate)}
+                   "timeDomain": _time_curve(processed, start, rate, source_rate=source["originalSampleRate"])}
         stitched_parts.setdefault(point_id, []).append((mapping, processed.copy(), rate))
-        point["samples"] += end - start
-        point["durationSeconds"] += (end - start) / rate
+        point["samples"] += len(processed)
+        point["durationSeconds"] += len(processed) / rate
         point["segments"].append(mapping)
-        plot_curve, plot_filter = _plot_curve(processed, start, rate)
+        plot_curve, plot_filter = _plot_curve(processed, start, rate, source_rate=source["originalSampleRate"])
         mapping["plotTimeDomain"] = plot_curve
         mapping["plotFilter"] = plot_filter
         if segment_sink is not None:
@@ -110,17 +112,24 @@ def reconstruct_blade_passes(store, parameters, *, segment_sink=None):
         # well-defined time step and no higher-rate segment is aliased.
         rate = min(part_rate for _, _, part_rate in parts)
         joined, previous_end = [], None
+        merged_sample_cursor = 0
         for mapping, values, part_rate in parts:
             if part_rate != rate:
                 ratio = Fraction(rate / part_rate).limit_denominator(1000)
                 values = signal.resample_poly(values, ratio.numerator, ratio.denominator)
             values = np.asarray(values, dtype=np.float64)
+            mapping["mergedStart"] = merged_sample_cursor
+            mapping["mergedEnd"] = merged_sample_cursor + len(values)
+            mapping["analysisSamples"] = len(values)
+            mapping["mergedSampleRate"] = rate
+            merged_sample_cursor += len(values)
             offset = 0. if previous_end is None else previous_end - float(values[0])
             values = values + offset
             mapping["stitchOffsetMps"] = offset
             joined.append(values)
             previous_end = float(values[-1])
         joined_signal = np.concatenate(joined)
+        point["samples"] = len(joined_signal)
         stitched = joined_signal
         original_samples = len(joined_signal)
         if original_samples > MAX_FFT_SAMPLES:

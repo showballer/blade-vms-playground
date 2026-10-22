@@ -84,6 +84,28 @@ class BladePassAnalysisTests(unittest.TestCase):
         self.assertEqual(before, after)
         json.dumps(result, allow_nan=False)
 
+    def test_analysis_sample_rate_resamples_segments_without_changing_source_time_ranges(self):
+        rid = self.recording(samples=40000, rate=20000, start=2000, end=32000)
+        source = self.analyze(rid, analysisSampleRate=10000)["sources"][0]
+        segment = source["segments"][0]
+        self.assertEqual(source["sampleRate"], 10000)
+        self.assertEqual(source["originalSampleRate"], 20000)
+        self.assertEqual(source["validRanges"], [{"start": 2000, "end": 32000, "samples": 30000}])
+        self.assertEqual(source["sourceValidSamples"], 30000)
+        self.assertEqual(source["validSamples"], 15000)
+        self.assertEqual(segment["samples"], 15000)
+        self.assertEqual(segment["sourceSamples"], 30000)
+        self.assertAlmostEqual(segment["durationSeconds"], 1.5)
+        self.assertAlmostEqual(source["validSeconds"], 1.5)
+        self.assertAlmostEqual(segment["spectrum"]["frequencies"][int(np.argmax(segment["spectrum"]["amplitudes"]))], 50)
+
+    def test_analysis_target_does_not_upsample_lower_rate_recording(self):
+        rid = self.recording(samples=4000, rate=8000, start=400, end=3200)
+        source = self.analyze(rid, analysisSampleRate=10000)["sources"][0]
+        self.assertEqual(source["sampleRate"], 8000)
+        self.assertEqual(source["validSamples"], 2800)
+        self.assertAlmostEqual(source["validSeconds"], .35)
+
     def test_low_rssi_and_overrange_split_segments_keep_original_time(self):
         rssi = [80.] * 2000
         rssi[600:700] = [10.] * 100

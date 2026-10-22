@@ -18,7 +18,7 @@ function record(id: string, point = "P1", task = collection, blade = "2"): Blade
 }
 const metrics = { rmsVelocityMps: .002, peakVelocityMps: .003, peakToPeakVelocityMps: .006 };
 const source: BladePassSource = { recordingId: "r1", name: "P1原记录", sessionId: "b".repeat(32), radialPointId: "P1", radialPointName: "P1",
-  radiusM: .31, azimuthDeg: 0, sampleRate: 1000, sampleOrigin: 2000, status: "included", candidateRange: { start: 10, end: 400 },
+  radiusM: .31, azimuthDeg: 0, sampleRate: 1000, sampling: { kind: "anti_alias_lowpass", sourceSampleRate: 4000, targetSampleRate: 1000, recommendedMaxFrequencyHz: 400 }, sampleOrigin: 2000, status: "included", candidateRange: { start: 10, end: 400 },
   validRanges: [{ start: 10, end: 110, samples: 100 }, { start: 300, end: 400, samples: 100 }], exclusions: [{ reason: "low_rssi", samples: 190 }], metrics,
   segments: [{ start: 10, end: 110, samples: 100, durationSeconds: .1, metrics, timeDomain: { sampleIndices: [10, 109], seconds: [.01, .109], values: [.002, -.002] }, spectrum: { frequencies: [0, 10], amplitudes: [0, .002], frequencySpacingHz: 10 } },
     { start: 300, end: 400, samples: 100, durationSeconds: .1, metrics, timeDomain: { sampleIndices: [300, 399], seconds: [.3, .399], values: [.003, -.003] }, spectrum: { frequencies: [0, 10], amplitudes: [0, .003], frequencySpacingHz: 10 } }], provenance: { event: "confirmed_leave", index: 400 } };
@@ -88,6 +88,7 @@ check("结果可读展示排除原因与相位边界，只展示单段FFT", () =
   assert.ok(markup.includes("RSSI 低于阈值")); assert.ok(markup.includes("FFT 连续有效段"));
   assert.ok(markup.includes("原始边界依据")); assert.ok(!markup.includes("播放动画"));
   assert.ok(markup.includes("速度 RMS mm/s")); assert.ok(markup.includes("短片段不能通过拼接提高频率分辨率"));
+  assert.ok(markup.includes("上传目标 1,000 Hz")); assert.ok(markup.includes("Nyquist 上限 500 Hz"));
 });
 check("全部排除结果仍展示原因，不出现虚构的波形或幅值", () => {
   const excluded = { ...result, sources: [result.sources[1]], amplitudeDistributions: [] };
@@ -119,7 +120,7 @@ check("实验合成区分探索频带与模态候选，展示压缩时间与未�
         displacementRmsM: .00001, normalizedAmplitude: 1, spatialPhaseDeg: null, stationCount: 2, stationAmplitudeRatio: 10 }] }],
   }} />);
   assert.ok(markup.includes("探索频带")); assert.ok(markup.includes("未检出共同窄带峰"));
-  assert.ok(markup.includes("压缩有效时间")); assert.ok(markup.includes("同相假设"));
+  assert.ok(markup.includes("按所选记录顺序压缩无效时间")); assert.ok(markup.includes("同相假设"));
   assert.ok(markup.includes("不是识别出的模态")); assert.ok(markup.includes("节点正负未知"));
   assert.ok(markup.includes("角度幅值最大/最小")); assert.ok(markup.includes("频带位移 RMS"));
 });

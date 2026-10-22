@@ -76,13 +76,14 @@ class BladeSynthesisTests(unittest.TestCase):
 
         result = reconstruct_blade_passes(self.store, {"recordingIds": ids, "rssiThresholdPercent": 50}, segment_sink=sink)
         point = result["synthesis"]["mergedPoints"][0]
-        self.assertEqual(point["samples"], 2 * (8192 - 200) - 100)
+        self.assertEqual(point["samples"], 450 + 3496 + 7992)
         self.assertEqual(len(point["segments"]), 3)
         self.assertEqual([(s["originalStart"], s["originalEnd"]) for s in point["segments"]], [(100, 1000), (1100, 8092), (100, 8092)])
-        self.assertEqual(point["segments"][1]["mergedStart"], 900)
+        self.assertEqual(point["segments"][1]["mergedStart"], 450)
+        self.assertEqual(point["segments"][1]["mergedSampleRate"], 2048)
         self.assertEqual(point["segments"][2]["compressedStartSeconds"], (7992 - 100) / 4096)
         self.assertAlmostEqual(point["durationSeconds"], (7992 - 100) / 4096 + 7992 / 2048)
-        self.assertEqual(sum(len(raw) for _, raw, _ in saved), point["samples"])
+        self.assertEqual(sum(len(raw) for _, raw, _ in saved), 2 * (8192 - 200) - 100)
         after = {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in self.root.rglob("*") if path.is_file()}
         self.assertEqual(before, after)
 
@@ -101,6 +102,17 @@ class BladeSynthesisTests(unittest.TestCase):
         self.assertTrue(all(math.isfinite(value) for value in spectrum["amplitudesMps"]))
         self.assertEqual(len(result["stitchedWaveform"]["seconds"]), len(result["stitchedWaveform"]["valuesMps"]))
         json.dumps(result, allow_nan=False)
+
+    def test_stitched_indices_and_fft_follow_configured_analysis_rate(self):
+        rid = self.recording(1, rate=20000, length=40000, frequency=80)
+        point = self.analyze([rid], analysisSampleRate=10000)["synthesis"]["mergedPoints"][0]
+        segment = point["segments"][0]
+        self.assertEqual(segment["sampleRate"], 10000)
+        self.assertEqual(segment["sourceSamples"], segment["originalEnd"] - segment["originalStart"])
+        self.assertEqual(segment["analysisSamples"], segment["mergedEnd"] - segment["mergedStart"])
+        self.assertEqual(point["samples"], segment["analysisSamples"])
+        self.assertAlmostEqual(point["durationSeconds"], segment["compressedEndSeconds"])
+        self.assertAlmostEqual(point["stitchedSpectrum"]["sampleRate"], 10000)
 
     def test_station_weight_does_not_count_retries_as_extra_angles(self):
         ids = []
