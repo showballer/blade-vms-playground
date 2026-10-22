@@ -8,7 +8,7 @@ a = Analysis(
     datas=[(str(root / "blade_acquisition" / "resources" / "rotation_from_static.json.gz"), "blade_acquisition/resources")],
     hiddenimports=collect_submodules("uvicorn") + collect_submodules("websockets") +
         ["blade_acquisition.analysis", "blade_acquisition.rotation", "blade_acquisition.simulation",
-         "blade_acquisition.csv_export", "blade_acquisition.task_export", "blade_acquisition.drive_position", "serial", "serial.tools.list_ports", "serial.win32", "serial.serialwin32", "numpy", "scipy"],
+         "blade_acquisition.csv_export", "blade_acquisition.task_export", "blade_acquisition.upload_sampling", "blade_acquisition.drive_position", "serial", "serial.tools.list_ports", "serial.win32", "serial.serialwin32", "numpy", "scipy"],
     hookspath=[], hooksconfig={}, runtime_hooks=[], excludes=[], noarchive=False,
 )
 pyz = PYZ(a.pure)

@@ -29,7 +29,7 @@ export type CaptureFrame = {
 export type CaptureDetail = { capture: CaptureSummary; frame: CaptureFrame | null };
 
 export const captureLiveLabel = (state: CaptureSummary["liveState"]) => ({ acquiring: "采集中", stopped: "采集已停止", offline: "连接中断", error: "采集异常" })[state];
-export const captureUploadLabel = (state: CaptureSummary["uploadState"]) => ({ pending: "等待完整记录", uploading: "原始记录上传中", complete: "原始记录已上传", error: "上传待重试" })[state];
+export const captureUploadLabel = (state: CaptureSummary["uploadState"]) => ({ pending: "等待完整记录", uploading: "记录上传中", complete: "记录已上传", error: "上传待重试" })[state];
 export function captureProgress(capture: Pick<CaptureSummary, "receivedBytes" | "totalBytes" | "uploadState">): number {
   if (capture.uploadState === "complete") return 100;
   return capture.totalBytes > 0 ? Math.max(0, Math.min(99, Math.floor(capture.receivedBytes / capture.totalBytes * 100))) : 0;

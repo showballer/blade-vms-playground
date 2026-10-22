@@ -263,7 +263,8 @@ def import_capture(store: RecordingStore, value):
         imported = {**manifest, "id": target_id, "cloudCaptureId": capture_id,
                     "sourceRecordingId": original_id,
                     "sourceDataPreserved": True, "sourceQuantity": "velocity", "sourceUnit": "m/s",
-                    "conversion": "原生采集样本，未重采样或修改数值"}
+                    "conversion": ("客户端低通滤波后降采样的上传副本；本机保留原始记录" if manifest.get("sampling")
+                                   else "原生采集样本，未重采样或修改数值")}
         atomic_json(temporary / "manifest.json", imported)
         os.rename(temporary, destination)
         store.update_index(imported)

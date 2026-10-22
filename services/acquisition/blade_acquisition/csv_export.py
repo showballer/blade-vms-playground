@@ -48,7 +48,7 @@ def stream_csv(manifest, chunks):
     # Full exports retain task/point identity and sample-index gates, not only the display name.
     for key in ("windFarm", "object", "turbine", "pointCycle", "turntable", "sampleOrigin", "sourceSampleOrigin",
                 "sourceRecordingId", "sourceTimeStart", "rssiSampleStride", "rssiSampleRate",
-                "startedAt", "endedAt", "sourceStartedAt", "sourceEndedAt", "deviceSettings"):
+                "startedAt", "endedAt", "sourceStartedAt", "sourceEndedAt", "deviceSettings", "sampling"):
         if manifest.get(key) is not None:
             metadata[key] = manifest[key]
     if manifest.get("position") is not None:

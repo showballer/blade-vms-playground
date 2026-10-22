@@ -237,6 +237,7 @@ class AcquisitionController:
         self.lock = threading.RLock()
         self.operation_lock = threading.Lock()
         self.export_lock = threading.Lock()
+        self.upload_sampling_lock = threading.Lock()
         self.state, self.error = "idle", None
         self.writer = None
         self.thread: threading.Thread | None = None
@@ -3049,6 +3050,23 @@ def create_app(settings: Settings, receiver_factory=PolytecReceiver, motor_facto
                 raise HTTPException(404, str(exc)) from exc
             except (OSError, ValueError) as exc:
                 raise HTTPException(500, f"无法读取采集记录：{exc}") from exc
+
+    @app.post("/api/field/recordings/{recording_id}/upload-copy")
+    def upload_copy(recording_id: str, parameters: dict):
+        from .upload_sampling import prepare_upload
+        if set(parameters) != {"sampleRate"}:
+            raise HTTPException(422, "上传副本参数无效。")
+        if not controller.upload_sampling_lock.acquire(blocking=False):
+            raise HTTPException(409, "另一条上传副本正在生成，请稍后重试。")
+        try:
+            return prepare_upload(controller.store, recording_id, parameters["sampleRate"],
+                                  controller.settings.data_dir / "upload-cache")
+        except KeyError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except (OSError, ValueError, BlockingIOError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+        finally:
+            controller.upload_sampling_lock.release()
 
     @app.get("/api/field/recordings/{recording_id}/waveform")
     def recording_waveform(recording_id: str, start: int = Query(default=0, ge=0, le=2**53 - 1),

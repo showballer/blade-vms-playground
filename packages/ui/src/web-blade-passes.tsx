@@ -5,6 +5,7 @@ import { api, saveBlob } from "./api";
 import { Button } from "./common";
 import { CustomSelect } from "./custom-select";
 import { Chart } from "./charts";
+import { ChartLoading } from "./chart-loading";
 import { BLADE_PASS_RECORD_LIMIT, bladePassMetadata, bladePassNumber as number, bladePassReason, bladePassTasks, bladePassUnavailableReason, bladePassWaveSeries, preferredBladePassTask, selectedBladePassRecords,
   type BladePassRecording, type BladePassResult, type BladePassSource } from "./web-blade-passes-data";
 
@@ -103,6 +104,7 @@ export function WebBladePasses({ canAnalyze, refreshKey, preferredIds, onError }
       </>}
       <details className="blade-pass-advanced"><summary>筛选与预处理设置</summary><div className="blade-pass-advanced-fields"><label>预处理<CustomSelect value={detrend} onChange={event => { invalidate(); setDetrend(event.target.value); }}><option value="constant">去均值</option><option value="linear">去线性趋势</option><option value="none">不去趋势</option></CustomSelect></label><label>RSSI 下限 · %<input aria-label="RSSI 下限百分比" type="number" min={0} max={100} step="any" placeholder="不设强度阈值" value={rssi} onChange={event => { invalidate(); setRssi(event.target.value); }} /></label></div><p className="blade-pass-note">保留原始时间和片段间隙，频谱按单个连续有效段计算。更改设置后需重新分析。</p></details>
     </form>
+    {busy && <ChartLoading label="正在筛选有效片段并计算幅值…" />}
     {result && <BladePassResults result={result} />}
   </div>;
 }

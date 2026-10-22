@@ -16,9 +16,10 @@ const plain = value => value && typeof value === 'object' && !Array.isArray(valu
 const scope = context => context ? JSON.stringify([context.serverUrl, context.user.id, context.user.tenant]) : '';
 const clone = value => JSON.parse(JSON.stringify(value));
 
-function createFieldCloudSync({ file, dataDir, auth, getLive, fetchImpl = global.fetch, now = Date.now, intervalMs = 1000 } = {}) {
+function createFieldCloudSync({ file, dataDir, auth, getLive, prepareUpload, fetchImpl = global.fetch, now = Date.now, intervalMs = 1000 } = {}) {
   if (!path.isAbsolute(file || '') || !path.isAbsolute(dataDir || '') || !auth?.cloudSession || !auth?.cloudBinding || typeof fetchImpl !== 'function') throw Error('Invalid cloud sync configuration');
-  let saved = { version: 1, clientId: randomUUID(), enabled: true, items: [] };
+  const validRate = value => Number.isInteger(value) && (value === 0 || value >= 10000 && value <= 100000);
+  let saved = { version: 1, clientId: randomUUID(), enabled: true, uploadSampleRate: 50000, items: [] };
   let storeError = '', transientError = '', paused = true, disposed = false, activeId = null;
   let worker = null, liveWork = null, generation = 0, timer = null, liveSequence = 0;
   const controllers = new Set();
@@ -27,10 +28,15 @@ function createFieldCloudSync({ file, dataDir, auth, getLive, fetchImpl = global
     if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 10 * 1024 * 1024 || (process.platform !== 'win32' && stat.mode & 0o077)) throw Error('invalid queue file');
     const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
     if (!plain(parsed) || parsed.version !== 1 || !/^[a-f0-9-]{36}$/.test(parsed.clientId) || typeof parsed.enabled !== 'boolean' || !Array.isArray(parsed.items) || parsed.items.length > 2000) throw Error('invalid queue');
+    if (parsed.uploadSampleRate !== undefined && !validRate(parsed.uploadSampleRate)) throw Error('invalid upload sampling');
+    parsed.uploadSampleRate ??= 50000;
     for (const item of parsed.items) {
       if (!plain(item) || !ID.test(item.recordingId) || typeof item.owner !== 'string' || item.owner.length > 2500 || !['recording', 'queued', 'uploading', 'synced', 'error'].includes(item.state) || typeof item.manual !== 'boolean') throw Error('invalid queue item');
       if (item.captureId && !/^[A-Za-z0-9_-]{1,128}$/.test(item.captureId)) throw Error('invalid capture');
       if (item.files && (!Array.isArray(item.files) || item.files.length > MAX_FILES || item.files.some(f => !FILE.test(f.name) || !Number.isSafeInteger(f.bytes) || f.bytes < 0 || !SHA.test(f.sha256)))) throw Error('invalid file plan');
+      if (item.uploadSampleRate !== undefined && !validRate(item.uploadSampleRate)) throw Error('invalid upload sampling');
+      // Existing checksummed transfers must resume with their original bytes.
+      if (item.planHash && item.uploadSampleRate === undefined) item.uploadSampleRate = 0;
       item.retryAt = 0; item.attempts = 0;
       if (item.state === 'uploading') item.state = 'queued';
     }
@@ -45,9 +51,9 @@ function createFieldCloudSync({ file, dataDir, auth, getLive, fetchImpl = global
     for (const item of saved.items) if (item.state === 'synced') { delete item.recording; delete item.files; }
   }
   function checkpoint(items = saved.items) {
-    return { version: 1, clientId: saved.clientId, enabled: saved.enabled, items: items.map(item => {
+    return { version: 1, clientId: saved.clientId, enabled: saved.enabled, uploadSampleRate: saved.uploadSampleRate, items: items.map(item => {
       const minimal = {};
-      for (const key of ['recordingId', 'name', 'owner', 'manual', 'state', 'captureId', 'progress', 'totalBytes', 'sentBytes', 'attempts', 'retryAt', 'finishedAt', 'planHash']) {
+      for (const key of ['recordingId', 'name', 'owner', 'manual', 'state', 'captureId', 'progress', 'totalBytes', 'sentBytes', 'attempts', 'retryAt', 'finishedAt', 'planHash', 'uploadSampleRate']) {
         if (item[key] !== undefined) minimal[key] = item[key];
       }
       if (item.error) minimal.error = String(item.error).slice(0, 240);
@@ -148,12 +154,25 @@ function createFieldCloudSync({ file, dataDir, auth, getLive, fetchImpl = global
     return hash.digest('hex');
   }
   async function prepare(item) {
-    const recording = manifest(item.recordingId);
+    let recording = manifest(item.recordingId);
     if (recording.status !== 'complete') {
       if (item.recordingId === activeId && recording.status === 'incomplete') return null;
       throw fail('该记录尚未完整保存，不能上传原始数据。', 409);
     }
-    const directory = safeDirectory(item.recordingId), names = fs.readdirSync(directory);
+    let directory = safeDirectory(item.recordingId);
+    // Freeze the rate before the first plan so retry/restart cannot mix chunks.
+    if (item.uploadSampleRate === undefined) { item.uploadSampleRate = saved.uploadSampleRate; persist(); }
+    if (item.uploadSampleRate && recording.sampleRate > item.uploadSampleRate) {
+      if (typeof prepareUpload !== 'function') throw fail('当前采集服务不支持上传降采样，请升级或选择原始采样率。', 422);
+      const prepared = await prepareUpload(item.recordingId, item.uploadSampleRate);
+      const cacheRoot = path.join(path.dirname(dataDir), 'upload-cache');
+      if (!plain(prepared?.recording) || prepared.recording.id !== item.recordingId ||
+          prepared.recording.sampleRate !== item.uploadSampleRate || typeof prepared.directory !== 'string' ||
+          path.dirname(prepared.directory) !== cacheRoot || fs.lstatSync(prepared.directory).isSymbolicLink() ||
+          path.dirname(fs.realpathSync(prepared.directory)) !== fs.realpathSync(cacheRoot)) throw fail('上传副本校验失败', 409);
+      directory = prepared.directory; recording = prepared.recording;
+    }
+    const names = fs.readdirSync(directory);
     if (names.some(name => /^chunk-.*\.part$/.test(name))) throw fail('原始分块尚未完整保存', 409);
     const selected = names.filter(name => FILE.test(name)).sort();
     if (selected.length > MAX_FILES) throw fail('采集文件超过 4096 个同步限制，请分段采集。', 413);
@@ -195,6 +214,7 @@ function createFieldCloudSync({ file, dataDir, auth, getLive, fetchImpl = global
     return directory;
   }
   async function upload(item, ctx) {
+    item.state = 'uploading'; item.error = ''; persist();
     const directory = await prepare(item);
     if (!directory) return;
     item.state = 'uploading'; item.error = ''; persist();
@@ -227,6 +247,9 @@ function createFieldCloudSync({ file, dataDir, auth, getLive, fetchImpl = global
     item.state = 'synced'; item.error = ''; item.progress = 100; item.finishedAt = now(); item.retryAt = 0;
     persist();
     try { fs.unlinkSync(path.join(planDirectory, `${item.recordingId}.json`)); } catch { /* An orphaned checksum plan is harmless. */ }
+    if (path.dirname(directory) === path.join(path.dirname(dataDir), 'upload-cache')) {
+      await fs.promises.rm(directory, { recursive: true, force: true }).catch(() => {});
+    }
   }
   function recordFailure(item, error) {
     if (error.status === 499) return;
@@ -253,7 +276,17 @@ function createFieldCloudSync({ file, dataDir, auth, getLive, fetchImpl = global
     })().catch(error => { transientError = error.message || '同步暂时失败'; }).finally(() => { worker = null; });
   }
   function boundedWaveform(value) {
-    if (!plain(value) || !Array.isArray(value.values) || !value.values.length) return undefined;
+    if (!plain(value) || !Array.isArray(value.values)) return undefined;
+    if (value.representation === 'envelope' && Array.isArray(value.envelope) && value.envelope.length && value.envelope.length <= 1000) {
+      const envelope = { values: [], rssi: [], overrange: [], unit: 'm/s', rssiUnit: '%', representation: 'envelope',
+        envelope: value.envelope.map(item => ({ ...item })) };
+      for (const key of ['source', 'sampleRate', 'sampleStart', 'sampleStride', 'sampleOrigin', 'rangeStart', 'rangeEnd',
+        'sourceSamples', 'overrangeCount', 'missingRssiCount', 'rssiSampleStride', 'rssiSampleRate', 'latest']) {
+        if (value[key] !== undefined) envelope[key] = value[key];
+      }
+      return envelope;
+    }
+    if (!value.values.length) return undefined;
     const stride = Math.max(1, Math.ceil(value.values.length / 2048));
     const indexes = value.values.map((_, index) => index).filter(index => index % stride === 0);
     const waveform = { source: value.source, sampleRate: value.sampleRate, unit: 'm/s', sampleStart: value.sampleStart,
@@ -320,7 +353,7 @@ function createFieldCloudSync({ file, dataDir, auth, getLive, fetchImpl = global
       progress: item.state === 'synced' ? 100 : item.totalBytes ? Math.max(0, Math.min(99, Math.round((item.sentBytes || 0) / item.totalBytes * 100))) : 0 }));
     let state = !binding ? 'unbound' : paused ? 'signed-out' : !ctx ? 'offline' : worker || liveWork ? 'syncing' : 'ready';
     if (storeError || (ctx && transientError)) state = 'error';
-    return { enabled: saved.enabled, connected: Boolean(ctx), state, error: storeError || transientError || undefined, items };
+    return { enabled: saved.enabled, uploadSampleRate: saved.uploadSampleRate, connected: Boolean(ctx), state, error: storeError || transientError || undefined, items };
   }
   function track(recording, manual = false) {
     if (!plain(recording) || !ID.test(recording.id)) throw fail('无效采集记录');
@@ -391,6 +424,12 @@ function createFieldCloudSync({ file, dataDir, auth, getLive, fetchImpl = global
   return Object.freeze({
     status, resume, pause, observeRecording,
     setEnabled(enabled) { if (typeof enabled !== 'boolean') throw fail('自动同步设置无效'); saved.enabled = enabled; persist(); wake(); return status(); },
+    setUploadSampleRate(rate) {
+      if (!validRate(rate)) throw fail('上传采样率应为 10～100 kHz，或选择原始采样率');
+      saved.uploadSampleRate = rate;
+      for (const item of saved.items) if (item.state === 'error' && !item.planHash) item.uploadSampleRate = rate;
+      persist(); return status();
+    },
     started(recording) { activeId = recording?.id || null; try { return track(recording); } catch (error) { transientError = error.message || '新采集未能加入同步队列'; throw error; } },
     finished(recording) {
       if (!recording?.id) return status();

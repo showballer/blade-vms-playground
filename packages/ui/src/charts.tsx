@@ -1,5 +1,6 @@
 "use client";
-import { memo, useEffect, useRef } from "react";
+import { memo, useEffect, useRef, useState } from "react";
+import { ChartLoading } from "./chart-loading";
 import * as echarts from "echarts/core";
 import { LineChart, BarChart, HeatmapChart } from "echarts/charts";
 import {
@@ -35,6 +36,7 @@ export const Chart = memo(function Chart({
   renderer = "canvas",
   updateMode = "replace",
   active = true,
+  loading = false,
 }: {
   option: Record<string, any>;
   height?: number;
@@ -44,7 +46,9 @@ export const Chart = memo(function Chart({
   updateMode?: "replace" | "merge";
   /** Hidden panels retain their instance and zoom without doing chart work. */
   active?: boolean;
+  loading?: boolean;
 }) {
+  const [rendering, setRendering] = useState(true);
   const ref = useRef<HTMLDivElement>(null),
     chart = useRef<echarts.EChartsType | undefined>(undefined),
     schedule = useRef<(() => void) | undefined>(undefined),
@@ -74,6 +78,7 @@ export const Chart = memo(function Chart({
         applied = current;
       }
       if (renderer === "svg") element.querySelector("svg")?.setAttribute("viewBox", `0 0 ${c.getWidth()} ${c.getHeight()}`);
+      setRendering(false);
     };
     const queue = () => {
       if (!canDraw()) { resized = true; return; }
@@ -96,7 +101,8 @@ export const Chart = memo(function Chart({
     observer.observe(element);
     const beforePrint = () => { cancelAnimationFrame(frame); resized = true; flush(); };
     window.addEventListener("beforeprint", beforePrint);
-    update();
+    if (renderer === "svg") update();
+    else queue();
     return () => {
       observer.disconnect();
       window.removeEventListener("beforeprint", beforePrint);
@@ -110,12 +116,15 @@ export const Chart = memo(function Chart({
     schedule.current?.();
   }, [option, updateMode, renderer, active]);
   return (
+    <div style={{ position: "relative", height, width: "100%" }} aria-busy={loading || rendering}>
     <div
       role="img"
       aria-label={label}
       ref={ref}
       style={{ height, width: "100%" }}
     />
+    {(loading || rendering) && <div style={{ position: "absolute", inset: 0 }}><ChartLoading height={height} /></div>}
+    </div>
   );
 });
 const palette = ["#2D6CC0", "#1FA971", "#F5A623", "#7A4DD4", "#E5484D"];

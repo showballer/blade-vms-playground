@@ -110,6 +110,15 @@ async function main() {
     }
     assert.deepEqual((await service.detail(viewer, id)).frame.waveform, sparseWaveform, "Rejected RSSI metadata cannot alter the last accepted live waveform");
     passed.push("Sparse RSSI acquisition timing survives preview storage; invalid or incomplete timing is rejected");
+    const envelope = { values: [], representation: "envelope", sampleRate: 250000, sampleStart: 0, rangeStart: 0, rangeEnd: 500,
+      envelope: [{ start: 0, end: 500, min: -0.1, max: 0.2, rssiMin: 5, rssiMax: 80, overrange: 1, missing: 0 }] };
+    await service.live(owner, id, { ...frame, sequence: 4, waveform: envelope });
+    assert.deepEqual((await service.detail(viewer, id)).frame.waveform, envelope);
+    for (const entry of [{ ...envelope.envelope[0], min: 5 }, { ...envelope.envelope[0], start: -1 }, { ...envelope.envelope[0], max: Infinity }]) {
+      await assert.rejects(service.live(owner, id, { ...frame, sequence: 5, waveform: { ...envelope, envelope: [entry] } }), rejected(400));
+    }
+    await assert.rejects(service.live(owner, id, { ...frame, sequence: 5, waveform: { ...envelope, envelope: Array(1001).fill(envelope.envelope[0]) } }), rejected(400));
+    passed.push("High-rate bounded min/max previews survive live sync; malformed envelopes are rejected");
     await assert.rejects(service.live(teammate, id, frame), rejected(403));
     await assert.rejects(service.prepareAnalysis(owner, id), rejected(403));
     await assert.rejects(service.prepareAnalysis(analyst, id), rejected(409));

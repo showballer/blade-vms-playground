@@ -1,8 +1,8 @@
 import React, { useEffect, useRef, useState } from "react";
-import { LoaderCircle } from "lucide-react";
 import { Button, Dialog } from "./common";
 import { FieldDeviceSnapshot } from "./field-device";
 import { FieldRecordingViewer } from "./field-waveform";
+import { ChartLoading } from "./chart-loading";
 import { fieldDate, type FieldRecording, type FieldRecordingDetail, type FieldRequestOptions } from "./field-types";
 
 export function FieldRecordingDialog({ recording, load, onError, onClose }: {
@@ -33,7 +33,7 @@ export function FieldRecordingDialog({ recording, load, onError, onClose }: {
     <div className="field-recording-preview">
       <p className="field-subtext">{fieldDate(recording.startedAt)?.toLocaleString("zh-CN") || "—"} · 全程浏览与区间放大</p>
       {error ? <div className="field-error" role="alert">{error}<Button onClick={() => setRevision(value => value + 1)}>重新读取</Button></div>
-        : !detail ? <div className="field-wave-loading" role="status"><LoaderCircle className="spin" size={18} />正在读取采集记录…</div>
+        : !detail ? <ChartLoading label="正在读取采集记录…" />
         : <>{detail.recording.error && <p className="field-error">{detail.recording.error}</p>}
           <FieldRecordingViewer detail={detail} load={load} onError={onError} />
           <details className="field-recorded-settings"><summary>查看本次采集的设备配置快照</summary><FieldDeviceSnapshot settings={detail.recording.deviceSettings} /></details>

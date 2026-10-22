@@ -9,6 +9,67 @@ const { createFieldCloudSync } = require('../apps/desktop/electron/field-cloud-s
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const json = (data, status = 200) => new Response(JSON.stringify(data), { status });
 
+test('upload sampling persists, freezes across retry, and never modifies source bytes', async t => {
+  const f = fixture(t), original = f.recording();
+  original.manifest.sampleRate = 250000; original.raw.writeDoubleLE(250000, 8);
+  fs.writeFileSync(path.join(original.dir, 'manifest.json'), JSON.stringify(original.manifest));
+  fs.writeFileSync(path.join(original.dir, 'chunk-00000000.bin'), original.raw);
+  const rates = [];
+  const prepareUpload = async (id, rate) => {
+    rates.push(rate);
+    const directory = path.join(path.dirname(f.dataDir), 'upload-cache', `${id}-${rate}`);
+    fs.mkdirSync(directory, { recursive: true });
+    const raw = Buffer.from(original.raw.subarray(0, 32 + 20 * 29)); raw.writeDoubleLE(rate, 8);
+    const recording = { ...original.manifest, sampleRate: rate, samples: 20, sampling: { sourceSampleRate: 250000 } };
+    fs.writeFileSync(path.join(directory, 'chunk-00000000.bin'), raw);
+    fs.writeFileSync(path.join(directory, 'manifest.json'), JSON.stringify(recording));
+    return { directory, recording };
+  };
+  let queue = f.create({ prepareUpload });
+  assert.equal(queue.status().uploadSampleRate, 50000);
+  for (const rate of [-1, 9999, 100001, NaN, '50000', true]) assert.throws(() => queue.setUploadSampleRate(rate));
+  f.setHandler((url, options, respond) => url.includes('/upload') ? json({}, 503) : respond(url, options));
+  queue.resume(); queue.uploadRecording(original.manifest.id); await queue.settled();
+  queue.setUploadSampleRate(10000); queue.dispose(); await queue.settled();
+  f.setHandler(null);
+  queue = f.create({ prepareUpload }); assert.equal(queue.status().uploadSampleRate, 10000);
+  queue.resume(); await queue.settled();
+  assert.deepEqual(rates, [50000, 50000]);
+  assert.equal(f.captures.get(original.manifest.id).recording.sampleRate, 50000);
+  assert.equal(queue.status().items[0].state, 'synced');
+  assert.deepEqual(fs.readFileSync(path.join(original.dir, 'chunk-00000000.bin')), original.raw);
+});
+
+test('high-rate min/max live envelopes reach Web without requiring a raw display array', async t => {
+  const f = fixture(t), source = f.recording('a'.repeat(32), 100, 'incomplete');
+  const queue = f.create(); queue.resume(); queue.started(source.manifest); await queue.settled();
+  const waveform = { sampleRate: 250000, sampleStart: 0, sampleStride: 1, sampleOrigin: 1800000000,
+    values: [], rssi: [], overrange: [], representation: 'envelope', rangeStart: 0, rangeEnd: 250000,
+    envelope: [{ start: 0, end: 250000, min: -2, max: 3, rssiMin: 0, rssiMax: 80, missing: 0, overrange: 2 }] };
+  f.setFrame({ recording: source.manifest, state: 'acquiring', waveform });
+  queue.resume(); await queue.settled();
+  const delivered = f.captures.get(source.manifest.id).live.at(-1).waveform;
+  assert.deepEqual(delivered.envelope, waveform.envelope);
+  assert.equal(delivered.sampleRate, 250000);
+  assert.equal(delivered.rangeEnd, 250000);
+});
+
+test('failed derivative preparation can switch to original-rate upload without discarding the record', async t => {
+  const f = fixture(t), original = f.recording();
+  original.manifest.sampleRate = 250000; original.raw.writeDoubleLE(250000, 8);
+  fs.writeFileSync(path.join(original.dir, 'manifest.json'), JSON.stringify(original.manifest));
+  fs.writeFileSync(path.join(original.dir, 'chunk-00000000.bin'), original.raw);
+  let preparations = 0;
+  const queue = f.create({ prepareUpload: async () => { preparations++; throw Error('Unpaired RSSI requires original rate'); } });
+  queue.resume(); queue.uploadRecording(original.manifest.id); await queue.settled();
+  assert.equal(queue.status().items[0].state, 'error');
+  queue.setUploadSampleRate(0); queue.retry(); await queue.settled();
+  assert.equal(preparations, 1);
+  assert.equal(queue.status().items[0].state, 'synced');
+  assert.equal(f.captures.get(original.manifest.id).recording.sampleRate, 250000);
+  assert.deepEqual(fs.readFileSync(path.join(original.dir, 'chunk-00000000.bin')), original.raw);
+});
+
 function fixture(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'blade-cloud-sync-'));
   const dataDir = path.join(directory, 'data'); fs.mkdirSync(dataDir);
@@ -49,8 +110,8 @@ function fixture(t) {
     throw Error('unexpected request');
   }
   async function fetchImpl(url, options) { requests.push({ url, method: options.method, body: options.body }); return handler ? handler(url, options, respond) : respond(url, options); }
-  function create() {
-    const queue = createFieldCloudSync({ file, dataDir, auth, fetchImpl, getLive: async () => frame, intervalMs: 60000 }); instances.push(queue); return queue;
+  function create(options = {}) {
+    const queue = createFieldCloudSync({ file, dataDir, auth, fetchImpl, getLive: async () => frame, intervalMs: 60000, ...options }); instances.push(queue); return queue;
   }
   function recording(id = 'a'.repeat(32), samples = 100, status = 'complete') {
     const dir = path.join(dataDir, id); fs.mkdirSync(dir, { recursive: true });

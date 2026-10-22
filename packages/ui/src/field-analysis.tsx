@@ -2,6 +2,7 @@
 import { CustomSelect } from "./custom-select";
 import React, { useEffect, useRef, useState } from "react";
 import { Chart } from "./charts";
+import { ChartLoading } from "./chart-loading";
 import { Button } from "./common";
 import type { FieldRecording, FieldRequestOptions } from "./field-types";
 
@@ -85,7 +86,8 @@ export const FieldAnalysis = React.memo(function FieldAnalysis({ request, onErro
     </fieldset><p>{record?.sampleRate ? `采样率 ${record.sampleRate} Hz；选区 ${(Math.max(0, end - start) / record.sampleRate).toFixed(3)} s；FFT 栅格 ${(record.sampleRate / nfft).toPrecision(4)} Hz。` : "先选择已完整保存的记录。"}</p><Button type="submit" variant="primary" disabled={busy || !id}>{busy ? "正在读取原始数据并计算…" : "开始分析"}</Button></form>
     <p className="field-inline-help">本版支持离线 Butterworth IIR。暂不提供 FIR、自动去毛刺、同步平均或损伤诊断。最多分析800万点；不会修改原始文件。</p>
   </section>
-  {result && <section className="field-card"><div className="field-section-heading"><div><h2>{result.provenance.recordingName} · 分析结果</h2><p>来源 {result.provenance.source} · {result.algorithmVersion} · {result.sampleCount}点 · {result.unit}</p></div><Button onClick={() => { const blob = new Blob([JSON.stringify(result, null, 2)], { type: "application/json" }); const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = `analysis-${result.provenance.recordingId}-${result.parameters.start}-${result.parameters.end}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); }}>导出结果 JSON</Button></div>
+  {busy && <ChartLoading label="正在读取波形并计算分析结果…" />}
+    {result && <section className="field-card"><div className="field-section-heading"><div><h2>{result.provenance.recordingName} · 分析结果</h2><p>来源 {result.provenance.source} · {result.algorithmVersion} · {result.sampleCount}点 · {result.unit}</p></div><Button onClick={() => { const blob = new Blob([JSON.stringify(result, null, 2)], { type: "application/json" }); const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = `analysis-${result.provenance.recordingId}-${result.parameters.start}-${result.parameters.end}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); }}>导出结果 JSON</Button></div>
     <p>FFT 首 {result.parameters.nfft} 点 / {format(result.fftDurationSeconds)} s，频率栅格 {format(result.frequencySpacingHz)} Hz；谱峰幅值已校正窗增益。</p>
     <div className="field-form-actions" role="tablist" aria-label="信号处理类型">{tabs.map(t => <Button role="tab" aria-selected={t === tab} key={t} variant={t === tab ? "primary" : "ghost"} onClick={() => setTab(t)}>{t}</Button>)}</div>
     <AnalysisCharts result={result} tab={tab} /><Features result={result} />

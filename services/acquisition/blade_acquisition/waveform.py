@@ -80,6 +80,12 @@ def live_envelope(rows, step):
     # entirely missing RSSI stay unknown rather than claiming a zero signal.
     rssi = np.fromiter(map(itemgetter(2), rows), dtype=np.float64, count=count)
     overrange = np.fromiter(map(itemgetter(3), rows), dtype=np.bool_, count=count)
+    return array_envelope(indices, values, rssi, overrange, step)
+
+
+def array_envelope(indices, values, rssi, overrange, step):
+    import numpy as np
+    count = len(indices)
     offsets = np.r_[0, np.flatnonzero(np.diff(indices // step)) + 1]
     ends = np.r_[offsets[1:], count]
     low, high = np.minimum.reduceat(values, offsets), np.maximum.reduceat(values, offsets)
@@ -140,6 +146,33 @@ class WaveformReader:
         self.store = store
         self.lock = threading.Lock()
         self.cache = OrderedDict()
+
+    def _envelopes(self, stream, header_start, begin, end, step):
+        """Vectorize disk summaries instead of constructing millions of Python rows."""
+        import numpy as np
+        dtype = np.dtype([("index", "<u8"), ("raw", "<i4"), ("value", "<f8"),
+                          ("rssiRaw", "<i4"), ("rssi", "<f4"), ("flags", "u1")])
+        stream.seek(HEADER.size + (begin - header_start) * RECORD.size)
+        current = None
+        while begin < end:
+            size = min(262144, end - begin)
+            rows = np.frombuffer(stream.read(size * RECORD.size), dtype=dtype)
+            if (len(rows) != size or not np.array_equal(rows["index"], np.arange(begin, begin + size)) or
+                    not np.isfinite(rows["value"]).all() or
+                    not np.isfinite(rows["rssi"][rows["flags"] & 2 != 0]).all()):
+                raise ValueError("原始样本序号或数值无效，未伪造补点。")
+            pieces = array_envelope(rows["index"], rows["value"],
+                                    np.where(rows["flags"] & 2, rows["rssi"], np.nan), rows["flags"] & 1 != 0, step)
+            for piece in pieces:
+                if current is not None and current["start"] // step == piece["start"] // step:
+                    merge(current, piece)
+                else:
+                    if current is not None:
+                        yield current
+                    current = piece
+            begin += size
+        if current is not None:
+            yield current
 
     def _rows(self, stream, header_start, begin, end):
         stream.seek(HEADER.size + (begin - header_start) * RECORD.size)
@@ -223,7 +256,7 @@ class WaveformReader:
                     key = (str(path), stat.st_size, stat.st_mtime_ns)
                     blocks = self.cache.get(key)
                     if blocks is None:
-                        blocks = list(envelope_rows(self._rows(stream, chunk_start, chunk_start, chunk_end), CACHE_STEP))
+                        blocks = list(self._envelopes(stream, chunk_start, chunk_start, chunk_end, CACHE_STEP))
                         self.cache[key] = blocks
                         if len(self.cache) > 64:
                             self.cache.popitem(last=False)
@@ -236,7 +269,7 @@ class WaveformReader:
                         pieces.append(block if lo == block["start"] and hi == block["end"] else
                                       summarize(self._rows(stream, chunk_start, lo, hi)))
                 else:
-                    pieces = envelope_rows(self._rows(stream, chunk_start, begin, finish), step)
+                    pieces = self._envelopes(stream, chunk_start, begin, finish, step)
                 for piece in pieces:
                     if aggregates and aggregates[-1]["start"] // step == piece["start"] // step:
                         merge(aggregates[-1], piece)

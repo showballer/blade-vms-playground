@@ -294,7 +294,7 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     if (!port || !secret || !child) throw failure('本机采集服务尚未就绪');
     const requestGeneration = generation, requestChild = child;
     const response = await fetchImpl(`http://127.0.0.1:${port}/api/field/${route}`, {
-      method, redirect: 'error', signal: AbortSignal.timeout(route.endsWith('/analysis') || route === 'rotation' || route.endsWith('/waveform') || route.includes('/waveform?') ? 120000 :
+      method, redirect: 'error', signal: AbortSignal.timeout(route.endsWith('/upload-copy') ? 1800000 : route.endsWith('/analysis') || route === 'rotation' || route.endsWith('/waveform') || route.includes('/waveform?') ? 120000 :
         route === 'device' || route === 'rssi-calibration' ? 90000 : route === 'stop' || route === 'turntable' || route === 'single-point' && body?.action === 'cancel' ? Math.max(75000, requestTimeoutMs) : requestTimeoutMs),
       headers: { Authorization: `Bearer ${secret}`, 'Content-Type': 'application/json' },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -591,6 +591,17 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     if (!wave || !Array.isArray(wave.values) || wave.values.length > 4096 ||
         (wave.envelope !== undefined && (!Array.isArray(wave.envelope) || wave.envelope.length > 1000))) throw failure('采集波形超过安全显示限制');
   }
+  async function prepareUpload(id, sampleRate) {
+    if (typeof id !== 'string' || !/^[0-9a-f]{32}$/.test(id) || !Number.isInteger(sampleRate) ||
+        (sampleRate !== 0 && (sampleRate < 10000 || sampleRate > 100000))) throw failure('上传采样率无效', 400);
+    await ready();
+    const result = await http(`recordings/${id}/upload-copy`, 'POST', { sampleRate });
+    const directory = result.directory;
+    if (typeof directory !== 'string' || !path.isAbsolute(directory) || result.recording?.id !== id ||
+        ![path.join(dataDir, 'recordings'), path.join(dataDir, 'upload-cache')].includes(path.dirname(directory)))
+      throw failure('上传副本路径无效');
+    return result;
+  }
   async function waveform(id, start, end) {
     if (typeof id !== 'string' || !/^[0-9a-f]{32}$/.test(id)) throw failure('无效录制编号', 400);
     for (const value of [start, end]) if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) throw failure('无效波形区间', 400);
@@ -736,6 +747,6 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     await ready();
     return http('rotation', 'POST', parameters);
   }
-  return { start, status, frame, begin, stop, recordings, simulation, exportRecording, exportTask, waveform, analysis, rotation, device, rssiCalibration, turntable, turntablePorts, singlePoint, motionTrial, shutdown, serviceInfo };
+  return { start, status, frame, begin, stop, recordings, simulation, exportRecording, exportTask, prepareUpload, waveform, analysis, rotation, device, rssiCalibration, turntable, turntablePorts, singlePoint, motionTrial, shutdown, serviceInfo };
 }
 module.exports = { createFieldService, windowsServiceEnvironment, posixServiceEnvironment, failure };

@@ -2,6 +2,7 @@
 import { CustomSelect } from "./custom-select";
 import React, { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Chart } from "./charts";
+import { ChartLoading } from "./chart-loading";
 import { Button } from "./common";
 import type { FieldRecording, FieldRequestOptions } from "./field-types";
 import { FieldBending, type BendingMatch } from "./field-bending";
@@ -110,6 +111,7 @@ export function FieldRotation({ request, onError, refreshKey = 0, preferredIds =
         <div className="field-acquisition-actions"><p>转频 {(rpm / 60).toFixed(4)} Hz · 目标频率 {(targetOrder * rpm / 60).toFixed(4)} Hz</p><Button type="button" disabled={busy} onClick={() => void refresh()}>刷新记录</Button><Button type="submit" variant="primary" disabled={busy || selected.length < 1 || !canAnalyze}>{busy ? "正在读取并计算…" : "开始恒转速分析"}</Button></div>
       </section>
     </form>
+    {busy && <ChartLoading label="正在读取测点并计算旋转分析…" />}
     {result && <>
       <section className="field-card rotation-result-summary"><div><h2>分析结果</h2><p>{result.revolutions} 个完整周期 · {result.durationSeconds.toFixed(3)} s · {result.modeShape.points.length} 个测点{result.sources?.some(source => source.source === "simulation") ? " · 含模拟数据" : ""}</p></div><Button onClick={() => { const blob = new Blob([JSON.stringify(result, null, 2)], { type: "application/json" }); const url = URL.createObjectURL(blob); const anchor = document.createElement("a"); anchor.href = url; anchor.download = `rotation-${result.rpm}rpm-${result.modeShape.targetOrder}order.json`; anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); }}>导出完整结果 JSON</Button></section>
       <div className="rotation-result-tabs" role="tablist" aria-label="旋转分析结果">{resultTabs.map(([id, label], index) => <button key={id} id={`${tabId}-${id}-tab`} ref={element => { tabButtons.current[index] = element; }} type="button" role="tab" aria-selected={resultTab === id} aria-controls={`${tabId}-${id}-panel`} tabIndex={resultTab === id ? 0 : -1} onClick={() => setResultTab(id)} onKeyDown={event => {

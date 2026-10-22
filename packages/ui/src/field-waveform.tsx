@@ -1,7 +1,8 @@
 "use client";
 import { CustomSelect } from "./custom-select";
+import { ChartLoading } from "./chart-loading";
 import React, { memo, useEffect, useId, useMemo, useReducer, useRef, useState } from "react";
-import { AudioLines, LoaderCircle } from "lucide-react";
+import { AudioLines } from "lucide-react";
 import { Button } from "./common";
 import type { FieldRecordingDetail, FieldRequestOptions, FieldWaveform } from "./field-types";
 
@@ -160,17 +161,21 @@ export function waveLimit(wave?: FieldWaveform): number {
 export function FieldRecordingViewer({ detail, load, onError }: {
   detail: FieldRecordingDetail; load: <T>(options: FieldRequestOptions) => Promise<T>; onError: (cause: unknown) => void;
 }) {
-  const [overview, setOverview] = useState<FieldRecordingDetail | null>(null);
-  const [view, setView] = useState<FieldRecordingDetail | null>(null);
+  // Web history already returns a bounded full-range preview. Reusing it
+  // avoids a second full disk scan/worker request immediately after loading.
+  const completePreview = detail.waveform?.rangeStart === 0 && detail.waveform?.rangeEnd === detail.recording.samples ? detail : null;
+  const [overview, setOverview] = useState<FieldRecordingDetail | null>(completePreview);
+  const [view, setView] = useState<FieldRecordingDetail | null>(completePreview);
   const [range, setRange] = useState<[number, number] | null>(null);
   const [revision, setRevision] = useState(0);
-  const [loading, setLoading] = useState(true), [error, setError] = useState("");
-  const [timeMode, setTimeMode] = useState<TimeMode>("clock"), [unit, setUnit] = useState<VelocityUnit>("mm/s"), [scale, setScale] = useState(0.5);
+  const [loading, setLoading] = useState(!completePreview), [error, setError] = useState("");
+  const [timeMode, setTimeMode] = useState<TimeMode>("clock"), [unit, setUnit] = useState<VelocityUnit>("mm/s"), [scale, setScale] = useState(() => waveLimit(completePreview?.waveform));
   const [from, setFrom] = useState("0"), [to, setTo] = useState("");
   const pending = useRef<Promise<unknown> | null>(null);
   const drag = useRef<{ x: number; range: [number, number]; mode: string } | null>(null);
   useEffect(() => {
     let canceled = false;
+    if (completePreview && !range && revision === 0) { setOverview(completePreview); setView(completePreview); setScale(waveLimit(completePreview.waveform)); setLoading(false); return; }
     setLoading(true); setError("");
     const timer = setTimeout(async () => {
       try {
@@ -196,7 +201,7 @@ export function FieldRecordingViewer({ detail, load, onError }: {
   function zoom(factor: number) { const center = (chosen[0] + chosen[1]) / 2, half = Math.max(1, chosen[1] - chosen[0]) * factor / 2; select(center - half, center + half); }
   function pan(fraction: number) { const shift = (chosen[1] - chosen[0]) * fraction; select(chosen[0] + shift, chosen[1] + shift); }
   const wave = view?.waveform;
-  return <div className="field-full-waveform"><p className="field-subtext">完整记录 {total.toLocaleString("zh-CN")} 点 · {rate ? `${(total / rate).toFixed(3)} 秒` : "采样率未知"}。拖动概览选区或下方波形平移；缩小选区查看逐点数据。</p>
+  return <div className="field-full-waveform" aria-busy={loading}>{detail.recording.sampling && <p className="field-notice">云端降采样副本 · {detail.recording.sampling.sourceSampleRate / 1000} → {detail.recording.sampleRate! / 1000} kHz；本机保留全量原始数据。此处分析带宽受降采样限制。</p>}<p className="field-subtext">完整记录 {total.toLocaleString("zh-CN")} 点 · {rate ? `${(total / rate).toFixed(3)} 秒` : "采样率未知"}。拖动概览选区或下方波形平移；缩小选区查看逐点数据。</p>
     {overview?.waveform && hasWave(overview.waveform) && <div className="field-wave-overview"><strong>全程概览 · 拖动选区两侧改变范围</strong><FieldWaveChart waveform={overview.waveform} unit={unit} compact timeMode={timeMode} />
       <div className="field-overview-track" style={{ left: 76, right: 48 }} onPointerMove={event => {
         if (!drag.current) return;
@@ -215,7 +220,7 @@ export function FieldRecordingViewer({ detail, load, onError }: {
       <label className="field-pan-slider">横向浏览<input aria-label="横向浏览波形" type="range" min="0" max={Math.max(0, total - (chosen[1] - chosen[0]))} step="1" value={chosen[0]} disabled={!overview || chosen[1] - chosen[0] >= total} onChange={event => { const start = Number(event.target.value); select(start, start + chosen[1] - chosen[0]); }} /></label></>}
     <FieldWaveOptions timeMode={timeMode} onTime={setTimeMode} unit={unit} onUnit={setUnit} scale={scale} onScale={setScale} fit={() => setScale(waveLimit(wave))} />
     {error && <p className="field-error" role="alert">{error}<Button onClick={() => setRevision(value => value + 1)}>重试读取</Button></p>}
-    {loading ? <div className="field-wave-loading" role="status"><LoaderCircle className="spin" size={18} />正在读取原始波形；首次生成长记录概览可能需要一些时间。采集与停止控制不受此读取锁阻塞。</div> : !error && <><h3>CH1 · 振动速度</h3><FieldWaveChart waveform={wave} unit={unit} yLimit={scale} timeMode={timeMode} onPan={pan} /><h3>RSSI · 激光回波强度</h3><FieldWaveChart waveform={wave} kind="rssi" timeMode={timeMode} onPan={pan} />
+    {loading ? <ChartLoading label="正在读取波形并生成预览…" /> : !error && <><h3>CH1 · 振动速度</h3><FieldWaveChart waveform={wave} unit={unit} yLimit={scale} timeMode={timeMode} onPan={pan} /><h3>RSSI · 激光回波强度</h3><FieldWaveChart waveform={wave} kind="rssi" timeMode={timeMode} onPan={pan} />
       <p className="field-subtext" data-testid="wave-representation">{wave?.representation === "envelope" ? "当前为区间最小/最大值包络，保留峰值，不是平滑滤波。放大到 4,096 点以内自动显示全部原始点。" : "当前区间显示全部原始点，未做平滑或滤波。"} 选区 {wave?.sourceSamples?.toLocaleString("zh-CN") || 0} 点；超量程 {wave?.overrangeCount || 0} 点；RSSI 缺失 {wave?.missingRssiCount || 0} 点。</p></>}
     <p className="field-subtext">实际时间 = 本机 DAQ 起点 + 样本序号 ÷ 采样率，是推算时间，非设备硬件同步时钟。此处仅选择查看区间，不删除或过滤原始文件；异常/未完成标记继续保留。</p>
   </div>;

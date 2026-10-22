@@ -5,6 +5,7 @@ import { Button } from "./common";
 import { CustomSelect } from "./custom-select";
 import { FieldWaveChart, FieldWaveOptions, hasWave, waveBounds, waveLimit, type TimeMode, type VelocityUnit } from "./field-waveform";
 import { FieldRealtimeAnalysis } from "./field-realtime";
+import { ChartLoading } from "./chart-loading";
 import { FieldCycleProgress } from "./field-cycle-progress";
 import { FieldCycleMotion } from "./field-cycle-motion";
 import type { FieldCaptureRoute } from "./field-capture-route";
@@ -135,7 +136,7 @@ export const FieldAcquisition = memo(function FieldAcquisition({ config, onConfi
         <div id={`${tabId}-wave-panel`} role="tabpanel" tabIndex={0} aria-labelledby={`${tabId}-wave-tab`} hidden={tab !== "wave"}>
           {tab === "wave" && <>
             <div className="field-section-heading field-capture-wave-heading"><h2>振动速度</h2><label className="field-window-picker">显示窗口<CustomSelect aria-label="实时显示时间窗" value={windowMs} onChange={event => onWindow(Number(event.target.value))}>{[20, 100, 500, 1000].map(value => <option key={value} value={value}>{value} ms</option>)}</CustomSelect></label></div>
-            <FieldWaveChart waveform={wave} unit={unit} timeMode={timeMode} yLimit={autoScale ? undefined : scale} />
+            {!hasWave(wave) && ["starting", "acquiring"].includes(status?.state || "") && !pollError ? <ChartLoading label="正在等待首批测振数据…" /> : <FieldWaveChart waveform={wave} unit={unit} timeMode={timeMode} yLimit={autoScale ? undefined : scale} />}
             <details className="field-chart-options"><summary>显示设置<span>{unit} · {autoScale ? "自动纵轴" : "固定纵轴"} · {timeMode === "relative" ? "相对时间" : "本机时间"}</span></summary><FieldWaveOptions timeMode={timeMode} onTime={setTimeMode} unit={unit} onUnit={setUnit} scale={autoScale ? waveLimit(wave) : scale} onScale={value => { setScale(value); setAutoScale(false); }} fit={() => setAutoScale(true)} /></details>
             <div className="field-rssi-heading"><h3>RSSI 回波强度</h3><span>信号质量</span></div><FieldWaveChart waveform={wave} kind="rssi" compact timeMode={timeMode} />
             <div className="field-chart-foot"><span>{(wave?.sourceSamples ?? wave?.values.length ?? 0).toLocaleString("zh-CN")} 个原始样本</span><span>窗口 {wave?.sampleRate && hasWave(wave) ? number((waveBounds(wave)[1] - waveBounds(wave)[0]) / wave.sampleRate * 1000) : "—"} ms</span><span>{wave?.representation === "envelope" ? "峰值包络" : "原始采样点"}</span><span>{actualSource === "simulation" || !wave && source === "simulation" ? "模拟数据" : "设备输入"}</span></div>

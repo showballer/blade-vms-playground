@@ -112,6 +112,7 @@ async function dispatch(options) {
       return warning ? { ...status, state: 'error', error: [status.error, warning].filter(Boolean).join('；') } : status;
     }
     case 'setAutoSync': return cloudSync.setEnabled(options.enabled);
+    case 'setUploadSampleRate': return cloudSync.setUploadSampleRate(options.sampleRate);
     case 'syncRecording': return cloudSync.uploadRecording(options.id);
     case 'retrySync': return cloudSync.retry();
     case 'start': {
@@ -235,7 +236,7 @@ else {
       auth = createUnifiedAuth({ file: path.join(userData, 'blade-unified-account.json'), localAuth, retainSessionToken: true });
       service = createFieldService({ getConfig: () => config, dataDir,
         resourcesDir: app.isPackaged ? process.resourcesPath : path.join(__dirname, '../resources') });
-      cloudSync = createFieldCloudSync({ file: path.join(userData, 'blade-cloud-sync.json'), dataDir: path.join(dataDir, 'recordings'), auth, getLive: () => service.frame() });
+      cloudSync = createFieldCloudSync({ file: path.join(userData, 'blade-cloud-sync.json'), dataDir: path.join(dataDir, 'recordings'), auth, getLive: () => service.frame(), prepareUpload: (id, rate) => service.prepareUpload(id, rate) });
       captureTracker = createCaptureTracker({ file: path.join(userData, 'blade-capture-runs.json'),
         dataDir: path.join(dataDir, 'recordings'), auth, sync: cloudSync, getSnapshot: () => service.status() });
     } catch {

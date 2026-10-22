@@ -208,7 +208,7 @@ def imported_record_metadata(metadata: dict, samples: int, sample_rate: float, f
             result[source_key] = metadata[key]
         if source_key in metadata:
             result[source_key] = number(metadata[source_key], "原采集时间")
-    for key in ("turntable", "deviceSettings"):
+    for key in ("turntable", "deviceSettings", "sampling"):
         if key in metadata:
             if not isinstance(metadata[key], dict):
                 raise ValueError(f"{key} 元数据必须是对象。")

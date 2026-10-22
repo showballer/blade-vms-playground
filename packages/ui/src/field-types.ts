@@ -20,6 +20,7 @@ export type FieldSyncItem = {
 };
 export type FieldSyncStatus = {
   enabled: boolean; connected: boolean;
+  uploadSampleRate?: number;
   state: "unbound" | "signed-out" | "offline" | "ready" | "syncing" | "error";
   error?: string; items: FieldSyncItem[];
 };
@@ -187,6 +188,7 @@ export type FieldDeviceRequest = {
 export type FieldRssiCalibrationRequest = { deviceIp: string; hostIp: string; state: "background" | "blade_on" | "blade_pass"; durationSeconds: number; confirmLaser: true };
 export type FieldRssiCalibrationResult = { state: FieldRssiCalibrationRequest["state"]; label: string; recordedAt: number; startedAt: number; durationSeconds: number; sampleRate: number | null; sampleCount: number; minimum: number; p10: number; median: number; mean: number; p90: number; maximum: number; samples: number[]; states?: Record<string, FieldRssiCalibrationResult> };
 export type FieldRecording = {
+  sampling?: { kind: "anti_alias_lowpass"; sourceSampleRate: number; sourceSamples: number; targetSampleRate: number; recommendedMaxFrequencyHz: number };
   captureSessionId?: string;
   turntable?: FieldTurntableStatus & { config: FieldTurntableConfig; telemetry?: { events: number; file: string; sha256: string; cloudSync: string } };
   source?: string;
@@ -248,6 +250,7 @@ export type FieldStatus = {
 export type FieldRequestOptions =
   | { action: "session" | "accountInfo" | "logout" | "status" | "stop" | "recordings" | "simulation" | "openDataDirectory" | "restartService" | "configureService" | "configureDll" | "syncStatus" | "retrySync" | "turntablePorts" }
   | { action: "setAutoSync"; enabled: boolean }
+  | { action: "setUploadSampleRate"; sampleRate: number }
   | { action: "syncRecording"; id: string }
   | { action: "frame"; windowMs?: number }
   | { action: "login"; username: string; password: string }

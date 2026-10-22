@@ -113,6 +113,16 @@ function files(value: unknown): CaptureFile[] {
 }
 function validatePreview(waveform: unknown, realtime: unknown) {
   object(waveform);
+  if (waveform.envelope !== undefined) {
+    if (waveform.representation !== "envelope" || !Array.isArray(waveform.envelope) || waveform.envelope.length > 1000 ||
+        !Number.isFinite(waveform.sampleRate) || waveform.sampleRate <= 0 || waveform.envelope.some((entry: any, i: number) =>
+          !entry || !integer(entry.start) || !integer(entry.end, entry.start + 1) ||
+          (i > 0 && entry.start !== waveform.envelope[i - 1].end) ||
+          !Number.isFinite(entry.min) || !Number.isFinite(entry.max) || entry.min > entry.max ||
+          !integer(entry.missing, 0, entry.end - entry.start) || !integer(entry.overrange, 0, entry.end - entry.start) ||
+          [entry.rssiMin, entry.rssiMax].some(v => v !== null && (!Number.isFinite(v) || v < 0 || v > 100))))
+      throw invalid("实时波形包络无效或超过显示上限。");
+  }
   const numbers = (value: unknown, nullable = false, limit = 2048) => Array.isArray(value) && value.length <= limit &&
     value.every(item => nullable && item === null || typeof item === "number" && Number.isFinite(item));
   if (!numbers(waveform.values) || (waveform.rssi !== undefined && !numbers(waveform.rssi, true)) ||

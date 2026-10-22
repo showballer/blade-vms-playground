@@ -3,6 +3,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowDownToLine, CheckCircle2, Cloud, Pause, Play, Radio, RefreshCw, Waves } from "lucide-react";
 import { api, ApiError, download } from "./api";
 import { Button } from "./common";
+import { ChartLoading } from "./chart-loading";
 import { CustomSelect } from "./custom-select";
 import { FieldRecordingViewer, FieldWaveChart } from "./field-waveform";
 import { FieldRealtimeAnalysis } from "./field-realtime";
@@ -29,6 +30,7 @@ export function WebCaptures({ canAnalyze, onAnalyze, onAnalyzeBatch }: { canAnal
   const [view, setView] = useState<View>("waveform");
   const [paused, setPaused] = useState(false), pausedRef = useRef(false);
   const [error, setError] = useState(""), [listError, setListError] = useState("");
+  const [detailLoading, setDetailLoading] = useState(false);
   const [loading, setLoading] = useState(true), [busy, setBusy] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0), [history, setHistory] = useState<FieldRecordingDetail | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false), [analysisError, setAnalysisError] = useState("");
@@ -60,7 +62,8 @@ export function WebCaptures({ canAnalyze, onAnalyze, onAnalyzeBatch }: { canAnal
     preparationTicket.current++; setBusy(false);
     setDetail(null); setDisplayed(null); setHistory(null); setError(""); setAnalysisError(""); setHistoryFailed(false);
     setPaused(false); pausedRef.current = false; setView("waveform");
-    if (!selectedId) return;
+    if (!selectedId) { setDetailLoading(false); return; }
+    setDetailLoading(true);
     let canceled = false, timer: ReturnType<typeof setTimeout>;
     async function poll() {
       try {
@@ -74,7 +77,7 @@ export function WebCaptures({ canAnalyze, onAnalyze, onAnalyzeBatch }: { canAnal
           setDetail(null); setDisplayed(null); setHistory(null); setCaptures(items => items.filter(item => item.id !== selectedId));
         }
       } }
-      finally { if (!canceled) timer = setTimeout(poll, document.hidden ? 5000 : 1000); }
+      finally { if (!canceled) { setDetailLoading(false); timer = setTimeout(poll, document.hidden ? 5000 : 1000); } }
     }
     void poll(); return () => { canceled = true; clearTimeout(timer); };
   }, [selectedId, refreshKey]);
@@ -124,18 +127,19 @@ export function WebCaptures({ canAnalyze, onAnalyze, onAnalyzeBatch }: { canAnal
     finally { setBusy(false); }
   }
   const disconnected = Boolean(error) || capture?.liveState === "offline";
-  const tabs: { id: View; label: string }[] = [{ id: "waveform", label: "实时波形" }, { id: "analysis", label: "实时分析" }, { id: "recording", label: "完整原始记录" }];
+  const tabs: { id: View; label: string }[] = [{ id: "waveform", label: "实时波形" }, { id: "analysis", label: "实时分析" }, { id: "recording", label: "已上传记录" }];
   return <section className="web-captures" aria-label="桌面实时采集与原始记录">
     <div className="field-card capture-selector-card">
       <div className="field-section-heading"><div><h2><Radio size={18} /> 桌面采集</h2><p>查看实时信号，选择已上传的完整记录进行分析。</p></div><Button variant="ghost" onClick={() => setRefreshKey(value => value + 1)}><RefreshCw size={15} />刷新</Button></div>
       {listError && <p className="field-error" role="alert">{listError}</p>}
-      {loading ? <p className="field-subtext" role="status">正在读取采集记录…</p> : !captures.length ? <div className="capture-empty"><Cloud size={26} /><div><strong>等待客户端采集</strong><p>客户端绑定此 Web 的账号后，开启自动同步并开始采集。采集中可看实时波形，停止保存后自动上传原始记录。</p></div></div> : <>
+      {loading ? <p className="field-subtext" role="status">正在读取采集记录…</p> : !captures.length ? <div className="capture-empty"><Cloud size={26} /><div><strong>等待客户端采集</strong><p>客户端绑定此 Web 的账号后，开启自动同步并开始采集。采集中可看实时波形，停止保存后按客户端设置上传。</p></div></div> : <>
         <div className="capture-selection-row"><label>采集任务<CustomSelect aria-label="桌面采集任务" value={selectedId} onChange={event => setSelectedId(event.target.value)}>{captures.map(item => <option key={item.id} value={item.id}>{item.recording.name || "未命名采集"}{item.recording.pointCycle?.radialPointName ? ` · ${item.recording.pointCycle.radialPointName} / ${item.recording.pointCycle.azimuthDeg}°` : ""} · {item.ownerName} · {captureLiveLabel(item.liveState)} · {time(item.recording.startedAt)}</option>)}</CustomSelect></label>
-          <Button variant="primary" disabled={!complete || !canAnalyze || busy} onClick={() => void useForAnalysis()} title={!canAnalyze ? "管理员或分析员可执行分析" : !complete ? "完整原始记录上传完成后可分析" : undefined}><ArrowDownToLine size={16} />{busy ? "正在准备…" : prepareCurrentOnly ? "选择当前记录用于分析" : selection?.automatic ? "选择同叶片记录" : "选择用于旋转分析"}</Button>
+          <Button variant="primary" disabled={!complete || !canAnalyze || busy} onClick={() => void useForAnalysis()} title={!canAnalyze ? "管理员或分析员可执行分析" : !complete ? "记录上传完成后可分析" : undefined}><ArrowDownToLine size={16} />{busy ? "正在准备…" : prepareCurrentOnly ? "选择当前记录用于分析" : selection?.automatic ? "选择同叶片记录" : "选择用于旋转分析"}</Button>
         </div>
         {selection?.automatic && <p className="field-subtext">本任务 · 叶片 {capture?.recording.pointCycle?.bladeId} · {selection.captures.length} 条完整点位记录{selection.pending ? ` · ${selection.pending} 条尚未上传完成` : ""}。下方可按测点、批次和点位选择分析范围。</p>}
         {prepareCurrentOnly && <p className="field-subtext">当前任务超过 64 条记录，请在上方逐条选择并加入分析工作区，再在下方分批分析。</p>}
-        {capture && <div className="capture-info-grid"><div><span>采集端</span><strong>{capture.ownerName}</strong><small>{capture.tenant}</small></div><div><span>原始样本 / 采样率</span><strong>{count(capture.recording.samples)} 点</strong><small>{count(capture.recording.sampleRate)} Hz</small></div><div><span>实时连接</span><strong className={disconnected ? "capture-warning" : ""}>{error ? "连接中断" : captureLiveLabel(capture.liveState)}</strong><small>最后接收 {time(capture.lastSeenAt)}</small></div><div><span>原始记录</span><strong>{captureUploadLabel(capture.uploadState)}</strong><small>{capture.totalBytes ? `${captureProgress(capture)}% · ${(capture.receivedBytes / 1048576).toFixed(1)} / ${(capture.totalBytes / 1048576).toFixed(1)} MB` : "停止并保存后上传"}</small></div></div>}
+        {capture?.recording.sampling && <p className="field-notice">降采样上传 · {capture.recording.sampling.sourceSampleRate / 1000} → {capture.recording.sampleRate! / 1000} kHz；本机全量原始记录保留。</p>}
+        {capture && <div className="capture-info-grid"><div><span>采集端</span><strong>{capture.ownerName}</strong><small>{capture.tenant}</small></div><div><span>云端样本 / 采样率</span><strong>{count(capture.recording.samples)} 点</strong><small>{count(capture.recording.sampleRate)} Hz</small></div><div><span>实时连接</span><strong className={disconnected ? "capture-warning" : ""}>{error ? "连接中断" : captureLiveLabel(capture.liveState)}</strong><small>最后接收 {time(capture.lastSeenAt)}</small></div><div><span>上传记录</span><strong>{captureUploadLabel(capture.uploadState)}</strong><small>{capture.totalBytes ? `${captureProgress(capture)}% · ${(capture.receivedBytes / 1048576).toFixed(1)} / ${(capture.totalBytes / 1048576).toFixed(1)} MB` : "停止并保存后上传"}</small></div></div>}
       </>}
       {analysisError && <p className="field-error" role="alert">{analysisError}{historyFailed && view === "recording" && <Button disabled={historyLoading} onClick={() => setHistoryRevision(value => value + 1)}>重试读取</Button>}</p>}
       {capture?.error && <p className="field-error" role="alert">{capture.error}</p>}
@@ -152,9 +156,9 @@ export function WebCaptures({ canAnalyze, onAnalyze, onAnalyzeBatch }: { canAnal
       </div>
       {disconnected && <div className="field-notice warning" role="status">{error || "采集端连接已中断。"} 当前保留最后收到的画面，等待连接恢复。</div>}
       {paused && <div className="capture-paused" role="status">显示已暂停 · 画面时间 {time(displayed?.receivedAt)}</div>}
-      {view === "waveform" && <section id="capture-waveform-panel" role="tabpanel" aria-labelledby="capture-waveform-tab" className="field-card capture-wave-card"><div className="field-section-heading"><h2><Waves size={17} /> CH1 振动速度</h2><span className="field-subtext">mm/s · 相对时间</span></div><FieldWaveChart waveform={displayed?.waveform} unit="mm/s" /><div className="capture-rssi-heading">RSSI 回波强度 <span>信号质量 · %</span></div><FieldWaveChart waveform={displayed?.waveform} kind="rssi" compact /><p className="capture-preview-note">实时画面为有限显示窗口；完整原始样本以已上传记录为准。</p></section>}
+      {view === "waveform" && <section id="capture-waveform-panel" role="tabpanel" aria-labelledby="capture-waveform-tab" className="field-card capture-wave-card"><div className="field-section-heading"><h2><Waves size={17} /> CH1 振动速度</h2><span className="field-subtext">mm/s · 相对时间</span></div>{detailLoading ? <ChartLoading label="正在连接并读取波形…" /> : <FieldWaveChart waveform={displayed?.waveform} unit="mm/s" />}<div className="capture-rssi-heading">RSSI 回波强度 <span>信号质量 · %</span></div><FieldWaveChart waveform={displayed?.waveform} kind="rssi" compact /><p className="capture-preview-note">实时画面为有限显示窗口；图表按显示分辨率压缩；上传记录按客户端采样率设置保存，本机保留全量原始样本。</p></section>}
       {view === "analysis" && <div id="capture-analysis-panel" role="tabpanel" aria-labelledby="capture-analysis-tab"><FieldRealtimeAnalysis key={selectedId} realtime={displayed?.realtime} paused={paused} /></div>}
-      {view === "recording" && <section id="capture-recording-panel" role="tabpanel" aria-labelledby="capture-recording-tab" className="field-card capture-history-card"><div className="field-section-heading"><h2><CheckCircle2 size={17} /> 完整原始记录</h2><div className="capture-display-actions">{capture.recording.turntable && <><Button disabled={busy} onClick={() => void downloadAttachment("manifest.json")}><ArrowDownToLine size={15} />转盘元信息</Button>{capture.recording.turntable.telemetry && <Button disabled={busy} onClick={() => void downloadAttachment("turntable.jsonl")}><ArrowDownToLine size={15} />转盘遥测</Button>}</>}<span className="field-badge green">上传校验通过</span></div></div>{historyLoading ? <p role="status">正在读取完整记录…</p> : !historyFailed && history && <FieldRecordingViewer key={selectedId} detail={history} load={historyRequest} onError={historyError} />}</section>}
+      {view === "recording" && <section id="capture-recording-panel" role="tabpanel" aria-labelledby="capture-recording-tab" className="field-card capture-history-card"><div className="field-section-heading"><h2><CheckCircle2 size={17} /> 已上传记录</h2><div className="capture-display-actions">{capture.recording.turntable && <><Button disabled={busy} onClick={() => void downloadAttachment("manifest.json")}><ArrowDownToLine size={15} />转盘元信息</Button>{capture.recording.turntable.telemetry && <Button disabled={busy} onClick={() => void downloadAttachment("turntable.jsonl")}><ArrowDownToLine size={15} />转盘遥测</Button>}</>}<span className="field-badge green">上传校验通过</span></div></div>{historyLoading ? <ChartLoading label="正在读取已上传记录…" /> : !historyFailed && history && <FieldRecordingViewer key={selectedId} detail={history} load={historyRequest} onError={historyError} />}</section>}
     </div>}
   </section>;
 }

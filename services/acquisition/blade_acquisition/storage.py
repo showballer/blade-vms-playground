@@ -26,7 +26,7 @@ DISPLAY_LIMIT = 2048
 RECORDING_LIST_FIELDS = (
     "id", "name", "source", "windFarm", "object", "turbine", "point",
     "samples", "sampleRate", "startedAt", "endedAt", "status", "error", "unit",
-    "sampleOrigin", "velocityRangeMps", "position", "rpm", "qualityCounts", "simulation", "captureSessionId",
+    "sampleOrigin", "velocityRangeMps", "position", "rpm", "qualityCounts", "simulation", "captureSessionId", "sampling",
 )
 POINT_LIST_FIELDS = (
     "mode", "collectionId", "sessionId", "bladeId", "radialPointId", "radialPointName",
