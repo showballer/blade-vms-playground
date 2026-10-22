@@ -667,8 +667,12 @@ def dispatch(root: Path, payload: dict):
     if action == "import":
         return import_file(store, payload)
     if action == "blade-passes":
+        parameters = payload.get("parameters")
+        if isinstance(parameters, dict) and "synthesis" in parameters:
+            from .blade_synthesis import reconstruct_blade_passes
+            return reconstruct_blade_passes(store, parameters)
         from .blade_passes import analyze_blade_passes
-        return analyze_blade_passes(store, payload.get("parameters"))
+        return analyze_blade_passes(store, parameters)
     config = RotationRequest.model_validate(payload.get("parameters"))
     manifests = [store._read_manifest(store.directory(record_id)) for record_id in config.recordingIds]
     rates = [record.get("sampleRate") for record in manifests]

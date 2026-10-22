@@ -263,6 +263,7 @@ export type FieldRequestOptions =
   | { action: "waveform"; id: string; start?: number; end?: number }
   | { action: "analysis"; id: string; parameters: Record<string, unknown> }
   | { action: "rotation"; parameters: Record<string, unknown> }
+  | { action: "bladePasses"; parameters: Record<string, unknown> }
   | { action: "device"; request: FieldDeviceRequest }
   | { action: "rssiCalibration"; request: FieldRssiCalibrationRequest }
   | { action: "singlePoint"; request: FieldSinglePointRequest }

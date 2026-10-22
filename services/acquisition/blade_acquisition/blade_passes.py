@@ -257,6 +257,39 @@ def _time_curve(values, start, rate):
             "values": values[indices].tolist(), "representation": "original-index-minmax"}
 
 
+def _plot_curve(values, start, rate):
+    """Create a bounded display preview with anomalous-step buckets blanked."""
+    differences = np.abs(np.diff(values))
+    typical = float(np.percentile(differences, 99))
+    threshold = max(50 * typical, 1e-6)
+    bad_edges = differences > threshold
+    bad_samples = np.zeros(len(values), dtype=bool)
+    bad_samples[:-1] |= bad_edges
+    bad_samples[1:] |= bad_edges
+    bucket_size = max(1, math.ceil(len(values) / (MAX_CURVE_POINTS // 2)))
+    indices, plotted = [], []
+    hidden_samples = hidden_buckets = 0
+    for lo in range(0, len(values), bucket_size):
+        hi = min(len(values), lo + bucket_size)
+        if bad_samples[lo:hi].any():
+            hidden_samples += hi - lo
+            hidden_buckets += 1
+            indices.append(lo + (hi - lo - 1) // 2)
+            plotted.append(None)
+            continue
+        section = values[lo:hi]
+        selected = sorted({lo + int(np.argmin(section)), lo + int(np.argmax(section))})
+        indices.extend(selected)
+        plotted.extend(float(values[index]) for index in selected)
+    original = np.asarray(indices, dtype=np.int64) + start
+    return ({"sampleIndices": original.tolist(), "seconds": (original / rate).tolist(),
+             "values": plotted, "representation": "minmax-with-anomaly-gaps"},
+            {"method": "step-over-50-times-p99", "thresholdMps": threshold,
+             "flaggedSteps": int(np.count_nonzero(bad_edges)), "hiddenSamples": hidden_samples,
+             "hiddenTimeBuckets": hidden_buckets, "plottedSamples": len(values) - hidden_samples,
+             "effect": "plot-only; source-samples-metrics-and-spectra-unchanged"})
+
+
 def _spectrum(values, start, rate):
     size = min(len(values), MAX_FFT_SAMPLES)
     offset = (len(values) - size) // 2
@@ -277,7 +310,7 @@ def _spectrum(values, start, rate):
             "boundedWindow": size != len(values)}
 
 
-def analyze_blade_passes(store, parameters) -> dict:
+def analyze_blade_passes(store, parameters, *, segment_consumer=None) -> dict:
     config = _parameters(parameters)
     manifests, definitions, stations, original_ids, pass_ids = [], {}, {}, set(), set()
     collection, blade, total = None, None, 0
@@ -390,13 +423,23 @@ def analyze_blade_passes(store, parameters) -> dict:
         rate = manifest["sampleRate"]
         for start, end in ranges:
             processed = _preprocess(values[start:end], config["detrend"])
+            plot_data = None
+            if segment_consumer is not None:
+                plot_data = segment_consumer(source, start, end, values[start:end], processed)
             item = _statistics(processed)
             stats.append(item)
             source["validRanges"].append({"start": start, "end": end, "samples": end - start})
-            source["segments"].append({"start": start, "end": end, "samples": end - start,
+            segment = {"start": start, "end": end, "samples": end - start,
                                        "durationSeconds": (end - start) / rate, "metrics": _metrics(item),
                                        "timeDomain": _time_curve(processed, start, rate),
-                                       "spectrum": _spectrum(processed, start, rate)})
+                                       "spectrum": _spectrum(processed, start, rate)}
+            plot_curve, plot_filter = _plot_curve(processed, start, rate)
+            segment["plotTimeDomain"] = plot_curve
+            segment["plotFilter"] = plot_filter
+            if isinstance(plot_data, dict) and "plotTimeDomain" in plot_data:
+                segment["plotTimeDomain"] = plot_data["plotTimeDomain"]
+                segment["plotFilter"] = plot_data["plotFilter"]
+            source["segments"].append(segment)
         merged = _merge_statistics(stats)
         source.update(status="included", validSamples=merged["samples"],
                       validSeconds=merged["samples"] / rate, metrics=_metrics(merged))

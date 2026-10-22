@@ -13,7 +13,7 @@ async function main() {
   const user = { id: "pass-worker", tenant: "temporary-test" };
   const collection = "c".repeat(32);
   async function upload(index: number, radius: number, azimuth: number, session: string) {
-    const samples = 2000, rate = 1000, radial = radius < .4 ? "p1" : "p2";
+    const samples = 2000, rate = 1000, radial = radius < .4 ? "p1" : radius < .6 ? "p2" : "p3";
     const metadata = { format: "blade-vms-csv-1", recordingId: index.toString(16).padStart(32, "0"),
       name: "隔离点位分析测试", source: "simulation", object: "测试叶轮", turbine: "test", sampleOrigin: 1700000000 + index,
       sampleRate: rate, samples, rssiSampleStride: 4, rssiSampleRate: rate / 4,
@@ -49,11 +49,24 @@ async function main() {
     assert.notEqual(result.sources[0].provenance.storeSampleOrigin, 1700000001);
     assert.equal(result.modalMatch, undefined);
     assert.ok(JSON.stringify(result).length < 8 * 1024 * 1024);
+    const d = await upload(4, .65, 0, "d".repeat(32));
+    const synthesis = await rotationWorker(user, { action: "blade-passes", parameters: {
+      ...parameters, recordingIds: [...parameters.recordingIds, d.id], synthesis: { minHz: 20, maxHz: 300 },
+    } });
+    assert.equal(synthesis.synthesis.status, "candidates_available");
+    assert.equal(synthesis.coverage.validSamples, 4800);
+    assert.equal(synthesis.coverage.segmentCount, 12);
+    assert.deepEqual(synthesis.synthesis.mergedPoints.map((point: any) => point.samples), [2400, 1200, 1200]);
+    assert.equal(synthesis.synthesis.measuredPhaseAvailable, false);
+    const candidate = synthesis.synthesis.candidates.find((item: any) => Math.abs(item.frequencyHz - 50) < 3);
+    assert.ok(candidate);
+    candidate.points.forEach((point: any) => assert.ok(Math.abs(point.normalizedAmplitude - point.radiusM / .65) < .02));
+    assert.ok(synthesis.synthesis.mergedPoints.every((point: any) => point.segments.every((segment: any) => segment.sourceRecordingId)));
     await assert.rejects(rotationWorker(user, { action: "rotation", parameters: { recordingIds: [a.id], rpm: 1200 } }), /片段|间歇|点位/);
     await assert.rejects(rotationWorker({ ...user, id: "other-user" }, { action: "blade-passes", parameters }), /记录|文件|No such file/);
     const duplicate = await upload(1, .31, 0, "a".repeat(32));
     await assert.rejects(rotationWorker(user, { action: "blade-passes", parameters: { recordingIds: [a.id, duplicate.id] } }), /重复|副本|去重/);
-    console.log("PASS gzip import → identity/RSSI preservation → disjoint pass analysis → radial/station grouping → account isolation and legacy guard");
+    console.log("PASS gzip import → identity/RSSI preservation → disjoint pass analysis → synthesis and known shape → account isolation and legacy guard");
   } finally {
     if (previous === undefined) delete process.env.BLADE_ANALYSIS_DATA_DIR;
     else process.env.BLADE_ANALYSIS_DATA_DIR = previous;

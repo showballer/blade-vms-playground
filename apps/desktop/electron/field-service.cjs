@@ -294,7 +294,7 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     if (!port || !secret || !child) throw failure('本机采集服务尚未就绪');
     const requestGeneration = generation, requestChild = child;
     const response = await fetchImpl(`http://127.0.0.1:${port}/api/field/${route}`, {
-      method, redirect: 'error', signal: AbortSignal.timeout(route.endsWith('/upload-copy') ? 1800000 : route.endsWith('/analysis') || route === 'rotation' || route.endsWith('/waveform') || route.includes('/waveform?') ? 120000 :
+      method, redirect: 'error', signal: AbortSignal.timeout(route.endsWith('/upload-copy') ? 1800000 : route.endsWith('/analysis') || route === 'rotation' || route === 'blade-passes' || route.endsWith('/waveform') || route.includes('/waveform?') ? 120000 :
         route === 'device' || route === 'rssi-calibration' ? 90000 : route === 'stop' || route === 'turntable' || route === 'single-point' && body?.action === 'cancel' ? Math.max(75000, requestTimeoutMs) : requestTimeoutMs),
       headers: { Authorization: `Bearer ${secret}`, 'Content-Type': 'application/json' },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -747,6 +747,15 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     await ready();
     return http('rotation', 'POST', parameters);
   }
-  return { start, status, frame, begin, stop, recordings, simulation, exportRecording, exportTask, prepareUpload, waveform, analysis, rotation, device, rssiCalibration, turntable, turntablePorts, singlePoint, motionTrial, shutdown, serviceInfo };
+  async function bladePasses(parameters) {
+    if (!parameters || typeof parameters !== 'object' || Array.isArray(parameters) ||
+        JSON.stringify(parameters).length > 20000 || !Array.isArray(parameters.recordingIds) ||
+        parameters.recordingIds.length < 1 || parameters.recordingIds.length > 64 ||
+        parameters.recordingIds.some(id => typeof id !== 'string' || !/^[0-9a-f]{32}$/.test(id)))
+      throw failure('无效叶片有效片段分析请求', 400);
+    await ready();
+    return http('blade-passes', 'POST', parameters);
+  }
+  return { start, status, frame, begin, stop, recordings, simulation, exportRecording, exportTask, prepareUpload, waveform, analysis, rotation, bladePasses, device, rssiCalibration, turntable, turntablePorts, singlePoint, motionTrial, shutdown, serviceInfo };
 }
 module.exports = { createFieldService, windowsServiceEnvironment, posixServiceEnvironment, failure };

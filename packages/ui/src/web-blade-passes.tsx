@@ -6,10 +6,12 @@ import { Button } from "./common";
 import { CustomSelect } from "./custom-select";
 import { Chart } from "./charts";
 import { ChartLoading } from "./chart-loading";
+import { BladeSynthesisResults } from "./web-blade-synthesis";
 import { BLADE_PASS_RECORD_LIMIT, bladePassMetadata, bladePassNumber as number, bladePassReason, bladePassTasks, bladePassUnavailableReason, bladePassWaveSeries, preferredBladePassTask, selectedBladePassRecords,
   type BladePassRecording, type BladePassResult, type BladePassSource } from "./web-blade-passes-data";
 
-type Props = { canAnalyze: boolean; refreshKey: number; preferredIds: string[]; onError: (cause: unknown) => void };
+type Props = { canAnalyze: boolean; refreshKey: number; preferredIds: string[]; onError: (cause: unknown) => void;
+  localData?: { listRecordings: () => Promise<{ recordings: BladePassRecording[] }>; analyze: (parameters: Record<string, unknown>) => Promise<BladePassResult> } };
 const token = (name: string, fallback: string) => typeof window === "undefined" ? fallback : getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
 function chartBase() {
   return { animation: false, color: [token("--accent", "#2d6cc0"), token("--green", "#1fa971")], textStyle: { fontSize: 12 },
@@ -20,11 +22,12 @@ function chartBase() {
 const station = (angle: number | undefined) => Number.isFinite(angle) ? `${number(angle)}°` : "点位未知";
 const sourceLabel = (source: BladePassSource) => `${source.radialPointName || source.radialPointId} · ${station(source.azimuthDeg)} · ${source.sessionId?.slice(0, 8) || source.recordingId.slice(0, 8)}`;
 
-export function WebBladePasses({ canAnalyze, refreshKey, preferredIds, onError }: Props) {
+export function WebBladePasses({ canAnalyze, refreshKey, preferredIds, onError, localData }: Props) {
   const [records, setRecords] = useState<BladePassRecording[]>([]);
   const [taskKey, setTaskKey] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const [detrend, setDetrend] = useState("constant"), [rssi, setRssi] = useState("");
+  const [synthesize, setSynthesize] = useState(true), [minHz, setMinHz] = useState("20"), [maxHz, setMaxHz] = useState("2000");
   const [loading, setLoading] = useState(true), [busy, setBusy] = useState(false);
   const [result, setResult] = useState<BladePassResult | null>(null);
   const listTicket = useRef(0), calculationTicket = useRef(0), selection = useRef({ taskKey, selected });
@@ -39,7 +42,7 @@ export function WebBladePasses({ canAnalyze, refreshKey, preferredIds, onError }
   const refresh = useCallback(async () => {
     const ticket = ++listTicket.current; invalidate(); setLoading(true);
     try {
-      const response = await api<{ recordings: BladePassRecording[] }>("rotation/recordings");
+      const response = localData ? await localData.listRecordings() : await api<{ recordings: BladePassRecording[] }>("rotation/recordings");
       if (ticket !== listTicket.current) return;
       const nextTasks = bladePassTasks(response.recordings);
       const next = preferredBladePassTask(nextTasks, JSON.parse(preferredKey), selection.current.taskKey);
@@ -47,7 +50,7 @@ export function WebBladePasses({ canAnalyze, refreshKey, preferredIds, onError }
       setSelected(next?.records.slice(0, BLADE_PASS_RECORD_LIMIT).map(record => record.id) ?? []);
     } catch (cause) { if (ticket === listTicket.current) errorHandler.current(cause); }
     finally { if (ticket === listTicket.current) setLoading(false); }
-  }, [invalidate, preferredKey]);
+  }, [invalidate, preferredKey, localData]);
   useEffect(() => { void refresh(); return () => { listTicket.current++; calculationTicket.current++; }; }, [refresh, refreshKey]);
   useEffect(() => { if (!canAnalyze) invalidate(); }, [canAnalyze, invalidate]);
   const pointOptions = useMemo(() => {
@@ -71,11 +74,14 @@ export function WebBladePasses({ canAnalyze, refreshKey, preferredIds, onError }
     if (!canAnalyze || !chosen.length || loading || busy) return;
     const rssiThresholdPercent = rssi.trim() === "" ? undefined : Number(rssi);
     if (rssiThresholdPercent !== undefined && (!Number.isFinite(rssiThresholdPercent) || rssiThresholdPercent < 0 || rssiThresholdPercent > 100)) { onError(new Error("RSSI 阈值应在 0～100% 之间。")); return; }
+    if (synthesize && (!Number.isFinite(Number(minHz)) || !Number.isFinite(Number(maxHz)) || Number(minHz) < .1 || Number(maxHz) <= Number(minHz) || Number(maxHz) > 100000)) { onError(new Error("合成频率范围应满足 0.1 ≤ 下限 < 上限 ≤ 100000 Hz。")); return; }
     const ticket = ++calculationTicket.current; setBusy(true); setResult(null);
     try {
-      const response = await api<BladePassResult>("rotation/blade-passes", "POST", {
+      const parameters = {
         recordingIds: chosen.map(record => record.id), detrend, ...(rssiThresholdPercent === undefined ? {} : { rssiThresholdPercent }),
-      });
+        ...(synthesize ? { synthesis: { minHz: Number(minHz), maxHz: Number(maxHz) } } : {}),
+      };
+      const response = localData ? await localData.analyze(parameters) : await api<BladePassResult>("rotation/blade-passes", "POST", parameters);
       if (ticket === calculationTicket.current) setResult(response);
     } catch (cause) { if (ticket === calculationTicket.current) errorHandler.current(cause); }
     finally { if (ticket === calculationTicket.current) setBusy(false); }
@@ -88,7 +94,7 @@ export function WebBladePasses({ canAnalyze, refreshKey, preferredIds, onError }
         {tasks.map(item => <option key={item.key} value={item.key}>{item.name} · 叶片 {item.bladeId} · {item.collectionId.slice(0, 8)}</option>)}
       </CustomSelect></label><div className="blade-pass-selection"><strong>{chosen.length}</strong> / {BLADE_PASS_RECORD_LIMIT} 条记录</div><Button type="submit" variant="primary" disabled={!canAnalyze || !chosen.length || loading || busy}>{busy ? "正在筛选有效片段…" : "筛选并分析"}</Button>{busy && <Button type="button" variant="ghost" onClick={invalidate}>取消等待</Button>}</div>
       {!canAnalyze && <p className="blade-pass-note">当前账号可查看记录，运行分析需要分析权限。</p>}
-      {!loading && !tasks.length && <p className="blade-pass-empty">等待桌面端上传完整点位记录，或导入桌面端导出的完整 CSV。文件需保留任务、叶片、测点与进入/离开信息。</p>}
+      {!loading && !tasks.length && <p className="blade-pass-empty">{localData ? "本机尚无带完整叶片、测点和经过边界信息的采集记录。完成自动点位采集后，点击刷新记录。" : "等待桌面端上传完整点位记录，或导入桌面端导出的完整 CSV。文件需保留任务、叶片、测点与进入/离开信息。"}</p>}
       {unavailable.length > 0 && <details className="blade-pass-detail"><summary>{unavailable.length} 条点位记录暂不能用于此分析</summary><p className="blade-pass-note">旧记录缺少任务、叶片或测点归属时，不按名称猜测合并。请检查桌面上传状态，或重新导入保留完整元信息的桌面 CSV。</p><ul>{unavailable.map(({ record, reason }) => <li key={record.id}>{record.name} · {record.id.slice(0, 8)}：{reason}</li>)}</ul></details>}
       {task && <>
         <fieldset className="blade-pass-points"><legend>选择径向测点</legend>{pointOptions.map(point => {
@@ -102,6 +108,7 @@ export function WebBladePasses({ canAnalyze, refreshKey, preferredIds, onError }
         })}</tbody></table></div></details>
         {task.records.length > BLADE_PASS_RECORD_LIMIT && <p className="blade-pass-note">一次最多分析 64 条记录；可在批次与点位中调整选择。</p>}
       </>}
+      <div className="blade-pass-advanced-fields"><label><input aria-label="合并片段并合成振型候选" type="checkbox" checked={synthesize} onChange={event => { invalidate(); setSynthesize(event.target.checked); }} />合并片段并合成振型候选</label>{synthesize && <><label>频率下限 Hz<input aria-label="合成频率下限" type="number" min={.1} max={100000} step="any" value={minHz} onChange={event => { invalidate(); setMinHz(event.target.value); }} /></label><label>频率上限 Hz<input aria-label="合成频率上限" type="number" min={.1} max={100000} step="any" value={maxHz} onChange={event => { invalidate(); setMaxHz(event.target.value); }} /></label></>}</div>
       <details className="blade-pass-advanced"><summary>筛选与预处理设置</summary><div className="blade-pass-advanced-fields"><label>预处理<CustomSelect value={detrend} onChange={event => { invalidate(); setDetrend(event.target.value); }}><option value="constant">去均值</option><option value="linear">去线性趋势</option><option value="none">不去趋势</option></CustomSelect></label><label>RSSI 下限 · %<input aria-label="RSSI 下限百分比" type="number" min={0} max={100} step="any" placeholder="不设强度阈值" value={rssi} onChange={event => { invalidate(); setRssi(event.target.value); }} /></label></div><p className="blade-pass-note">保留原始时间和片段间隙，频谱按单个连续有效段计算。更改设置后需重新分析。</p></details>
     </form>
     {busy && <ChartLoading label="正在筛选有效片段并计算幅值…" />}
@@ -119,15 +126,17 @@ export function BladePassResults({ result }: { result: BladePassResult }) {
   return <div className="blade-pass-results">
     <section className="field-card"><div className="field-section-heading"><div><h2>有效数据汇总{result.hasSimulation && <span className="field-badge amber">含模拟数据</span>}</h2><p>叶片 {result.bladeId} · 任务 {result.collectionId.slice(0, 8)}</p></div><Button onClick={() => saveBlob(new Blob([JSON.stringify(result, null, 2)], { type: "application/json" }), `blade-${result.bladeId}-passes.json`)}><Download size={14} />导出结果</Button></div>
       <dl className="blade-pass-metrics"><div><dt>有效样本</dt><dd>{coverage.validSamples.toLocaleString()}<small> / {coverage.rawSamples.toLocaleString()}</small></dd></div><div><dt>有效时长</dt><dd>{number(coverage.validSeconds)}<small> s</small></dd></div><div><dt>连续有效段</dt><dd>{coverage.segmentCount}</dd></div><div><dt>纳入 / 排除记录</dt><dd>{coverage.includedRecords}<small> / {coverage.excludedRecords}</small></dd></div></dl>
-      <p className="blade-pass-boundary">没有共同相位参考，当前结果为幅值分布，不能据此生成实测振型。</p>
+      <p className="blade-pass-boundary">{result.synthesis ? "片段已按径向测点合并；频带空间曲线为实验候选，实测跨点相位仍未知。" : "没有共同相位参考，当前结果为幅值分布，不能据此生成实测振型。"}</p>
       {result.warnings.length > 0 && <details className="blade-pass-detail"><summary>数据说明 · {result.warnings.length} 项</summary><ul>{result.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul></details>}
     </section>
+    {result.synthesis && <BladeSynthesisResults synthesis={result.synthesis} />}
     {distribution && <section className="field-card"><div className="field-section-heading"><div><h2>多点幅值分布</h2><p>同一圆周点位下，比较不同径向测点的有效段速度 RMS。</p></div><label className="blade-pass-inline">圆周点位<CustomSelect aria-label="幅值分布圆周点位" value={azimuthIndex} onChange={event => setAzimuthIndex(Number(event.target.value))}>{result.amplitudeDistributions.map((item, index) => <option key={item.azimuthDeg} value={index}>{station(item.azimuthDeg)}</option>)}</CustomSelect></label></div>
       <Chart height={280} label="径向测点速度 RMS 分布，非相位振型" option={{ ...chartBase(), xAxis: { type: "value", name: "测点半径 / m", nameLocation: "middle", nameGap: 30, axisLabel: { hideOverlap: true } }, series: [{ type: "line", showSymbol: true, symbolSize: 7, lineStyle: { type: "dashed" }, data: [...distribution.points].sort((a, b) => a.radiusM - b.radiusM).map(point => [point.radiusM, point.value * 1000]) }] }} />
       <div className="field-table-scroll blade-pass-values"><table className="field-table"><thead><tr><th>测点</th><th>半径 m</th><th>速度 RMS mm/s</th><th>有效样本</th></tr></thead><tbody>{distribution.points.map(point => <tr key={point.radialPointId}><td>{point.radialPointName || point.radialPointId}</td><td>{number(point.radiusM)}</td><td>{number(point.value * 1000)}</td><td>{point.validSamples.toLocaleString()}</td></tr>)}</tbody></table></div>
     </section>}
     {source && <section className="field-card"><div className="field-section-heading"><div><h2>有效波形与频谱</h2><p>每次只展示一条原始记录；各有效段保留原时间，中间不连线。</p></div><label className="blade-pass-inline">查看记录<CustomSelect aria-label="查看有效波形记录" value={recordingIndex} onChange={event => { setRecordingIndex(Number(event.target.value)); setSegmentIndex(0); }}>{included.map((item, index) => <option key={item.recordingId} value={index}>{sourceLabel(item)}</option>)}</CustomSelect></label></div>
       <Chart height={270} label="按原始记录时间显示的分段有效波形" option={{ ...chartBase(), xAxis: { type: "value", name: "原始记录时间 / s", nameLocation: "middle", nameGap: 30, axisLabel: { hideOverlap: true } }, series: bladePassWaveSeries(source) }} />
+      {source.segments.some(item => item.plotFilter?.flaggedSteps) && <p className="blade-pass-note">绘图遮罩：本记录检测到 {source.segments.reduce((sum, item) => sum + (item.plotFilter?.flaggedSteps ?? 0), 0)} 个异常单步变化，已在预览中留空对应时间桶。原始样本、统计指标和频谱未过滤。</p>}
       <div className="blade-pass-spectrum-heading"><label className="blade-pass-inline">连续有效段<CustomSelect aria-label="FFT 连续有效段" value={segmentIndex} onChange={event => setSegmentIndex(Number(event.target.value))}>{source.segments.map((item, index) => <option key={`${item.start}-${item.end}`} value={index}>第 {index + 1} 段 · {number(item.durationSeconds)} s · {item.samples.toLocaleString()} 样本</option>)}</CustomSelect></label><p>频率间隔 {number(segment?.spectrum?.frequencySpacingHz)} Hz · 短片段不能通过拼接提高频率分辨率</p></div>
       {segment?.spectrum && segment.spectrum.frequencies.length > 0 ? <Chart height={260} label="单个连续有效段的 FFT 速度幅值谱" option={{ ...chartBase(), xAxis: { type: "value", name: "频率 / Hz", nameLocation: "middle", nameGap: 30, axisLabel: { hideOverlap: true } }, series: [{ type: "line", showSymbol: false, data: segment.spectrum.frequencies.map((frequency, index) => [frequency, segment.spectrum!.amplitudes[index] * 1000]) }] }} /> : <p className="blade-pass-empty">此有效段太短，暂不能计算可靠频谱。</p>}
     </section>}

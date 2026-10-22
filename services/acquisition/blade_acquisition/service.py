@@ -3143,6 +3143,27 @@ def create_app(settings: Settings, receiver_factory=PolytecReceiver, motor_facto
         finally:
             analysis_lock.release()
 
+    @app.post("/api/field/blade-passes")
+    def blade_pass_analysis(parameters: dict):
+        if not analysis_lock.acquire(blocking=False):
+            raise HTTPException(409, "已有分析运行，请等待完成。")
+        try:
+            try:
+                from .blade_passes import analyze_blade_passes
+                from .blade_synthesis import reconstruct_blade_passes
+            except ImportError as exc:
+                raise HTTPException(503, "当前采集服务缺少 NumPy/SciPy 片段分析依赖，请更新服务包。") from exc
+            analyze = reconstruct_blade_passes if "synthesis" in parameters else analyze_blade_passes
+            return analyze(controller.store, parameters)
+        except (KeyError, FileNotFoundError) as exc:
+            raise HTTPException(404, "叶片片段分析所选记录或原始分块不存在。") from exc
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(500, f"无法读取叶片片段原始记录：{exc}") from exc
+        finally:
+            analysis_lock.release()
+
     @app.websocket("/ws/field")
     async def field_socket(socket: WebSocket):
         protocols = [item.strip() for item in socket.headers.get("sec-websocket-protocol", "").split(",")]

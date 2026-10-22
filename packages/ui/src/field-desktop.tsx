@@ -2,7 +2,7 @@
 import React, { useCallback, useEffect, useId, useRef, useState } from "react";
 import {
   Activity, AlertTriangle, ArrowRight, AudioLines, Check,
-  FolderOpen, HardDrive, LoaderCircle, LockKeyhole, LogOut, Minus,
+  FolderOpen, HardDrive, Layers3, LoaderCircle, LockKeyhole, LogOut, Minus,
   Radio, RefreshCw, Settings, ShieldCheck, Square, X,
 } from "lucide-react";
 import { Button } from "./common";
@@ -11,6 +11,8 @@ import { FieldDevicePanel } from "./field-device";
 import { FieldHeaderLaser } from "./field-header-laser";
 import { FieldTurntableHealth } from "./field-turntable-health";
 import { FieldAnalysis } from "./field-analysis";
+import { WebBladePasses } from "./web-blade-passes";
+import type { BladePassRecording, BladePassResult } from "./web-blade-passes-data";
 import { FieldAcquisition } from "./field-acquisition";
 import { FieldTurntableWorkspace, autoFollowCollection, autoFollowCollectionContext } from "./field-auto-follow";
 import { autoFollowStorageKey, readAutoFollowSurvey } from "./field-auto-follow-config";
@@ -44,6 +46,11 @@ async function fieldCall<T>(options: FieldRequestOptions): Promise<T> {
   }
   return result.data as T;
 }
+// Stable callbacks keep record refreshes independent of status polling renders.
+const localBladeData = {
+  listRecordings: () => fieldCall<{ recordings: BladePassRecording[] }>({ action: "recordings" }),
+  analyze: (parameters: Record<string, unknown>) => fieldCall<BladePassResult>({ action: "bladePasses", parameters }),
+};
 const messageOf = (error: unknown) => error instanceof Error ? error.message : "操作失败，请查看服务状态后重试";
 const count = (value: number | undefined | null) => typeof value === "number" && Number.isFinite(value) ? value.toLocaleString("zh-CN") : "—";
 const timeOf = (value?: string | number) => {
@@ -181,7 +188,7 @@ export function FieldDesktopApp() {
     const next = event.key === "Home" ? "records" : event.key === "End" ? "summary" : recordsTab === "records" ? "summary" : "records";
     setRecordsTab(next); document.getElementById(`${recordsTabId}-${next}-tab`)?.focus();
   }
-  const [screen, setScreen] = useState<"acquisition" | "turntable" | "recordings" | "service" | "analysis">("acquisition");
+  const [screen, setScreen] = useState<"acquisition" | "turntable" | "recordings" | "service" | "analysis" | "blade-passes">("acquisition");
   const [turntableVisited, setTurntableVisited] = useState(false);
   const [turntablePort, setTurntablePort] = useState("");
   const [linkEnabled, setLinkEnabled] = useState(false);
@@ -456,8 +463,8 @@ export function FieldDesktopApp() {
       <header className="field-header"><div className="field-brand"><div className="field-brand-icon"><Activity size={19} /></div><span>BladeVMS <small>现场采集工作台</small></span></div><div className="field-header-right"><FieldHeaderLaser deviceIp={config.deviceIp} status={status} disabled={Boolean(busy) || turntableOperationBusy || stoppingCapture} pollUnavailable={statusPollUnavailable} request={fieldCall} onBusy={headerLaserBusyChanged} /><span className={`field-account-header ${account?.offline ? "offline" : ""}`} title={unifiedAccount ? `已绑定 ${account.serverUrl || "Web"}；离线有效期至 ${fieldAccountTime(account.offlineUntil)}` : "原始记录保存在本机"}><ShieldCheck size={13} />{unifiedAccount ? account.offline ? "统一账号 · 离线验证" : "统一账号" : "本机账号"}</span><span className="field-header-user"><span className="field-avatar">{(session.user.name || session.user.username).slice(0, 1).toUpperCase()}</span>{session.user.name || session.user.username}</span><Button variant="ghost" disabled={Boolean(busy) || accountLocked} onClick={openPassword} aria-label={unifiedAccount ? "修改统一密码" : "修改本机密码"}><LockKeyhole size={15} /></Button><Button variant="ghost" disabled={Boolean(busy) || active} onClick={() => void logout()} title={active ? "请先停止并保存采集" : "退出账号"}><LogOut size={15} />退出</Button></div></header>
       {(active || stoppingCapture || busy === "start") && <div className="field-live-controls" aria-label="采集安全控制"><p><strong>{stoppingCapture ? "正在停止并保存" : busy === "start" ? "正在检查并启动采集" : status ? stateLabels[status.state] : "采集服务运行中"}</strong></p><Button type="button" variant="danger" disabled={stoppingCapture} onClick={() => void stopAcquisition()}>{stoppingCapture ? <LoaderCircle className="spin" size={15} /> : <Square size={13} />}停止并保存</Button></div>}
       {busy === "preposition" && <div className="field-live-controls" aria-label="预定位控制"><p><strong>{presetStopping ? "正在停止预定位" : "正在移动到预设位置"}</strong><span>仅定位，未采集数据</span></p><Button type="button" variant="danger" disabled={presetStopping} onClick={cancelPresetPosition}><Square size={13} />停止定位</Button></div>}
-      <div className="field-workspace"><aside className="field-sidebar"><p>现场作业</p><button disabled={turntableOperationBusy} className={screen === "acquisition" ? "active" : ""} onClick={() => setScreen("acquisition")}><Activity size={17} />数据采集</button><button disabled={turntableOperationBusy} className={screen === "turntable" ? "active" : ""} onClick={() => { setTurntableVisited(true); setScreen("turntable"); }}><Settings size={17} />转盘点位</button><button disabled={turntableOperationBusy} className={screen === "recordings" ? "active" : ""} onClick={() => { setScreen("recordings"); void operate("recordings", refreshRecordings); }}><HardDrive size={17} />本机记录</button><button disabled={turntableOperationBusy} className={screen === "service" ? "active" : ""} onClick={() => setScreen("service")}><Settings size={17} />设备与服务</button><p>记录分析</p><button disabled={turntableOperationBusy} className={screen === "analysis" ? "active" : ""} onClick={() => setScreen("analysis")}><AudioLines size={17} />信号处理</button></aside>
-        <main className="field-content" ref={contentRef}><div className="field-page-heading"><div className={screen === "turntable" ? "field-turntable-heading field-servo-ui" : undefined}><h1>{screen === "acquisition" ? "数据采集" : screen === "turntable" ? "转盘点位控制" : screen === "recordings" ? "本机记录" : screen === "analysis" ? "信号处理" : "设备与本机服务"}</h1>{screen === "turntable" && <FieldTurntableHealth port={turntablePort} status={status} disabled={Boolean(busy) && busy !== "turntable-health" || turntableOperationBusy} pollUnavailable={statusPollUnavailable} request={fieldCall} onStatus={setStatus} onBusy={turntableHealthBusyChanged} />}</div><div className="field-page-tools"><span className={`field-badge ${status?.state === "acquiring" ? "green" : status?.state === "error" ? "red" : ""}`}><span className="field-status-dot" />{status ? stateLabels[status.state] : "读取状态中"}</span></div></div>
+      <div className="field-workspace"><aside className="field-sidebar"><p>现场作业</p><button disabled={turntableOperationBusy} className={screen === "acquisition" ? "active" : ""} onClick={() => setScreen("acquisition")}><Activity size={17} />数据采集</button><button disabled={turntableOperationBusy} className={screen === "turntable" ? "active" : ""} onClick={() => { setTurntableVisited(true); setScreen("turntable"); }}><Settings size={17} />转盘点位</button><button disabled={turntableOperationBusy} className={screen === "recordings" ? "active" : ""} onClick={() => { setScreen("recordings"); void operate("recordings", refreshRecordings); }}><HardDrive size={17} />本机记录</button><button disabled={turntableOperationBusy} className={screen === "service" ? "active" : ""} onClick={() => setScreen("service")}><Settings size={17} />设备与服务</button><p>记录分析</p><button disabled={turntableOperationBusy} className={screen === "analysis" ? "active" : ""} onClick={() => setScreen("analysis")}><AudioLines size={17} />信号处理</button><button disabled={turntableOperationBusy} className={screen === "blade-passes" ? "active" : ""} onClick={() => setScreen("blade-passes")}><Layers3 size={17} />叶片片段分析</button></aside>
+        <main className="field-content" ref={contentRef}><div className="field-page-heading"><div className={screen === "turntable" ? "field-turntable-heading field-servo-ui" : undefined}><h1>{screen === "acquisition" ? "数据采集" : screen === "turntable" ? "转盘点位控制" : screen === "recordings" ? "本机记录" : screen === "analysis" ? "信号处理" : screen === "blade-passes" ? "叶片片段分析" : "设备与本机服务"}</h1>{screen === "turntable" && <FieldTurntableHealth port={turntablePort} status={status} disabled={Boolean(busy) && busy !== "turntable-health" || turntableOperationBusy} pollUnavailable={statusPollUnavailable} request={fieldCall} onStatus={setStatus} onBusy={turntableHealthBusyChanged} />}</div><div className="field-page-tools"><span className={`field-badge ${status?.state === "acquiring" ? "green" : status?.state === "error" ? "red" : ""}`}><span className="field-status-dot" />{status ? stateLabels[status.state] : "读取状态中"}</span></div></div>
           {(error || pollError) && <div className="field-error field-global-message" role="alert"><AlertTriangle size={17} /><span>{error || pollError}</span></div>}
           {captureError && captureError !== error && captureError !== pollError && <div className="field-error field-global-message" role="alert"><AlertTriangle size={17} /><span>上次采集异常：{captureError}。请检查设备状态与点位配置后重新开始。</span></div>}
           {busy === "export" && <div className="field-notice field-global-message" role="status"><LoaderCircle size={17} className="spin" />正在导出完整原始波形，大记录需要一些时间，请等待保存完成。</div>}
@@ -466,6 +473,7 @@ export function FieldDesktopApp() {
           {busy === "device" && <p className="field-notice warning">设备配置操作进行中，请等待结果。自动聚焦涉及激光，请留意现场状态。</p>}
           {status?.indexWarning && <div className="field-notice warning field-global-message" role="status"><AlertTriangle size={17} /><span>本机索引提示：{status.indexWarning}</span></div>}
           {screen === "analysis" && <FieldAnalysis request={fieldCall} onError={handleError} />}
+          {screen === "blade-passes" && <WebBladePasses canAnalyze refreshKey={0} preferredIds={[]} onError={handleError} localData={localBladeData} />}
           <div hidden={screen !== "turntable"}>{turntableVisited && <FieldTurntableWorkspace pollUnavailable={statusPollUnavailable} visible={screen === "turntable"} onPortChange={setTurntablePort} onOperationBusy={setTurntableOperationBusy} config={config} onConfig={setConfig} status={status} disabled={Boolean(busy)} request={fieldCall} onStatus={setStatus} onService={() => setScreen("service")} onRecords={() => { setScreen("recordings"); void operate("recordings", refreshRecordings); }}
             routeMode={routeMode} onRouteMode={setRouteMode} autoTargetKey={autoTargetKey} onAutoTarget={setAutoTargetKey} onRoute={onRoute} onAcquisition={() => setScreen("acquisition")} />}</div>
           {screen === "acquisition" && unifiedAccount && syncStatus && <div className="field-cloud-sync-inline" role="status"><strong>Web 同步 · {syncStatus.state === "syncing" ? "正在同步" : syncStatus.state === "ready" ? "已连接" : syncStatus.state === "offline" ? "等待联网登录" : syncStatus.state === "error" ? "同步异常" : "等待联网登录"}</strong><span>{syncStatus.enabled ? "自动同步已开启" : "自动同步已关闭"}</span><span>{syncStatus.items.filter(item => item.state === "synced").length} 条近期已上传 / {syncStatus.items.filter(item => item.state !== "synced").length} 条待完成</span><Button variant="ghost" onClick={() => setScreen("service")}>同步设置</Button></div>}

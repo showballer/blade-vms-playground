@@ -6,6 +6,8 @@ export type BladePassMetrics = { rmsVelocityMps: number; peakVelocityMps: number
 export type BladePassSegment = {
   start: number; end: number; samples: number; durationSeconds: number; metrics: BladePassMetrics;
   timeDomain: { sampleIndices: number[]; seconds: number[]; values: number[] };
+  plotTimeDomain?: { sampleIndices: number[]; seconds: number[]; values: (number | null)[]; representation?: string };
+  plotFilter?: { method: string; thresholdMps: number; flaggedSteps: number; hiddenSamples: number; hiddenTimeBuckets: number; plottedSamples: number; effect: string };
   spectrum?: { frequencies: number[]; amplitudes: number[]; frequencySpacingHz: number } | null;
 };
 export type BladePassSource = {
@@ -28,6 +30,36 @@ export type BladePassResult = {
   points: { radialPointId: string; radialPointName: string; radiusM: number; stations: { azimuthDeg: number; recordingIds: string[]; validSamples: number; validSeconds: number; metrics: BladePassMetrics }[] }[];
   amplitudeDistributions: BladePassDistribution[]; warnings: string[];
   hasSimulation?: boolean;
+  synthesis?: BladeSynthesis;
+};
+
+export type BladeMergedSegment = {
+  segmentId: string; recordingId: string; sourceRecordingId: string; azimuthDeg: number;
+  originalStart: number; originalEnd: number; sampleRate: number;
+  mergedStart: number; mergedEnd: number; compressedStartSeconds: number; compressedEndSeconds: number;
+  originalStartSeconds: number; originalEndSeconds: number;
+  timeDomain: BladePassSegment["timeDomain"];
+  plotTimeDomain?: NonNullable<BladePassSegment["plotTimeDomain"]>;
+  plotFilter?: BladePassSegment["plotFilter"];
+  discontinuityAudit?: { count: number; maxStepMps: number; firstOriginalSampleIndices: number[] };
+};
+export type BladeMergedPoint = {
+  radialPointId: string; radialPointName: string; radiusM: number;
+  samples: number; durationSeconds: number; segments: BladeMergedSegment[];
+};
+export type BladeShapeCandidate = {
+  frequencyHz: number; bandHz: [number, number]; frequencyGridHz: number;
+  kind: "unsigned_band_response_candidate" | "exploratory_band_response"; phaseAssumption: "in_phase_for_preview_only"; warnings: string[];
+  points: { radialPointId: string; radialPointName: string; radiusM: number;
+    velocityRmsMps: number; displacementRmsM: number; normalizedAmplitude: number;
+    spatialPhaseDeg: null; stationCount: number; stationAmplitudeRatio: number | null }[];
+};
+export type BladeSynthesis = {
+  algorithmVersion: string; status: "candidates_available" | "band_responses_only" | "insufficient_evidence";
+  reason: string | null; mergedPoints: BladeMergedPoint[]; candidates: BladeShapeCandidate[]; bandResponses: BladeShapeCandidate[];
+  coordinate: "compressed-valid-time"; measuredPhaseAvailable: false;
+  assumptions: string[]; damageAssessmentAvailable: false;
+  qualityWarnings?: string[];
 };
 
 export const BLADE_PASS_RECORD_LIMIT = 64;
@@ -78,7 +110,10 @@ export function selectedBladePassRecords(task: BladePassTask | undefined, ids: r
 export function bladePassWaveSeries(source: BladePassSource) {
   return source.segments.map((segment, index) => ({
     name: `有效段 ${index + 1}`, type: "line", showSymbol: false, connectNulls: false,
-    data: segment.timeDomain.seconds.map((seconds, sample) => [seconds, segment.timeDomain.values[sample] * 1000]),
+    data: (segment.plotTimeDomain ?? segment.timeDomain).seconds.map((seconds, sample) => {
+      const value = (segment.plotTimeDomain ?? segment.timeDomain).values[sample];
+      return [seconds, value == null ? null : value * 1000];
+    }),
   }));
 }
 

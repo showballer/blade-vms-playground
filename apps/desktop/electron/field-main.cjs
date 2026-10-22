@@ -164,6 +164,7 @@ async function dispatch(options) {
     case 'waveform': return service.waveform(options.id, options.start, options.end);
     case 'analysis': return service.analysis(options.id, options.parameters);
     case 'rotation': return service.rotation(options.parameters);
+    case 'bladePasses': return service.bladePasses(options.parameters);
     case 'device': return service.device(options.request);
     case 'rssiCalibration': return service.rssiCalibration(options.request);
     case 'configureService': return chooseProgram('executable');
@@ -266,7 +267,7 @@ else {
         // device operation owns the SDK. The service returns its owner's cache
         // in that case and never opens a competing connection.
         const directLaserRead = options?.action === 'device' && options.request?.action === 'laser_read';
-        const result = directSinglePoint || directLaserRead || ['session', 'accountInfo', 'status', 'frame', 'recordings', 'simulation', 'recording', 'waveform', 'analysis', 'rotation', 'syncStatus'].includes(options?.action)
+        const result = directSinglePoint || directLaserRead || ['session', 'accountInfo', 'status', 'frame', 'recordings', 'simulation', 'recording', 'waveform', 'analysis', 'rotation', 'bladePasses', 'syncStatus'].includes(options?.action)
           ? await execute() : await serial(execute);
         return { status: 200, data: result };
       } catch (error) { return { status: error.status || 500, data: { error: error.message || '本机操作失败' } }; }

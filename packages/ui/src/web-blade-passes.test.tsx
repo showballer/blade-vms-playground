@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { BladePassResults, WebBladePasses } from "./web-blade-passes";
+import { BladeSynthesisResults } from "./web-blade-synthesis";
 import { bladePassTasks, bladePassUnavailableReason, bladePassWaveSeries, preferredBladePassTask, selectedBladePassRecords,
   type BladePassRecording, type BladePassResult, type BladePassSource } from "./web-blade-passes-data";
 
@@ -68,6 +69,14 @@ check("有效波形分段保留原时间间隙，展示单位转换不拼接", (
   assert.deepEqual(series[1].data, [[.3, 3], [.399, -3]]); assert.ok(series.every(item => item.connectNulls === false));
   assert.deepEqual(source.segments[0].timeDomain.values, [.002, -.002]);
 });
+check("异常大单步仅在波形预览中断线，分析时域值仍完整", () => {
+  const filtered: BladePassSource = { ...source, segments: [{ ...source.segments[0],
+    plotTimeDomain: { sampleIndices: [10, 50, 109], seconds: [.01, .05, .109], values: [.002, null, -.002] },
+    plotFilter: { method: "step-over-50-times-p99", thresholdMps: .01, flaggedSteps: 1,
+      hiddenSamples: 10, hiddenTimeBuckets: 1, plottedSamples: 90, effect: "plot-only" } }] };
+  assert.deepEqual(bladePassWaveSeries(filtered)[0].data, [[.01, 2], [.05, null], [.109, -2]]);
+  assert.deepEqual(filtered.segments[0].timeDomain.values, [.002, -.002]);
+});
 check("只读界面不能运行分析，SSR不会调用网络或设备", () => {
   const markup = renderToStaticMarkup(<WebBladePasses canAnalyze={false} refreshKey={0} preferredIds={[]} onError={() => { throw Error("must not perform a request"); }} />);
   assert.match(markup, /type="submit" disabled=""/); assert.ok(markup.includes("运行分析需要分析权限"));
@@ -93,5 +102,25 @@ check("任务与来源元信息按文本转义", () => {
   const unsafe = { ...result, sources: [{ ...source, name: "<script>alert(1)</script>", provenance: { raw: "<img onerror=alert(1)>" } }] };
   const markup = renderToStaticMarkup(<BladePassResults result={unsafe} />);
   assert.ok(!markup.includes("<script>")); assert.ok(markup.includes("&lt;script&gt;")); assert.ok(!markup.includes("<img onerror"));
+});
+check("实验合成区分探索频带与模态候选，展示压缩时间与未知相位", () => {
+  const markup = renderToStaticMarkup(<BladeSynthesisResults synthesis={{
+    algorithmVersion: "test", status: "band_responses_only", reason: "未检出共同窄带峰",
+    coordinate: "compressed-valid-time", measuredPhaseAvailable: false, damageAssessmentAvailable: false,
+    assumptions: ["同一叶片假设"], candidates: [],
+    mergedPoints: [{ radialPointId: "P1", radialPointName: "P1", radiusM: .2, samples: 100, durationSeconds: .1,
+      segments: [{ segmentId: "r1:10:110", recordingId: "r1", sourceRecordingId: "original-r1", azimuthDeg: 90,
+        originalStart: 10, originalEnd: 110, sampleRate: 1000, mergedStart: 0, mergedEnd: 100,
+        compressedStartSeconds: 0, compressedEndSeconds: .1, originalStartSeconds: .01, originalEndSeconds: .11,
+        timeDomain: source.segments[0].timeDomain }] }],
+    bandResponses: [{ frequencyHz: 30, bandHz: [20, 40], frequencyGridHz: 2,
+      kind: "exploratory_band_response", phaseAssumption: "in_phase_for_preview_only", warnings: ["不是识别出的模态"],
+      points: [{ radialPointId: "P1", radialPointName: "P1", radiusM: .2, velocityRmsMps: .002,
+        displacementRmsM: .00001, normalizedAmplitude: 1, spatialPhaseDeg: null, stationCount: 2, stationAmplitudeRatio: 10 }] }],
+  }} />);
+  assert.ok(markup.includes("探索频带")); assert.ok(markup.includes("未检出共同窄带峰"));
+  assert.ok(markup.includes("压缩有效时间")); assert.ok(markup.includes("同相假设"));
+  assert.ok(markup.includes("不是识别出的模态")); assert.ok(markup.includes("节点正负未知"));
+  assert.ok(markup.includes("角度幅值最大/最小")); assert.ok(markup.includes("频带位移 RMS"));
 });
 console.log(`${checks} blade-pass UI/data checks passed; hardware tested: false`);
