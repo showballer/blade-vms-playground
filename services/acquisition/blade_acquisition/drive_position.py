@@ -111,7 +111,7 @@ def _stop_both(motor, evidence, emit, timeout_s):
 
 def execute_drive_position(motor, *, targets, speed_rpm, reference_signature,
                                 cancel, timeout_s=15.0, observe=None, initial_snapshots=None,
-                                follow_error_limit=.75):
+                                follow_error_limit=.75, on_stopped=None):
     """Position both axes using the existing serial owner and fresh joint readback.
 
     Returns joint ``feedback`` and ``stopConfirmed`` evidence. Failures raise
@@ -305,7 +305,8 @@ def execute_drive_position(motor, *, targets, speed_rpm, reference_signature,
                 # The joint pose is the first stopped observation. Read the
                 # full independent statuses/references/guards directly as the
                 # second, rather than duplicate 0x20 reads just before it.
-                final = joint_snapshots(motor)
+                final = (joint_snapshots(motor, stopped_positions=positions, positions_observed_ns=query_ns)
+                         if callable(getattr(motor, "get_status_from_position", None)) else joint_snapshots(motor))
                 for value, config in zip(final, configs):
                     require_position_ready(value, config)
                 if (_reference(final[0]) != signature or any(
@@ -321,6 +322,8 @@ def execute_drive_position(motor, *, targets, speed_rpm, reference_signature,
                 evidence.update(feedback=final[0], stopConfirmed=True, state="complete",
                                 actualSeconds=(time.monotonic_ns() - started_ns) / 1e9,
                                 actualAngles=[final[0]["axes"][str(axis)]["output_angle_deg"] for axis in (1, 2)])
+                if on_stopped is not None:
+                    on_stopped(final)
                 emit("arrived", angles=evidence["actualAngles"])
                 return evidence
             feedback = tuple(motor.get_feedback(axis) for axis in (1, 2))

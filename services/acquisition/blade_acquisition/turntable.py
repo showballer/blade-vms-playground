@@ -526,14 +526,35 @@ def joint_snapshots_from_observations(observations):
     return tuple(result)
 
 
-def joint_snapshots(motor):
-    """Read both drive statuses, references and guards once; never reuse a cache."""
+def joint_snapshots(motor, *, interrupted=None, stopped_positions=None, positions_observed_ns=None):
+    """Independent status/reference/guard pair; partial observations never pass.
+
+    A caller may supply its just-read direct stop/alarm pair to avoid querying
+    the same alarm twice. References, guards and speed/limit flags stay fresh.
+    """
     observations = []
     for axis in (1, 2):
+        if interrupted is not None and interrupted():
+            return None  # A partial read is never a valid preflight snapshot.
         started = time.time()
-        status = motor.get_status(axis)
+        fast_status = getattr(motor, "get_status_from_position", None)
+        cooperative_status = getattr(motor, "get_status_interruptible", None)
+        if callable(fast_status) and stopped_positions is not None:
+            status = fast_status(axis, stopped_positions[axis - 1], positions_observed_ns)
+        elif interrupted is not None and callable(cooperative_status):
+            status = cooperative_status(axis, interrupted)
+        else:
+            status = motor.get_status(axis)
+        if status is None:
+            return None
+        if interrupted is not None and interrupted():
+            return None
         feedback = motor.get_feedback(axis)
+        if interrupted is not None and interrupted():
+            return None
         guard = motor.get_guard_config(axis)
+        if interrupted is not None and interrupted():
+            return None
         observations.append(TrajectoryAxisObservation(
             axis, status, feedback, guard, started, time.time()))
     return joint_snapshots_from_observations(observations)

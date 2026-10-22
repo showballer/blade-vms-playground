@@ -399,6 +399,18 @@ class DrivePositionTests(unittest.TestCase):
         self.assertTrue(result["stopConfirmed"])
         self.assertEqual(read.call_count, 1, "Only the independent final pair is read again")
 
+    def test_only_fully_checked_arrival_pair_is_offered_for_immediate_next_capture(self):
+        checked = Mock()
+        result = self.run_move(on_stopped=checked)
+        checked.assert_called_once()
+        pair = checked.call_args.args[0]
+        self.assertIs(pair[0], result["feedback"])
+        self.assertEqual(pair[1]["axis"], 2)
+        checked.reset_mock()
+        self.motor.reference_delta = 1
+        self.failed("原参考", on_stopped=checked)
+        checked.assert_not_called()
+
     def test_stale_initial_pair_is_never_used_to_authorize_motion(self):
         initial = self.motor.snapshots()
         self.motor.alarm = 7

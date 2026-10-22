@@ -1121,7 +1121,8 @@ class AcquisitionController:
                 cancel=cancel, timeout_s=min(600, max(15, 5 + max(
                     abs(config.targetAngleDeg - feedback["axes"][str(config.axis)]["output_angle_deg"])
                     for config in configs) / (6 * configs[0].speedRpm) * 3)),
-                observe=observed, initial_snapshots=initial_snapshots, follow_error_limit=follow_error_limit)
+                observe=observed, initial_snapshots=initial_snapshots, follow_error_limit=follow_error_limit,
+                on_stopped=lambda pair: setattr(motor, "_blade_stopped_snapshots", pair))
             feedback = evidence["feedback"]
             if not evidence.get("stopConfirmed"):
                 raise RuntimeError("内部定位两轴停止未确认")
@@ -2261,8 +2262,36 @@ class AcquisitionController:
         self._cycle_update("holding", feedback=feedback, currentPoint=point.name)
         return feedback
 
+    def _cycle_hold_observations(self, motor, cycle, point):
+        """Cooperative telemetry: a blade departure takes priority between reads.
+
+        Only complete, checked pairs can be reused by this station's handoff.
+        The SDK still independently verifies fresh pose/alarm/reference before
+        sending motion; no snapshot survives a station, owner or task change.
+        """
+        interrupted = lambda: self.stop_event.is_set() or self.rssi_event.is_set()
+        observations = joint_snapshots(motor, interrupted=interrupted)
+        if observations is None or interrupted():
+            return None
+        for value in observations:
+            require_ready(value)
+        feedback = observations[0]
+        actual = [[feedback["axes"][str(axis)][key] for key in
+                   ("origin_counts", "display_mode", "command_counts_per_rev", "encoder_bits")]
+                  for axis in (1, 2)]
+        if actual != self._cycle_point_reference(point):
+            raise RuntimeError("采集点位参考位或反馈计数单位已变化，请重新手动瞄准并校准")
+        for axis, angle in ((1, point.axis1AngleDeg), (2, point.axis2AngleDeg)):
+            config = TurntableConfig(port=cycle.port, axis=axis, protocol="position",
+                                     targetAngleDeg=angle, speedRpm=cycle.speedRpm)
+            require_position_ready(observations[axis - 1], config)
+            if not position_reached(observations[axis - 1], config):
+                raise RuntimeError("采集点位角度已变化或尚未到位，未开启下一个点位采集")
+        self._cycle_update("holding", feedback=feedback, currentPoint=point.name)
+        return observations
+
     def _cycle_move_point(self, motor, cycle: PointCycleConfig, point: PointCyclePoint, on_command=None,
-                          source_point: PointCyclePoint | None = None):
+                          source_point: PointCyclePoint | None = None, initial_snapshots=None):
         """Use the verified firmware path and confirm stopped arrival before capture."""
         configs = [TurntableConfig(port=cycle.port, axis=axis, protocol="position",
                                    targetAngleDeg=angle, speedRpm=cycle.speedRpm)
@@ -2270,7 +2299,12 @@ class AcquisitionController:
         completed, active = [], None
         feedback = None
         try:
-            initial_snapshots = joint_snapshots(motor)
+            native_position = cycle.diagnosticDrivePosition or getattr(motor, "drive_internal_position", False)
+            reuse_checks = (native_position and initial_snapshots is not None and len(initial_snapshots) == 2 and
+                            all(0 <= time.time() - value.get("queryStartedAt", 0) <= .5
+                                for value in initial_snapshots))
+            if not reuse_checks:
+                initial_snapshots = joint_snapshots(motor)
             feedback = initial_snapshots[0]
             require_ready(feedback)
             references = reference_key(feedback)
@@ -2303,6 +2337,8 @@ class AcquisitionController:
                     evidence["stationTiming"] = timing
                 self._cycle_update("holding", currentPoint=point.name, feedback=feedback, lastMove=evidence,
                                    motionMode=evidence["mode"], motionCapability=capability)
+                if point_mode == "drive_internal" or cycle.diagnosticDrivePosition:
+                    motor._blade_stopped_snapshots = initial_snapshots
                 return not self.stop_event.is_set(), [1, 2], feedback
             configs = [config.model_copy(update={"speedRpm": speed}) for config in configs]
             self._cycle_update("positioning", motionCapability=capability, motionMode=point_mode, feedback=feedback,
@@ -2310,8 +2346,9 @@ class AcquisitionController:
                                targetAxis2AngleDeg=point.axis2AngleDeg)
             if point_mode == "drive_internal" or cycle.diagnosticDrivePosition:
                 def diagnostic_update(state, **extra):
-                    if timing is not None and "lastMove" in extra:
-                        extra["lastMove"] = {**extra["lastMove"], "stationTiming": timing}
+                    if "lastMove" in extra:
+                        extra["lastMove"] = {**extra["lastMove"], "startupSnapshotReused": reuse_checks,
+                                             **({"stationTiming": timing} if timing is not None else {})}
                     self._cycle_update(state, currentPoint=point.name, **extra)
                 return self._execute_drive_position(
                     motor, configs, feedback, self.stop_event, diagnostic_update, on_command,
@@ -2397,7 +2434,8 @@ class AcquisitionController:
                              point: PointCyclePoint, cycle_index: int, point_index: int,
                              receiver, actual_angles: dict[str, float | None] | None = None,
                              next_point: PointCyclePoint | None = None, on_handoff=None,
-                             keep_laser_on: bool = True, before_capture=None, feedback_poll=None):
+                             keep_laser_on: bool = True, before_capture=None, feedback_poll=None,
+                             initial_snapshots=None):
         metadata = request.model_dump(exclude={"confirmLaser", "confirmMotion", "simulation", "turntable", "pointCycle"})
         metadata["point"] = point.name
         metadata["pointCycle"] = {"cycle": cycle_index, "pointIndex": point_index,
@@ -2483,6 +2521,10 @@ class AcquisitionController:
             self._cycle_process("starting_capture", point=point.name)
         capture_stop, capture_done, ready = threading.Event(), threading.Event(), threading.Event()
         capture_errors = []
+        # Keep the independently verified arrival pair for a blade which
+        # passes before the first complete periodic observation. Handoff still
+        # enforces the same 0.5 s expiry and fresh SDK checks before any write.
+        last_hold_snapshots = initial_snapshots
         capture_started_at = time.time()
 
         def require_capture_laser():
@@ -2599,7 +2641,9 @@ class AcquisitionController:
                         raise RuntimeError(f"点位 {point.name} 等待叶片进入并离开超时，未自动换点；请检查光路或延长最长等候时间")
                     break
                 if time.monotonic() >= next_feedback_at and feedback_poll is not None:
-                    feedback_poll()
+                    observations = feedback_poll()
+                    if observations is not None:
+                        last_hold_snapshots = observations
                     next_feedback_at = time.monotonic() + .2
                 self.rssi_event.wait(min(0.01, remaining))
             capture_stop.set()
@@ -2625,7 +2669,7 @@ class AcquisitionController:
                 trigger["receiverSessionReused"] = self.cycle_receiver is not None
                 writer.manifest["pointCycle"]["handoff"].update(trigger)
                 if on_handoff is not None:
-                    on_handoff(trigger)
+                    on_handoff(trigger, initial_snapshots=last_hold_snapshots)
             with self.lock:
                 self._cycle_process("record_saved", point=point.name)
                 writer.finish(None)
@@ -2731,7 +2775,7 @@ class AcquisitionController:
                     next_point = (planned_points[point_index] if point_index < len(planned_points) else
                                   anchor if cycle_index < cycle.cycles or (cycle.mode != "automatic_stations" and cycle.routeOrder != "configured") else None)
 
-                    def handoff(trigger):
+                    def handoff(trigger, initial_snapshots=None):
                         nonlocal prefetched_feedback
 
                         def command_started():
@@ -2745,7 +2789,7 @@ class AcquisitionController:
 
                         reached, _, arrival = self._cycle_position_laser_on(request, motor, cycle, next_point,
                                                                      on_command=command_started,
-                                                                     source_point=point)
+                                                                     source_point=point, initial_snapshots=initial_snapshots)
                         if not reached:
                             raise RuntimeError(f"换点 {next_point.name} 未完成两轴到位确认")
                         prefetched_feedback = arrival
@@ -2766,8 +2810,8 @@ class AcquisitionController:
                                                               before_capture=(lambda: self._cycle_verify_initial_pose(
                                                                   motor, cycle, point, "before_daq")) if initial_hold else
                                                               (lambda: self._cycle_capture_pose(motor, cycle, point, arrived_feedback=final_feedback)),
-                                                              feedback_poll=lambda: self._cycle_capture_pose(
-                                                                  motor, cycle, point, check_trajectory=False))
+                                                              feedback_poll=lambda: self._cycle_hold_observations(motor, cycle, point),
+                                                              initial_snapshots=getattr(motor, "_blade_stopped_snapshots", None))
                     with self.lock:
                         self.point_cycle["completedRecords"] += 1
                     self._cycle_update("ready", cycle=cycle_index, point=point_index,

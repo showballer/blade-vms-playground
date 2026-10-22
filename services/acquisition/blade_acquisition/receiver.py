@@ -428,6 +428,21 @@ class PolytecReceiver:
         if self._stream_context is None or self._daq_start_attempted:
             raise RuntimeError("采集会话尚未就绪或仍在接收，不能操作激光")
         self._laser_attempted = True
+        if enabled:
+            # Read the real device every boundary; avoid repeatedly writing ON
+            # when a continuous-laser session is already on. Never trust a UI
+            # badge or stale observation after another application changes it.
+            try:
+                actual = self._integer(SENSOR_HEAD, LASER_ON)
+                if actual not in (0, 1):
+                    raise RuntimeError("设备返回无效激光状态")
+                if actual == 1:
+                    self._publish_laser(actual)
+            except Exception as exc:
+                self._publish_laser(None, str(exc))
+                raise
+            if actual == 1:
+                return self.laser_status
         self._set_laser(enabled)
         return self.laser_status
 

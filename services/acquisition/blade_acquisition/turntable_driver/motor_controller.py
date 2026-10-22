@@ -237,8 +237,10 @@ class MotorController:
                 if written != len(frame):
                     raise CommunicationError("串口写入不完整，执行结果未知")
                 deadline = time.monotonic() + self.timeout
+                wait_read = getattr(self._port, "read_available", None)
                 while time.monotonic() < deadline:
-                    data = self._port.read(min(self._port.in_waiting, 4096))
+                    data = (wait_read(max(0, deadline - time.monotonic())) if callable(wait_read)
+                            else self._port.read(min(self._port.in_waiting, 4096)))
                     for packet in self._parser.feed(data):
                         if (packet.device_id, packet.command, packet.parameter) != expected:
                             continue
@@ -251,7 +253,8 @@ class MotorController:
                                 self._faulted = True
                             raise CommandRejected(packet)
                         return packet
-                    time.sleep(0.005)
+                    if not callable(wait_read):
+                        time.sleep(0.005)
                 read_only = frame[4] in read_commands or frame[4] == CMD_TRAJECTORY_STATUS
                 trace_event("serial_timeout", axis=expected[0], command=expected[1],
                             parameter=expected[2], timeoutSeconds=self.timeout, readOnly=read_only)
@@ -286,12 +289,40 @@ class MotorController:
         return struct.unpack(">H", self._data(packet, 2)[:2])[0]
 
     def get_status(self, motor_id: int) -> MotorStatus:
+        return self.get_status_interruptible(motor_id, lambda: False)
+
+    def get_status_interruptible(self, motor_id, interrupted):
+        """Finish an in-flight read, but let departure preempt the next one."""
         self._axis(motor_id)
+        if interrupted():
+            return None
         packet = self._request(build_request(motor_id, CMD_READ_SPEED))
         data = self._data(packet, 4)
         rpm, run_state = struct.unpack(">hH", data[:4])
+        if interrupted():
+            return None
         alarm = self.read_alarm(motor_id)
         return MotorStatus(motor_id, rpm, rpm / self.gear_ratio, run_state, alarm,
+                           data[4] if len(data) >= 5 else None)
+
+    def get_status_from_position(self, motor_id, position, observed_ns):
+        """Reuse only a freshly read direct alarm; speed/limit status stays fresh.
+
+        The caller has just observed both drives stopped. References, guards,
+        speed and limit/bypass flags are still independently read. Expired,
+        cached or incomplete observations use the ordinary full status read.
+        """
+        self._axis(motor_id)
+        elapsed_ms = ((time.monotonic_ns() - observed_ns) / 1e6
+                      if isinstance(observed_ns, int) else float("inf"))
+        if (not position.usable or position.source != 0 or position.motor_rpm or
+                not 0 <= position.sample_age_ms or not 0 <= elapsed_ms or
+                not 0 <= position.sample_age_ms + elapsed_ms <= 250):
+            return self.get_status(motor_id)
+        packet = self._request(build_request(motor_id, CMD_READ_SPEED))
+        data = self._data(packet, 4)
+        rpm, run_state = struct.unpack(">hH", data[:4])
+        return MotorStatus(motor_id, rpm, rpm / self.gear_ratio, run_state, position.alarm_code,
                            data[4] if len(data) >= 5 else None)
 
     def start_continuous(self, motor_id: int, signed_output_rpm: float, *, cancel=None) -> float | None:

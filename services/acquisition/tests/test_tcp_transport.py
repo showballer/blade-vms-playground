@@ -4,12 +4,34 @@ import struct
 import threading
 import time
 import unittest
+from unittest.mock import patch
 from blade_acquisition.turntable_driver.transport import TcpTransport
 from blade_acquisition.turntable_driver import MotorController,CommunicationError
 from blade_acquisition.turntable_driver.protocol import append_crc,CMD_READ_PA,CMD_READ_SPEED
 
 
 class TcpTests(unittest.TestCase):
+    def test_sdk_tcp_reply_uses_readiness_wait_without_fixed_poll_sleep(self):
+        def handle(conn):
+            data = b''
+            while len(data) < 3:
+                data += conn.recv(3 - len(data))
+            while len(data) < data[2] + 3:
+                data += conn.recv(data[2] + 3 - len(data))
+            threading.Event().wait(.02)
+            payload = bytes((data[3], data[4], 0)) + data[5:7] + struct.pack('>h', 10000)
+            conn.sendall(append_crc(b'\xaa\x55' + bytes((len(payload) + 2,)) + payload))
+        endpoint, thread, errors = self.server(handle)
+        controller = MotorController(endpoint, timeout=.5).connect()
+        try:
+            with patch('blade_acquisition.turntable_driver.motor_controller.time.sleep',
+                       side_effect=AssertionError('TCP must wait for bytes instead of polling')):
+                self.assertEqual(controller.read_pa(1, 11), 10000)
+            thread.join(2)
+            self.assertFalse(errors)
+        finally:
+            controller.close(stop=False)
+
     def server(self,handler):
         listener=socket.socket();listener.bind(('127.0.0.1',0));listener.listen(1)
         errors=[]

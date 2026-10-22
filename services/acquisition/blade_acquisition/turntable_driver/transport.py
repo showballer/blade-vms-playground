@@ -43,6 +43,12 @@ class TcpTransport:
             raise ConnectionError("转盘TCP连接已关闭")
         return data
 
+    def read_available(self, timeout):
+        """Wake on arriving bytes instead of introducing a 5 ms polling tick."""
+        if not select.select([self._socket], [], [], max(0, timeout))[0]:
+            return b''
+        return self.read(4096)
+
     def write(self, data):
         view, sent = memoryview(data), 0
         deadline = time.monotonic() + self.write_timeout
