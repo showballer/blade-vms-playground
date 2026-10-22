@@ -25,7 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, 
 
 from .receiver import Batch, PolytecReceiver, ReceiverConfig
 from .rssi_handoff import RssiHandoff
-from .serial_ports import SerialPort, list_turntable_ports
+from .serial_ports import TurntableEndpoint, list_turntable_ports
 from .single_point import SinglePointConfig, preview_plan
 from .single_point_runner import SinglePointSession
 from .motion_trial import MotionTrialConfig, preview_full_circle
@@ -51,7 +51,7 @@ MOTOR_STARTUP_SECONDS = 10.0
 DAQ_READY_SECONDS = 30.0
 JOINT_CYCLE_MS = 100
 DEFAULT_JOINT_FOLLOW_ERROR_DEG = .75
-JOINT_ARRIVAL_TOLERANCE_DEG = .1
+JOINT_ARRIVAL_TOLERANCE_DEG = .5
 
 
 @dataclass(frozen=True)
@@ -174,7 +174,7 @@ class SinglePointCapture(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     deviceIp: str = Field(min_length=7, max_length=15)
     hostIp: str = Field(min_length=7, max_length=15)
-    port: SerialPort
+    port: TurntableEndpoint
     windFarm: str = Field(default="", max_length=120)
     object: str = Field(default="", max_length=120)
     turbine: str = Field(default="", max_length=120)
@@ -579,7 +579,7 @@ class AcquisitionController:
                     axis2AngleDeg=request.axis2AngleDeg, speedRpm=request.speedRpm,
                     accelerationDegS2=request.maxMoveAccelerationDegS2,
                     followErrorLimitDeg=request.followErrorLimitDeg)
-        recovering = request.action in ("clear_trajectory_fault", "clear_guard_fault", "reset_alarm", "cancel_trajectory")
+        recovering = request.action in ("clear_trajectory_fault", "clear_guard_fault", "clear_axis1_reference", "reset_alarm", "cancel_trajectory")
         if request.action in ("stop", "test", "manual_move", "recall", "prepare", "reference", "limits") and not request.confirmMotion:
             raise HTTPException(422, "请明确确认试转/停止，或确认已观察到实际转动并完成设置")
         with self.lock:
@@ -600,6 +600,20 @@ class AcquisitionController:
                     raise HTTPException(409, "联合采集期间由任务独占转盘；请使用停止并保存")
                 self.turntable_busy = True
                 self.turntable_preparation = None
+            if request.action in ("mechanical_home", "horizontal_zero"):
+                from .turntable_homing import run_turntable_homing
+                with self.lock:
+                    self.turntable_test = None
+                    self.test_stop = threading.Event()
+                    self.turntable_snapshot = {"state": "homing", "port": request.port, "axis": 1,
+                        "homing": {"action": request.action, "state": "running", "phase": "checking",
+                                   "targetAngleDeg": 35 if request.action == "mechanical_home" else 0,
+                                   "speedDegS": request.homingSpeedDegS, "effectiveRpm": request.homingSpeedDegS / 6}}
+                    self.test_thread = threading.Thread(target=run_turntable_homing, args=(self, request),
+                                                        name="blade-turntable-homing", daemon=True)
+                    self.test_thread.start()
+                    handed_off = True
+                return self.status()
             if request.action in ("test", "manual_move", "recall"):
                 if self.motion_guard.warning:
                     raise RuntimeError(self.motion_guard.warning)
@@ -639,7 +653,8 @@ class AcquisitionController:
             feedback = motor_snapshot(motor, request.axis)
             recovery = None
             if recovering:
-                # Recovery never changes coordinates, resumes capture, or replays a session.
+                # Only the explicit pitch-reference clear may change coordinates.
+                # No recovery resumes capture or replays a session.
                 # Read BOTH drives, not just the selected axis. All writes remain under
                 # the same operation/serial owner as this fresh preflight.
                 if self.motion_guard.warning and self.motion_guard.identity and self.motion_guard.identity[0] != request.port:
@@ -671,22 +686,42 @@ class AcquisitionController:
                     if request.expectedTrajectorySession is not None:
                         if not trajectory or trajectory["session"] != request.expectedTrajectorySession:
                             raise RuntimeError("轨迹会话已变化，请重新检查；未清除其他轨迹")
-                        motor.clear_trajectory_fault(expected_session=request.expectedTrajectorySession)
-                    else:
+                        if trajectory["state"] != 0 or trajectory["fault"]:
+                            motor.clear_trajectory_fault(expected_session=request.expectedTrajectorySession)
+                    elif not trajectory or trajectory["state"] != 0 or trajectory["fault"]:
                         motor.clear_trajectory_fault()
                 elif request.action == "clear_guard_fault":
-                    motor.clear_guard_fault(request.axis)
+                    if feedback["axes"][str(request.axis)]["fault"] or feedback["axes"][str(request.axis)]["flags"] & 16:
+                        motor.clear_guard_fault(request.axis)
+                elif request.action == "clear_axis1_reference":
+                    for axis, observation in observations.items():
+                        require_stop_confirmed(observation, request.model_copy(update={"axis": axis}))
+                    if feedback["alarmCode"]:
+                        raise RuntimeError("俯仰轴驱动报警仍存在，请先处理报警")
+                    motor.clear_axis1_reference()
                 else:
                     # Alarm reset is not an encoder reset. Refuse limit/stop-pending
                     # conditions rather than treating the reset as a universal fix.
                     selected = feedback["axes"][str(request.axis)]
                     if selected["flags"] & 16 or feedback["limitFlags"] not in (None, 0):
                         raise RuntimeError("限位或停止状态异常，请先停止并排除原因")
-                    if "reset_alarm" not in get_fault_advice("drive", feedback["alarmCode"]).apis:
+                    if feedback["alarmCode"] and "reset_alarm" not in get_fault_advice("drive", feedback["alarmCode"]).apis:
                         raise RuntimeError("该驱动器报警未识别或无需复位，请先核对报警码和驱动器手册")
-                    if motor.reset_alarm(request.axis):
+                    if feedback["alarmCode"] and motor.reset_alarm(request.axis):
                         raise RuntimeError("驱动器报警仍存在，未恢复运动")
                 feedback = motor_snapshot(motor, request.axis)
+                if request.action == "clear_axis1_reference":
+                    after = reference_key(feedback)
+                    pitch = feedback["axes"]["1"]
+                    if (after["2"] != before_reference["2"] or
+                            feedback["axes"]["2"]["guard"] != before_guards["2"] or
+                            any(after["1"][key] != before_reference["1"][key] for key in
+                                ("display_mode", "command_counts_per_rev", "encoder_bits"))):
+                        raise RuntimeError("清除俯仰参考时水平参考、保护或计数单位变化，请重新核查")
+                    if pitch["flags"] & 1 or pitch["output_angle_deg"] is not None:
+                        raise RuntimeError("俯仰轴参考未确认清除，请重新检查；未启动回零")
+                    before_reference = after
+                    before_guards["1"] = pitch["guard"]
                 if reference_key(feedback) != before_reference or any(
                         value["guard"] != before_guards[axis] for axis, value in feedback["axes"].items()):
                     raise RuntimeError("恢复后参考位、反馈单位或保护配置发生变化，请重新核查；未恢复运动")
@@ -1043,12 +1078,13 @@ class AcquisitionController:
             raise exc
 
     def _execute_drive_position(self, motor, configs, feedback, cancel, update, on_command=None,
-                                initial_snapshots=None):
+                                initial_snapshots=None, follow_error_limit=.75):
         """Joint native positioning shared by recall, capture and return-to-origin."""
         from .drive_position import execute_drive_position
 
         self._persist_pending_axes(configs[0].port, [1, 2], "drive_internal")
-        evidence = {"mode": "drive_internal"}
+        position_protocol = getattr(motor, "point_position_protocol", None)
+        evidence = {"mode": "drive_internal", "positionProtocol": position_protocol}
         command_notified = False
 
         def observed(event):
@@ -1062,12 +1098,17 @@ class AcquisitionController:
                 feedback = copy.deepcopy(feedback)
                 observed_at = time.time()
                 for axis, value in enumerate(event["feedbackReadings"], 1):
-                    feedback["axes"][str(axis)].update(value, observedAt=observed_at)
+                    previous = feedback["axes"][str(axis)]
+                    if event.get("referencePending"):
+                        previous.update(referenceObservedAt=previous.get("referenceObservedAt", previous.get("observedAt")),
+                                        guardObservedAt=previous.get("guardObservedAt", previous.get("observedAt")))
+                    age = event.get("conservativeAgeMs", event.get("sampleAgeMs", [0, 0]))[axis - 1] / 1000
+                    previous.update(value, observedAt=observed_at - age)
                 selected = feedback["axes"][str(feedback["axis"])]
                 feedback.update(outputAngleDeg=selected["output_angle_deg"], motorRpm=selected["motor_rpm"],
                                 outputRpm=selected["motor_rpm"] / 50, observedAt=observed_at)
             update("positioning", motionMode="drive_internal", lastMove={**event, "mode": "drive_internal",
-                   "speedLimitRpm": configs[0].speedRpm}, feedback=feedback)
+                   "positionProtocol": position_protocol, "speedLimitRpm": configs[0].speedRpm}, feedback=feedback)
 
         references = reference_key(feedback)
         signature = [[references[str(axis)][key] for key in
@@ -1080,7 +1121,7 @@ class AcquisitionController:
                 cancel=cancel, timeout_s=min(600, max(15, 5 + max(
                     abs(config.targetAngleDeg - feedback["axes"][str(config.axis)]["output_angle_deg"])
                     for config in configs) / (6 * configs[0].speedRpm) * 3)),
-                observe=observed, initial_snapshots=initial_snapshots)
+                observe=observed, initial_snapshots=initial_snapshots, follow_error_limit=follow_error_limit)
             feedback = evidence["feedback"]
             if not evidence.get("stopConfirmed"):
                 raise RuntimeError("内部定位两轴停止未确认")
@@ -1309,7 +1350,8 @@ class AcquisitionController:
             update("positioning", motionCapability=capability, motionMode=capability["mode"])
             if capability.get("pointMode") == "drive_internal" or request.diagnosticDrivePosition:
                 passed, completed, feedback = self._execute_drive_position(
-                    motor, configs, feedback, self.test_stop, update, initial_snapshots=initial_snapshots)
+                    motor, configs, feedback, self.test_stop, update, initial_snapshots=initial_snapshots,
+                    follow_error_limit=request.followErrorLimitDeg)
                 return
             if capability["supported"]:
                 passed, completed, feedback = self._execute_dual_axis_move(
@@ -2273,7 +2315,7 @@ class AcquisitionController:
                     self._cycle_update(state, currentPoint=point.name, **extra)
                 return self._execute_drive_position(
                     motor, configs, feedback, self.stop_event, diagnostic_update, on_command,
-                    initial_snapshots=initial_snapshots)
+                    initial_snapshots=initial_snapshots, follow_error_limit=cycle.followErrorLimitDeg)
             if capability["supported"]:
                 def dual_update(state, **extra):
                     if timing is not None and "lastMove" in extra:
@@ -2417,12 +2459,26 @@ class AcquisitionController:
             self.rows.clear()
             self.state = "starting"
             self.rssi_event.clear()
-            self.rssi_handoff = RssiHandoff(cycle, travel) if cycle.rssiTriggerEnabled else None
+            # Ordered saved-point handoffs need the same complete-pass guard as
+            # computed automatic stations, including when no geometric origin
+            # is available. A blade already covering the beam on arrival must
+            # not be mistaken for a newly observed full pass.
+            complete_pass = cycle.mode == "automatic_stations" or cycle.routeOrder == "configured"
+            self.rssi_handoff = RssiHandoff(cycle, travel, require_background=complete_pass) if cycle.rssiTriggerEnabled else None
+            writer.manifest["pointCycle"]["rssiDetector"] = {
+                "version": 2 if complete_pass else 1,
+                "requireBackground": complete_pass,
+                "backgroundRequiredMs": max(50, cycle.rssiConfirmMs),
+                "exitRequiresBaselineReturn": complete_pass,
+            }
             self.point_cycle.update(latestRssi=None, rssiSamples=0, rssiBelowSamples=0,
                                     rssiTrigger=None, rssiBaseline=None, rssiThreshold=None,
                                     rssiSpread=None, rssiEntryMs=0, rssiBelowMs=0,
                                     signalGapCount=0, lastSignalGapReason=None,
-                                    rssiPhase="waiting_blade" if cycle.rssiTriggerEnabled else None,
+                                    rssiBackgroundReady=not complete_pass, rssiBackgroundMs=0,
+                                    rssiBackgroundRequiredMs=max(50, cycle.rssiConfirmMs),
+                                    rssiBackgroundMean=None, rssiPartialPassesIgnored=0,
+                                    rssiPhase=("waiting_background" if complete_pass else "waiting_blade") if cycle.rssiTriggerEnabled else None,
                                     nextPoint=next_point.name if next_point is not None else None)
             self._cycle_process("starting_capture", point=point.name)
         capture_stop, capture_done, ready = threading.Event(), threading.Event(), threading.Event()
@@ -2458,7 +2514,7 @@ class AcquisitionController:
                                 self._receive(batch)
                                 raise RuntimeError("当前点采样序号或采样率不连续，已停止采集")
                             if not ready.is_set():
-                                self._cycle_process("waiting_blade" if cycle.rssiTriggerEnabled else "capturing", point=point.name)
+                                self._cycle_process(("waiting_background" if complete_pass else "waiting_blade") if cycle.rssiTriggerEnabled else "capturing", point=point.name)
                                 writer.manifest["pointCycle"]["firstSampleAt"] = time.time()
                                 ready.set()
                             self._receive(batch)

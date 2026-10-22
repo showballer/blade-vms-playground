@@ -122,6 +122,17 @@ class VendorV35Tests(unittest.TestCase):
         self.assertEqual(writes[0][5:9], b'\0\3\5\xff')
         self.assertFalse({CMD_SET_ZERO, CMD_SET_REFERENCE, CMD_TRAJECTORY_START, CMD_RESET_ALARM}.intersection(self.commands()))
 
+    def test_execution_fault_uses_dedicated_ack_not_guard_reconfiguration(self):
+        self.serial.guard_fault[1] = 8
+        refs = dict(self.serial.origins)
+        actual = self.motor.clear_guard_fault(1)
+        self.assertEqual(actual.fault, 0)
+        writes = [f for f in self.serial.frames if f[4] == CMD_CONFIG_GUARD]
+        self.assertEqual(len(writes), 1)
+        self.assertEqual(writes[0][5:7], b'\0\4')
+        self.assertEqual(self.serial.origins, refs)
+        self.assertFalse({CMD_SET_ZERO, CMD_SET_REFERENCE, CMD_TRAJECTORY_START, CMD_RESET_ALARM}.intersection(self.commands()))
+
     def test_axis_recovery_refuses_bad_conditions_before_guard_write(self):
         cases = ('invalid_reference', 'moving', 'pending', 'alarm', 'range', 'limit', 'prepared', 'running')
         for case in cases:

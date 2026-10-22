@@ -9,6 +9,9 @@ import struct
 
 HEADER = b"\xAA\x55"
 MAX_FRAME_SIZE = 64
+# Host acceptance for capture/preset/work-origin positioning. This does not
+# rewrite the controller's mechanical reference or its own stopping precision.
+OUTPUT_POSITION_TOLERANCE_DEG = .5
 
 CMD_WRITE_PA = 0x01
 CMD_START = 0x05
@@ -21,6 +24,8 @@ CMD_READ_ALARM = 0x09
 CMD_RESET_ALARM = 0x0A
 CMD_MOVE_RELATIVE = 0x11
 CMD_MOVE_OUTPUT_RELATIVE = 0x14
+CMD_MOVE_OUTPUT_TRACKED = 0x19
+POINT_TRACK_KEY = 0x5054
 CMD_SET_MOTION_PROFILE = 0x15
 CMD_LIMIT_DEBUG = 0x16
 CMD_ROTATE_CONTINUOUS = 0x17
@@ -30,6 +35,9 @@ CMD_CONFIG_GUARD = 0x21
 CMD_SET_ZERO = 0x22
 CMD_READ_GUARD = 0x24
 CMD_SET_REFERENCE = 0x25
+CMD_CONFIG_DUAL_LIMIT = 0x26
+CMD_READ_DUAL_LIMIT = 0x27
+CMD_HOME_DUAL_LIMIT = 0x28
 CMD_TRAJECTORY_BEGIN = 0x30
 CMD_TRAJECTORY_POINT = 0x31
 CMD_TRAJECTORY_SEAL = 0x32
@@ -80,6 +88,26 @@ def build_soft_range(axis: int, minimum: float, maximum: float) -> bytes:
     if not minimum < maximum or not minimum <= 0 <= maximum:
         raise ValueError("软范围须包含零点")
     return build_request(axis, CMD_CONFIG_GUARD, struct.pack(">ii", round(minimum * 1000), round(maximum * 1000)), parameter=2)
+
+
+def build_axis1_limit_config() -> bytes:
+    """app(5) v3.8.1 measured preset: DI0 +35°, DI2 −29°, active low.
+
+    This explicitly invalidates the pitch reference. Never send it merely to
+    read status, or when an existing valid reference can be used for positioning.
+    """
+    return build_request(1, CMD_CONFIG_DUAL_LIMIT,
+                         struct.pack(">BBBBbBii", 1, 2, 0, 0, -1, 3, -29000, 35000), 0x444C)
+
+
+def build_axis1_limit_home(speed_deg_s: float = 0.6) -> bytes:
+    # v3.8.2 calls this setting speed_rpm, but divides it by 6. Numerically
+    # it is output degrees/second; normal capture RPM must NOT be divided.
+    if (isinstance(speed_deg_s, bool) or not isinstance(speed_deg_s, (int, float)) or
+            not math.isfinite(speed_deg_s) or not 0.2 <= speed_deg_s <= 1.5):
+        raise ValueError("机械回零速度须为0.2～1.5 °/s")
+    return build_request(1, CMD_HOME_DUAL_LIMIT,
+                         struct.pack(">biii", -1, round(speed_deg_s * 1000), 45000, 120000), 0x4449)
 
 
 def crc16_modbus(data: bytes | bytearray) -> int:
@@ -182,6 +210,17 @@ def build_move_output_relative(device_id: int, output_speed_rpm: float, output_a
     if angle_millideg == 0 or not -(2**31) <= angle_millideg <= 2**31 - 1:
         raise ValueError("输出轴角度小于 0.001°或超出协议范围。")
     return build_request(device_id, CMD_MOVE_OUTPUT_RELATIVE, struct.pack(">Hi", speed_centi, angle_millideg))
+
+
+def build_move_output_tracked(device_id: int, output_speed_rpm: float, output_angle_deg: float) -> bytes:
+    """LightCheck(1) feedback target, physical output units, not a raw/P4 task.
+
+    The firmware applies its angle_sign exactly once. Do not invert the signed
+    physical delta here, even when the pitch motor's encoder runs backwards.
+    Keep the legacy frame builder for explicit protocol compatibility tests.
+    """
+    legacy = build_move_output_relative(device_id, output_speed_rpm, output_angle_deg)
+    return build_request(device_id, CMD_MOVE_OUTPUT_TRACKED, legacy[7:13], parameter=POINT_TRACK_KEY)
 
 
 def build_motion_profile(device_id: int, accel_ms: int, decel_ms: int, s_curve_ms: int) -> bytes:

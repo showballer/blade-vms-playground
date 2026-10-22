@@ -134,7 +134,7 @@ class DrivePositionServiceTests(unittest.TestCase):
                 self.controller._cycle_move_point(self.motor, self.cycle, self.cycle.points[0])
             native.assert_not_called()
         self.motor.origins[2] -= 1
-        self.motor.angles[2] += .2
+        self.motor.angles[2] += .501
         with patch("blade_acquisition.drive_position.execute_drive_position", side_effect=self.success) as native:
             self.controller._cycle_move_point(self.motor, self.cycle, self.cycle.points[0])
             native.assert_called_once()

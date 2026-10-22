@@ -9,16 +9,19 @@ import threading
 import time
 import warnings
 
-from ..serial_ports import validate_local_serial_port
+from ..serial_ports import validate_local_serial_port, validate_turntable_endpoint
+from .transport import TcpTransport
 
 from .protocol import (
-    CMD_MOVE_OUTPUT_RELATIVE, CMD_READ_PA, CMD_READ_SPEED, CMD_READ_POSITION,
+    CMD_MOVE_OUTPUT_TRACKED, CMD_READ_PA, CMD_READ_SPEED, CMD_READ_POSITION,
+    OUTPUT_POSITION_TOLERANCE_DEG,
     CMD_READ_ALARM, CMD_RESET_ALARM, CMD_STOP, CMD_SET_MOTION_PROFILE, CMD_START, CMD_SET_SPEED,
     CMD_ROTATE_CONTINUOUS, CMD_ROTATE_KEEPALIVE,
     CMD_READ_FEEDBACK, CMD_READ_GUARD, CMD_SET_ZERO, CMD_CONFIG_GUARD, CMD_SET_REFERENCE,
     CMD_TRAJECTORY_CLEAR, build_set_reference,
+    CMD_READ_DUAL_LIMIT, build_axis1_limit_config, build_axis1_limit_home,
     build_soft_range, validate_output_angle,
-    Response, ResponseParser, build_request, build_move_output_relative,
+    Response, ResponseParser, build_request, build_move_output_tracked,
     build_motion_profile,
     CMD_TRAJECTORY_BEGIN, CMD_TRAJECTORY_POINT, CMD_TRAJECTORY_SEAL, CMD_TRAJECTORY_START,
     CMD_TRAJECTORY_STATUS, CMD_TRAJECTORY_STOP, CMD_TRAJECTORY_KEEPALIVE, CMD_READ_AXES,
@@ -45,7 +48,10 @@ class CommandRejected(MotorError):
     def __init__(self, response: Response):
         self.response = response
         self.status = response.status
-        super().__init__(f"Motor {response.device_id}: {response.status_text}")
+        detail = ("控制板不支持0x19反馈定位，请升级配套LightCheck(1)固件；未退回旧定位"
+                  if response.command == CMD_MOVE_OUTPUT_TRACKED and response.status == 7
+                  else response.status_text)
+        super().__init__(f"Motor {response.device_id}: {detail}")
 
 
 class DriveAlarm(MotorError):
@@ -141,6 +147,7 @@ class MotorController:
 
     trajectory_start_observer = True
     drive_internal_position = True
+    point_position_protocol = "0x19"
 
     def __init__(self, port: str, *, timeout: float = 2.0,
                  gear_ratio: float = 50.0, serial_factory=None):
@@ -174,19 +181,26 @@ class MotorController:
                 return self
             factory = self._factory
             if factory is None:
-                try:
-                    validate_local_serial_port(self.port_name)
-                except ValueError as exc:
-                    raise CommunicationError(str(exc)) from exc
-                try:
-                    from serial import Serial
-                except ImportError as exc:
-                    raise CommunicationError("请先安装 pyserial") from exc
-                factory = Serial
+                if self.port_name.startswith('tcp://'):
+                    try:
+                        validate_turntable_endpoint(self.port_name)
+                    except ValueError as exc:
+                        raise CommunicationError(str(exc)) from exc
+                    factory = TcpTransport
+                else:
+                    try:
+                        validate_local_serial_port(self.port_name)
+                    except ValueError as exc:
+                        raise CommunicationError(str(exc)) from exc
+                    try:
+                        from serial import Serial
+                    except ImportError as exc:
+                        raise CommunicationError("请先安装 pyserial") from exc
+                    factory = Serial
             port = None
             try:
                 port = factory(self.port_name, baudrate=115200, bytesize=8, parity="N",
-                               stopbits=1, timeout=0, write_timeout=self.timeout)
+                               stopbits=1, timeout=self.timeout if self.port_name.startswith('tcp://') else 0, write_timeout=self.timeout)
                 port.reset_input_buffer()
             except Exception as exc:
                 if port is not None:
@@ -207,7 +221,7 @@ class MotorController:
             if self._faulted:
                 raise CommunicationError("上次通信结果不确定，请关闭并重连；不要自动重发运动")
             read_commands = (CMD_READ_PA, CMD_READ_SPEED, CMD_READ_POSITION, CMD_READ_ALARM,
-                             CMD_READ_FEEDBACK, CMD_READ_GUARD, CMD_READ_AXES)
+                             CMD_READ_FEEDBACK, CMD_READ_GUARD, CMD_READ_AXES, CMD_READ_DUAL_LIMIT)
             if (self._trajectory_session is not None and frame[4] not in read_commands and
                     not CMD_TRAJECTORY_BEGIN <= frame[4] <= CMD_TRAJECTORY_KEEPALIVE and frame[4] not in (CMD_STOP, CMD_TRAJECTORY_CLEAR)):
                 raise MotorError("两轴轨迹已准备或运行，请先停止轨迹后再发送其他运动或配置")
@@ -238,6 +252,13 @@ class MotorController:
                             raise CommandRejected(packet)
                         return packet
                     time.sleep(0.005)
+                read_only = frame[4] in read_commands or frame[4] == CMD_TRAJECTORY_STATUS
+                trace_event("serial_timeout", axis=expected[0], command=expected[1],
+                            parameter=expected[2], timeoutSeconds=self.timeout, readOnly=read_only)
+                if read_only:
+                    raise CommunicationError(
+                        f"读取 STM32 应答超时（轴{expected[0]}，指令0x{expected[1]:02X}，"
+                        f"参数{expected[2]}，等待{self.timeout:g}秒）；本次读数不可用，未自动重发")
                 raise CommunicationError("等待 STM32 应答超时；执行结果未知，未自动重发")
             except CommandRejected:
                 raise
@@ -345,6 +366,13 @@ class MotorController:
         self._axis(motor_id)
         packet = self._request(build_request(motor_id, CMD_READ_FEEDBACK))
         values = list(struct.unpack(">iiiHHHiHBBBBih", self._data(packet, 34)[:34]))
+        # v3.8.6 cached control feedback omits PA95 and sends UINT16_MAX.
+        # Obtain the real value rather than comparing that sentinel with the
+        # stationary reference signature, or silently reusing an old unit.
+        if values[5] == 0xFFFF:
+            values[5] = self.read_pa(motor_id, 95)
+            if not 1 <= values[5] <= 32:
+                raise MotorError("读取真实编码器位数 PA95 无效，未使用缓存占位值")
         # Only P3-32=3 with a nonzero PA11 has a verified output-coordinate scale.
         values[6] = values[6] / 1000 if values[7] & 1 and values[3] == 3 and values[4] > 0 else None
         return PositionFeedback(*values)
@@ -355,6 +383,85 @@ class MotorController:
         neg,pos,home,high,direction,confirmed,hw,soft,lo,hi,end = struct.unpack(">BBBBbBBBiiB", self._data(packet,17)[:17])
         return GuardConfig(None if neg==255 else neg,None if pos==255 else pos,None if home==255 else home,
                            bool(high),direction,bool(confirmed),bool(hw),bool(soft),lo/1000,hi/1000,bool(end))
+
+    def get_axis1_limits(self) -> dict:
+        """Read new firmware capability without touching references or motion."""
+        try:
+            packet = self._request(build_request(1, CMD_READ_DUAL_LIMIT))
+        except CommandRejected as exc:
+            if exc.status == 7:
+                raise MotorError("机械回零需要 app(5) 配套的 v3.8.1 转盘固件；当前固件不支持，未发送回零运动") from exc
+            raise
+        enabled, horizontal, raised, high, sign, valid, lo, hi, hit, pending = struct.unpack(
+            ">BBBBbBiiBB", self._data(packet, 16)[:16])
+        if (enabled not in (0, 1) or high not in (0, 1) or sign not in (-1, 1) or valid & ~3 or
+                horizontal not in range(6) or raised not in range(6) or horizontal == raised or
+                hit not in (0, 1, 2)):
+            raise CommunicationError("双限位配置读回无效，未继续回零")
+        return dict(enabled=bool(enabled), horizontal_channel=horizontal, raised_channel=raised,
+                    active_high=bool(high), positive_is_up=sign == 1,
+                    horizontal_deg=lo / 1000 if valid & 1 else None,
+                    raised_deg=hi / 1000 if valid & 2 else None,
+                    last_hit={0: None, 1: "horizontal", 2: "raised"}[hit], pending=bool(pending),
+                    pending_flags=pending)
+
+    def configure_axis1_homing(self, *, cancel=None) -> dict:
+        if cancel is not None and cancel.is_set():
+            raise InterruptedError("机械回零已取消")
+        self.stop(1)
+        if cancel is not None and cancel.is_set():
+            raise InterruptedError("机械回零已取消，未重写参考")
+        self._request(build_axis1_limit_config())
+        self._invalidate_trajectory()
+        actual = self.get_axis1_limits()
+        # app(5) treats the trailing pending byte as a flag value, not a strict
+        # 0/1 boolean. The connected firmware briefly reports 2 after applying
+        # the limit configuration. Wait using reads only; do not reconfigure.
+        deadline = time.monotonic() + 1
+        while actual["pending"]:
+            if cancel is not None and cancel.is_set():
+                raise InterruptedError("机械回零已取消，未启动搜索")
+            if time.monotonic() >= deadline:
+                raise MotorError("限位配置仍在停稳处理中，未启动回零搜索")
+            time.sleep(.03)
+            actual = self.get_axis1_limits()
+        expected = dict(enabled=True, horizontal_channel=2, raised_channel=0, active_high=False,
+                        positive_is_up=False, horizontal_deg=-29, raised_deg=35)
+        if any(actual[key] != value for key, value in expected.items()):
+            raise MotorError("机械回零限位配置读回不一致，未启动搜索")
+        return actual
+
+    def start_axis1_limit_homing(self, speed_deg_s: float = 0.6, *, cancel=None) -> None:
+        """Nonblocking app(5) DI0 search; caller owns renewal, cancel and readback."""
+        frame = build_axis1_limit_home(speed_deg_s)
+        if cancel is not None and cancel.is_set():
+            raise InterruptedError("机械回零已取消，未启动")
+        self.stop(1)
+        if cancel is not None and cancel.is_set():
+            raise InterruptedError("机械回零已取消，未启动")
+        self._data(self._request(frame), 2)
+
+    def clear_axis1_reference(self) -> PositionFeedback:
+        """app(6) explicit pitch-reference reset; no search or positioning.
+
+        Reapply the vendor's DI2/DI0, -29/+35 dual-limit configuration. This
+        invalidates the pitch coordinate and old trajectory, never the yaw zero.
+        The service owns both-axis stationary preflight and final readback.
+        """
+        with self._lock:
+            if self.get_trajectory_status().state not in (0, 6, 7, 8):
+                raise MotorError("控制器仍有待执行或运行轨迹，请先取消或停止两轴")
+            self.get_axis1_limits()  # Capability probe before any configuration.
+            self.configure_axis1_homing()
+            trajectory = self.get_trajectory_status()
+            if trajectory.state != 0 or trajectory.fault:
+                raise MotorError("清除参考后旧轨迹未确认空闲；未启动回零或定位")
+            actual = self.get_feedback(1)
+            if actual.flags & 1 or actual.output_angle_deg is not None:
+                raise MotorError("俯仰轴仍有有效参考，可能已触发机械限位；请重新检查，未启动回零")
+            if actual.motor_rpm or actual.flags & 16 or actual.home_phase not in (0, 7, 8):
+                raise MotorError("清除参考后停止尚未确认，未启动回零或定位")
+            return actual
 
     def set_soft_range(self, motor_id: int, minimum_deg: float, maximum_deg: float) -> GuardConfig:
         frame = build_soft_range(motor_id,minimum_deg,maximum_deg)
@@ -442,7 +549,7 @@ class MotorController:
         if cancel is not None and cancel.is_set():
             return None
         return self.move_relative(motor_id, delta, speed_rpm=speed_rpm, cancel=cancel,
-                                  stop_before=stop_before)
+                                  stop_before=False)  # Already stopped above, or prechecked by caller.
 
     def move_to_angle_prechecked(self, motor_id: int, angle_deg: float, *,
                                  speed_rpm: float = 0.2, cancel=None) -> MotionAccepted | None:
@@ -474,6 +581,83 @@ class MotorController:
                 return MotionAccepted(motor_id, 0, speed_rpm)
             return self.move_relative(motor_id, delta, speed_rpm=speed_rpm,
                                       cancel=cancel, stop_before=False)
+
+    def move_axes_to_angles_verified(self, targets, *, speed_rpm, cancel, references,
+                                     start_angles, observe=None):
+        """One owner/lock, one fresh joint alarm read, then two protected targets.
+
+        Full reference and guard preflight belongs to the group caller. Each
+        axis's reference/position is still read immediately before its target,
+        including axis 2 AFTER the first ACK. There is no stop, retry, fallback,
+        profile change or reference write. A failed second target must make
+        the caller stop both axes.
+        """
+        if len(targets) != 2 or len(references) != 2 or len(start_angles) != 2:
+            raise ValueError("双轴定位参数不完整")
+        if isinstance(speed_rpm, bool) or not math.isfinite(speed_rpm) or not .02 <= speed_rpm <= 100:
+            raise ValueError("速度必须为0.02～100 rpm")
+        frame_probe = build_move_output_tracked(1, speed_rpm, .001)
+        # Validate both target envelopes and motor-speed conversion before I/O.
+        for axis, target in enumerate(targets, 1):
+            validate_output_angle(axis, target)
+        raw_speed = struct.unpack(">H", frame_probe[7:9])[0]
+        if not 1 <= int(math.floor(raw_speed / 100 * self.gear_ratio + .5)) <= 5000:
+            raise ValueError("按减速比换算后的电机速度必须为 1～5000 rpm")
+        keys = ("origin_counts", "display_mode", "command_counts_per_rev", "encoder_bits")
+        accepted = []
+        with self._lock:
+            if cancel.is_set():
+                return None
+            positions = self.get_axis_positions()
+            if len(positions) != 2 or any(
+                    not p.usable or p.source != 0 or not p.flags & 1 or p.flags & 16 or
+                    p.motor_rpm or p.alarm_code or p.guard_fault or
+                    not math.isfinite(p.angle_deg) or abs(p.angle_deg - start) > .1 + 1e-9
+                    for p, start in zip(positions, start_angles)):
+                raise MotorError("双轴下发前实测位置、停止状态或报警已变化")
+            for axis, target in enumerate(targets, 1):
+                if cancel.is_set():
+                    return None
+                # The fresh joint read already checked both axes' reference,
+                # alarm and zero speed. Do not start a second firmware point
+                # task for encoder drift inside the caller's arrival tolerance:
+                # its blocking setup can starve the first axis's control loop.
+                # This is command elision only; the caller must still verify
+                # both final positions and references independently.
+                if abs(target - positions[axis - 1].angle_deg) <= OUTPUT_POSITION_TOLERANCE_DEG + 1e-9:
+                    accepted.append(MotionAccepted(axis, 0, raw_speed / 100))
+                    if observe:
+                        observe("axis_already_at_target", axis=axis,
+                                angle=positions[axis - 1].angle_deg, toleranceDeg=OUTPUT_POSITION_TOLERANCE_DEG)
+                    continue
+                feedback = self.get_feedback(axis)
+                if ([getattr(feedback, key) for key in keys] != list(references[axis - 1]) or
+                        feedback.motor_rpm or feedback.fault or feedback.flags & 16 or
+                        not feedback.flags & 1 or feedback.home_phase not in (0, 7, 8) or
+                        feedback.output_angle_deg is None or not math.isfinite(feedback.output_angle_deg) or
+                        abs(feedback.output_angle_deg - start_angles[axis - 1]) > .1 + 1e-9):
+                    raise MotorError(f"轴{axis}下发前参考、故障或停止位置已变化")
+                delta = round((target - feedback.output_angle_deg) * 1000) / 1000
+                if abs(target - start_angles[axis - 1]) <= .0005 or delta == 0:
+                    accepted.append(MotionAccepted(axis, 0, raw_speed / 100))
+                    if observe:
+                        observe("axis_already_at_target", axis=axis)
+                    continue
+                frame = build_move_output_tracked(axis, speed_rpm, delta)
+                requested = struct.unpack(">i", frame[9:13])[0]
+                if cancel.is_set():
+                    return None
+                if observe:
+                    observe("wire_sending", axis=axis, target=target)
+                packet = self._request(frame)
+                actual = struct.unpack(">i", self._data(packet, 4)[:4])[0]
+                if actual != requested:
+                    self._faulted = True
+                    raise CommunicationError("运动应答角度与请求不符，实际动作未知，请检查并停止")
+                accepted.append(MotionAccepted(axis, actual / 1000, raw_speed / 100))
+                if observe:
+                    observe("command_accepted", axis=axis, outputSpeedRpm=raw_speed / 100)
+        return tuple(accepted)
 
     def _invalidate_trajectory(self):
         self._trajectory_session = None
@@ -521,6 +705,24 @@ class MotorController:
             self.stop(motor_id)
             config = self.get_guard_config(motor_id)
             feedback = self.get_feedback(motor_id)
+            if feedback.fault == 8:
+                # Dual-limit firmware rejects generic guard reconfiguration.
+                # Its dedicated acknowledgement checks two real zero-speed
+                # samples, alarms, reference and its own endpoint margin.
+                self._request(build_request(motor_id, CMD_CONFIG_GUARD, parameter=4))
+                actual_config = self.get_guard_config(motor_id)
+                actual = self.get_feedback(motor_id)
+                fields = ("origin_counts", "display_mode", "command_counts_per_rev", "encoder_bits")
+                if actual_config != config or any(getattr(actual, key) != getattr(feedback, key) for key in fields):
+                    raise MotorError("执行故障确认后参考或保护配置变化；未恢复运动")
+                if (actual.fault or not actual.flags & 1 or actual.flags & 16 or actual.motor_rpm or
+                        actual.output_angle_deg is None or not math.isfinite(actual.output_angle_deg) or
+                        actual.home_phase not in (0, 7, 8)):
+                    raise MotorError("执行故障尚未清除或停稳/参考无效；未恢复运动")
+                alarm = self.read_alarm(motor_id)
+                if alarm:
+                    raise DriveAlarm(motor_id, alarm)
+                return actual
             if (not feedback.flags & 1 or feedback.output_angle_deg is None or
                     feedback.flags & 16 or feedback.motor_rpm or feedback.home_phase in range(1, 7)):
                 raise MotorError("参考无效、回零中或尚未停稳；不能清单轴保护，请先核查真实参考")
@@ -651,15 +853,15 @@ class MotorController:
             zero_samples = zero_samples + 1 if rpm == 0 else 0
             if zero_samples >= 2:
                 return
-            time.sleep(0.1)
+            time.sleep(0.02)
         raise MotorError("停止确认超时；未发送后续运动，请检查机构并使用硬件急停")
 
     def move_relative(self, motor_id: int, angle_deg: float, *, speed_rpm: float = 0.2,
                       stop_timeout: float = 10.0, cancel=None,
                       stop_before: bool = True) -> MotionAccepted | None:
-        """输出轴相对转动；正角度正向，负角度反向。"""
+        """反馈定位相对当前实测位置；物理角度符号由固件映射，不恢复旧P4任务。"""
         self._axis(motor_id)
-        frame = build_move_output_relative(motor_id, speed_rpm, angle_deg)
+        frame = build_move_output_tracked(motor_id, speed_rpm, angle_deg)
         requested_speed, requested_angle = struct.unpack(">Hi", frame[7:13])
         motor_speed = int(math.floor(requested_speed / 100.0 * self.gear_ratio + 0.5))
         if not 1 <= motor_speed <= 5000:

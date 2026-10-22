@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, patch
 
-from blade_acquisition.serial_ports import valid_serial_port, validate_local_serial_port, list_turntable_ports
+from blade_acquisition.serial_ports import valid_serial_port, validate_local_serial_port, list_turntable_ports, valid_turntable_endpoint
 from blade_acquisition.turntable import TurntableConfig, TurntableRequest, PointCycleConfig
 from blade_acquisition.turntable_driver.motor_controller import MotorController, CommunicationError
 
@@ -41,6 +41,20 @@ class SerialPortTests(unittest.TestCase):
         for changes in ({"port": self.port.lower()}, {"referenceSignature": "invalid"}, {"axis1AngleDeg": 36}):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 PointCycleConfig(port=self.port, points=[point | changes])
+
+    def test_tcp_boundaries_and_recorded_endpoint_identity(self):
+        cases = json.loads((Path(__file__).resolve().parents[3] / "scripts/fixtures/turntable-ports.json").read_text())
+        for port in cases['tcpValid']:
+            self.assertFalse(valid_serial_port(port))
+            self.assertTrue(valid_turntable_endpoint(port))
+            self.assertEqual(TurntableRequest(action='health', port=port).port, port)
+            point = dict(name='P4', port=port, referenceSignature=self.signature, axis1AngleDeg=10, axis2AngleDeg=0)
+            self.assertEqual(PointCycleConfig(port=port, points=[point]).points[0].port, port)
+            with self.assertRaises(ValueError):
+                PointCycleConfig(port=port, points=[point | {'port': 'COM7'}])
+        for port in cases['tcpInvalid']:
+            self.assertFalse(valid_turntable_endpoint(port), repr(port))
+            with self.assertRaises(ValueError): TurntableRequest(port=port)
 
     def test_local_gate_requires_platform_character_device_and_never_symlink(self):
         with patch("blade_acquisition.serial_ports.sys.platform", "darwin"):

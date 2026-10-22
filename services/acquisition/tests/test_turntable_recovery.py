@@ -19,9 +19,23 @@ class RecoveryMotor(BufferedMotor):
         self.alarms = {1: 0, 2: 0}
         self.recoveries = []
         self.fail_recovery = self.change_recovery_reference = self.move_other_after_recovery = False
+        self.pitch_reference_cleared = False
+        self.keep_pitch_reference = False
 
     def get_feedback(self, axis):
-        return replace(super().get_feedback(axis), fault=self.guard_faults[axis])
+        actual = replace(super().get_feedback(axis), fault=self.guard_faults[axis])
+        return replace(actual, flags=actual.flags & ~1, output_angle_deg=None) if axis == 1 and self.pitch_reference_cleared else actual
+
+    def clear_axis1_reference(self):
+        self.recoveries.append(('reference', 1))
+        if self.fail_recovery: raise MotorError('configuration reply lost')
+        self.pitch_reference_cleared = not self.keep_pitch_reference
+        self.guard_faults[1] = 0
+        self.guard_configs[1] = replace(self.get_guard_config(1), minimum_deg=-29,
+                                       maximum_deg=35, hardware_enabled=False)
+        self.initial_state = 0
+        if self.change_recovery_reference: self.origins[2] += 1
+        return self.get_feedback(1)
 
     def get_status(self, axis):
         value = super().get_status(axis)
@@ -71,10 +85,51 @@ class TurntableRecoveryTests(unittest.TestCase):
         return self.client.post('/api/field/turntable', json={'action': action, 'port': 'COM6', 'axis': 1, 'confirmRecovery': True, **kwargs})
 
     def test_recovery_requires_explicit_action_not_read_only_health(self):
-        for action in ('clear_guard_fault', 'clear_trajectory_fault', 'reset_alarm'):
+        for action in ('clear_guard_fault', 'clear_trajectory_fault', 'reset_alarm', 'clear_axis1_reference'):
             self.assertEqual(self.call(action, confirmRecovery=False).status_code, 422)
         self.assertEqual(self.call('health').status_code, 422)
         self.assertEqual(self.motor.recoveries, [])
+
+    def test_explicit_pitch_reference_clear_preserves_yaw_and_never_starts_motion(self):
+        before = self.motor.get_feedback(2)
+        reply = self.call('clear_axis1_reference')
+        self.assertEqual(reply.status_code, 200, reply.text)
+        value = reply.json()['turntable']
+        self.assertEqual(value['recovery']['action'], 'clear_axis1_reference')
+        self.assertTrue(value['recovery']['verified'])
+        self.assertIsNone(value['feedback']['axes']['1']['output_angle_deg'])
+        self.assertFalse(value['feedback']['axes']['1']['flags'] & 1)
+        self.assertEqual(self.motor.get_feedback(2), before)
+        self.assertEqual(self.motor.start_calls, 0)
+        self.assertEqual(self.motor.references, [])
+
+    def test_reference_clear_cannot_target_yaw_or_request_motion(self):
+        for changes in ({'axis': 2}, {'confirmMotion': True}):
+            self.assertEqual(self.call('clear_axis1_reference', **changes).status_code, 422)
+        self.assertEqual(self.motor.recoveries, [])
+
+    def test_reference_clear_requires_stationary_terminal_controller_and_readback(self):
+        for state in (1, 2, 3, 4, 5):
+            self.motor.initial_state = state
+            self.assertEqual(self.call('clear_axis1_reference').status_code, 503)
+        self.assertEqual(self.motor.recoveries, [])
+        self.motor.initial_state = 0
+        self.motor.keep_pitch_reference = True
+        self.assertEqual(self.call('clear_axis1_reference').status_code, 503)
+        self.motor.keep_pitch_reference = False
+        self.motor.change_recovery_reference = True
+        self.assertEqual(self.call('clear_axis1_reference').status_code, 503)
+
+    def test_reference_clear_does_not_hide_partial_failure_or_uncertain_stop(self):
+        self.motor.fail_recovery = True
+        reply = self.call('clear_axis1_reference')
+        self.assertEqual(reply.status_code, 503)
+        self.assertNotIn('recovery', self.controller.status()['turntable'])
+        self.assertEqual(self.motor.start_calls, 0)
+        self.motor.fail_recovery = False
+        self.motor.move_other_after_recovery = True
+        reply = self.call('clear_axis1_reference')
+        self.assertEqual(reply.status_code, 503)
 
     def test_health_includes_namespaced_advice_without_recovery(self):
         self.motor.alarms[2] = 59
@@ -117,6 +172,25 @@ class TurntableRecoveryTests(unittest.TestCase):
         self.assertEqual(self.motor.origins, before)
         self.assertEqual(self.motor.start_calls, 0)
         self.assertFalse(body['receiver']['running'])
+
+    def test_already_clear_recovery_refreshes_without_rewriting_guards_or_resetting_drive(self):
+        self.motor.guard_faults = {1: 0, 2: 0}
+        for action in ('clear_guard_fault', 'reset_alarm', 'clear_trajectory_fault'):
+            with self.subTest(action=action):
+                response = self.call(action)
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertTrue(response.json()['turntable']['recovery']['verified'])
+        self.assertEqual(self.motor.recoveries, [])
+        self.assertEqual(self.motor.start_calls, 0)
+
+    def test_previous_homing_error_does_not_prevent_fresh_recovery(self):
+        self.controller.turntable_snapshot = {'state': 'error', 'port': 'COM6',
+            'error': '回零定位期间参考位或反馈计数单位变化，已停止'}
+        self.motor.guard_faults[1] = 8
+        response = self.call('clear_guard_fault')
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.motor.recoveries, [('guard', 1)])
+        self.assertEqual(self.motor.start_calls, 0)
 
     def test_trajectory_clear_keeps_axis_fault_visible(self):
         self.motor.initial_state = 7

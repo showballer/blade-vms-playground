@@ -87,7 +87,7 @@ class LaserMotionInterlockTests(unittest.TestCase):
                 ready(1000, 1700000000)
                 background = self.background_only or self.background_only_after is not None and len(self.gates) > self.background_only_after
                 receive(batch([80] * 900 if background else
-                              [80] * 700 + blade_values(100) + [60] * 100))
+                              [80] * 700 + blade_values(100) + [80] * 100))
                 if self.observed_laser_problem == "off":
                     self.api.integers[46] = 0
                     receiver.laser_observer({"deviceIp": receiver.config.device_ip, "readAt": time.time(),

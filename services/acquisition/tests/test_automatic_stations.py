@@ -76,7 +76,7 @@ class PassReceiver:
 
     def run(self, stop, ready, receive):
         ready(1000, 1700000000)
-        receive(batch([62] * 100 + blade_values(50) + [53] * 50))
+        receive(batch([62] * 100 + blade_values(50) + [62] * 50))
         stop.wait(5)
 
 
@@ -331,17 +331,17 @@ class AutomaticStationTests(unittest.TestCase):
                         super(Receiver, receiver).run(stop, ready, receive)
                 self.controller.receiver_factory = Receiver
                 if phase == "before_worker":
-                    self.motor.angles[2] = .2
+                    self.motor.angles[2] = .501
                 original = self.controller._cycle_verify_initial_pose
                 def verify(motor, cycle, point, step):
                     if phase == "during_worker" and step == "worker_start":
-                        motor.angles[1] = .2
+                        motor.angles[1] = .501
                     return original(motor, cycle, point, step)
                 create = self.controller.store.create
                 def create_record(*args, **kwargs):
                     writer = create(*args, **kwargs)
                     if phase == "before_daq":
-                        self.motor.angles[2] = .2
+                        self.motor.angles[2] = .501
                     return writer
                 with patch.object(self.controller, "_cycle_verify_initial_pose", side_effect=verify), \
                      patch.object(self.controller.store, "create", side_effect=create_record), \
@@ -539,6 +539,27 @@ class AutomaticStationTests(unittest.TestCase):
         self.assertEqual(last_move["stationTiming"], timing)
         self.assertLessEqual(last_move["speedLimitRpm"], config.speedRpm)
 
+    def test_capture_at_prepositioned_point_repeatedly_remains_read_only(self):
+        config = PointCycleConfig(**automatic_config(followErrorLimitDeg=2.4))
+        point = config.points[0]
+        self.motor.angles = {1: point.axis1AngleDeg + .5, 2: point.axis2AngleDeg - .5}
+        with patch.object(self.controller, "_execute_drive_position", side_effect=AssertionError("duplicate positioning")), \
+             patch.object(self.controller, "_execute_dual_axis_move", side_effect=AssertionError("duplicate trajectory")):
+            for _ in range(2):
+                reached, completed, _ = self.controller._cycle_move_point(self.motor, config, point)
+                self.assertTrue(reached)
+                self.assertEqual(completed, [1, 2])
+                self.assertFalse(self.controller.turntable_snapshot["lastMove"]["motionCommanded"])
+        self.assertEqual(self.motor.start_calls, 0)
+
+    def test_native_capture_threads_configured_motion_error_limit(self):
+        config = PointCycleConfig(**automatic_config(followErrorLimitDeg=2.4))
+        self.motor.angles[1] = -2
+        self.motor._blade_motion_capability = {"supported": True, "mode": "dual_axis_timed", "pointMode": "drive_internal"}
+        with patch.object(self.controller, "_execute_drive_position", return_value=(True, [1, 2], {})) as move:
+            self.controller._cycle_move_point(self.motor, config, config.points[0])
+        self.assertEqual(move.call_args.kwargs["follow_error_limit"], 2.4)
+
     def test_configured_order_radial_laps_session_identity_and_no_final_return(self):
         config = automatic_config(radial_points=(("root", .5), ("tip", .8)), cycles=2)
         # A nearest-route optimizer must never be called for an automatic run.
@@ -620,7 +641,7 @@ class AutomaticStationTests(unittest.TestCase):
         self.assertEqual(calls, [("command", 1), ("arrived", 1), ("command", 2), ("arrived", 2)])
 
     def test_timeout_requires_entry_and_exit_and_never_moves_to_next_station(self):
-        for echo, completion in (([62] * 200, "missing_entry"), (blade_values(200), "missing_exit")):
+        for echo, completion in (([62] * 200, "missing_entry"), ([62] * 100 + blade_values(200), "missing_exit")):
             class Receiver(PassReceiver):
                 def run(self, stop, ready, receive):
                     ready(1000, 1700000000)

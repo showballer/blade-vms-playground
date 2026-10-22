@@ -709,11 +709,12 @@ class TurntableTests(unittest.TestCase):
         motor = FakeMotor()
         client = self.make_client(motor)
         def run(motor, **kwargs):
+            self.assertEqual(kwargs["follow_error_limit"], 2.4)
             motor.angles.update({1: kwargs["targets"][0], 2: kwargs["targets"][1]})
             return {"feedback": snapshot(motor, 1), "stopConfirmed": True, "state": "complete"}
         with patch.dict("os.environ", {"BLADE_TURNTABLE_DRIVE_POSITION_TEST": "1"}), \
              patch("blade_acquisition.drive_position.execute_drive_position", side_effect=run):
-            client.post("/api/field/turntable", json=self.recall_body(diagnosticDrivePosition=True))
+            client.post("/api/field/turntable", json=self.recall_body(diagnosticDrivePosition=True, followErrorLimitDeg=2.4))
             status = self.wait_test(client)
         self.assertTrue(status["turntableTest"]["passed"])
         self.assertIsNone(status["turntableWarning"])
@@ -779,7 +780,7 @@ class TurntableTests(unittest.TestCase):
         def stop(axis):
             original(axis)
             if axis == 1:
-                motor.angles[1] += 0.5
+                motor.angles[1] += 0.501
         motor.stop = stop
         client = self.make_client(motor)
         client.post("/api/field/turntable", json=self.recall_body())

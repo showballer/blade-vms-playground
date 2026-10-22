@@ -373,7 +373,8 @@ class ApiTests(unittest.TestCase):
         class Receiver(FixtureReceiver):
             def run(self, stop, ready, receive):
                 ready(1000, 1700000000)
-                receive(echo_batch([80] * 700 + blade_values(100) + [60] * 100))
+                # A complete saved-point pass returns to its own background.
+                receive(echo_batch([80] * 700 + blade_values(100) + [80] * 100))
                 stop.wait(3)
                 # Late receiver shutdown data must not enter a moving record.
                 receive(echo_batch([1] * 100, start=900))
@@ -403,6 +404,8 @@ class ApiTests(unittest.TestCase):
             meta = record["pointCycle"]
             self.assertEqual(meta["completion"], "confirmed_pass")
             self.assertEqual(meta["handoff"]["reason"], "blade_left")
+            self.assertTrue(meta["rssiDetector"]["requireBackground"])
+            self.assertEqual(meta["handoff"]["baselineRssi"], 80)
             self.assertLess(meta["entrySampleIndex"], meta["exitSampleIndex"])
             self.assertEqual(meta["referenceSignature"], POINT_REFERENCE["referenceSignature"])
         # Saving a timed route cannot bypass the enter/leave requirement.

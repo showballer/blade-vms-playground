@@ -1,4 +1,59 @@
 {
-  "valid": ["COM1", "COM6", "COM9999", "/dev/cu.usbserial-110", "/dev/cu.usbmodemAB12", "/dev/cu.SLAB_USBtoUART", "/dev/cu.Bluetooth-Incoming-Port"],
-  "invalid": ["", "COM0", "COM10000", "com6", " COM6", "COM6\n", "/dev/tty.usbserial-110", "/DEV/CU.usbserial-110", "/dev/cu.", "/dev/cu.../etc/passwd", "/dev/cu./../tty", "/dev/cu.usb\n", "/dev/cu.usb/extra", "/dev/cu.usb%2fextra", "/dev/cu.usb\\extra", "/dev/cu.usb\u0000", "/tmp/cu.usb", "file:///dev/cu.usb", "socket://127.0.0.1:1234", "rfc2217://127.0.0.1:1234", null, 6, true]
+  "valid": [
+    "COM1",
+    "COM6",
+    "COM9999",
+    "/dev/cu.usbserial-110",
+    "/dev/cu.usbmodemAB12",
+    "/dev/cu.SLAB_USBtoUART",
+    "/dev/cu.Bluetooth-Incoming-Port"
+  ],
+  "invalid": [
+    "",
+    "COM0",
+    "COM10000",
+    "com6",
+    " COM6",
+    "COM6\n",
+    "/dev/tty.usbserial-110",
+    "/DEV/CU.usbserial-110",
+    "/dev/cu.",
+    "/dev/cu.../etc/passwd",
+    "/dev/cu./../tty",
+    "/dev/cu.usb\n",
+    "/dev/cu.usb/extra",
+    "/dev/cu.usb%2fextra",
+    "/dev/cu.usb\\extra",
+    "/dev/cu.usb\u0000",
+    "/tmp/cu.usb",
+    "file:///dev/cu.usb",
+    "socket://127.0.0.1:1234",
+    "rfc2217://127.0.0.1:1234",
+    null,
+    6,
+    true
+  ],
+  "tcpValid": [
+    "tcp://192.168.10.50:5000",
+    "tcp://127.0.0.1:1",
+    "tcp://10.0.0.1:65535"
+  ],
+  "tcpInvalid": [
+    "tcp://192.168.10.50",
+    "tcp://192.168.10.50:0",
+    "tcp://192.168.10.50:65536",
+    "tcp://192.168.10.50:05000",
+    "tcp://192.168.010.50:5000",
+    "tcp://0.0.0.0:5000",
+    "tcp://224.0.0.1:5000",
+    "tcp://255.255.255.255:5000",
+    "tcp://192.168.256.50:5000",
+    "tcp://user@192.168.10.50:5000",
+    "tcp://192.168.10.50:5000/",
+    "tcp://192.168.10.50:5000?x=1",
+    "tcp://192.168.10.50:5000#x",
+    "tcp://localhost:5000",
+    "tcp://[::1]:5000",
+    "tcp://192.168.10.50:5000\n"
+  ]
 }

@@ -1,7 +1,8 @@
-"""Bounded serial names at API boundaries; local-device checks before opening."""
+"""Bounded serial names and IPv4/TCP endpoints; local-device checks before serial opens."""
 from __future__ import annotations
 
 import os
+import ipaddress
 import re
 import stat
 import sys
@@ -25,6 +26,35 @@ def validate_serial_port(value: str) -> str:
 
 
 SerialPort = Annotated[str, AfterValidator(validate_serial_port)]
+
+
+def tcp_endpoint(value: object) -> tuple[str, int] | None:
+    if not isinstance(value, str):
+        return None
+    match = re.fullmatch(r"tcp://([^:/\s]+):([1-9][0-9]{0,4})", value)
+    if not match:
+        return None
+    try:
+        host = ipaddress.IPv4Address(match[1])
+    except ipaddress.AddressValueError:
+        return None
+    port = int(match[2])
+    if not 0 < int(host) < int(ipaddress.IPv4Address('224.0.0.0')) or port > 65535:
+        return None
+    return str(host), port
+
+
+def valid_turntable_endpoint(value: object) -> bool:
+    return valid_serial_port(value) or tcp_endpoint(value) is not None
+
+
+def validate_turntable_endpoint(value: str) -> str:
+    if not valid_turntable_endpoint(value):
+        raise ValueError("转盘连接须为 tcp://IPv4:端口、COM1～COM9999 或 macOS /dev/cu.* 设备")
+    return value
+
+
+TurntableEndpoint = Annotated[str, AfterValidator(validate_turntable_endpoint)]
 
 
 def validate_local_serial_port(port: str) -> str:

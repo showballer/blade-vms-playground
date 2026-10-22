@@ -1,6 +1,7 @@
 """Bounded diagnostic sequencing and fail-closed cleanup; no device/network I/O."""
 from dataclasses import asdict
 import threading
+import struct
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch, Mock
@@ -79,7 +80,8 @@ class PositionMotor:
                 self.on_sample()
         return tuple(AxisPosition(angle + self.sample_offset[index], int(angle * 1000),
                                   self.rpm[index], 3 if index == 0 else 1,
-                                  self.sample_age, self.alarm, self.feedback_fault, self.source)
+                                  self.sample_age, self.alarm, self.feedback_fault,
+                                  self.source[index] if isinstance(self.source, tuple) else self.source)
                      for index, angle in enumerate(self.angles))
 
     def move_to_angle_verified(self, axis, target, *, speed_rpm, cancel, reference, start_angle):
@@ -151,13 +153,50 @@ class DrivePositionTests(unittest.TestCase):
         self.assertEqual(self.motor.stops, [])
         self.assertTrue(result["stopConfirmed"])
         self.assertEqual(result["actualAngles"], [14, -9])
-        self.assertEqual(result["toleranceDeg"], .1)
+        self.assertEqual(result["toleranceDeg"], .5)
         phases = [event["phase"] for event in seen]
         first_sample = phases.index("position_sample")
         self.assertEqual(phases[:first_sample].count("command_accepted"), 2)
         self.assertEqual(phases.count("position_sample"), 2)
         self.assertEqual(set(result["firstMotionSeconds"]), {"1", "2"})
         self.assertEqual(result["feedback"]["axes"]["2"]["motor_rpm"], 0)
+
+    def grouped_motor(self):
+        from blade_acquisition.turntable_driver.motor_controller import MotorController
+        self.motor.gear_ratio = 50
+        self.motor._lock = threading.RLock()
+        def request(frame):
+            axis = frame[3]
+            delta = struct.unpack('>i', frame[9:13])[0] / 1000
+            self.motor.move_native(axis, self.motor.angles[axis-1] + delta,
+                                   speed_rpm=5, cancel=self.cancel)
+            return SimpleNamespace(data=frame[9:13])
+        self.motor._request = request
+        self.motor._data = lambda packet, _: packet.data
+        self.motor.move_axes_to_angles_verified = lambda *a, **kw: MotorController.move_axes_to_angles_verified(self.motor, *a, **kw)
+
+    def test_grouped_sdk_path_confirms_real_joint_stop_and_records_wire_times(self):
+        self.grouped_motor()
+        result = self.run_move()
+        self.assertTrue(result['stopConfirmed'])
+        self.assertEqual(self.motor.commands, [1, 2])
+        self.assertEqual(set(result['wireCommandSeconds']), {'1', '2'})
+        self.assertEqual(result['actualAngles'], [14, -9])
+
+    def test_grouped_partial_failure_cancels_both_axes_without_retry(self):
+        self.grouped_motor()
+        self.motor.reject_axis = 2
+        result = self.failed('drive rejected')
+        self.assertTrue(result['stopConfirmed'])
+        self.assertEqual(self.motor.commands, [1, 2])
+        self.assertEqual(self.motor.stops, [1, 2])
+
+    def test_grouped_reference_change_after_first_ack_prevents_second_axis(self):
+        self.grouped_motor()
+        self.motor.on_command = lambda axis: setattr(self.motor, 'reference_delta', 1)
+        result = self.failed('轴2下发前参考')
+        self.assertTrue(result['stopConfirmed'])
+        self.assertEqual(self.motor.commands, [1])
 
     def test_pending_or_faulted_trajectory_is_read_only_rejection(self):
         for state, fault in ((1, 0), (2, 0), (3, 0), (5, 0), (7, 7)):
@@ -219,8 +258,8 @@ class DrivePositionTests(unittest.TestCase):
         self.assertEqual(self.motor.stops, [1, 2])
         self.assertTrue(result["stopConfirmed"])
 
-    def test_zero_rpm_outside_point_one_tolerance_is_not_arrival(self):
-        self.motor.on_sample = lambda: self.motor.angles.__setitem__(1, -8.8)
+    def test_zero_rpm_outside_point_five_tolerance_is_not_arrival(self):
+        self.motor.on_sample = lambda: self.motor.angles.__setitem__(1, -8.499)
         result = self.failed("超时")
         self.assertTrue(result["stopConfirmed"])
 
@@ -229,6 +268,54 @@ class DrivePositionTests(unittest.TestCase):
         self.failed("明显反向")
         self.assertEqual(self.motor.stops, [1, 2])
 
+    def test_rejected_overshoot_is_preserved_before_stop_replaces_feedback(self):
+        # Match the failed P2 move: the first returned pose was already outside
+        # the permitted segment. A STOP sample must not erase that evidence.
+        self.motor.angles[0] = self.motor.start[0] = 5.184
+        self.motor.on_sample = lambda: self.motor.angles.__setitem__(0, 10.)
+        result = self.failed('越过目标：起点5.184°，目标8.863°，实测10.000°',
+                             targets=(8.862676, 0))
+        rejected = result['rejectedPosition']
+        self.assertEqual(rejected['reason'], 'overshoot')
+        self.assertEqual(rejected['actualAngleDeg'], 10)
+        self.assertEqual(rejected['targetAngleDeg'], 8.862676)
+        self.assertTrue(result['stopConfirmed'])
+        self.assertEqual(self.motor.stops, [1, 2])
+        self.assertIn('position_rejected', [event['phase'] for event in result['events']])
+        self.assertNotIn('arrived', [event['phase'] for event in result['events']])
+
+    def test_small_overshoot_can_correct_but_does_not_relax_final_arrival(self):
+        self.motor.angles[0] = self.motor.start[0] = 5.354
+        def sample():
+            if self.motor.sample == 1:
+                self.motor.angles[0] = 9.366
+                self.motor.rpm[0] = -54
+        self.motor.on_sample = sample
+        result = self.run_move(targets=(8.862676, 0), follow_error_limit=.8)
+        self.assertEqual(result['followErrorLimitDeg'], .8)
+        self.assertEqual(result['toleranceDeg'], .5)
+        self.assertTrue(result['stopConfirmed'])
+        self.assertEqual(result['actualAngles'], [8.863, 0])
+        self.assertEqual(self.motor.stops, [])
+
+    def test_configured_envelope_still_stops_real_overshoot(self):
+        self.motor.angles[0] = self.motor.start[0] = 5.354
+        self.motor.on_sample = lambda: self.motor.angles.__setitem__(0, 9.366)
+        result = self.failed('保护限0.500°', targets=(8.862676, 0), follow_error_limit=.5)
+        self.assertEqual(result['rejectedPosition']['followErrorLimitDeg'], .5)
+        self.assertEqual(self.motor.stops, [1, 2])
+
+    def test_stopped_overshoot_inside_motion_limit_is_not_arrival(self):
+        self.motor.on_sample = lambda: (self.motor.angles.__setitem__(0, 14.503), self.motor.rpm.__setitem__(0, 0))
+        result = self.failed('超时', follow_error_limit=.8)
+        self.assertEqual(self.motor.stops, [1, 2])
+        self.assertNotIn('arrived', [event['phase'] for event in result['events']])
+
+    def test_invalid_motion_limits_never_send_a_command(self):
+        for limit in (.49, 10.01, True, float('nan')):
+            self.failed('定位行程误差上限', follow_error_limit=limit)
+        self.assertEqual(self.motor.commands + self.motor.stops, [])
+
     def test_stale_or_failed_source_during_move_is_stopped(self):
         for key, value in (("sample_age", 1001), ("source", 2), ("alarm", 12), ("feedback_fault", 3)):
             with self.subTest(key=key):
@@ -236,6 +323,41 @@ class DrivePositionTests(unittest.TestCase):
                 self.motor.on_sample = lambda: setattr(self.motor, key, value)
                 self.failed("实测反馈")
                 self.assertEqual(self.motor.stops, [1, 2])
+
+    def test_recent_control_samples_allow_motion_but_direct_readback_confirms_arrival(self):
+        self.motor.on_sample = lambda: setattr(self.motor, "source", (1, 0) if self.motor.sample <= 2 else 0)
+        self.motor.sample_age = 150
+        seen = []
+        result = self.run_move(observe=seen.append)
+        samples = [event for event in seen if event["phase"] == "position_sample"]
+        self.assertEqual([event["sources"] for event in samples], [[1, 0], [1, 0], [0, 0]])
+        self.assertEqual(samples[0]["sampleAgeMs"], [150, 150])
+        self.assertEqual(samples[0]["conservativeAgeMs"], [150, 150])
+        self.assertTrue(result["stopConfirmed"])
+        self.assertEqual(self.motor.stops, [])
+
+    def test_cached_zero_speed_at_target_cannot_complete_a_point_task(self):
+        self.motor.on_sample = lambda: setattr(self.motor, "source", 1)
+        result = self.failed("超时")
+        self.assertTrue(result["stopConfirmed"])
+        self.assertNotIn("arrived", [event["phase"] for event in result["events"]])
+        self.assertEqual(self.motor.stops, [1, 2])
+
+    def test_control_sample_age_includes_transport_delay(self):
+        def delayed():
+            self.motor.source = 1
+            self.motor.sample_age = 200
+            self.clock.sleep(.85)
+        self.motor.on_sample = delayed
+        result = self.failed("实测反馈过期")
+        self.assertTrue(result["stopConfirmed"])
+        self.assertEqual(self.motor.stops, [1, 2])
+
+    def test_cached_preflight_cannot_authorize_a_motion_command(self):
+        self.motor.source = 1
+        result = self.failed("新鲜实测反馈未确认停稳")
+        self.assertFalse(result["motionCommanded"])
+        self.assertEqual(self.motor.commands + self.motor.stops, [])
 
     def test_guard_changed_at_end_cannot_succeed(self):
         self.motor.on_sample = lambda: setattr(self.motor, "guard_changed", True)

@@ -12,16 +12,16 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, field_validator, model_validator
 
-from .serial_ports import SerialPort
+from .serial_ports import TurntableEndpoint
 from .turntable_driver import MotorController, MotorError
 from .turntable_driver.motor_controller import TrajectoryAxisObservation
-from .turntable_driver.protocol import validate_output_angle
+from .turntable_driver.protocol import validate_output_angle, OUTPUT_POSITION_TOLERANCE_DEG
 from .turntable_driver.trajectory import TrajectoryPoint
 
 
 class TurntableConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    port: SerialPort
+    port: TurntableEndpoint
     axis: StrictInt = Field(default=1, ge=1, le=2)
     speedRpm: float = Field(default=0.2, ge=0.02, le=100, allow_inf_nan=False)
     direction: Literal["forward", "reverse"] = "forward"
@@ -59,7 +59,8 @@ class DriveMotionProfile(BaseModel):
 
 
 class TurntableRequest(TurntableConfig):
-    action: Literal["probe", "health", "test", "manual_move", "recall", "prepare", "stop", "reference", "limits", "clear_trajectory_fault", "clear_guard_fault", "reset_alarm", "cancel_trajectory", "read_motion_profile", "set_motion_profile"] = "probe"
+    action: Literal["probe", "health", "test", "manual_move", "recall", "prepare", "stop", "reference", "limits", "clear_trajectory_fault", "clear_guard_fault", "clear_axis1_reference", "reset_alarm", "cancel_trajectory", "read_motion_profile", "set_motion_profile", "mechanical_home", "horizontal_zero"] = "probe"
+    homingSpeedDegS: float = Field(default=0.6, ge=0.2, le=1.5, allow_inf_nan=False)
     motionProfile: DriveMotionProfile | None = None
     expectedMotionProfile: DriveMotionProfile | None = None
     testSeconds: StrictInt = Field(default=3, ge=1, le=15)
@@ -68,19 +69,21 @@ class TurntableRequest(TurntableConfig):
     axis1AngleDeg: float | None = Field(default=None, allow_inf_nan=False)
     axis2AngleDeg: float | None = Field(default=None, allow_inf_nan=False)
     referenceSignature: str | None = Field(default=None, max_length=512)
-    recordedPort: SerialPort | None = None
+    recordedPort: TurntableEndpoint | None = None
     maxMoveAccelerationDegS2: float = Field(default=3, ge=0.1, le=120, allow_inf_nan=False)
     followErrorLimitDeg: float = Field(default=0.75, ge=0.5, le=10, allow_inf_nan=False)
     diagnosticDrivePosition: StrictBool = False
     expectedTrajectorySession: StrictInt | None = Field(default=None, ge=1, le=65535)
 
-    @field_validator("axis1AngleDeg", "axis2AngleDeg", "maxMoveAccelerationDegS2", "followErrorLimitDeg", mode="before")
+    @field_validator("axis1AngleDeg", "axis2AngleDeg", "maxMoveAccelerationDegS2", "followErrorLimitDeg", "homingSpeedDegS", mode="before")
     @classmethod
     def recall_numeric(cls, value):
         return cls.numeric(value)
 
     @model_validator(mode="after")
     def recall_targets(self):
+        if self.action in ("mechanical_home", "horizontal_zero") and (self.axis != 1 or not self.confirmMotion or self.confirmRecovery):
+            raise ValueError("机械回零与回水平0°仅操作俯仰轴，须明确发起运动")
         if self.action == "set_motion_profile":
             if self.motionProfile is None or self.expectedMotionProfile is None:
                 raise ValueError("请先读取当前轴的驱动参数，再应用修改")
@@ -92,7 +95,9 @@ class TurntableRequest(TurntableConfig):
             raise ValueError("内部定位对照仅支持两轴点位回位")
         if self.action == "health" and self.confirmRecovery:
             raise ValueError("状态检查只读，不能同时确认恢复")
-        if self.action in ("clear_trajectory_fault", "clear_guard_fault", "reset_alarm", "cancel_trajectory") and not self.confirmRecovery:
+        if self.action == "clear_axis1_reference" and (self.axis != 1 or self.confirmMotion):
+            raise ValueError("清除俯仰轴参考仅操作轴1，不执行运动")
+        if self.action in ("clear_trajectory_fault", "clear_guard_fault", "clear_axis1_reference", "reset_alarm", "cancel_trajectory") and not self.confirmRecovery:
             raise ValueError("故障恢复必须由用户明确发起")
         if self.action == "cancel_trajectory" and self.expectedTrajectorySession is None:
             raise ValueError("取消待执行轨迹需要最近读取的轨迹会话号")
@@ -124,7 +129,7 @@ class PointCyclePoint(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     axis1AngleDeg: float = Field(allow_inf_nan=False)
     axis2AngleDeg: float = Field(allow_inf_nan=False)
-    port: SerialPort
+    port: TurntableEndpoint
     referenceSignature: str = Field(min_length=1, max_length=512)
     bladeId: str | None = Field(default=None, min_length=1, max_length=80)
     radialPointId: str | None = Field(default=None, min_length=1, max_length=80)
@@ -209,7 +214,7 @@ class PointCycleGeometry(BaseModel):
 class PointCycleConfig(BaseModel):
     """Validated parameters for a multi-point, multi-circle capture."""
     model_config = ConfigDict(extra="ignore")
-    port: SerialPort
+    port: TurntableEndpoint
     points: list[PointCyclePoint] = Field(min_length=1, max_length=200)
     mode: Literal["legacy", "automatic_stations"] = "legacy"
     diagnosticDrivePosition: StrictBool = False
@@ -667,7 +672,7 @@ def require_stop_confirmed(value, config):
 def position_reached(value, config):
     axis = value["axes"][str(config.axis)]
     return (axis["output_angle_deg"] is not None and axis["motor_rpm"] == 0 and
-            abs(axis["output_angle_deg"] - config.targetAngleDeg) <= 0.1)
+            abs(axis["output_angle_deg"] - config.targetAngleDeg) <= OUTPUT_POSITION_TOLERANCE_DEG + 1e-9)
 
 
 def check_position_motion(value, config, *, allow_other_axis_motion: bool = False):

@@ -195,7 +195,7 @@ class DualAxisIntegrationTests(unittest.TestCase):
         self.assertTrue(self.motor.options["adaptive"])
         self.assertEqual(self.motor.options["cycle_ms"], 100)
         self.assertEqual(self.motor.options["max_error"], .75)
-        self.assertEqual(self.motor.options["tolerance"], .1)
+        self.assertEqual(self.motor.options["tolerance"], .5)
         self.assertEqual(evidence["waitTimeoutSeconds"], evidence["plannedSeconds"] * 4 + 35)
         self.assertIsNone(self.controller.motion_guard.warning)
 
@@ -248,7 +248,7 @@ class DualAxisIntegrationTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, r"1.224°.*保护限 1.2°.*清除旧轨迹"):
             self.controller._cycle_move_point(self.motor, cycle, point)
         self.assertEqual(self.motor.options["max_error"], 1.2)
-        self.assertEqual(self.motor.options["tolerance"], .1)
+        self.assertEqual(self.motor.options["tolerance"], .5)
         self.assertEqual(self.motor.calls.count("start"), 1)
         self.assertFalse(self.controller.status()["receiver"]["running"])
 
@@ -349,7 +349,7 @@ class DualAxisIntegrationTests(unittest.TestCase):
             self.assertEqual(self.motor.options["max_speed"], speed * 6)
             self.assertEqual(self.motor.options["max_accel"], acceleration)
             self.assertEqual(self.motor.options["max_error"], follow_limit)
-            self.assertEqual(self.motor.options["tolerance"], .1)
+            self.assertEqual(self.motor.options["tolerance"], .5)
             self.assertEqual(recall["lastMove"]["followErrorLimitDeg"], follow_limit)
             expected, evidence = station_move_plan((0, 0), (5, 9), speed, acceleration=acceleration)
             self.assertEqual(self.motor.points, expected)
@@ -495,7 +495,7 @@ class DualAxisIntegrationTests(unittest.TestCase):
         self.assertEqual(status["state"], "idle", status)
         self.assertEqual(status["pointCycle"]["state"], "complete", status)
         self.assertEqual(self.motor.angles, {1: 0, 2: 0})
-        self.assertEqual(prepared, [(30, 1.2, .1)] * 5, "Initial, three handoffs and normal return all use the saved values")
+        self.assertEqual(prepared, [(30, 1.2, .5)] * 5, "Initial, three handoffs and normal return all use the saved values")
         self.assertEqual(status["pointCycle"]["lastMove"]["accelerationLimitDegS2"], 30)
         records = self.controller.store.list()
         self.assertEqual(len(records), 4, "Return does not create a measurement record")

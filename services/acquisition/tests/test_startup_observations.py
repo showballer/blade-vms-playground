@@ -54,7 +54,7 @@ class StartupObservationTests(unittest.TestCase):
         self.motor.connect()
         cycle = PointCycleConfig(port="COM6", speedRpm=.25, points=[{
             "name": "P1", "port": "COM6", "referenceSignature": self.signature,
-            "axis1AngleDeg": 10.4, "axis2AngleDeg": 0,
+            "axis1AngleDeg": 10.6, "axis2AngleDeg": 0,
         }])
         return self.controller._cycle_move_point(self.motor, cycle, cycle.points[0], on_command)
 
@@ -65,9 +65,9 @@ class StartupObservationTests(unittest.TestCase):
         # Each status is two wire requests (speed and alarm).
         self.assertEqual(Counter(before), {
             0x07: 6, 0x09: 6, 0x20: 6, 0x24: 6,
-            0x30: 1, 0x31: 11, 0x32: 1, 0x34: 4,
+            0x30: 1, 0x31: 12, 0x32: 1, 0x34: 4,
         })
-        self.assertEqual(len(before), 41)
+        self.assertEqual(len(before), 42)
         self.assertEqual(commands.count(START), 1)
 
     def test_joint_views_read_each_drive_feedback_and_guard_once(self):
@@ -82,11 +82,11 @@ class StartupObservationTests(unittest.TestCase):
         with self.assertRaisesRegex(MotorError, "观察数据不完整"):
             joint_snapshots_from_observations(())
 
-    def test_manual_return_uses_41_requests_and_checks_both_axes_before_capture(self):
+    def test_manual_return_uses_42_requests_and_checks_both_axes_before_capture(self):
         response = self.client.post("/api/field/turntable", json={
             "action": "recall", "port": "COM6", "recordedPort": "COM6",
             "confirmMotion": True, "referenceSignature": self.signature,
-            "axis1AngleDeg": 10.4, "axis2AngleDeg": 0, "speedRpm": .25,
+            "axis1AngleDeg": 10.6, "axis2AngleDeg": 0, "speedRpm": .25,
         })
         self.assertEqual(response.status_code, 200, response.text)
         self.controller.test_thread.join(5)

@@ -21,7 +21,7 @@ class PacketSdk(VfxSdk):
     def __init__(self, packets=None, rate=1000):
         super().__init__()
         self.base_rate = self.velocity_rate = rate
-        pulse = [260] * 30 + [100, 420] * 30 + [260] * 50
+        pulse = [260] * 70 + [100, 420] * 30 + [260] * 50
         self.packets = packets or [[(i, raw, 0) for i, raw in enumerate(pulse)]] * 4
         self.station = -1
         self.offset = 0
@@ -88,6 +88,50 @@ def receiver_for(sdk, platform_path='fixture.dylib'):
 
 
 class StationSessionTests(unittest.TestCase):
+    def test_ordered_saved_points_ignore_partial_arrival_on_mac_and_windows(self):
+        # Arrive during a blade, then observe background and one full pass.
+        pulse = [100, 420] * 30 + [260] * 80 + [100, 420] * 30 + [260] * 50
+        for filename in ('DeviceCommunication.dll', 'libDeviceCommunication.dylib'):
+            with self.subTest(filename=filename), tempfile.TemporaryDirectory() as folder:
+                sdk = PacketSdk([[(i, raw, 0) for i, raw in enumerate(pulse)]])
+                receiver = receiver_for(sdk, filename)
+                motor = BufferedMotor()
+                motor.drive_internal_position = True
+                controller = create_app(Settings(TOKEN, 8765, Path(folder)), lambda _: receiver,
+                                        lambda *a, **kw: motor).state.controller
+                config = automatic_config(azimuths=(0,), mode='legacy', geometry=None,
+                                          routeOrder='configured', rssiExitSpread=4)
+                controller.start(StartRequest(**START, confirmMotion=True, pointCycle=config))
+                controller.thread.join(5)
+                self.assertFalse(controller.thread.is_alive())
+                self.assertEqual(controller.status()['pointCycle']['state'], 'complete', controller.status().get('error'))
+                record = json.loads(next((Path(folder)/'recordings').glob('*/manifest.json')).read_text())
+                pc = record['pointCycle']
+                self.assertTrue(pc['rssiDetector']['requireBackground'])
+                self.assertTrue(pc['rssiDetector']['exitRequiresBaselineReturn'])
+                self.assertEqual(pc['handoff']['entrySampleIndex'], 140)
+                self.assertEqual(pc['handoff']['sampleIndex'], 229)
+                self.assertGreaterEqual(pc['handoff']['partialPassesIgnored'], 1)
+
+    def test_unordered_legacy_route_keeps_its_existing_detector_contract(self):
+        pulse = [100, 420] * 30 + [260] * 50
+        with tempfile.TemporaryDirectory() as folder:
+            sdk = PacketSdk([[(i, raw, 0) for i, raw in enumerate(pulse)]])
+            receiver = receiver_for(sdk)
+            motor = BufferedMotor()
+            motor.drive_internal_position = True
+            controller = create_app(Settings(TOKEN, 8765, Path(folder)), lambda _: receiver,
+                                    lambda *a, **kw: motor).state.controller
+            config = automatic_config(azimuths=(0,), mode='legacy', geometry=None)
+            controller.start(StartRequest(**START, confirmMotion=True, pointCycle=config))
+            controller.thread.join(5)
+            self.assertFalse(controller.thread.is_alive())
+            self.assertEqual(controller.status()['pointCycle']['state'], 'complete', controller.status().get('error'))
+            record = json.loads(next((Path(folder)/'recordings').glob('*/manifest.json')).read_text())
+            self.assertFalse(record['pointCycle']['rssiDetector']['requireBackground'])
+            self.assertEqual(record['pointCycle']['handoff']['entrySampleIndex'], 0)
+            self.assertEqual(record['pointCycle']['handoff']['sampleIndex'], 89)
+
     def test_mac_and_windows_reuse_transport_reset_indices_and_drop_moving_buffer(self):
         for filename in ('DeviceCommunication.dll', 'libDeviceCommunication.dylib'):
             with self.subTest(filename=filename):
