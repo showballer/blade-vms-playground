@@ -96,6 +96,10 @@ async function main() {
   assert.equal(calibrated.cycle!.startAtCurrentPose, true, "Does not change the saved calibration or start policy");
   const recall = result.calls.find(call => call.action === "turntable" && call.request.action === "recall");
   assert.ok(recall?.action === "turntable"); assert.equal(recall.request.speedRpm, 5);
+  assert.deepEqual(recall.request.preloadPoints, calibrated.cycle!.points.map(p => [p.axis1AngleDeg, p.axis2AngleDeg]),
+    "Preposition uploads the entire selected measurement's circular positions");
+  const repeatAuto = await run({ route: calibrated, alreadyAtTarget: true });
+  assert.equal(repeatAuto.recalls, 1, "Service must validate/preload the bank even if first pose is unchanged; service skips RUN");
 
   const plan = planAutoFollow(autoFollowDefaults, null, "unknown", "COM6");
   const theoretical = await run({ route: { kind: "auto", name: "calculated", pointNames: [], errors: [], referenceMode: "read_at_start", cycle: plan.pointCycle! } });

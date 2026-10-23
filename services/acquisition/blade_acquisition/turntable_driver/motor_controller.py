@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+import secrets
 import struct
 import threading
 import time
@@ -221,7 +222,7 @@ class MotorController:
             if self._faulted:
                 raise CommunicationError("上次通信结果不确定，请关闭并重连；不要自动重发运动")
             read_commands = (CMD_READ_PA, CMD_READ_SPEED, CMD_READ_POSITION, CMD_READ_ALARM,
-                             CMD_READ_FEEDBACK, CMD_READ_GUARD, CMD_READ_AXES, CMD_READ_DUAL_LIMIT)
+                             CMD_READ_FEEDBACK, CMD_READ_GUARD, CMD_READ_AXES, CMD_READ_DUAL_LIMIT, 0x44)
             if (self._trajectory_session is not None and frame[4] not in read_commands and
                     not CMD_TRAJECTORY_BEGIN <= frame[4] <= CMD_TRAJECTORY_KEEPALIVE and frame[4] not in (CMD_STOP, CMD_TRAJECTORY_CLEAR)):
                 raise MotorError("两轴轨迹已准备或运行，请先停止轨迹后再发送其他运动或配置")
@@ -951,19 +952,94 @@ class MotorController:
         """Read MCU cached state; never use this as a live angle before sampling."""
         return self._trajectory_data(self._request(build_request(1, CMD_TRAJECTORY_STATUS)))
 
-    def get_axis_positions(self):
+    def get_axis_positions(self, *, fresh=False):
         """Read vendor dual-axis observations without full drive queries in motion.
 
         New firmware reuses its control samples while moving and reports each
         sample's age. It refreshes from the drives while idle. Neither this read
         nor its capability probe changes references, guards, speed or position.
         """
-        packet = self._request(build_request(1, CMD_READ_AXES))
+        if type(fresh) is not bool:
+            raise ValueError("fresh 必须为布尔值")
+        packet = self._request(build_request(1, CMD_READ_AXES, parameter=0x4652 if fresh else 0))
         try:
             return decode_axes(self._data(packet, 40))
         except ValueError as exc:
             self._faulted = True
             raise CommunicationError(str(exc)) from exc
+
+    def get_preloaded_route(self, route_id=1):
+        from .point_bank import status_frame, decode_status
+        try:
+            packet = self._request(status_frame(route_id))
+        except CommandRejected as exc:
+            if route_id in (5, 6) and exc.status == 4:
+                raise MotorError("控制器不支持第5、6组点位，请确认已烧录v3.9.4或更新固件") from exc
+            raise
+        try:
+            return dict(route_id=route_id, **decode_status(packet.data))
+        except ValueError as exc:
+            self._faulted = True
+            raise CommunicationError(str(exc)) from exc
+
+    def probe_preloaded_routes(self):
+        """Only an explicit unknown-command response allows legacy positioning."""
+        try:
+            return self.get_preloaded_route(1)
+        except CommandRejected as exc:
+            if exc.status == 7:
+                return None
+            raise
+
+    def preload_route(self, points, *, route_id=1, speed_rpm=.1, tolerance_deg=.2, token=None, cancel=None):
+        from .point_bank import upload_frames, normalize_points, decode_status
+        points = normalize_points(points)
+        token = (secrets.randbits(32) or 1) if token is None else token
+        # Validate ALL frames before touching any bank. BEGIN/POINT/SEAL never move.
+        frames = upload_frames(points, slot=route_id, token=token, speed_rpm=speed_rpm, tolerance_deg=tolerance_deg)
+        with self._lock:
+            began = time.monotonic()
+            for frame in frames:
+                if cancel is not None and cancel.is_set():
+                    raise MotorError("点位预存已取消，未启动运动")
+                packet = self._request(frame)
+                try:
+                    state = decode_status(packet.data)
+                except ValueError as exc:
+                    self._faulted = True
+                    raise CommunicationError(str(exc)) from exc
+                if state['token'] != token or state['count'] != len(points):
+                    raise MotorError("点位库应答与本次上传不一致，未启动运动")
+            if (not state['ready'] or state['loaded'] != len(points) or
+                    abs(state['speed_rpm'] - speed_rpm) > .005001 or
+                    abs(state['tolerance_deg'] - tolerance_deg) > .000501):
+                raise MotorError("点位库未完整就绪或运动参数不一致，未启动运动")
+            return dict(route_id=route_id, points=points,
+                        upload_elapsed_ms=(time.monotonic() - began) * 1000, **state)
+
+    def run_preloaded_point(self, route_id, point_index, *, token):
+        """One motion request. No speed, coordinates, retries or fallback."""
+        from .point_bank import run_frame
+        packet = self._request(run_frame(route_id, token, point_index))
+        if len(packet.data) != 8:
+            self._faulted = True
+            raise CommunicationError("预存点位执行应答长度错误，执行结果未知")
+        return {"route_id": route_id, "point_index": point_index,
+                "board_prepare_ms": list(struct.unpack(">II", packet.data))}
+
+    def move_axes_point(self, targets, *, speed_rpm, tolerance_deg=.2):
+        """Explicit absolute move (e.g. work origin), never a failed-RUN fallback."""
+        from .point_bank import normalize_points, upload_frames
+        targets = normalize_points([targets])[0]
+        # Share numeric validation/rounding with point-bank BEGIN.
+        upload_frames([targets], slot=1, token=1, speed_rpm=speed_rpm, tolerance_deg=tolerance_deg)
+        payload = struct.pack(">HiiH", math.floor(speed_rpm * 100 + .5),
+            *(round(angle * 1000) for angle in targets), math.floor(tolerance_deg * 1000 + .5))
+        packet = self._request(build_request(1, 0x1A, payload, parameter=0x4A50))
+        if len(packet.data) != 8:
+            self._faulted = True
+            raise CommunicationError("双轴定位应答长度错误，执行结果未知")
+        return {"board_prepare_ms": list(struct.unpack(">II", packet.data))}
 
     def probe_axis_positions(self):
         """Only UNKNOWN_COMMAND permits an older-firmware telemetry fallback."""

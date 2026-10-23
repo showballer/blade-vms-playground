@@ -13,6 +13,28 @@ const idle = () => ({ state: "idle", error: null, receiver: { connected: false }
 const acquiring = () => ({ state: "acquiring", error: null, receiver: { connected: true }, recording: { id: "recording-1", state: "acquiring" } });
 const waveform = values => ({ sampleRate: 1000, unit: "m/s", values, rssi: [], overrange: [] });
 
+test('indexed capture preposition forwards the full route without starting acquisition on Mac and Windows', async t => {
+  const f = fixture(t);
+  for (const port of ['COM7', '/dev/cu.usbserial-110', 'tcp://192.168.10.50:5000']) {
+    const request = { action: 'recall', port, recordedPort: port, axis: 1, confirmMotion: true,
+      axis1AngleDeg: 10, axis2AngleDeg: 0, speedRpm: 5,
+      referenceSignature: '[[0,3,10000,17],[0,3,10000,17]]',
+      preloadPoints: [[10, 0], [12, 3]], preloadReturnPoint: [0, 0] };
+    await f.service.turntable(request);
+    const body = JSON.parse(f.requests.filter(r => r.route === 'turntable').at(-1).options.body);
+    assert.deepEqual(body.preloadPoints, request.preloadPoints);
+    assert.deepEqual(body.preloadReturnPoint, [0, 0]);
+    assert.equal(body.speedRpm, 5);
+    assert.ok(!f.requests.some(r => r.route === 'start' || r.route === 'device'));
+    for (const bad of [{ preloadPoints: [[11, 0]] }, { preloadPoints: [[10, 0], [36, 0]] },
+      { action: 'probe' }, { preloadReturnPoint: [false, 0] }, { preloadPoints: [] }]) {
+      const count = f.requests.length;
+      await assert.rejects(f.service.turntable({ ...request, ...bad }), { status: 400 });
+      assert.equal(f.requests.length, count);
+    }
+  }
+});
+
 test('app5 homing and level return use the same axis1 API for Mac and Windows', async t => {
   const f = fixture(t);
   for (const port of ['COM7', '/dev/cu.usbserial-110', 'tcp://192.168.10.50:5000']) for (const action of ['mechanical_home', 'horizontal_zero']) {

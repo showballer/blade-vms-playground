@@ -16,6 +16,7 @@ from .turntable import (
 )
 from .turntable_driver import MotorError
 from .turntable_driver.protocol import validate_output_angle, OUTPUT_POSITION_TOLERANCE_DEG
+from .preloaded_points import point_command, completion_snapshots
 
 
 class DrivePositionError(MotorError):
@@ -111,7 +112,7 @@ def _stop_both(motor, evidence, emit, timeout_s):
 
 def execute_drive_position(motor, *, targets, speed_rpm, reference_signature,
                                 cancel, timeout_s=15.0, observe=None, initial_snapshots=None,
-                                follow_error_limit=.75, on_stopped=None):
+                                follow_error_limit=.75, on_stopped=None, point_index=None):
     """Position both axes using the existing serial owner and fresh joint readback.
 
     Returns joint ``feedback`` and ``stopConfirmed`` evidence. Failures raise
@@ -149,6 +150,11 @@ def execute_drive_position(motor, *, targets, speed_rpm, reference_signature,
             raise MotorError("双轴反馈定位超时")
 
     try:
+        bank = point_command(motor, targets, point_index=point_index)
+        if bank is not None:
+            evidence.update(positionProtocol=bank['protocol'], bankId=bank['route_id'],
+                            pointIndex=bank.get('index'), toleranceDeg=bank['tolerance_deg'])
+        tolerance = bank['tolerance_deg'] if bank else _TOLERANCE
         if (isinstance(follow_error_limit, bool) or not isinstance(follow_error_limit, (int, float)) or
                 not math.isfinite(follow_error_limit) or not .5 <= follow_error_limit <= 10):
             raise ValueError("定位行程误差上限范围0.5～10°")
@@ -192,7 +198,7 @@ def execute_drive_position(motor, *, targets, speed_rpm, reference_signature,
                 raise MotorError(f"轴{axis}反馈计数单位无效")
         # Capability/freshness is required, never silently fall back to estimated pose.
         grouped = getattr(motor, "move_axes_to_angles_verified", None)
-        if not callable(grouped):
+        if not callable(grouped) and bank is None:
             positions = motor.get_axis_positions()
             if len(positions) != 2 or any(not p.usable or p.source != 0 or p.motor_rpm or p.alarm_code or
                    p.guard_fault or p.flags & 16 or not math.isfinite(p.angle_deg) for p in positions):
@@ -206,7 +212,25 @@ def execute_drive_position(motor, *, targets, speed_rpm, reference_signature,
         emit("preflight_complete", angles=starts)
         # Do not wait for axis 1 to arrive before issuing axis 2. These are two
         # individually protected commands, not a simultaneous hardware trigger.
-        if callable(grouped):
+        if bank is not None:
+            if abs(speed_rpm - bank['speed_rpm']) > .005001:
+                raise MotorError("预存转速与本次任务不一致，请重新预存")
+            if not all(abs(start - target) <= tolerance + 1e-9 for start, target in zip(starts, targets)):
+                emit("command_sending", axis=1, pointIndex=bank.get('index'))
+                check_cancel_timeout()
+                evidence['motionCommanded'] = True
+                emit("wire_sending", axes=[1, 2], protocol=bank['protocol'],
+                     bankId=bank['route_id'], pointIndex=bank.get('index'))
+                accepted = (motor.run_preloaded_point(bank['route_id'], bank['index'], token=bank['token'])
+                            if bank['protocol'] == '0x43' else motor.move_axes_point(
+                                bank['targets'], speed_rpm=bank['speed_rpm'], tolerance_deg=tolerance))
+                evidence['boardPrepareMs'] = accepted['board_prepare_ms']
+                for axis in (1, 2):
+                    evidence['commandAckSeconds'][str(axis)] = (time.monotonic_ns() - started_ns) / 1e9
+                emit("command_accepted", axes=[1, 2], boardPrepareMs=evidence['boardPrepareMs'])
+            else:
+                emit("already_at_target", angles=starts)
+        elif callable(grouped):
             # Preserve the historical positioning-call timing marker, and add a
             # separate wire marker after SDK validation for honest A/B timing.
             emit("command_sending", axis=1, target=targets[0])
@@ -225,7 +249,7 @@ def execute_drive_position(motor, *, targets, speed_rpm, reference_signature,
                 raise MotorError("双轴反馈定位已取消，未继续运动")
             if len(accepted) != 2 or [item.motor_id for item in accepted] != [1, 2]:
                 raise MotorError("双轴反馈定位应答轴不一致")
-        for axis, target in (() if callable(grouped) else enumerate(targets, 1)):
+        for axis, target in (() if callable(grouped) or bank is not None else enumerate(targets, 1)):
             check_cancel_timeout()
             if abs(target - starts[axis - 1]) <= .0005:
                 emit("axis_already_at_target", axis=axis)
@@ -245,10 +269,13 @@ def execute_drive_position(motor, *, targets, speed_rpm, reference_signature,
             evidence["commandAckSeconds"][str(axis)] = (time.monotonic_ns() - started_ns) / 1e9
             emit("command_accepted", axis=axis, outputSpeedRpm=accepted.output_speed_rpm)
         zero_samples = 0
+        fresh = False
         while True:
             check_cancel_timeout()
             query_ns = time.monotonic_ns()
-            positions = motor.get_axis_positions()
+            queried_at = time.time()
+            positions = motor.get_axis_positions(fresh=fresh) if bank else motor.get_axis_positions()
+            received_at = time.time()
             pose_ns = time.monotonic_ns()
             if len(positions) != 2:
                 raise MotorError("两轴位置反馈不完整")
@@ -298,14 +325,26 @@ def execute_drive_position(motor, *, targets, speed_rpm, reference_signature,
             # A cached zero-speed sample is not an independent stop observation.
             # Once the firmware ends the point task it returns direct source 0;
             # only then may the full independent joint check confirm arrival.
-            settled = all(p.source == 0 and p.motor_rpm == 0 and abs(p.angle_deg - target) <= _TOLERANCE + 1e-9
+            settled = all(p.source == 0 and p.motor_rpm == 0 and abs(p.angle_deg - target) <= tolerance + 1e-9
                           for p, target in zip(positions, targets))
+            if bank:
+                settled = settled and all(age <= 200 and not p.flags & 0x30
+                                          for p, age in zip(positions, age_ms))
+                for axis, p in enumerate(positions, 1):
+                    baseline = initial[0]['axes'][str(axis)]
+                    guard = baseline['guard']
+                    if p.flags & 7 != baseline['flags'] & 7:
+                        raise MotorError(f"轴{axis}参考或保护状态发生变化")
+                    if guard['soft_enabled'] and not guard['minimum_deg'] <= p.angle_deg <= guard['maximum_deg']:
+                        raise MotorError(f"轴{axis}实际位置超出软范围")
             zero_samples = zero_samples + 1 if settled else 0
-            if zero_samples >= 1:
+            board_complete = bool(bank and settled and (all(p.flags & 0x40 for p in positions) or zero_samples >= 2))
+            if board_complete or bank is None and zero_samples >= 1:
                 # The joint pose is the first stopped observation. Read the
                 # full independent statuses/references/guards directly as the
                 # second, rather than duplicate 0x20 reads just before it.
-                final = (joint_snapshots(motor, stopped_positions=positions, positions_observed_ns=query_ns)
+                final = (completion_snapshots(initial, positions, queried_at, received_at) if board_complete else
+                         joint_snapshots(motor, stopped_positions=positions, positions_observed_ns=query_ns)
                          if callable(getattr(motor, "get_status_from_position", None)) else joint_snapshots(motor))
                 for value, config in zip(final, configs):
                     require_position_ready(value, config)
@@ -316,18 +355,26 @@ def execute_drive_position(motor, *, targets, speed_rpm, reference_signature,
                 _check_running_feedback([SimpleNamespace(**final[0]["axes"][str(axis)]) for axis in (1, 2)],
                                         initial[0], signature, starts, targets, follow_error_limit)
                 if any(abs(final[0]["axes"][str(axis)]["output_angle_deg"] - targets[axis - 1]) >
-                       _TOLERANCE + 1e-9 for axis in (1, 2)):
+                       tolerance + 1e-9 for axis in (1, 2)):
                     raise MotorError("最终读回未确认两轴到位")
                 check_cancel_timeout()
                 evidence.update(feedback=final[0], stopConfirmed=True, state="complete",
+                                controllerCompletionConfirmed=board_complete,
                                 actualSeconds=(time.monotonic_ns() - started_ns) / 1e9,
                                 actualAngles=[final[0]["axes"][str(axis)]["output_angle_deg"] for axis in (1, 2)])
                 if on_stopped is not None:
                     on_stopped(final)
                 emit("arrived", angles=evidence["actualAngles"])
                 return evidence
-            feedback = tuple(motor.get_feedback(axis) for axis in (1, 2))
-            _check_running_feedback(feedback, initial[0], signature, starts, targets, follow_error_limit)
+            if bank:
+                # The MCU owns reference validation, control and stop confirmation.
+                # No repeated full register reads between indexed point commands.
+                fresh = all(p.motor_rpm == 0 and not p.flags & 0x30 and
+                            abs(p.angle_deg - target) <= tolerance + 1e-9
+                            for p, target in zip(positions, targets))
+            else:
+                feedback = tuple(motor.get_feedback(axis) for axis in (1, 2))
+                _check_running_feedback(feedback, initial[0], signature, starts, targets, follow_error_limit)
             check_cancel_timeout()
             time.sleep(_POLL_SECONDS)
     except Exception as exc:

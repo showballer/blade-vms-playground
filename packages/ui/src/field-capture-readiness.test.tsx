@@ -70,7 +70,7 @@ test("fresh reference changes, axis faults, limits and communication errors neve
   await assert.rejects(prepareCaptureStartRoute(route, idle, async () => { throw Error("fixture timeout"); }), /timeout/);
 });
 
-test("pre-positioning reads before moving and a rejected reference never dispatches recall", async () => {
+test("pre-positioning verifies the whole bank at a reached target; rejected references never dispatch recall", async () => {
   for (const changed of [false, true]) {
     const fresh = structuredClone(checked), first = route.cycle!.points[0];
     fresh.turntable!.feedback!.axes!["1"].output_angle_deg = first.axis1AngleDeg;
@@ -79,12 +79,17 @@ test("pre-positioning reads before moving and a rejected reference never dispatc
     const calls: FieldRequestOptions[] = [];
     const run = moveToCapturePreset(route, idle, async <T,>(options: FieldRequestOptions) => {
       calls.push(options); assert.equal(options.action, "turntable");
-      assert.equal(options.request.action, "probe", "No motion for an already reached or rejected target");
+      if (changed || calls.length === 1) assert.equal(options.request.action, "probe");
+      else if (options.request.action === "recall") {
+        assert.deepEqual(options.request.preloadPoints, route.cycle!.points.map(point => [point.axis1AngleDeg, point.axis2AngleDeg]));
+        fresh.turntable!.recall = { state: "complete", targets: [first.axis1AngleDeg, first.axis2AngleDeg], completedAxes: [1, 2] };
+      } else assert.equal(options.request.action, "probe", "Preload-only success is followed by actual pose verification");
       return structuredClone(fresh) as T;
     }, { signal: new AbortController().signal, current: () => true, onStatus: () => {} });
     if (changed) await assert.rejects(run, /参考位/);
     else assert.equal(await run, "complete");
-    assert.equal(calls.length, 1);
+    assert.deepEqual(calls.map(call => call.action === "turntable" && call.request.action),
+      changed ? ["probe"] : ["probe", "recall", "probe"]);
   }
 });
 

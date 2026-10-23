@@ -11,6 +11,18 @@ assert.equal(model.origin, "calibrated");
 assert.equal(model.nominalRpm, 2);
 assert.equal(model.points.length, 4);
 assert.deepEqual(model.points.map(p => p.azimuthDeg), [0, 90, 180, 270]);
+for (const stepDeg of [180, 90, 60, 45, 30, 22.5]) {
+  const planned = planAutoFollow({ ...draft(), stepDeg }, anchor);
+  assert.deepEqual(planned.errors, []);
+  assert.equal(planned.points.length, 360 / stepDeg);
+  assert.equal(new Set(planned.points.map(point => point.pointId)).size, 360 / stepDeg);
+  assert.equal(planned.points.at(-1)!.azimuthDeg, 360 - stepDeg, "No duplicate closing point consumes bank capacity");
+}
+for (const stepDeg of [20, 15, 10, 5]) {
+  const planned = planAutoFollow({ ...draft(), stepDeg }, anchor);
+  assert.match(planned.errors.join(" "), /最多预存16/);
+  assert.equal(planned.points.length, 0, "Excess points must not be silently truncated");
+}
 near(model.points[0].axis1AngleDeg, 10);
 near(model.points[0].axis2AngleDeg, 0);
 assert.ok(model.points[1].axis2AngleDeg < 0, "Clockwise from laser side travels left from six o'clock");

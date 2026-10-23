@@ -54,7 +54,7 @@ export const FieldAutoCaptureList = memo(function FieldAutoCaptureList({ targets
   }, [recordings, collectionId, targets, config.windFarm, config.turbine, config.name, config.object]);
   const cycle = status?.pointCycle;
   return <section className="field-auto-capture-list field-servo-ui" aria-label="风机叶片逐点采集">
-    <div className="field-auto-capture-heading"><div><h3>叶片与测点</h3><p>可先移动到预设位置。开始采集时先读取转盘参考位，已到位则直接采集。</p></div><span className="field-badge">{groups.length} 个叶片 · {targets.length} 个测点</span></div>
+    <div className="field-auto-capture-heading"><div><h3>叶片与测点</h3><p>可先移动到预设位置：新固件会预存本测点整圈点位，再定位首点。开始采集时先读取转盘参考位并核对位置，已到位则直接采集；叶片离开后按编号换点。</p></div><span className="field-badge">{groups.length} 个叶片 · {targets.length} 个测点</span></div>
     {!targets.length ? <div className="field-auto-capture-empty"><p>请先配置叶片和测点，填写测量尺寸与转盘串口。</p><Button type="button" disabled={disabled} onClick={onConfigureAll}>配置自动跟随<ChevronRight size={14} /></Button></div> : <>
       {!active && configError && <p className="field-auto-capture-notice" role="status">{configError}</p>}
       {groups.map(group => <section key={group.key} className="field-auto-capture-blade" aria-label={`叶片 ${group.bladeId || "待设置"} 采集测点`}>

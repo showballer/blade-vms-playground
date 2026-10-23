@@ -55,6 +55,7 @@ export function planAutoFollow(draft: AutoFollowDraft, anchor: AutoFollowAnchor 
   if (!draft.bladeId.trim() || draft.bladeId.trim().length > 80) errors.push("请填写叶片编号（最多80字）");
   if (!manualRotation && !finite(draft.periodSeconds, 0.5, 3600)) errors.push("每圈时间填0表示人手转动，或填写0.5～3600秒");
   if (!finite(draft.stepDeg, 5, 180) || !Number.isInteger(count)) errors.push("圆周间隔须能整分360°，范围5～180°");
+  if (Number.isInteger(count) && count > 16) errors.push("每个测点最多预存16个圆周点位，请将间隔设为22.5°或更大");
   if (!finite(draft.distanceM, 0.001, 10000) || !finite(draft.hubHeightDeltaM, -10000, 10000)) errors.push("请检查安装距离和高度差");
   if (![1, -1].includes(draft.axis1Sign) || ![1, -1].includes(draft.axis2Sign) || !["clockwise", "counterclockwise"].includes(draft.direction)) errors.push("请确认旋向和转盘轴方向");
   if (!finite(draft.maxMoveRpm, 0.02, 10)) errors.push("换点速度上限应为0.02～10 rpm");

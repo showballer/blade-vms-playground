@@ -696,6 +696,19 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
       throw failure('驱动参数操作不能同时执行运动或故障恢复', 400);
     const config = ['test', 'manual_move', 'prepare'].includes(request.action) ? turntableConfig({ port: request.port, axis: request.axis,
       speedRpm: request.speedRpm, direction: request.direction, durationSeconds: request.durationSeconds, protocol: request.protocol, targetAngleDeg: request.targetAngleDeg }) : {};
+    const preloaded = {};
+    if (request.preloadPoints !== undefined || request.preloadReturnPoint !== undefined) {
+      const validPair = pair => Array.isArray(pair) && pair.length === 2 && pair.every((value, index) =>
+        typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= (index === 0 ? 35 : 180));
+      if (request.action !== 'recall' || !Array.isArray(request.preloadPoints) ||
+          request.preloadPoints.length < 1 || request.preloadPoints.length > 200 ||
+          !request.preloadPoints.every(validPair) ||
+          (request.preloadReturnPoint !== undefined && !validPair(request.preloadReturnPoint)) ||
+          request.preloadPoints[0].some((value, i) => Math.abs(value - [request.axis1AngleDeg, request.axis2AngleDeg][i]) > .000501))
+        throw failure('预存点位无效或首点与预定位目标不一致', 400);
+      preloaded.preloadPoints = request.preloadPoints.map(pair => [...pair]);
+      if (request.preloadReturnPoint !== undefined) preloaded.preloadReturnPoint = [...request.preloadReturnPoint];
+    }
     const recall = request.action === 'recall' ? (() => {
       if (!Number.isFinite(request.axis1AngleDeg) || Math.abs(request.axis1AngleDeg) > 35 ||
           !Number.isFinite(request.axis2AngleDeg) || Math.abs(request.axis2AngleDeg) > 180) throw failure('点位需要两轴有效角度，轴1限±35°，轴2限±180°', 400);
@@ -722,7 +735,7 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     if (current.deviceBusy || (current.turntableBusy && request.action !== 'stop') || current.receiver?.running || ['starting', 'acquiring', 'stopping'].includes(current.state)) throw failure('设备正在使用，请先停止并保存', 409);
     snapshotEpoch += 1;
     try {
-      lastStatus = await http('turntable', 'POST', { ...config, ...recall, ...profile, ...homing, action: request.action, port: request.port, axis: request.axis,
+      lastStatus = await http('turntable', 'POST', { ...config, ...recall, ...profile, ...homing, ...preloaded, action: request.action, port: request.port, axis: request.axis,
         ...(request.testSeconds !== undefined ? { testSeconds: request.testSeconds } : {}),
         ...(['cancel_trajectory', 'clear_trajectory_fault'].includes(request.action) && request.expectedTrajectorySession !== undefined
           ? { expectedTrajectorySession: request.expectedTrajectorySession } : {}),

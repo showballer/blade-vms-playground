@@ -266,6 +266,8 @@ class AcquisitionController:
         self.capture_stop = None
         self.turntable_test = None
         self.turntable_preparation = None
+        from .preloaded_points import PreloadedPointsCache
+        self.preloaded_points = PreloadedPointsCache()
         self.test_thread = None
         self.test_stop = threading.Event()
         self.point_cycle = None
@@ -912,6 +914,18 @@ class AcquisitionController:
             motor._blade_motion_capability = probe_motion_capability(motor)
         return motor._blade_motion_capability
 
+    def _prepare_preloaded_points(self, motor, *, port, points, origin, speed, feedback, cancel):
+        summary = self.preloaded_points.prepare(motor, port=port, points=points, origin=origin,
+                                               speed=speed, feedback=feedback, cancel=cancel)
+        capability = self._motion_capability(motor)
+        capability['preloadedPoints'] = summary is not None
+        if summary is not None:
+            capability['pointMode'] = 'drive_internal'
+        with self.lock:
+            self.turntable_snapshot['preloadedRoute'] = summary
+            self.turntable_snapshot['motionCapability'] = copy.deepcopy(capability)
+        return summary
+
     def _execute_dual_axis_move(self, motor, configs, feedback, cancel, update, on_command=None,
                                *, acceleration=3.0, follow_error_limit=DEFAULT_JOINT_FOLLOW_ERROR_DEG):
         """Own the buffered group move until BOTH axes are verified stopped."""
@@ -1088,12 +1102,18 @@ class AcquisitionController:
             raise exc
 
     def _execute_drive_position(self, motor, configs, feedback, cancel, update, on_command=None,
-                                initial_snapshots=None, follow_error_limit=.75):
+                                initial_snapshots=None, follow_error_limit=.75, point_index=None):
         """Joint native positioning shared by recall, capture and return-to-origin."""
         from .drive_position import execute_drive_position
 
-        self._persist_pending_axes(configs[0].port, [1, 2], "drive_internal")
         position_protocol = getattr(motor, "point_position_protocol", None)
+        bank = None
+        if getattr(motor, '_blade_preloaded_route', None) is not None:
+            from .preloaded_points import point_command
+            bank = point_command(motor, tuple(config.targetAngleDeg for config in configs), point_index=point_index)
+            position_protocol = bank['protocol']
+            configs = [config.model_copy(update={"speedRpm": bank['speed_rpm']}) for config in configs]
+        self._persist_pending_axes(configs[0].port, [1, 2], "drive_internal")
         evidence = {"mode": "drive_internal", "positionProtocol": position_protocol}
         command_notified = False
 
@@ -1118,7 +1138,8 @@ class AcquisitionController:
                 feedback.update(outputAngleDeg=selected["output_angle_deg"], motorRpm=selected["motor_rpm"],
                                 outputRpm=selected["motor_rpm"] / 50, observedAt=observed_at)
             update("positioning", motionMode="drive_internal", lastMove={**event, "mode": "drive_internal",
-                   "positionProtocol": position_protocol, "speedLimitRpm": configs[0].speedRpm}, feedback=feedback)
+                   "positionProtocol": position_protocol, "speedLimitRpm": configs[0].speedRpm,
+                   **({"bankId": bank['route_id'], "pointIndex": bank.get('index')} if bank else {})}, feedback=feedback)
 
         references = reference_key(feedback)
         signature = [[references[str(axis)][key] for key in
@@ -1132,7 +1153,7 @@ class AcquisitionController:
                     abs(config.targetAngleDeg - feedback["axes"][str(config.axis)]["output_angle_deg"])
                     for config in configs) / (6 * configs[0].speedRpm) * 3)),
                 observe=observed, initial_snapshots=initial_snapshots, follow_error_limit=follow_error_limit,
-                on_stopped=lambda pair: setattr(motor, "_blade_stopped_snapshots", pair))
+                on_stopped=lambda pair: setattr(motor, "_blade_stopped_snapshots", pair), point_index=point_index)
             feedback = evidence["feedback"]
             if not evidence.get("stopConfirmed"):
                 raise RuntimeError("内部定位两轴停止未确认")
@@ -1358,6 +1379,10 @@ class AcquisitionController:
                 elif reference_key(feedback) != references:
                     raise RuntimeError("两轴参考位或反馈单位已变化，请重新核查点位")
             capability = self._motion_capability(motor)
+            if request.preloadPoints is not None:
+                self._prepare_preloaded_points(motor, port=request.port, points=request.preloadPoints,
+                    origin=request.preloadReturnPoint, speed=request.speedRpm, feedback=initial_snapshots[0],
+                    cancel=self.test_stop)
             update("positioning", motionCapability=capability, motionMode=capability["mode"])
             if capability.get("pointMode") == "drive_internal" or request.diagnosticDrivePosition:
                 passed, completed, feedback = self._execute_drive_position(
@@ -2375,6 +2400,13 @@ class AcquisitionController:
             start_angles = tuple(feedback["axes"][str(axis)]["output_angle_deg"] for axis in (1, 2))
             point_mode = capability.get("pointMode") or capability["mode"]
             speed, timing = station_timing_plan(cycle, start_angles, point, point_mode, source_point)
+            bank = getattr(motor, '_blade_preloaded_route', None)
+            if bank:
+                speed = bank['speed_rpm']
+                if timing is not None:
+                    timing['speedLimitRpm'] = timing['configuredCeilingRpm'] = speed
+                    timing['plannedMoveSeconds'] = max(abs(point.axis1AngleDeg - start_angles[0]),
+                                                      abs(point.axis2AngleDeg - start_angles[1])) / (6 * speed)
             if all(position_reached(checked, config) for config, checked in zip(configs, initial_snapshots)):
                 # Prepositioning and capture are separate operations. Trust
                 # fresh drive feedback, never a UI flag or an earlier recall.
@@ -2410,7 +2442,9 @@ class AcquisitionController:
                     self._cycle_update(state, currentPoint=point.name, **extra)
                 return self._execute_drive_position(
                     motor, configs, feedback, self.stop_event, diagnostic_update, on_command,
-                    initial_snapshots=initial_snapshots, follow_error_limit=cycle.followErrorLimitDeg)
+                    initial_snapshots=initial_snapshots, follow_error_limit=cycle.followErrorLimitDeg,
+                    point_index=next((i for i, candidate in enumerate(cycle.points)
+                                      if candidate.pointId == point.pointId), None) if bank else None)
             if capability["supported"]:
                 def dual_update(state, **extra):
                     if timing is not None and "lastMove" in extra:
@@ -2923,6 +2957,13 @@ class AcquisitionController:
                                                                       protocol="position", targetAngleDeg=angle,
                                                                       speedRpm=cycle.speedRpm))
             anchor = cycle.points[0]
+            if cycle.mode == 'automatic_stations':
+                summary = self._prepare_preloaded_points(motor, port=cycle.port,
+                    points=[(p.axis1AngleDeg, p.axis2AngleDeg) for p in cycle.points],
+                    origin=(cycle.returnToOrigin.axis1AngleDeg, cycle.returnToOrigin.axis2AngleDeg)
+                        if cycle.returnToOrigin else None,
+                    speed=cycle.maxMoveRpm, feedback=feedback, cancel=self.stop_event)
+                self._cycle_update('checking', preloadedRoute=summary, motionCapability=capability)
             planned_points = (list(cycle.points) if cycle.mode == "automatic_stations" or cycle.routeOrder == "configured" else
                               self._plan_point_order(feedback, cycle.points, anchor))
             planned_names = [point.name for point in planned_points]

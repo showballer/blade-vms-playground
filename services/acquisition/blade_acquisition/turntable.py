@@ -74,6 +74,17 @@ class TurntableRequest(TurntableConfig):
     followErrorLimitDeg: float = Field(default=0.75, ge=0.5, le=10, allow_inf_nan=False)
     diagnosticDrivePosition: StrictBool = False
     expectedTrajectorySession: StrictInt | None = Field(default=None, ge=1, le=65535)
+    # Supplied only by explicit capture prepositioning; all angles are absolute.
+    preloadPoints: list[tuple[float, float]] | None = Field(default=None, min_length=1, max_length=200)
+    preloadReturnPoint: tuple[float, float] | None = None
+
+    @field_validator("preloadPoints", "preloadReturnPoint", mode="before")
+    @classmethod
+    def preload_numeric(cls, value, info):
+        if value is None:
+            return value
+        from .turntable_driver.point_bank import normalize_points
+        return normalize_points(value) if info.field_name == "preloadPoints" else normalize_points([value])[0]
 
     @field_validator("axis1AngleDeg", "axis2AngleDeg", "maxMoveAccelerationDegS2", "followErrorLimitDeg", "homingSpeedDegS", mode="before")
     @classmethod
@@ -82,6 +93,10 @@ class TurntableRequest(TurntableConfig):
 
     @model_validator(mode="after")
     def recall_targets(self):
+        if (self.preloadPoints is not None or self.preloadReturnPoint is not None) and self.action != "recall":
+            raise ValueError("点位预存只用于采集预定位")
+        if self.preloadReturnPoint is not None and self.preloadPoints is None:
+            raise ValueError("预存返原点需要完整测点列表")
         if self.action in ("mechanical_home", "horizontal_zero") and (self.axis != 1 or not self.confirmMotion or self.confirmRecovery):
             raise ValueError("机械回零与回水平0°仅操作俯仰轴，须明确发起运动")
         if self.action == "set_motion_profile":
@@ -110,6 +125,9 @@ class TurntableRequest(TurntableConfig):
                 raise ValueError("点位回位需要两轴有效角度")
             validate_output_angle(1, self.axis1AngleDeg)
             validate_output_angle(2, self.axis2AngleDeg)
+            if self.preloadPoints is not None and self.preloadPoints[0] != tuple(
+                    round(value * 1000) / 1000 for value in (self.axis1AngleDeg, self.axis2AngleDeg)):
+                raise ValueError("预定位目标必须是预存列表的首点")
             if self.referenceSignature is not None:
                 signature = json.loads(self.referenceSignature)
                 if not isinstance(signature, list) or len(signature) != 2 or any(
