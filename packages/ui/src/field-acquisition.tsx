@@ -17,7 +17,7 @@ import { fieldStartError, fieldIsActive, type FieldConfig, type FieldRecording, 
 const number = (value?: number | null, digits = 5) => typeof value === "number" && Number.isFinite(value) ? Number(value.toPrecision(digits)).toLocaleString("zh-CN", { maximumFractionDigits: 6 }) : "—";
 type Props = {
   config: FieldConfig; onConfig: React.Dispatch<React.SetStateAction<FieldConfig>>;
-  source: FieldSource; status: FieldStatus | null; busy: string; pollError: string;
+  source: FieldSource; status: FieldStatus | null; busy: string; pollError: string; stopping?: boolean;
   windowMs: number; onWindow: (value: number) => void;
   refreshMs: number; onRefresh: (value: number) => void;
   request: <T>(options: FieldRequestOptions) => Promise<T>;
@@ -30,7 +30,7 @@ type Props = {
   onStop: () => void; onService: () => void; onRecords: () => void;
 };
 
-export const FieldAcquisition = memo(function FieldAcquisition({ config, onConfig, source, status, busy, pollError, windowMs, onWindow, refreshMs, onRefresh, request, link, onDeviceStart, onSimulationStart, onStop, onService, onRecords }: Props) {
+export const FieldAcquisition = memo(function FieldAcquisition({ config, onConfig, source, status, busy, pollError, stopping = false, windowMs, onWindow, refreshMs, onRefresh, request, link, onDeviceStart, onSimulationStart, onStop, onService, onRecords }: Props) {
   const [simulation, setSimulation] = useState<FieldSimulation>({ point: "P1", scenario: "baseline" });
   const [metadata, setMetadata] = useState<FieldSimulationInfo | null>(null);
   const [metadataError, setMetadataError] = useState("");
@@ -131,7 +131,7 @@ export const FieldAcquisition = memo(function FieldAcquisition({ config, onConfi
             {!autoLinked && !link.errors.length && <p className="field-subtext">按配置顺序到位停稳，确认叶片进入并离开后自动换点。</p>}</>}
         </section>}
       </form>
-      {autoLinked && link && <FieldAutoCaptureList targets={link.route?.targets || []} selectedTargetKey={link.route?.selectedTargetKey} collectionId={link.collectionId} recordings={link.recordings} config={config} status={status} busy={busy} pollError={pollError} onSelect={link.onSelectTarget} onStart={link.onStartTarget} onPosition={link.onPosition} onConfigure={link.onConfigureTarget} onConfigureAll={link.onConfigure} onStop={onStop} />}
+      {autoLinked && link && <FieldAutoCaptureList targets={link.route?.targets || []} selectedTargetKey={link.route?.selectedTargetKey} collectionId={link.collectionId} recordings={link.recordings} config={config} status={status} busy={busy} pollError={pollError} stopping={stopping} onSelect={link.onSelectTarget} onStart={link.onStartTarget} onPosition={link.onPosition} onConfigure={link.onConfigureTarget} onConfigureAll={link.onConfigure} onStop={onStop} />}
     </section>
     {source === "device" && linked && <FieldCycleMotion status={status} route={link?.route} config={config} unavailable={!!pollError} />}
     <div className="field-acquisition-grid field-capture-grid">
@@ -154,7 +154,7 @@ export const FieldAcquisition = memo(function FieldAcquisition({ config, onConfi
         {status?.pointCycle && <FieldCycleProgress status={status} />}
         {(recording?.turntable || status?.pointCycle) && <FieldTurntableFeedback status={status} />}
         <section className="field-card"><div className="field-section-heading"><h2>采集状态</h2><span className={`field-badge ${status?.service.state === "error" || status?.state === "error" ? "red" : active ? "green" : ""}`}>{status?.service.state === "error" || status?.state === "error" ? "异常" : active ? "接收中" : "待机"}</span></div><div className="field-metric-grid"><div><span>采样率</span><strong>{number(rate)}<small>Hz</small></strong></div><div><span>当前速度</span><strong>{number(velocity == null ? null : velocity * (unit === "mm/s" ? 1000 : 1))}<small>{unit}</small></strong></div><div><span>回波强度</span><strong>{number(rssi, 4)}<small>%</small></strong></div><div><span>窗口超量程</span><strong>{number(status?.waveform?.overrangeCount ?? status?.waveform?.overrange.filter(Boolean).length)}<small>点</small></strong></div></div></section>
-        <section className="field-card field-active-record"><div className="field-section-heading"><h2>本次记录</h2><HardDrive size={17} /></div>{recording ? <><strong className="field-record-title">{recording.name}</strong><span className={`field-badge ${recording.source === "simulation" ? "amber" : ""}`}>{recording.source === "simulation" ? "模拟采集" : "设备采集"}</span><dl className="field-details"><div><dt>原始点数</dt><dd>{recording.samples.toLocaleString("zh-CN")}</dd></div><div><dt>采集时长</dt><dd>{number(duration)} 秒</dd></div><div><dt>保存状态</dt><dd>{recording.status === "complete" ? "已完整保存" : recording.status === "error" ? "记录异常" : "持续写入"}</dd></div></dl>{recording.error && <p className="field-error">{recording.error}</p>}</> : <p className="field-subtext">尚无采集记录。</p>}<Button variant="danger" className="full" disabled={!!busy || !active || status?.state === "stopping"} onClick={onStop}>{busy === "stop" ? <LoaderCircle size={15} className="spin" /> : <Square size={13} />}停止并保存</Button><button type="button" className="field-text-button" onClick={onRecords}>查看本机记录<ChevronRight size={14} /></button></section>
+        <section className="field-card field-active-record"><div className="field-section-heading"><h2>本次记录</h2><HardDrive size={17} /></div>{recording ? <><strong className="field-record-title">{recording.name}</strong><span className={`field-badge ${recording.source === "simulation" ? "amber" : ""}`}>{recording.source === "simulation" ? "模拟采集" : "设备采集"}</span><dl className="field-details"><div><dt>原始点数</dt><dd>{recording.samples.toLocaleString("zh-CN")}</dd></div><div><dt>采集时长</dt><dd>{number(duration)} 秒</dd></div><div><dt>保存状态</dt><dd>{recording.status === "complete" ? "已完整保存" : recording.status === "error" ? "记录异常" : "持续写入"}</dd></div></dl>{recording.error && <p className="field-error">{recording.error}</p>}</> : <p className="field-subtext">尚无采集记录。</p>}<Button variant="danger" className="full" disabled={stopping || !active} onClick={onStop}>{stopping ? <LoaderCircle size={15} className="spin" /> : <Square size={13} />}停止并保存</Button><button type="button" className="field-text-button" onClick={onRecords}>查看本机记录<ChevronRight size={14} /></button></section>
       </aside>
     </div>
   </div>;

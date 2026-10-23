@@ -49,6 +49,15 @@ test("one fresh probe revalidates the old signature after restart without changi
   assert.deepEqual(captureRouteBlockers(result.route, checked), []);
 });
 
+test("a cached running/fault trajectory is read again once; an actually active trajectory still blocks", async () => {
+  const stale = structuredClone(checked), bound = { ...route, generation: 2, verifyReferenceAtStart: undefined };
+  stale.turntable!.motionCapability = { supported: true, mode: "dual_axis_timed", probe: "confirmed", protocol: "0x30-0x36", status: { state: 3, fault: 0 } };
+  let probes = 0;
+  const result = await prepareCaptureStartRoute(bound, stale, async () => { probes++; return checked; });
+  assert.equal(probes, 1); assert.equal(result.probed, true);
+  await assert.rejects(prepareCaptureStartRoute(bound, stale, async () => stale), /轨迹/);
+});
+
 test("fresh reference changes, axis faults, limits and communication errors never permit capture", async () => {
   for (const kind of ["reference", "fault", "limit", "generation"]) {
     const bad = structuredClone(checked);

@@ -34,7 +34,7 @@ type Props = {
 };
 const angleText = (angle: number | null) => angle == null ? "—" : `${angle.toFixed(3)}°`;
 type ReturnChoice = { origin: FieldWorkOrigin; motion: FieldOriginReturnMotion };
-type ReturnRun = ReturnChoice & { token: number; port: string; generation: number; deviceIp: string; started: boolean; cancelled: boolean; stop?: Promise<FieldStatus> };
+type ReturnRun = ReturnChoice & { token: number; port: string; generation: number; deviceIp: string; started: boolean; cancelled: boolean; stop?: Promise<FieldStatus>; unconfirmedAt?: number };
 
 export function originReturnTargetError(origin: FieldWorkOrigin | null | undefined, status: FieldStatus, port: string): string {
   if (!origin || !matchingWorkOrigin(origin, status, port)) return "公共光学零点已失效，请重新设置归零";
@@ -117,7 +117,26 @@ export function FieldTurntableOriginControl({ port, status, disabled, origin, op
   const missingOpticalOrigin = opticalOriginRequired && !optical && !current;
   const axes = status?.turntable?.port === port ? status.turntable.feedback?.axes : undefined;
   useEffect(() => { alive.current = true; return () => { alive.current = false; operation.current++; onBusy(false); }; }, [onBusy]);
-  useEffect(() => { operation.current++; setError(""); setReturnNotice(""); }, [port, status?.service.generation, deviceIp]);
+  useEffect(() => {
+    operation.current++; setError(""); setReturnNotice("");
+    const run = returnRun.current;
+    if (run && (run.port !== port || run.generation !== status?.service.generation || run.deviceIp !== deviceIp.trim())) {
+      // A previous transport can no longer verify its stop. Release its UI
+      // owner so the new connection can be inspected; do not certify motion or
+      // rewrite the saved reference/origin from the new session.
+      returnRun.current = null; setReturnPhase(null);
+      setReturnNotice("连接或服务已变化，请在转盘状态中重新检查；原点坐标已保留，未自动恢复运动。");
+      onBusy(false);
+    }
+  }, [port, status?.service.generation, deviceIp, onBusy]);
+  useEffect(() => {
+    const run = returnRun.current;
+    if (returnPhase !== "unconfirmed" || !run || !status || !run.unconfirmedAt) return;
+    const observed = status.turntable?.feedback?.observedAt;
+    if (typeof observed !== "number" || observed < run.unconfirmedAt || originStopError(status, run.port, run.generation)) return;
+    returnRun.current = null; setReturnPhase(null); setError("");
+    setReturnNotice("新反馈已确认两轴停止，可以重新操作；未自动恢复回原点。");
+  }, [status, returnPhase]);
 
   async function setZero() {
     if (disabled || inFlight.current || !isTurntablePort(port)) return;
@@ -185,7 +204,7 @@ export function FieldTurntableOriginControl({ port, status, disabled, origin, op
   const runCurrent = (run: ReturnRun) => transportCurrent(run) && run.token === operation.current;
   async function retryStopReturn(run: ReturnRun) {
     if (inFlight.current || !transportCurrent(run) || fieldIsActive(latest.current.status)) return;
-    inFlight.current = true; setReturnPhase("stopping"); setError("");
+    inFlight.current = true; setReturnPhase("stopping"); setError(""); onBusy(true);
     let verified = false;
     try {
       const stopped = await request<FieldStatus>({ action: "turntable", request: { action: "stop", port: run.port, axis: 1, confirmMotion: true } });
@@ -200,8 +219,11 @@ export function FieldTurntableOriginControl({ port, status, disabled, origin, op
     } catch (cause) { if (alive.current) setError(`停止未确认：${cause instanceof Error ? cause.message : "请现场核查"}`); }
     finally {
       inFlight.current = false;
-      if (verified) { returnRun.current = null; if (alive.current) { setReturnPhase(null); onBusy(false); } }
-      else if (alive.current) setReturnPhase("unconfirmed");
+      if (returnRun.current === run && alive.current) {
+        if (verified) { returnRun.current = null; setReturnPhase(null); }
+        else { run.unconfirmedAt = Date.now() / 1000; setReturnPhase("unconfirmed"); }
+      }
+      if (alive.current) onBusy(false);
     }
   }
   function stopReturn() {
@@ -254,6 +276,7 @@ export function FieldTurntableOriginControl({ port, status, disabled, origin, op
         speedRpm: run.motion.speedRpm, maxMoveAccelerationDegS2: run.motion.maxMoveAccelerationDegS2,
         followErrorLimitDeg: run.motion.followErrorLimitDeg, confirmMotion: true } });
       apply(started);
+      const deadline = Date.now() + 660_000;
       while (runCurrent(run)) {
         if (run.cancelled) {
           if (!run.stop) throw new Error("服务或串口已变化，无法确认停止，请现场核查");
@@ -267,6 +290,9 @@ export function FieldTurntableOriginControl({ port, status, disabled, origin, op
         const next = await request<FieldStatus>({ action: "status" });
         apply(next);
         const controller = next.turntable!, axes = controller.feedback?.axes;
+        if (!controller.recall || controller.recall.targets.some((value, i) => Math.abs(value - [run.origin.axis1AngleDeg, run.origin.axis2AngleDeg][i]) > 1e-9))
+          throw new Error("回原点任务已变化，请重新检查转盘状态");
+        if (Date.now() > deadline) throw new Error("回原点超时，请检查转盘状态");
         if ((!next.turntableBusy && next.turntableWarning) || controller.error || controller.recall?.state === "error" || fieldIsActive(next)) throw new Error(next.turntableWarning || controller.error || "回原点未完成，请核查设备状态");
         if (axes && turntableReferenceSignature(axes) !== run.origin.referenceSignature) throw new Error("回位期间参考位已变化，请重新归零");
         if (axes && [1, 2].some(axis => axes[String(axis)]?.fault !== 0)) throw new Error("回原点检测到轴故障，请核查设备");
@@ -300,14 +326,16 @@ export function FieldTurntableOriginControl({ port, status, disabled, origin, op
           } catch (failure) { message += `；停止未确认：${failure instanceof Error ? failure.message : "请现场核查"}`; }
         } else message += "；停止状态未确认，请现场核查";
       }
-      if (alive.current) setError(message);
+      if (alive.current && returnRun.current === run) setError(message);
     } finally {
       inFlight.current = false;
-      if (!stopUnconfirmed && returnRun.current === run) returnRun.current = null;
-      if (alive.current) {
-        if (stopUnconfirmed) setReturnPhase("unconfirmed");
-        else { setReturnPhase(null); onBusy(false); }
+      if (alive.current && returnRun.current === run) {
+        if (stopUnconfirmed) { run.unconfirmedAt = Date.now() / 1000; setReturnPhase("unconfirmed"); }
+        else { returnRun.current = null; setReturnPhase(null); }
       }
+      // Unknown hardware state still blocks motion through the fresh preflight,
+      // but must not lock out the health/recovery dialog used to resolve it.
+      if (alive.current) onBusy(false);
     }
   }
 
@@ -339,7 +367,7 @@ export function FieldTurntableOriginControl({ port, status, disabled, origin, op
         onClick={() => void clearFailedOriginTrajectory()}>清除旧轨迹</Button>
     </div>}
     {motionError && <p className="field-error" role="alert">{motionError}</p>}
-    {returnPhase && <p className="field-notice" role="status">{returnPhase === "checking" ? "正在检查两轴参考位与运动范围…" : returnPhase === "stopping" ? "正在停止回原点并核查停稳…" : returnPhase === "unconfirmed" ? "停止尚未确认，请现场核查；连接可用后可重试停止。" : "正在返回公共光学原点，请等待两轴停稳。"}</p>}
+    {returnPhase && <p className="field-notice" role="status">{returnPhase === "checking" ? "正在检查两轴参考位与运动范围…" : returnPhase === "stopping" ? "正在停止回原点并核查停稳…" : returnPhase === "unconfirmed" ? "停止尚未确认，请在转盘状态中检查或清除故障，也可重试停止；不会自动恢复运动。" : "正在返回公共光学原点，请等待两轴停稳。"}</p>}
     {returnNotice && <p className="field-success" role="status">{returnNotice}</p>}
     {error && <p className="field-error" role="alert">{error}</p>}
   </section>;

@@ -91,8 +91,7 @@ export function recoverCalculatedWorkOrigin(status: FieldStatus | null): FieldWo
 export function createWorkOrigin(status: FieldStatus, port: string): FieldWorkOrigin {
   if (!isTurntablePort(port) || status.turntable?.port !== port) throw new Error("转盘串口无效或读取结果不匹配，请重新读取");
   if (status.service.state !== "ready" || !validGeneration(status.service.generation)) throw new Error("采集服务或代际信息无效，请重新读取");
-  if (fieldIsActive(status) || status.deviceBusy || status.turntableBusy ||
-      status.pointCycle && !["complete", "cancelled", "error"].includes(status.pointCycle.state)) throw new Error("采集或转盘任务尚未结束，请停稳后设置作业零点");
+  if (fieldIsActive(status) || status.deviceBusy || status.turntableBusy) throw new Error("采集或转盘任务尚未结束，请停稳后设置作业零点");
   if (status.deviceWarning || status.turntableWarning || status.turntable.error) throw new Error("设备状态尚未确认，请先处理设备提示");
   if (status.turntable.state !== "checked" || stopUnknown(status)) throw new Error("两轴停止状态未确认，请重新读取反馈");
   const trajectory = status.turntable.motionCapability?.status;

@@ -10,7 +10,7 @@ import { fieldStartError, fieldCaptureConfig, fieldIsActive, validateFieldConfig
 type Props = {
   targets: readonly FieldAutoCaptureTarget[]; selectedTargetKey?: string; collectionId?: string;
   recordings?: readonly FieldRecording[]; config: FieldConfig; status: FieldStatus | null;
-  busy: string; pollError: string; onSelect?: (key: string) => void; onStart?: (key: string) => void;
+  busy: string; pollError: string; stopping?: boolean; onSelect?: (key: string) => void; onStart?: (key: string) => void;
   onConfigure?: (key: string) => void; onConfigureAll: () => void; onStop: () => void;
   onPosition?: (key: string) => void;
 };
@@ -31,7 +31,7 @@ export function activeAutoCaptureKey(targets: readonly FieldAutoCaptureTarget[],
 }
 
 export const FieldAutoCaptureList = memo(function FieldAutoCaptureList({ targets, selectedTargetKey, collectionId, recordings = noRecords,
-  config, status, busy, pollError, onSelect, onStart, onConfigure, onConfigureAll, onStop, onPosition }: Props) {
+  config, status, busy, pollError, stopping = false, onSelect, onStart, onConfigure, onConfigureAll, onStop, onPosition }: Props) {
   const active = fieldIsActive(status);
   const activeKey = activeAutoCaptureKey(targets, status, selectedTargetKey);
   const disabled = active || !!busy || !!status?.turntableBusy || !!status?.deviceBusy;
@@ -74,7 +74,7 @@ export const FieldAutoCaptureList = memo(function FieldAutoCaptureList({ targets
               <th scope="row"><button type="button" className="field-auto-capture-point" aria-label={`选择叶片 ${target.bladeId} 测点 ${target.pointName}`} aria-pressed={selectedTargetKey === target.key} disabled={disabled || !onSelect} onClick={() => onSelect?.(target.key)}>{target.pointName || "未命名测点"}</button></th>
               <td className="mono">{radius(target.radiusM)}</td><td>{target.stations} 个</td><td>{target.cycles} 轮</td>
               <td><span className={`field-badge ${running || archived === "complete" ? "green" : archived === "partial" ? "amber" : ""}`}>{label}</span>{running && cycle && <span className="field-auto-capture-progress" role="status">{cycle.cycle > 0 && cycle.point > 0 ? `第 ${cycle.cycle}/${cycle.cycles} 轮 · 点位 ${Math.min(cycle.pointCount, cycle.point)}/${cycle.pointCount}` : "正在准备当前测点"}</span>}{!active && (reason || positionError) && <span className="field-inline-help" role="status">{[...new Set([reason, positionError].filter(Boolean))].join("；")}</span>}</td>
-              <td><div className="field-auto-capture-actions">{running ? <Button type="button" variant="danger" disabled={!!busy || status?.state === "stopping"} onClick={onStop}><Square size={12} />停止并保存</Button> : <><Button type="button" disabled={disabled || !!positionError || !onPosition} title={positionError || "先定位到此测点的第一个圆周点位，不开始采集"} aria-label={`移动到预设位置：叶片 ${target.bladeId} 测点 ${target.pointName}`} onClick={() => onPosition?.(target.key)}>{busy === "preposition" && selectedTargetKey === target.key ? <LoaderCircle size={14} className="spin" /> : <Crosshair size={14} />}移动到预设位置</Button><Button type="button" variant="primary" disabled={startDisabled} title={reason} aria-label={`开始采集叶片 ${target.bladeId} 测点 ${target.pointName}`} onClick={() => onStart?.(target.key)}>{busy === "start" && selectedTargetKey === target.key ? <LoaderCircle size={14} className="spin" /> : <Play size={14} />}{archived === "complete" ? "重新采集" : "开始采集"}</Button><Button type="button" variant="ghost" disabled={disabled || !onConfigure} onClick={() => onConfigure?.(target.key)}>配置测点<ChevronRight size={13} /></Button></>}</div></td>
+              <td><div className="field-auto-capture-actions">{running ? <Button type="button" variant="danger" disabled={stopping} onClick={onStop}><Square size={12} />停止并保存</Button> : <><Button type="button" disabled={disabled || !!positionError || !onPosition} title={positionError || "先定位到此测点的第一个圆周点位，不开始采集"} aria-label={`移动到预设位置：叶片 ${target.bladeId} 测点 ${target.pointName}`} onClick={() => onPosition?.(target.key)}>{busy === "preposition" && selectedTargetKey === target.key ? <LoaderCircle size={14} className="spin" /> : <Crosshair size={14} />}移动到预设位置</Button><Button type="button" variant="primary" disabled={startDisabled} title={reason} aria-label={`开始采集叶片 ${target.bladeId} 测点 ${target.pointName}`} onClick={() => onStart?.(target.key)}>{busy === "start" && selectedTargetKey === target.key ? <LoaderCircle size={14} className="spin" /> : <Play size={14} />}{archived === "complete" ? "重新采集" : "开始采集"}</Button><Button type="button" variant="ghost" disabled={disabled || !onConfigure} onClick={() => onConfigure?.(target.key)}>配置测点<ChevronRight size={13} /></Button></>}</div></td>
             </tr>;
           })}</tbody>
         </table></div>

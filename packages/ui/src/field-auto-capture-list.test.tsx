@@ -27,6 +27,18 @@ const props = { targets, selectedTargetKey: targets[0].key, config, status: read
 const render = (patch: Partial<React.ComponentProps<typeof FieldAutoCaptureList>> = {}) => renderToStaticMarkup(<FieldAutoCaptureList {...props} {...patch} />);
 const startButton = (html: string, blade: string, point: string) => html.match(new RegExp(`<button[^>]*aria-label="开始采集叶片 ${blade} 测点 ${point}"[^>]*>`))?.[0] || "";
 
+check("停止失败后的stopping状态仍可重试，仅本次停止请求进行中禁用", () => {
+  const stopping: FieldStatus = { ...ready, state: "stopping", receiver: { running: true }, pointCycle: {
+    state: "capturing", cycles: 1, pointCount: 4, point: 1, cycle: 1, completedRecords: 0, totalRecords: 4, speedRpm: 5, dwellSeconds: 60,
+  } };
+  const stopButton = (html: string) => html.match(/<button\b[^>]*>[\s\S]*?<\/button>/g)?.find(button => button.includes("停止并保存")) || "";
+  for (const busy of ["", "start"]) {
+    const html = stopButton(render({ status: stopping, busy }));
+    assert.ok(html); assert.doesNotMatch(html, /disabled/);
+  }
+  assert.match(stopButton(render({ status: stopping, stopping: true })), /disabled/);
+});
+
 check("多叶片测点分别分组，展示半径、点位与圈数，每行独立采集", () => {
   const html = render();
   assert.ok(html.includes('aria-label="叶片 1 采集测点"'));

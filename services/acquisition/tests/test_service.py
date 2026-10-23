@@ -102,6 +102,21 @@ class ApiTests(unittest.TestCase):
         del missing["confirmLaser"]
         self.assertEqual(self.client.post("/api/field/start", json=missing).status_code, 422)
 
+    def test_new_ordinary_capture_does_not_inherit_a_previous_linked_phase(self):
+        controller = self.app.state.controller
+        for terminal in ("idle", "error"):
+            with self.subTest(terminal=terminal):
+                controller.state = terminal
+                controller.point_cycle = {"state": "positioning", "sessionId": "previous-session"}
+                response = self.client.post("/api/field/start", json=START)
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertIsNone(response.json()["pointCycle"])
+                self.wait_for_samples()
+                stopped = self.client.post("/api/field/stop").json()
+                self.assertIsNone(stopped["pointCycle"])
+                self.assertEqual(stopped["recording"]["status"], "complete")
+                self.assertIsNone(stopped["recording"].get("pointCycle"))
+
     def test_raw_capture_is_complete_but_frame_is_bounded(self):
         self.assertEqual(self.client.post("/api/field/start", json={**START, "windFarm": "  WF-001  "}).status_code, 200)
         frame = self.wait_for_samples()

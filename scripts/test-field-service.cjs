@@ -936,6 +936,59 @@ test("crashed acquisition cannot silently complete a non-forced shutdown", async
   assert.equal(f.service.serviceInfo().state, "stopped");
 });
 
+for (const platform of ['darwin', 'win32']) test(`${platform}: confirmed process exit clears only process busy guards and cancels its pending HTTP`, async t => {
+  const servicesRoot = pythonServiceFixture(); t.after(() => fs.rmSync(servicesRoot, { recursive: true, force: true }));
+  const received = deferred(); let live = idle(), aborted = false;
+  const f = fixture(t, { options: { platform, servicesRoot }, fetch: async ({ route, options }) => {
+    if (route === 'turntable') {
+      received.resolve();
+      return new Promise((resolve, reject) => options.signal.addEventListener('abort', () => {
+        aborted = true; reject(options.signal.reason);
+      }, { once: true }));
+    }
+    return response(live);
+  } });
+  await f.service.start();
+  const checking = f.service.turntable({ action: 'health', port: 'tcp://192.168.10.50:5000', axis: 1 });
+  const rejected = assert.rejects(checking, /进程已退出/);
+  await received.promise;
+  live = { ...acquiring(), receiver: { running: true }, deviceBusy: true, turntableBusy: true,
+    recording: { id: 'unfinished', status: 'incomplete' }, turntableWarning: '需现场检查停止状态' };
+  await f.service.status(); f.children[0].finish(1); await rejected;
+  const failed = await f.service.status();
+  assert.equal(aborted, true); assert.equal(failed.state, 'error');
+  assert.equal(failed.receiver.running, false); assert.equal(failed.deviceBusy, false); assert.equal(failed.turntableBusy, false);
+  assert.equal(failed.recording.status, 'incomplete'); assert.equal(failed.turntableWarning, live.turntableWarning);
+  const oldGeneration = failed.service.generation;
+  await f.service.shutdown({ force: true });
+  const closed = await f.service.status();
+  assert.equal(closed.service.state, 'stopped'); assert.equal(closed.receiver.running, false);
+  assert.equal(closed.turntableBusy, false); assert.equal(closed.deviceBusy, false);
+  assert.equal(closed.state, 'error'); assert.equal(closed.recording.status, 'incomplete');
+  live = idle();
+  const fresh = await f.service.start();
+  assert.equal(fresh.service.state, 'ready'); assert.ok(fresh.service.generation > oldGeneration);
+  assert.equal(fresh.state, 'idle'); assert.equal(f.children.length, 2);
+});
+
+test('failed status/frame reads retain a live receiver Stop entry; a fresh idle read clears it', async t => {
+  let failRead = false;
+  const active = { ...acquiring(), receiver: { running: true }, turntableBusy: false, deviceBusy: false };
+  const f = fixture(t, { fetch: async ({ route }) => {
+    if (failRead && ['status', 'frame'].includes(route)) throw Error('fixture transport unavailable');
+    return response(route === 'start' ? active : idle());
+  } });
+  await f.service.begin({ confirmLaser: true, deviceIp: '192.168.0.10', hostIp: '192.168.0.2', name: '任务', object: '', turbine: '', point: '' });
+  failRead = true;
+  for (const next of [await f.service.status(), await f.service.frame()]) {
+    assert.equal(next.state, 'error'); assert.equal(next.receiver.running, true);
+    assert.match(next.service.error, /transport/);
+  }
+  failRead = false;
+  const fresh = await f.service.status();
+  assert.equal(fresh.receiver.running, undefined); assert.equal(fresh.service.error, null);
+});
+
 test("startup timeout escalates termination before another process can be created", async (t) => {
   const f = fixture(t, {
     options: { startupTimeoutMs: 20 },

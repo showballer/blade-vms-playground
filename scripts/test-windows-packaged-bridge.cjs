@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { finished } = require('node:stream/promises');
 const { test } = require('node:test');
 const asar = require('@electron/asar');
 const { extractPackagedBridge, MODULES } = require('./windows-packaged-bridge.cjs');
@@ -17,7 +18,10 @@ test('packaged bridge loads its own complete relative module graph, with source 
     fs.mkdirSync(path.join(packaged, 'electron'), { recursive: true });
     for (const name of MODULES) fs.copyFileSync(path.join(sourceDirectory, name), path.join(packaged, 'electron', name));
     const archive = path.join(directory, 'app.asar');
-    await asar.createPackage(packaged, archive);
+    const writing = await asar.createPackage(packaged, archive);
+    // This asar version resolves with out.end() before the writable's finish.
+    // Wait for actual bytes before checking hashes, including under test load.
+    if (writing?.once) await finished(writing);
     const value = extractPackagedBridge({ archive, directory: extracted, sourceDirectory });
     assert.equal(typeof require(value.bridgeFile).createFieldService, 'function');
     assert.equal(typeof require(value.cloudFile).createFieldCloudSync, 'function');

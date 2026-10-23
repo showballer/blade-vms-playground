@@ -1697,6 +1697,9 @@ class AcquisitionController:
                 self.rows.clear()
                 self.stop_event.clear()
                 self.state, self.error = "starting", None
+                # A completed linked run remains in its saved manifests. It must
+                # not make the next ordinary capture appear linked in the UI.
+                self.point_cycle = None
                 self.turntable_preparation = None
                 self.turntable_snapshot = {"state": "checking" if request.turntable else "disconnected", "feedback": None}
                 self.thread = threading.Thread(target=self._run, args=(receiver, request.turntable, request), name=f"blade-{request.source}", daemon=True)

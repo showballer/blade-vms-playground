@@ -60,13 +60,19 @@ check("作业范围平移设备包络，不能因归零扩大实际运动范围"
   }
 });
 
-check("采集中、设备操作中、未终止点位和有待启动轨迹时不能重设作业零点", () => {
+check("采集所有权、设备操作和待启动硬件轨迹阻止归零，历史点位阶段不锁死", () => {
   const patches: ((status: FieldStatus) => void)[] = [
     ...(["starting", "acquiring", "stopping"] as const).map(state => (status: FieldStatus) => { status.state = state; }),
     status => { status.receiver = { running: true }; }, status => { status.deviceBusy = true; }, status => { status.turntableBusy = true; },
-    status => { status.pointCycle = { state: "ready", cycles: 1, dwellSeconds: 60, speedRpm: .2, pointCount: 4, cycle: 1, point: 1, completedRecords: 0, totalRecords: 4 }; },
   ];
   for (const mutate of patches) assert.throws(() => createWorkOrigin(changed(mutate), "COM3"));
+  for (const state of ["idle", "error"] as const) {
+    const old = changed(status => { status.state = state; status.receiver = { running: false };
+      status.pointCycle = { state: "positioning", cycles: 1, dwellSeconds: 60, speedRpm: .2, pointCount: 4, cycle: 1, point: 1, completedRecords: 0, totalRecords: 4 }; });
+    assert.ok(createWorkOrigin(old, "COM3"));
+    old.receiver!.running = true;
+    assert.throws(() => createWorkOrigin(old, "COM3"));
+  }
   for (const state of [1, 2, 3, 4, 5, 7]) assert.throws(() => createWorkOrigin(changed(status => {
     status.turntable!.motionCapability!.status = { state, fault: state === 7 ? 13 : 0 };
   }), "COM3"));

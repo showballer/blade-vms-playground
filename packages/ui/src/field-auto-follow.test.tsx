@@ -17,6 +17,18 @@ const ready: FieldStatus = { service: { state: "ready", dllConfigured: true, gen
 const config: FieldConfig = { name: "叶片点位采集", deviceIp: "198.51.100.10", hostIp: "198.51.100.11", object: "", turbine: "", point: "" };
 const props = { config, onConfig: () => {}, status: ready, disabled: false, request: async <T,>(): Promise<T> => { throw new Error("No hardware in renderer test"); }, onStatus: () => {}, onRecords: () => {}, onService: () => {} };
 
+check("上次换点阶段不会锁住空闲或异常后的配置，仍运行的接收线程继续锁定", () => {
+  for (const state of ["idle", "error"] as const) {
+    const status: FieldStatus = { ...ready, state, receiver: { running: false }, pointCycle: { state: "positioning", cycles: 1,
+      pointCount: 2, point: 1, cycle: 1, completedRecords: 0, totalRecords: 2, speedRpm: 5, dwellSeconds: 60 } };
+    const input = (value: FieldStatus) => renderToStaticMarkup(<FieldAutoFollow {...props} status={value} />)
+      .match(/<input[^>]*aria-label="叶轮每圈时间 · s"[^>]*>/)?.[0] || "";
+    assert.ok(input(status)); assert.doesNotMatch(input(status), /disabled/);
+    status.receiver!.running = true;
+    assert.match(input(status), /disabled/);
+  }
+});
+
 check("生产入口只有转盘手动与自动标签，没有单点、试运行与模拟开关", () => {
   const html = renderToStaticMarkup(<FieldTurntableWorkspace {...props} />);
   assert.ok(html.includes("手动控制")); assert.ok(html.includes("自动跟随"));

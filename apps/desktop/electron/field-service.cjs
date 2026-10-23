@@ -232,7 +232,7 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
   let child = null, opening = null, state = 'stopped', error = null;
   let port = null, secret = '', socket = null, cachedFrame = null, receivedAt = 0;
   let lastStatus = { state: 'idle', error: null, recording: null }, frameRequest = null;
-  let stopping = false, generation = 0, logTail = '';
+  let stopping = false, generation = 0, logTail = '', childAbort = null;
   let snapshotEpoch = 0;
   const exitedChildren = new WeakSet();
 
@@ -283,8 +283,11 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
   function envelope(data = lastStatus) {
     // A failed child cannot be presented as healthy acquisition. Keep unknown
     // live-process guards, but distinguish a terminated receiver from hardware.
+    if (!child) data = { ...data, receiver: { ...data.receiver, running: false }, deviceBusy: false, turntableBusy: false,
+      ...(['starting', 'acquiring', 'stopping'].includes(data.state)
+        ? { state: 'error', error: data.error || '上次采集进程已结束，请检查未完成记录和设备状态' } : {}) };
     if (state === 'error') return { ...data, state: 'error', error: error || '本机采集服务异常，请检查未完成记录',
-      ...(!child ? { receiver: { ...data.receiver, running: false } } : {}), service: serviceInfo() };
+      service: serviceInfo() };
     return { ...data, service: serviceInfo() };
   }
   function closeSocket() {
@@ -294,8 +297,8 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     if (!port || !secret || !child) throw failure('本机采集服务尚未就绪');
     const requestGeneration = generation, requestChild = child;
     const response = await fetchImpl(`http://127.0.0.1:${port}/api/field/${route}`, {
-      method, redirect: 'error', signal: AbortSignal.timeout(route.endsWith('/upload-copy') ? 1800000 : route.endsWith('/analysis') || route === 'rotation' || route === 'blade-passes' || route.endsWith('/waveform') || route.includes('/waveform?') ? 120000 :
-        route === 'device' || route === 'rssi-calibration' ? 90000 : route === 'stop' || route === 'turntable' || route === 'single-point' && body?.action === 'cancel' ? Math.max(75000, requestTimeoutMs) : requestTimeoutMs),
+      method, redirect: 'error', signal: AbortSignal.any([childAbort.signal, AbortSignal.timeout(route.endsWith('/upload-copy') ? 1800000 : route.endsWith('/analysis') || route === 'rotation' || route === 'blade-passes' || route.endsWith('/waveform') || route.includes('/waveform?') ? 120000 :
+        route === 'device' || route === 'rssi-calibration' ? 90000 : route === 'stop' || route === 'turntable' || route === 'single-point' && body?.action === 'cancel' ? Math.max(75000, requestTimeoutMs) : requestTimeoutMs)]),
       headers: { Authorization: `Bearer ${secret}`, 'Content-Type': 'application/json' },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
@@ -375,6 +378,7 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
       port = await freePort(); secret = randomBytes(32).toString('hex');
       const env = spec.environment({ port, secret });
       try {
+        childAbort = new AbortController();
         const processChild = spawnImpl(spec.file, spec.args, { cwd: spec.cwd, env,
           shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
         child = processChild;
@@ -389,7 +393,7 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
         });
         const exited = code => {
           exitedChildren.add(processChild);
-          if (child === processChild) { child = null; closeSocket(); }
+          if (child === processChild) { childAbort?.abort(failure('采集服务进程已退出，请刷新状态后重试', 503)); child = null; closeSocket(); }
           if (current !== generation) return;
           if (stopping) { state = 'stopped'; return; }
           state = 'error'; error = `采集服务已退出（${code ?? '异常终止'}）。未完成的采集请在重启服务后检查。`;
@@ -431,7 +435,9 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     }
     catch (cause) {
       if (current !== generation || epoch !== snapshotEpoch) return envelope();
-      error = cause.message; return envelope({ state: 'error', error: cause.message, recording: lastStatus.recording });
+      // Loss of a read is not proof that a live owner's acquisition stopped.
+      // Retain its guards and the Stop entry until a fresh reply or child exit.
+      error = cause.message; return envelope({ ...lastStatus, state: 'error', error: cause.message });
     }
   }
   async function frame(windowMs) {
@@ -461,7 +467,7 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
       } catch (cause) {
         if (current !== generation || epoch !== snapshotEpoch) return envelope();
         error = cause.message;
-        return envelope({ state: 'error', error: cause.message, recording: lastStatus.recording,
+        return envelope({ ...lastStatus, state: 'error', error: cause.message,
           waveform: { sampleRate: null, unit: 'm/s', values: [], rssi: [], overrange: [] } });
       }
     })().finally(() => { frameRequest = null; });

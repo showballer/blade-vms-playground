@@ -191,8 +191,11 @@ export async function prepareCaptureStartRoute(route: FieldCaptureRoute, current
   if (!current) throw new Error("请先读取设备状态");
   const axes = current.turntable?.port === route.cycle?.port ? current.turntable?.feedback?.axes : undefined;
   const capability = current.turntable?.port === route.cycle?.port ? current.turntable?.motionCapability : undefined;
+  const trajectory = capability?.status;
   const probed = route.verifyReferenceAtStart === true || !turntableReferenceSignature(axes) || !capability ||
     capability.probe === "driver-unavailable" || !!current.turntableWarning || !!current.turntable?.error ||
+    capability.supported === true && (!trajectory || typeof trajectory.state !== "number" || ![0, 6, 8].includes(trajectory.state) ||
+      typeof trajectory.fault !== "number" || ![0, 1].includes(trajectory.fault)) ||
     route.referenceMode !== "read_at_start" && route.generation !== current.service.generation ||
     !!axes && Object.values(axes).some(axis => axis.fault !== 0 || axis.motor_rpm !== 0 || !!(axis.flags & 16));
   const checked = probed ? await probe() : current;

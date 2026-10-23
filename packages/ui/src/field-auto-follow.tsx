@@ -209,7 +209,9 @@ export function FieldAutoFollow({ config, onConfig, status, disabled, request, o
   const operation = useRef(0), generation = useRef<number | undefined>(status?.service.generation);
   const alive = useRef(false), latestGeneration = useRef(status?.service.generation);
   latestGeneration.current = status?.service.generation;
-  const active = fieldIsActive(status), cycleRunning = !!status?.pointCycle && !["complete", "cancelled", "error"].includes(status.pointCycle.state);
+  // pointCycle is retained as last-run history. Only the current service/receiver
+  // owner may lock editing, not a stale phase from a finished or failed run.
+  const active = fieldIsActive(status), cycleRunning = active && !!status?.pointCycle && !["complete", "cancelled", "error"].includes(status.pointCycle.state);
   const locked = disabled || !!pending || active || cycleRunning || !!status?.deviceBusy || !!status?.turntableBusy;
   const latestLocked = useRef(locked); latestLocked.current = locked;
   const port = connectionPort || survey.port, draft = useMemo(() => surveyDraft(survey), [survey]);

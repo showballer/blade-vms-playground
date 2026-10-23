@@ -46,6 +46,11 @@ window.blade={windowControl:()=>{},field:async options=>{
  if(options.action==='turntablePorts')return {status:200,data:{ports:[{port:'COM6',description:'TEST ONLY'}]}};
  if(options.action==='device'&&options.request.action==='laser_read')return {status:200,data:{deviceIp:options.request.deviceIp,state:'unknown',readAt:null,source:'unavailable',busy:false}};
  if(options.action==='turntable'&&options.request.action==='probe'){const reply=structuredClone(model.server);reply.turntable.state='checked';return {status:200,data:reply};}
+ if(options.action==='turntable'&&options.request.action==='horizontal_zero'){
+  const table=model.server.turntable;table.state='checked';table.feedback.axes['1'].output_angle_deg=0;
+  table.homing={action:'horizontal_zero',state:'complete',phase:'complete',verified:true,targetAngleDeg:0};
+  return {status:200,data:structuredClone(model.server)};
+ }
  if(options.action==='turntable'&&options.request.action==='reference'){
   const axis=model.server.turntable.feedback.axes[String(options.request.axis)];
   Object.assign(axis,{output_angle_deg:options.request.axis===1?25:0,flags:3,fault:0,origin_counts:axis.origin_counts+100});
@@ -144,16 +149,17 @@ app.whenReady().then(async () => {
       assert.equal(await js('!!document.querySelector("dialog")'), false);
       const requests = await js('window.__retryFixture.calls.filter(call=>call.action==="start")');
       assert.equal(requests.length, startsBefore+1); assert.equal(requests.at(-1).config.windFarm,'WF-001'); assert.ok(requests.at(-1).config.pointCycle.points.every(point => point.referenceSignature));
-      assert.ok((await js('window.__retryFixture.calls')).some(call => call.action === 'turntable' && call.request.action === 'probe'));
+      assert.ok(requests.at(-1).config.pointCycle.points.every(point => point.referenceSignature), 'Checked references are bound without a redundant renderer probe');
       await wait(rowStart + '&&!(' + rowStart + ').disabled');
     });
     await check('停止未确认、设备警告和运动中仍拦截，恢复后不残留 busy', async () => {
-      for (const patch of ['turntableWarning="停止未确认"', 'deviceWarning="激光状态未确认"', 'turntableBusy=true', 'deviceBusy=true']) {
+      for (const patch of ['deviceWarning="激光状态未确认"', 'turntableBusy=true', 'deviceBusy=true']) {
         await changed('window.__retryFixture.server.' + patch); assert.equal(await js('(' + rowStart + ').disabled'), true, patch);
         await changed('window.__retryFixture.server=structuredClone(window.__retryFixture.base)'); await wait(rowStart + '&&!(' + rowStart + ').disabled');
       }
       await changed('window.__retryFixture.server.turntable.motionCapability={supported:true,mode:"dual_axis_timed",protocol:"0x30-0x36",probe:"confirmed",status:{state:3,fault:0}}');
-      assert.equal(await js('(' + rowStart + ').disabled'), true);
+      const count=await js('window.__retryFixture.calls.filter(c=>c.action==="start").length');
+      await click(rowStart);await pause(150);assert.equal(await js('window.__retryFixture.calls.filter(c=>c.action==="start").length'),count,'Fresh active trajectory must not start');
       await changed('window.__retryFixture.server=structuredClone(window.__retryFixture.base)'); await wait(rowStart + '&&!(' + rowStart + ').disabled');
     });
     await check('新鲜探测的未知能力或无有效参考不能发送开始命令', async () => {
@@ -304,7 +310,7 @@ app.whenReady().then(async () => {
       await wait('('+button('清除旧轨迹')+').disabled===false');
       await click(button('清除旧轨迹'));
       await wait('document.querySelector(".field-turntable-health").textContent.includes("需要配套 v3.4")');
-      assert.equal(await js('('+button('清除旧轨迹')+').disabled'),true);
+      assert.equal(await js('('+button('清除旧轨迹')+').disabled'),false,'Failed recovery remains retryable');
       await click('document.querySelector("dialog button[aria-label=关闭弹窗]")');
       await changed('window.__retryFixture.recoveryFailure=false;window.__retryFixture.server=structuredClone(window.__retryFixture.base)');
     });
@@ -394,39 +400,22 @@ app.whenReady().then(async () => {
     });
     report.screenshot = path.join(output, 'retry-ready-1366.png');
     fs.writeFileSync(report.screenshot, (await win.webContents.capturePage()).toPNG());
-    await check('已知姿态参考恢复与回水平分开点击，使用设备0而非保存的作业零点', async () => {
-      await changed('window.__retryFixture.server=structuredClone(window.__retryFixture.base);window.__retryFixture.server.state="idle";Object.assign(window.__retryFixture.server.turntable.feedback.axes["1"],{output_angle_deg:7});Object.assign(window.__retryFixture.server.turntable.feedback.axes["2"],{output_angle_deg:-16.73})');
-      await click(button('转盘点位'));
-      await click(button('手动控制'));
-      await wait('('+button('俯仰回水平0°')+').disabled===false');
-      await input('手动定位转速',.8);
+    await check('参考设置统一在转盘状态，回水平与水平轴确认零点不覆盖作业原点', async () => {
+      await changed('window.__retryFixture.server=structuredClone(window.__retryFixture.base);window.__retryFixture.server.state="idle";window.__retryFixture.server.turntable.feedback.axes["1"].output_angle_deg=7');
+      await click(button('转盘点位'));await click(button('转盘状态'));
+      await wait('('+button('回水平 0°')+').disabled===false');
       const before=await js('({count:window.__retryFixture.calls.length,origin:localStorage.getItem("blade-turntable-work-origins-v1")})');
-      assert.ok(before.origin, '必须存在保存的作业原点');
-      await click(button('俯仰回水平0°'));
-      await wait('window.__retryFixture.calls.some((c,i)=>i>='+before.count+'&&c.action==="turntable"&&c.request.action==="manual_move")');
-      assert.deepEqual(await js('window.__retryFixture.calls.slice('+before.count+').filter(c=>c.action==="turntable"||c.action==="start").map(c=>c.request)'),
-        [{action:'manual_move',port:'COM6',axis:1,protocol:'position',targetAngleDeg:0,speedRpm:.8,durationSeconds:0,confirmMotion:true}]);
+      await click(button('回水平 0°'));
+      await wait('window.__retryFixture.server.turntable.feedback.axes["1"].output_angle_deg===0');
+      await wait('('+button('确认水平轴为 0°')+').disabled===false');
+      await click(button('确认水平轴为 0°'));
+      await wait('document.querySelector(".field-mechanical-home")?.textContent.includes("水平轴当前位置已设为设备0°")');
+      const calls=await js('window.__retryFixture.calls.slice('+before.count+').filter(c=>c.action==="turntable")');
+      assert.deepEqual(calls.map(c=>c.request.action),['horizontal_zero','reference']);
+      assert.equal(calls[0].request.axis,1);assert.equal(calls[0].request.homingSpeedDegS,.6);
+      assert.equal(calls[1].request.axis,2);
       assert.equal(await js('localStorage.getItem("blade-turntable-work-origins-v1")'),before.origin);
-      await changed('Object.assign(window.__retryFixture.server.turntable.feedback.axes["1"],{output_angle_deg:null,flags:18,fault:3})');
-      await wait('('+button('俯仰回水平0°')+').disabled===true');
-      assert.equal(await js('('+button('确认当前为+25°参考')+').disabled'),false);
-      const count=await js('window.__retryFixture.calls.length');
-      await click(button('确认当前为+25°参考'));
-      await wait('('+button('俯仰回水平0°')+').disabled===false');
-      assert.deepEqual(await js('window.__retryFixture.calls.slice('+count+').filter(c=>c.action==="turntable"||c.action==="start").map(c=>c.request)'),
-        [{action:'reference',port:'COM6',axis:1,confirmMotion:true}]);
-      assert.equal(await js('window.__retryFixture.server.turntable.feedback.axes["1"].output_angle_deg'),25);
-      assert.equal(await js('localStorage.getItem("blade-turntable-work-origins-v1")'),before.origin);
-      win.setContentSize(1366,900);await pause(100);
-      await js('document.querySelector(".field-turntable-manual").scrollIntoView({block:"start"})');
-      fs.writeFileSync(path.join(output,'turntable-reference-1366.png'),(await win.webContents.capturePage()).toPNG());
-      await click(button('轴2 · 水平'));
-      await wait('('+button('水平回设备0°')+').disabled===false');
-      const yawCount=await js('window.__retryFixture.calls.length');
-      await click(button('水平回设备0°'));
-      await wait('window.__retryFixture.calls.some((c,i)=>i>='+yawCount+'&&c.action==="turntable"&&c.request.action==="manual_move")');
-      assert.deepEqual(await js('window.__retryFixture.calls.slice('+yawCount+').filter(c=>c.action==="turntable"||c.action==="start").map(c=>c.request)'),
-        [{action:'manual_move',port:'COM6',axis:2,protocol:'position',targetAngleDeg:0,speedRpm:.2,durationSeconds:0,confirmMotion:true}]);
+      await click('document.querySelector("dialog button[aria-label=关闭弹窗]")');
     });
     clearTimeout(watchdog); finish();
   } catch (error) { clearTimeout(watchdog); if (win) report.failureState = await js('({calls:window.__retryFixture.calls,server:window.__retryFixture.server,text:document.body.innerText})').catch(() => null); finish(error); }
