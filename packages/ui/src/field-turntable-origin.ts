@@ -40,6 +40,12 @@ function originValid(origin: FieldWorkOrigin): boolean {
     Number.isFinite(origin.axis2AngleDeg) && Math.abs(origin.axis2AngleDeg) <= 180;
 }
 
+/** A saved offset may build a plan while feedback is absent. It grants no
+ * motion permission: its original reference signature must pass a fresh probe. */
+export function workOriginForPlanning(origin: FieldWorkOrigin | null | undefined, port: string): FieldWorkOrigin | null {
+  return origin && originValid(origin) && origin.port === port ? origin : null;
+}
+
 /** Saved coordinates survive page/app reloads. A stored
  * origin is only a candidate until the current reference checks accept it. */
 export function readSavedWorkOrigins(raw: string | null): { work: FieldWorkOrigin | null; optical: FieldWorkOrigin | null } {

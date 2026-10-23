@@ -8,6 +8,7 @@ export type FieldCaptureRoute = {
   cycle: FieldPointCycleConfig | null; errors: string[]; generation?: number;
   targets?: FieldAutoCaptureTarget[]; selectedTargetKey?: string;
   referenceMode?: "read_at_start";
+  verifyReferenceAtStart?: true;
 };
 export type FieldAutoCaptureTarget = {
   key: string; bladeKey: string; bladeId: string; pointId: string; pointName: string;
@@ -62,18 +63,29 @@ export function manualCaptureRoute(points: FieldBladePoint[], port: string, sett
       rssiEnterConfirmMs: settings.rssiEnterConfirmMs, rssiConfirmMs: settings.rssiConfirmMs,
       rssiSmoothingMs: 10, rssiMinimumSeconds: 0, keepLaserOnBetweenPoints: true } };
 }
-export function captureRouteBlockers(route: FieldCaptureRoute | null, status: FieldStatus | null, motionOnly = false): string[] {
+export function captureRouteRequestBlockers(route: FieldCaptureRoute | null, status: FieldStatus | null, motionOnly = false): string[] {
+  return captureRouteBlockers(route, status, motionOnly, true);
+}
+
+export function captureRouteBlockers(route: FieldCaptureRoute | null, status: FieldStatus | null, motionOnly = false, requestOnly = false): string[] {
   if (!route) return ["请先到转盘点位配置采集路线"];
   const errors = [...route.errors], cycle = route.cycle;
   const readAtStart = route.referenceMode === "read_at_start";
   if (!status || status.service.state !== "ready" || status.service.error || (!motionOnly && !status.service.dllConfigured)) errors.push("采集服务或设备驱动尚未就绪");
   if (!motionOnly && status?.deviceWarning) errors.push(status.deviceWarning);
-  if (status?.turntableWarning) errors.push(status.turntableWarning);
+  if (!requestOnly && status?.turntableWarning) errors.push(status.turntableWarning);
   if (!cycle) errors.push("请先完善采集测点与路线参数");
-  if (!readAtStart && route.generation !== status?.service.generation) errors.push("采集服务已重启，请重新读取转盘反馈并校准路线");
+  if (!requestOnly && !readAtStart && route.generation !== status?.service.generation) errors.push("采集服务已重启，请重新读取转盘反馈并校准路线");
   if (cycle) {
     if (cycle.startAtCurrentPose !== undefined && typeof cycle.startAtCurrentPose !== "boolean") errors.push("首个点位启动方式无效，请重新配置路线");
     if (cycle.startAtCurrentPose && cycle.mode !== "automatic_stations") errors.push("首个点位原地采集仅适用于自动跟随测点");
+    if (requestOnly) {
+      if (readAtStart) errors.push(...theoreticalRouteErrors(route));
+      else if (!isTurntablePort(cycle.port) || !cycle.points.length || cycle.points.some(point =>
+        !pointReferenceSignature(point) || !Number.isFinite(point.axis1AngleDeg) || !Number.isFinite(point.axis2AngleDeg)))
+        errors.push("采集路线缺少有效的连接、点位或参考位信息");
+      return [...new Set(errors)];
+    }
     const matchingController = status?.turntable?.port === cycle.port ? status.turntable : undefined;
     const trajectory = matchingController?.motionCapability?.status;
     if (trajectory && (trajectory.state === 7 || typeof trajectory.fault === "number" && trajectory.fault > 1)) errors.push("控制器轨迹存在故障，请先检查并恢复后重新读取反馈");
@@ -109,6 +121,16 @@ export function captureRouteBlockers(route: FieldCaptureRoute | null, status: Fi
     if (fieldTurntableMotionMode(status?.turntable, cycle.port) === "unknown") errors.push("请在转盘点位读取反馈，确认控制器换点方式");
   }
   return [...new Set(errors)];
+}
+
+/** Only call with a newly returned probe. A restarted service may revalidate
+ * the same saved reference, but must never replace that reference signature. */
+export function prepareCaptureRouteAfterProbe(route: FieldCaptureRoute, checked: FieldStatus, motionOnly = false): FieldCaptureRoute {
+  if (!Number.isInteger(checked.service.generation) || checked.service.generation! < 0) throw new Error("采集服务代际信息无效，请重新读取设备状态");
+  const candidate = structuredClone(route);
+  if (candidate.referenceMode !== "read_at_start") candidate.generation = checked.service.generation;
+  delete candidate.verifyReferenceAtStart;
+  return prepareCaptureRoute(candidate, checked, motionOnly);
 }
 
 function theoreticalRouteErrors(route: FieldCaptureRoute): string[] {
@@ -162,15 +184,19 @@ export function prepareCaptureRoute(route: FieldCaptureRoute, checked: FieldStat
   return prepared;
 }
 
-/** An existing reference binding is checked again by the service. Only read
- * here when the calculated route has no reference identity to bind yet. */
+/** Reuse an already checked reference. Missing, pending or restarted state
+ * gets one explicit probe; the service still validates before any movement. */
 export async function prepareCaptureStartRoute(route: FieldCaptureRoute, current: FieldStatus | null,
   probe: () => Promise<FieldStatus>): Promise<{ route: FieldCaptureRoute; status: FieldStatus; probed: boolean }> {
   if (!current) throw new Error("请先读取设备状态");
   const axes = current.turntable?.port === route.cycle?.port ? current.turntable?.feedback?.axes : undefined;
   const capability = current.turntable?.port === route.cycle?.port ? current.turntable?.motionCapability : undefined;
-  const probed = route.referenceMode === "read_at_start" && (!turntableReferenceSignature(axes) || !capability ||
-    capability.probe === "driver-unavailable");
+  const probed = route.verifyReferenceAtStart === true || !turntableReferenceSignature(axes) || !capability ||
+    capability.probe === "driver-unavailable" || !!current.turntableWarning || !!current.turntable?.error ||
+    route.referenceMode !== "read_at_start" && route.generation !== current.service.generation ||
+    !!axes && Object.values(axes).some(axis => axis.fault !== 0 || axis.motor_rpm !== 0 || !!(axis.flags & 16));
   const checked = probed ? await probe() : current;
-  return { route: prepareCaptureRoute(route, checked), status: checked, probed };
+  if (probed && Number.isInteger(current.service.generation) && checked.service.generation !== current.service.generation)
+    throw new Error("读取期间采集服务已重启，请重新核对并开始");
+  return { route: probed ? prepareCaptureRouteAfterProbe(route, checked) : prepareCaptureRoute(route, checked), status: checked, probed };
 }

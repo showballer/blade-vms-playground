@@ -1,4 +1,4 @@
-import { captureRouteBlockers, prepareCaptureRoute, type FieldCaptureRoute } from "./field-capture-route";
+import { captureRouteBlockers, captureRouteRequestBlockers, prepareCaptureRouteAfterProbe, type FieldCaptureRoute } from "./field-capture-route";
 import { turntableReferenceSignature } from "./field-turntable-points";
 import { FIELD_POSITION_TOLERANCE_DEG, fieldIsActive, type FieldRequestOptions, type FieldStatus } from "./field-types";
 
@@ -11,6 +11,10 @@ export function presetPositionError(route: FieldCaptureRoute | null, status: Fie
   if (fieldIsActive(status) || status?.turntableBusy || status?.deviceBusy) return "请等待当前任务结束";
   return captureRouteBlockers(route ? positioningRoute(route) : null, status, true)[0] || "";
 }
+export function presetPositionRequestError(route: FieldCaptureRoute | null, status: FieldStatus | null): string {
+  if (fieldIsActive(status) || status?.turntableBusy || status?.deviceBusy) return "请等待当前任务结束";
+  return captureRouteRequestBlockers(route ? positioningRoute(route) : null, status, true)[0] || "";
+}
 
 type Request = <T>(options: FieldRequestOptions) => Promise<T>;
 type Options = {
@@ -22,7 +26,7 @@ type Options = {
 /** Recall owns the serial port; this coordinator never starts a receiver or
  * changes the laser, origin, reference, or stored point configuration. */
 export async function moveToCapturePreset(route: FieldCaptureRoute, initial: FieldStatus, request: Request, options: Options): Promise<"complete" | "cancelled"> {
-  const invalid = presetPositionError(route, initial);
+  const invalid = presetPositionRequestError(route, initial);
   if (invalid) throw new Error(invalid);
   const port = route.cycle!.port, generation = initial.service.generation;
   let started = false, last = initial;
@@ -47,7 +51,7 @@ export async function moveToCapturePreset(route: FieldCaptureRoute, initial: Fie
     if (options.signal.aborted) return "cancelled";
     accept(await probe());
     if (options.signal.aborted) return "cancelled";
-    const prepared = prepareCaptureRoute(positioningRoute(route), last, true), cycle = prepared.cycle!, first = cycle.points[0];
+    const prepared = prepareCaptureRouteAfterProbe(positioningRoute(route), last, true), cycle = prepared.cycle!, first = cycle.points[0];
     if (!first?.referenceSignature) throw new Error("预设位置缺少有效参考位，请重新读取转盘");
     const target = [first.axis1AngleDeg, first.axis2AngleDeg];
     const initialAxes = last.turntable?.feedback?.axes;

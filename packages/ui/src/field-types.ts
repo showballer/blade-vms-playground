@@ -321,7 +321,19 @@ export function fieldSampleX(waveform: FieldWaveform, index: number): number {
 }
 
 export function fieldCanStart(status: FieldStatus | null, source: FieldSource = "device"): boolean {
-  return Boolean(status?.service.state === "ready" && !status.service.error && (source === "simulation" || status.service.dllConfigured) && !status.deviceBusy && !status.turntableBusy && (source === "simulation" || !status.deviceWarning) && !fieldIsActive(status) && ["idle", "error"].includes(status.state));
+  return !fieldStartError(status, source);
+}
+
+export function fieldStartError(status: FieldStatus | null, source: FieldSource = "device"): string {
+  if (!status || status.service.state !== "ready") return "本机采集服务尚未就绪，请在设备与服务中检查";
+  if (status.service.error) return status.service.error;
+  if (source !== "simulation" && !status.service.dllConfigured) return "尚未配置测振仪 SDK，请在设备与服务中选择设备 SDK";
+  if (status.deviceBusy) return "设备配置正在进行，请等待完成";
+  if (status.turntableBusy) return "转盘操作尚未结束，请等待完成或停止";
+  if (source !== "simulation" && status.deviceWarning) return status.deviceWarning;
+  if (fieldIsActive(status)) return "采集或数据保存尚未结束，请先停止并保存";
+  if (!["idle", "error"].includes(status.state)) return "本机采集服务当前无法开始新任务";
+  return "";
 }
 
 export function fieldIsActive(status: FieldStatus | null): boolean {

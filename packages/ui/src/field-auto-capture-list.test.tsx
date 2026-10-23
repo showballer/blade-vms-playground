@@ -43,7 +43,7 @@ check("缺失参数只阻止该行采集，配置入口不再要求光斑校准"
   assert.ok(!startButton(html, "1", "P1").includes("disabled"));
   assert.ok(html.includes("待配置")); assert.ok(html.includes("配置测点"));
   assert.ok(!html.includes("待校准")); assert.ok(!html.includes("去校准"));
-  assert.equal((html.match(/请先填写当前测点参数/g) || []).length, 2, "Position and capture each expose their blocker as a button title");
+  assert.equal((html.match(/请先填写当前测点参数/g) || []).length, 3, "Both button titles and a visible status explain the blocker");
 });
 check("预定位不要求任务名或激光驱动，运行期间不能重复定位或采集", () => {
   const button = (html: string) => html.match(/<button[^>]*aria-label="移动到预设位置：叶片 1 测点 P1"[^>]*>/)?.[0] || "";
@@ -56,7 +56,7 @@ check("预定位不要求任务名或激光驱动，运行期间不能重复定�
     assert.ok(startButton(html, "1", "P1").includes("disabled"));
   }
 });
-check("无光斑校准和缓存反馈的计算路线可开始，仍需服务就绪并禁止已知故障", () => {
+check("无光斑校准和缓存反馈的计算路线可发起新核验，仍需服务与SDK就绪", () => {
   const plan = planAutoFollow(autoFollowDefaults, null, "unknown", "COM6");
   const theoretical: FieldAutoCaptureTarget = { ...targets[0], route: { kind: "auto", name: "计算点位", pointNames: plan.points.map(point => point.name),
     cycle: plan.pointCycle!, errors: [], referenceMode: "read_at_start" } };
@@ -66,12 +66,13 @@ check("无光斑校准和缓存反馈的计算路线可开始，仍需服务就�
   assert.ok(html.includes("待采集")); assert.ok(html.includes("先读取转盘参考位"));
   assert.ok(!html.includes("待校准")); assert.ok(!html.includes("去校准"));
   const failed = structuredClone(ready); failed.turntable!.feedback!.axes!["1"].fault = 2;
-  assert.ok(startButton(render({ targets: [theoretical], status: failed }), "1", "P1").includes("disabled"));
+  assert.ok(!startButton(render({ targets: [theoretical], status: failed }), "1", "P1").includes("disabled"), "Cached fault may request a new probe; the coordinator must reject any fault still returned");
   assert.ok(startButton(render({ targets: [theoretical], status: { ...noCachedMotor, service: { ...ready.service, dllConfigured: false } } }), "1", "P1").includes("disabled"));
 });
-check("设备、参考位、轮廓限制、任务参数或轮询异常时均禁止开始", () => {
+check("服务、任务参数或轮询异常禁止请求，旧参考位可点击重新核验", () => {
   const changed = structuredClone(ready); changed.turntable!.feedback!.axes!["1"].origin_counts++;
-  for (const patch of [{ status: { ...ready, service: { ...ready.service, state: "error" as const } } }, { status: changed }, { pollError: "服务连接已断开" }, { config: { ...config, name: "" } }]) {
+  assert.ok(!startButton(render({ status: changed }), "1", "P1").includes("disabled"));
+  for (const patch of [{ status: { ...ready, service: { ...ready.service, state: "error" as const } } }, { pollError: "服务连接已断开" }, { config: { ...config, name: "" } }]) {
     const html = render(patch); assert.ok(startButton(html, "1", "P1").includes("disabled"));
   }
 });

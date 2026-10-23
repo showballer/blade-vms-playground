@@ -6,7 +6,7 @@ import { FieldLaserControl } from "./field-device";
 import { FieldTurntableManual } from "./field-turntable";
 import { FieldDriveProfile } from "./field-drive-profile";
 import { FieldTurntableOriginControl, type FieldOriginReturnMotion } from "./field-turntable-origin-control";
-import { matchingWorkOrigin, toWorkAngle, readSavedWorkOrigins, revalidateWorkOrigin, recoverCalculatedWorkOrigin, workOriginStorageKey, type FieldWorkOrigin } from "./field-turntable-origin";
+import { matchingWorkOrigin, workOriginForPlanning, toWorkAngle, readSavedWorkOrigins, revalidateWorkOrigin, recoverCalculatedWorkOrigin, workOriginStorageKey, type FieldWorkOrigin } from "./field-turntable-origin";
 import type { FieldCaptureRoute, FieldAutoCaptureTarget } from "./field-capture-route";
 import { planAutoFollow, manualBladeRotationWaitSeconds, type AutoFollowAnchor, type AutoFollowDraft, type AutoFollowPlan } from "./field-auto-follow-plan";
 import { turntableAxisLimitsError, turntablePointMotionError, turntableReferenceSignature } from "./field-turntable-points";
@@ -145,9 +145,18 @@ export function FieldTurntableWorkspace(props: Props) {
   }, [props.status, workOrigin, opticalOrigin]);
   useEffect(() => {
     const saved = opticalOrigin || workOrigin;
-    if (!saved || activePort !== saved.port || props.visible === false || props.disabled || autoBusy || originBusy || profileBusy ||
+    if (!saved || activePort !== saved.port || props.disabled || autoBusy || originBusy || profileBusy ||
         !props.status || props.status.service.state !== "ready" || fieldIsActive(props.status) || props.status.deviceBusy || props.status.turntableBusy ||
         !saved.verificationRequired && saved.generation === props.status.service.generation) return;
+    const observedAt = props.status.turntable?.port === activePort ? props.status.turntable.feedback?.observedAt : undefined;
+    if (observedAt !== undefined && Date.now() / 1000 - observedAt >= 0 && Date.now() / 1000 - observedAt <= .5) {
+      try {
+        const verified = revalidateWorkOrigin(saved, props.status, activePort);
+        setOpticalOrigin(verified); if (workOrigin) setWorkOrigin(verified);
+        return;
+      } catch { /* A failed fresh check never replaces the saved coordinates. */ }
+    }
+    if (props.visible === false) return; // Hidden configuration may accept a fresh result, never initiate a background probe.
     const key = JSON.stringify([saved, props.status.service.generation, activePort]);
     if (originCheck.current === key) return;
     originCheck.current = key;
@@ -160,7 +169,7 @@ export function FieldTurntableWorkspace(props: Props) {
       if (workOrigin) setWorkOrigin(verified);
     }).catch(() => { /* Coordinates remain saved; manual return can retry the fresh probe and explain any error. */ });
   }, [activePort, props.visible, props.disabled, props.status?.service.generation, props.status?.service.state,
-    props.status?.state, props.status?.deviceBusy, props.status?.turntableBusy, workOrigin, opticalOrigin, autoBusy, originBusy, profileBusy]);
+    props.status?.state, props.status?.deviceBusy, props.status?.turntableBusy, props.status?.turntable?.feedback?.observedAt, workOrigin, opticalOrigin, autoBusy, originBusy, profileBusy]);
   const id = useId(), tabs = useRef<(HTMLButtonElement | null)[]>([]);
   const editingLocked = props.disabled || autoBusy || profileBusy || fieldIsActive(props.status) || !!props.status?.deviceBusy;
   const baseLocked = editingLocked || !!props.status?.turntableBusy;
@@ -205,7 +214,9 @@ export function FieldAutoFollow({ config, onConfig, status, disabled, request, o
   const latestLocked = useRef(locked); latestLocked.current = locked;
   const port = connectionPort || survey.port, draft = useMemo(() => surveyDraft(survey), [survey]);
   const currentOrigin = matchingWorkOrigin(workOrigin, status, port);
-  const commonOrigin = matchingWorkOrigin(opticalOrigin === undefined ? workOrigin : opticalOrigin, status, port);
+  const savedOpticalOrigin = opticalOrigin === undefined ? workOrigin : opticalOrigin;
+  const verifiedOrigin = matchingWorkOrigin(savedOpticalOrigin, status, port);
+  const commonOrigin = verifiedOrigin || workOriginForPlanning(savedOpticalOrigin, port);
   useEffect(() => { onPortChange?.(port); }, [port, onPortChange]);
   const blade = survey.blades.find(item => item.id === survey.selectedBladeId);
   const currentPoint = blade?.points.find(point => point.id === survey.selectedPointId);
@@ -277,8 +288,9 @@ export function FieldAutoFollow({ config, onConfig, status, disabled, request, o
       route: { kind: "auto", name: `叶片 ${one.name.trim()} · ${point.name.trim()}`, pointNames: onePlan.points.map(item => item.name),
         cycle: identityErrors.length || pointOriginError || lengthError ? null : pointCycle,
         errors: [...new Set([...identityErrors, ...onePlan.errors, ...(pointOriginError ? [pointOriginError] : []), ...(lengthError ? [lengthError] : [])])], generation: calibration?.generation ?? commonOrigin?.generation,
+        ...(!calibration && commonOrigin && !verifiedOrigin ? { verifyReferenceAtStart: true as const } : {}),
         ...(!calibration && !commonOrigin ? { referenceMode: "read_at_start" as const } : {}) } as FieldCaptureRoute };
-  })), [survey, anchors, motionMode, context, status?.service.generation, commonOrigin, opticalOriginRequired]);
+  })), [survey, anchors, motionMode, context, status?.service.generation, commonOrigin, verifiedOrigin, opticalOriginRequired]);
   const selectedTarget = targets.find(item => item.key === selectedKey);
   const captureRoute: FieldCaptureRoute = useMemo(() => ({ ...(selectedTarget?.route || { kind: "auto", name: "自动跟随路线", pointNames: [], cycle: null, errors: ["请添加叶片和测点"] }), targets, selectedTargetKey: selectedKey }), [selectedTarget, targets, selectedKey]);
   const captureRouteKey = useMemo(() => JSON.stringify(captureRoute), [captureRoute]);

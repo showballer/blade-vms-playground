@@ -9,10 +9,10 @@ import { ChartLoading } from "./chart-loading";
 import { FieldCycleProgress } from "./field-cycle-progress";
 import { FieldCycleMotion } from "./field-cycle-motion";
 import type { FieldCaptureRoute } from "./field-capture-route";
-import { presetPositionError } from "./field-preset-position";
+import { presetPositionRequestError } from "./field-preset-position";
 import { FieldAutoCaptureList } from "./field-auto-capture-list";
 import { FieldTurntableFeedback } from "./field-turntable";
-import { fieldCanStart, fieldIsActive, type FieldConfig, type FieldRecording, type FieldRequestOptions, type FieldSimulation, type FieldSimulationInfo, type FieldSource, type FieldStatus } from "./field-types";
+import { fieldStartError, fieldIsActive, type FieldConfig, type FieldRecording, type FieldRequestOptions, type FieldSimulation, type FieldSimulationInfo, type FieldSource, type FieldStatus } from "./field-types";
 
 const number = (value?: number | null, digits = 5) => typeof value === "number" && Number.isFinite(value) ? Number(value.toPrecision(digits)).toLocaleString("zh-CN", { maximumFractionDigits: 6 }) : "—";
 type Props = {
@@ -60,7 +60,7 @@ export const FieldAcquisition = memo(function FieldAcquisition({ config, onConfi
   const linked = active ? !!status?.pointCycle : !!link?.enabled;
   const linkMode = link?.mode || link?.route?.kind || "manual";
   const autoLinked = source === "device" && linked && linkMode === "auto";
-  const positioningError = presetPositionError(link?.route || null, status) || pollError;
+  const positioningError = presetPositionRequestError(link?.route || null, status) || pollError;
   useEffect(() => { setSetupExpanded(!active); }, [active]);
   useEffect(() => {
     if (active && source === "simulation" && status?.recording?.simulation && restoredRecording.current !== status.recording.id) {
@@ -81,7 +81,10 @@ export const FieldAcquisition = memo(function FieldAcquisition({ config, onConfi
   const display = paused ? frozen.current : status;
   const wave = display?.waveform;
   const actualSource = status?.recording?.source || status?.source;
-  const canStart = fieldCanStart(status, source) && !pollError && (!link?.enabled || !!link.route?.cycle && link.errors.length === 0) && (source === "device" || !!metadata && !metadataError);
+  const startError = fieldStartError(status, source) || pollError ||
+    (link?.enabled ? link.errors[0] || (!link.route?.cycle ? "请先配置采集路线" : "") : "") ||
+    (source === "simulation" ? metadataError || (!metadata ? "正在读取模拟数据源" : "") : "");
+  const canStart = !startError;
   const latest = status?.waveform?.latest;
   const velocity = latest?.velocity ?? status?.waveform?.values.at(-1);
   const rssi = latest ? latest.rssi : status?.waveform?.rssi.at(-1);
@@ -109,9 +112,10 @@ export const FieldAcquisition = memo(function FieldAcquisition({ config, onConfi
           </> : <><label>设备 IP<input required maxLength={15} value={config.deviceIp} onChange={event => update("deviceIp", event.target.value)} placeholder="设备 IPv4 地址" /></label><label>本机网卡 IP<input required maxLength={15} value={config.hostIp} onChange={event => update("hostIp", event.target.value)} placeholder="连接设备的网卡 IPv4 地址" /></label></>}
           {!autoLinked && <div className="field-capture-start-actions field-servo-ui">
             {source === "device" && linked && <Button type="button" disabled={!!busy || !!positioningError || !link?.onPosition} title={positioningError || "先移动到路线第一个点位，不开始采集"} onClick={() => link?.onPosition?.()}>{busy === "preposition" ? <LoaderCircle size={16} className="spin" /> : <Crosshair size={16} />}移动到预设位置</Button>}
-            <Button type="submit" variant="primary" disabled={!!busy || !canStart}>{busy === "start" ? <LoaderCircle size={16} className="spin" /> : <Play size={16} />}开始采集</Button>
+            <Button type="submit" variant="primary" disabled={!!busy || !canStart} title={startError || undefined}>{busy === "start" ? <LoaderCircle size={16} className="spin" /> : <Play size={16} />}开始采集</Button>
           </div>}
         </fieldset>
+        {!active && !autoLinked && (startError || linked && positioningError) && <p className="field-notice warning" role="status">{[...new Set([startError, linked ? positioningError : ""].filter(Boolean))].join("；")}</p>}
         {metadataError && source === "simulation" && <p className="field-error" role="alert">{metadataError}<Button type="button" disabled={active || !!busy} onClick={() => setMetadataRevision(value => value + 1)}>重新读取</Button></p>}
         {source === "device" && !status?.service.dllConfigured && <p className="field-capture-driver-note">请先在“设备与服务”中配置设备驱动。</p>}
         <div className="field-task-row">

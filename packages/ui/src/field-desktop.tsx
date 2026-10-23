@@ -17,8 +17,8 @@ import type { BladePassRecording, BladePassResult } from "./web-blade-passes-dat
 import { FieldAcquisition } from "./field-acquisition";
 import { FieldTurntableWorkspace, autoFollowCollection, autoFollowCollectionContext } from "./field-auto-follow";
 import { autoFollowStorageKey, readAutoFollowSurvey } from "./field-auto-follow-config";
-import { captureRouteBlockers, prepareCaptureStartRoute, type FieldCaptureRoute } from "./field-capture-route";
-import { moveToCapturePreset, presetPositionError } from "./field-preset-position";
+import { captureRouteRequestBlockers, prepareCaptureStartRoute, type FieldCaptureRoute } from "./field-capture-route";
+import { moveToCapturePreset, presetPositionRequestError } from "./field-preset-position";
 import { FieldBladeSummary } from "./field-blade-summary";
 import { FieldTaskRecords } from "./field-recording-tasks";
 import { FieldAccountPanel, FieldCloudSyncPanel, FieldBindAccountDialog, FieldUnbindAccountDialog, fieldAccountServerDefault, fieldAccountTime, type FieldBindValues, type FieldUnbindValues } from "./field-account";
@@ -210,7 +210,7 @@ export function FieldDesktopApp() {
   const [routes, setRoutes] = useState<Partial<Record<"manual" | "auto", FieldCaptureRoute>>>({});
   const onRoute = useCallback((route: FieldCaptureRoute) => setRoutes(previous => JSON.stringify(previous[route.kind]) === JSON.stringify(route) ? previous : { ...previous, [route.kind]: route }), []);
   const currentRoute = routes[routeMode] || null;
-  const routeErrors = captureRouteBlockers(currentRoute, status);
+  const routeErrors = captureRouteRequestBlockers(currentRoute, status);
   const captureAttempt = useRef(0);
   const presetRun = useRef<AbortController | null>(null);
   const [presetStopping, setPresetStopping] = useState(false);
@@ -411,7 +411,7 @@ export function FieldDesktopApp() {
     if (presetRun.current || captureStarting.current || busy || stoppingCapture || turntableOperationBusy || !linkEnabled || !status || statusPollUnavailable) return;
     const target = routeMode === "auto" ? routes.auto?.targets?.find(item => item.key === (targetKey || routes.auto?.selectedTargetKey)) : undefined;
     const route = routeMode === "auto" ? target?.route || null : currentRoute;
-    const invalid = presetPositionError(route, status);
+    const invalid = presetPositionRequestError(route, status);
     if (invalid || !route) { setError(invalid); return; }
     if (target) setAutoTargetKey(target.key);
     const run = new AbortController(), epoch = generation.current;
@@ -440,7 +440,7 @@ export function FieldDesktopApp() {
       route = target.route;
       capture = { ...capture, turbine: capture.turbine.trim() || capture.name.trim(), point: `叶片 ${target.bladeId} · ${target.pointName}` };
     }
-    const invalid = validateFieldConfig(capture) || (linkEnabled ? captureRouteBlockers(route, status)[0] : "");
+    const invalid = validateFieldConfig(capture) || (linkEnabled ? captureRouteRequestBlockers(route, status)[0] : "");
     if (invalid) { setError(invalid); return; }
     setError("");
     const selection = { config: capture, ...(linkEnabled && route ? { route: structuredClone(route), targetKey } : {}) };

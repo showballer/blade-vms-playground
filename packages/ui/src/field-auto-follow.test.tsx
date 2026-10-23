@@ -194,7 +194,7 @@ check("内部定位显示实际模式，速度沿用上限且不把轨迹加速�
   assert.ok(html.includes("控制器反馈定位"));
   assert.ok(html.includes("运动可重叠"));
   assert.ok(!html.includes("两轴同时启动并按同一时长到位"));
-  const auto = renderToStaticMarkup(<FieldAutoFollow {...props} status={next} />);
+  const auto = renderToStaticMarkup(<FieldAutoFollow {...props} status={next} connectionPort="COM3" />);
   assert.match(auto, /aria-label="运动中行程误差上限 · °"[^>]*min="0.5"[^>]*max="10"/);
   assert.ok(!auto.includes('aria-label="换点加速度上限 · °/s²"'));
   assert.ok(auto.includes("到位容差为0.5°"));
