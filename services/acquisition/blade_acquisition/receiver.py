@@ -8,6 +8,7 @@ from __future__ import annotations
 import ctypes as C
 import math
 import os
+import queue
 import re
 import sys
 import threading
@@ -60,6 +61,7 @@ class Batch:
 class PolytecReceiver:
     supports_laser_persistence = True
     supports_reusable_session = True
+    supports_continuous_session = True
     def __init__(self, config: ReceiverConfig):
         self.config = config
         self.api: Any = None
@@ -74,6 +76,61 @@ class PolytecReceiver:
         self._stream_context = None
         self._communication_open = self._acquisition_open = False
         self._daq_start_attempted = self._laser_attempted = False
+        self._active_lock = threading.Lock()
+        self._active_requests = queue.Queue()
+        self._active_owner = None
+        self._active_accepting = False
+
+    def _request_active(self, operation: str, timeout: float):
+        """Submit read-only work to the DAQ owner, never call the SDK concurrently."""
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("连续采集请求超时必须是正数")
+        request = {"operation": operation, "done": threading.Event(),
+                   "deadline": time.monotonic() + timeout, "cancelled": False}
+        with self._active_lock:
+            if not self._active_accepting:
+                raise RuntimeError("连续采集尚未启动或已经停止")
+            if self._active_owner == threading.get_ident():
+                raise RuntimeError("不能在采集回调内同步请求采集屏障")
+            self._active_requests.put(request)
+        if not request["done"].wait(timeout):
+            request["cancelled"] = True
+            raise TimeoutError("连续采集状态确认超时；未确认新的采集边界")
+        if "error" in request:
+            raise RuntimeError(str(request["error"])) from request["error"]
+        return request["result"]
+
+    def confirm_active_laser(self, *, timeout: float = 3.0):
+        """Fresh ON readback on the owner thread; never enables an OFF laser."""
+        return self._request_active("laser", timeout)
+
+    def require_continuous_support(self):
+        """Check the loaded library before allowing the first positioning move."""
+        if not all(callable(getattr(self.api, name, None)) for name in
+                   ("PolyAvailableSamples", "PolyReadAvailableData")):
+            raise RuntimeError("当前 SDK 不支持连续采集缓存边界确认，请更新本机 Polytec SDK")
+
+    def fence_active_samples(self, *, timeout: float = 3.0):
+        """Drain existing SDK samples before admitting a new stationary point.
+
+        Drained samples still go through ``receive`` for full raw preservation.
+        The caller must keep its detector disabled until the returned sampleIndex.
+        This drains the SDK ring, not data still in the device/network; a fresh
+        stationary background is therefore still required before blade detection.
+        """
+        return self._request_active("fence", timeout)
+
+    def _end_active_requests(self, error):
+        with self._active_lock:
+            self._active_accepting = False
+            self._active_owner = None
+            while True:
+                try:
+                    request = self._active_requests.get_nowait()
+                except queue.Empty:
+                    break
+                request["error"] = error
+                request["done"].set()
 
     def validate(self) -> None:
         if not self.config.dll_path or not Path(self.config.dll_path).is_file():
@@ -130,6 +187,16 @@ class PolytecReceiver:
         for name, (arguments, result) in definitions.items():
             method = getattr(api, name)
             method.argtypes, method.restype = arguments, result
+        # Native C API, documented in PolyDataAcquisition.h. Older SDKs can
+        # still perform ordinary recordings, but cannot grant a continuous
+        # stationary boundary without these nonblocking ring-buffer methods.
+        for name, arguments in {
+            "PolyAvailableSamples": [C.c_int, C.POINTER(C.c_size_t)],
+            "PolyReadAvailableData": [C.c_int, C.c_size_t, C.POINTER(C.c_size_t)],
+        }.items():
+            method = getattr(api, name, None)
+            if method is not None:
+                method.argtypes, method.restype = arguments, C.c_int
         return api
 
     def _check(self, code: int, operation: str) -> None:
@@ -245,6 +312,20 @@ class PolytecReceiver:
         if self.laser_observer is not None:
             self.laser_observer(snapshot)
 
+    def _read_laser_monitor(self):
+        if self._laser_monitor_communication is None:
+            handle = C.c_int()
+            self._check(self.api.PolyOpenUdpEthernetCommunication(C.byref(handle), self.config.device_ip.encode("ascii"), 500),
+                        "Open laser monitor communication")
+            self._laser_monitor_communication = handle
+        result = C.c_int16()
+        self._check(self.api.PolySendGetInt16(self._laser_monitor_communication.value, SENSOR_HEAD, 0,
+                                            LASER_ON, C.byref(result)), "Read laser monitor")
+        if result.value not in (0, 1):
+            raise ValueError("设备返回无效激光状态")
+        self._publish_laser(result.value)
+        return self.laser_status
+
     def _observe_laser(self):
         """The DAQ owner alone uses a separate, short-timeout read-only handle.
 
@@ -255,17 +336,7 @@ class PolytecReceiver:
         if self._laser_monitor_failed:
             return
         try:
-            if self._laser_monitor_communication is None:
-                handle = C.c_int()
-                self._check(self.api.PolyOpenUdpEthernetCommunication(C.byref(handle), self.config.device_ip.encode("ascii"), 500),
-                            "Open laser monitor communication")
-                self._laser_monitor_communication = handle
-            result = C.c_int16()
-            self._check(self.api.PolySendGetInt16(self._laser_monitor_communication.value, SENSOR_HEAD, 0,
-                                                LASER_ON, C.byref(result)), "Read laser monitor")
-            if result.value not in (0, 1):
-                raise ValueError("设备返回无效激光状态")
-            self._publish_laser(result.value)
+            self._read_laser_monitor()
         except (OSError, RuntimeError, ValueError) as exc:
             self._laser_monitor_failed = True
             error = str(exc)
@@ -501,26 +572,105 @@ class PolytecReceiver:
             self._daq_start_attempted = True
             self._check(self.api.PolyStartDataAcquisition(self.acquisition.value), "Start acquisition")
             origin = time.time()
-            ready(sample_rate, origin)
             sample_index, last_sample_at = 0, time.monotonic()
+
+            def deliver(maximum_base_samples, expected_base_samples=None):
+                nonlocal sample_index, last_sample_at
+                raw = self._read_channel(VELOCITY, maximum_base_samples * rssi_stride)
+                rssi_raw = self._read_channel(RSSI, maximum_base_samples)
+                if (len(raw) != len(rssi_raw) * rssi_stride or
+                        (expected_base_samples is not None and len(rssi_raw) != expected_base_samples)):
+                    raise RuntimeError("速度与 RSSI 样本数不符合设备时标，采集已停止。")
+                if not raw:
+                    return
+                flags = (C.c_uint8 * len(raw))()
+                self._check(self.api.PolyGetOverrange(self.acquisition.value, VELOCITY, 0, flags, len(raw)), "Get overrange")
+                receive(Batch(sample_index, sample_rate, origin, raw,
+                              [value * scale / velocity_max for value in raw],
+                              rssi_raw, [100.0 * value / rssi_max for value in rssi_raw],
+                              [bool(flag) for flag in flags], rssi_sample_stride=rssi_stride))
+                sample_index += len(raw)
+                last_sample_at = time.monotonic()
+
+            def service_requests():
+                while not cancelled():
+                    try:
+                        request = self._active_requests.get_nowait()
+                    except queue.Empty:
+                        return
+                    try:
+                        if request["cancelled"] or time.monotonic() >= request["deadline"]:
+                            raise TimeoutError("连续采集请求已过期；未确认新的采集边界")
+                        if request["operation"] == "laser":
+                            if self._laser_monitor_failed:
+                                raise RuntimeError("本次采集激光读取连接已失败，不能确认激光开启")
+                            try:
+                                result = self._read_laser_monitor()
+                            except Exception as exc:
+                                self._laser_monitor_failed = True
+                                self._publish_laser(None, str(exc))
+                                raise
+                            if result["fields"]["laser"].get("value") != 1:
+                                raise RuntimeError("连续采集激光已关闭，未允许下一次移动")
+                        else:
+                            self.require_continuous_support()
+                            # A continuous task no longer re-enters run() for
+                            # each point. Preserve its one-per-point format
+                            # check here, on the same SDK owner, before draining
+                            # and admitting samples for the next point.
+                            self._verify_session_format()
+                            before = sample_index
+                            # A bounded drain catches up with queued samples;
+                            # it cannot silently drop samples or wait forever
+                            # when the consumer is slower than the native stream.
+                            budget = max(self.config.buffer_capacity * 2, read_base_samples * rssi_stride)
+                            while True:
+                                if (cancelled() or request["cancelled"] or
+                                        time.monotonic() >= request["deadline"]):
+                                    raise TimeoutError("连续采集缓存未清空，未允许新点位判定")
+                                available = C.c_size_t()
+                                self._check(self.api.PolyAvailableSamples(self.acquisition.value,
+                                                                         C.byref(available)), "Read available samples")
+                                if available.value > max(1, self.config.buffer_capacity // rssi_stride):
+                                    raise RuntimeError("SDK 缓存样本数超过已配置容量")
+                                if available.value == 0:
+                                    break
+                                count = min(available.value, read_base_samples)
+                                extracted = C.c_size_t()
+                                self._check(self.api.PolyReadAvailableData(self.acquisition.value,
+                                              count, C.byref(extracted)), "Drain available samples")
+                                if not 0 < extracted.value <= count:
+                                    raise RuntimeError("SDK 连续采集缓存排空未取得有效样本")
+                                deliver(count, extracted.value)
+                                if sample_index - before > budget:
+                                    raise RuntimeError("连续采集缓存持续积压，未允许新点位判定")
+                            result = {"sampleIndex": sample_index, "sampleRate": sample_rate,
+                                      "rssiSampleStride": rssi_stride,
+                                      "drainedSampleCount": sample_index - before,
+                                      "completedAt": time.time(), "source": "sdk-buffer-drained"}
+                        if cancelled() or request["cancelled"] or time.monotonic() >= request["deadline"]:
+                            raise TimeoutError("连续采集确认已取消或超时")
+                        request["result"] = result
+                    except Exception as exc:
+                        request["error"] = exc
+                        raise
+                    finally:
+                        request["done"].set()
+
+            with self._active_lock:
+                self._active_owner = threading.get_ident()
+                self._active_accepting = True
+            ready(sample_rate, origin)
             next_laser_read = time.monotonic() + 1
             while not cancelled():
+                service_requests()
+                if cancelled():
+                    break
                 code = self.api.PolyReadData(self.acquisition.value, read_base_samples, self.config.timeout_ms)
                 if code != TIMEOUT:
                     self._check(code, "Read data")
-                    raw = self._read_channel(VELOCITY, read_base_samples * rssi_stride)
-                    rssi_raw = self._read_channel(RSSI, read_base_samples)
-                    if len(raw) != len(rssi_raw) * rssi_stride:
-                        raise RuntimeError("速度与 RSSI 样本数不符合设备时标，采集已停止。")
-                    if raw:
-                        flags = (C.c_uint8 * len(raw))()
-                        self._check(self.api.PolyGetOverrange(self.acquisition.value, VELOCITY, 0, flags, len(raw)), "Get overrange")
-                        receive(Batch(sample_index, sample_rate, origin, raw,
-                                      [value * scale / velocity_max for value in raw],
-                                      rssi_raw, [100.0 * value / rssi_max for value in rssi_raw],
-                                      [bool(flag) for flag in flags], rssi_sample_stride=rssi_stride))
-                        sample_index += len(raw)
-                        last_sample_at = time.monotonic()
+                    deliver(read_base_samples)
+                service_requests()
                 if not cancelled() and time.monotonic() >= next_laser_read:
                     self._observe_laser()
                     next_laser_read = time.monotonic() + 1
@@ -529,6 +679,7 @@ class PolytecReceiver:
         except Exception as exc:
             failure = exc
         finally:
+            self._end_active_requests(failure or RuntimeError("连续采集已经停止，未确认新的采集边界"))
             errors = []
             if self.api and self._daq_start_attempted:
                 try:

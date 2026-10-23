@@ -35,7 +35,13 @@ def remap_indices(value, up, down, total):
         return value
     result = {}
     for key, item in value.items():
-        if type(item) is int and item >= 0 and (key.endswith("SampleIndex") or key == "sampleIndex"):
+        if key in {"bufferFence", "continuousSession"} and isinstance(item, dict):
+            # These indices describe the full-rate session archive, including
+            # transit before this station. They are not indices into the local
+            # station waveform, and must not be scaled or clamped to its size.
+            result[key] = copy.deepcopy(item)
+            result[key].setdefault("sampleClock", "continuous_session_raw")
+        elif type(item) is int and item >= 0 and (key.endswith("SampleIndex") or key == "sampleIndex"):
             result[key] = min(total - 1, item * up // down)
         elif type(item) is int and item >= 0 and key in ("observedSamples", "receivedSamples"):
             result[key] = (item * up + down - 1) // down

@@ -82,6 +82,8 @@ class PacketSdk(VfxSdk):
 
 def receiver_for(sdk, platform_path='fixture.dylib'):
     receiver = PolytecReceiver(ReceiverConfig(START['deviceIp'], START['hostIp'], platform_path))
+    # These fixtures explicitly exercise retained-handle, per-station compatibility.
+    receiver.supports_continuous_session = False
     receiver.validate = lambda: None
     receiver._load_api = lambda: sdk
     return receiver

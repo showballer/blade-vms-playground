@@ -20,6 +20,28 @@ from blade_acquisition.blade_passes import _range
 
 
 class UploadSamplingTests(unittest.TestCase):
+    def test_continuous_session_global_clock_is_preserved_when_station_is_downsampled(self):
+        manifest = self.source(n=250000)
+        cycle = manifest["pointCycle"]
+        cycle["bufferFence"] = {
+            "sampleIndex": 9000000, "sampleRate": 250000, "rssiSampleStride": 32,
+            "drainedSampleCount": 32000, "completedAt": 1800000036.0,
+            "source": "sdk-buffer-drained", "evidence": {"sampleIndex": 8999999}}
+        cycle["continuousSession"] = {
+            "id": "b" * 32, "directory": "continuous-sessions/" + "b" * 32,
+            "sampleStart": 9000000, "sampleEndExclusive": 9250000,
+            "sampleRate": 250000, "sampleIndex": 9000000}
+        source = self.store.directory(self.id)
+        atomic_json(source / "manifest.json", manifest)
+        source_bytes = (source / "manifest.json").read_bytes()
+        result = prepare_upload(self.store, self.id, 50000, self.cache)
+        derived = result["recording"]["pointCycle"]
+        for key in ("bufferFence", "continuousSession"):
+            self.assertEqual(derived[key], {**cycle[key], "sampleClock": "continuous_session_raw"})
+        self.assertEqual(derived["handoff"]["entrySampleIndex"], 20000)
+        self.assertEqual(result["recording"]["samples"], 50000)
+        self.assertEqual((source / "manifest.json").read_bytes(), source_bytes)
+
     def test_sparse_rssi_cadence_is_not_misclassified_as_packet_loss(self):
         m = self.source(n=600123)
         folder = self.store.directory(self.id)
