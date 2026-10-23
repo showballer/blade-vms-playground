@@ -656,15 +656,24 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     } finally { snapshotEpoch += 1; }
   }
   async function turntable(request) {
-    if (!request || !['probe', 'health', 'test', 'manual_move', 'recall', 'prepare', 'stop', 'reference', 'limits', 'clear_trajectory_fault', 'clear_guard_fault', 'reset_alarm', 'cancel_trajectory', 'read_motion_profile', 'set_motion_profile'].includes(request.action) || !isTurntablePort(request.port) ||
+    if (!request || !['probe', 'health', 'test', 'manual_move', 'recall', 'prepare', 'stop', 'reference', 'limits', 'clear_trajectory_fault', 'clear_guard_fault', 'clear_axis1_reference', 'reset_alarm', 'cancel_trajectory', 'read_motion_profile', 'set_motion_profile', 'mechanical_home', 'horizontal_zero'].includes(request.action) || !isTurntablePort(request.port) ||
         (request.action === 'health' && request.confirmRecovery === true) ||
-        (['clear_trajectory_fault', 'clear_guard_fault', 'reset_alarm', 'cancel_trajectory'].includes(request.action) && request.confirmRecovery !== true) ||
+        (['clear_trajectory_fault', 'clear_guard_fault', 'clear_axis1_reference', 'reset_alarm', 'cancel_trajectory'].includes(request.action) && request.confirmRecovery !== true) ||
+        (request.action === 'clear_axis1_reference' && (request.axis !== 1 || request.confirmMotion === true)) ||
         (request.action === 'cancel_trajectory' && (!Number.isInteger(request.expectedTrajectorySession) || request.expectedTrajectorySession < 1 || request.expectedTrajectorySession > 65535)) ||
         (request.action === 'clear_trajectory_fault' && request.expectedTrajectorySession !== undefined &&
           (!Number.isInteger(request.expectedTrajectorySession) || request.expectedTrajectorySession < 1 || request.expectedTrajectorySession > 65535)) ||
         ![1, 2].includes(request.axis) || (['stop', 'test', 'manual_move', 'recall', 'prepare', 'reference', 'limits'].includes(request.action) && request.confirmMotion !== true) ||
         (request.confirmRecovery !== undefined && typeof request.confirmRecovery !== 'boolean') ||
         (request.testSeconds !== undefined && (!Number.isInteger(request.testSeconds) || request.testSeconds < 1 || request.testSeconds > 15))) throw failure('无效转盘检查/试转请求', 400);
+    const homing = {};
+    if (['mechanical_home', 'horizontal_zero'].includes(request.action)) {
+      const speed = request.homingSpeedDegS === undefined ? 0.6 : request.homingSpeedDegS;
+      if (request.axis !== 1 || request.confirmMotion !== true || request.confirmRecovery ||
+          typeof speed !== 'number' || !Number.isFinite(speed) || speed < .2 || speed > 1.5)
+        throw failure('机械回零与回水平0°仅操作俯仰轴；回零速度应为0.2～1.5 °/s', 400);
+      homing.homingSpeedDegS = speed;
+    }
     const profile = {};
     const validProfile = value => value && typeof value === 'object' && !Array.isArray(value) &&
       Object.keys(value).length === 3 && ['accel_ms', 'decel_ms', 's_curve_ms'].every(key =>
@@ -707,7 +716,7 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     if (current.deviceBusy || (current.turntableBusy && request.action !== 'stop') || current.receiver?.running || ['starting', 'acquiring', 'stopping'].includes(current.state)) throw failure('设备正在使用，请先停止并保存', 409);
     snapshotEpoch += 1;
     try {
-      lastStatus = await http('turntable', 'POST', { ...config, ...recall, ...profile, action: request.action, port: request.port, axis: request.axis,
+      lastStatus = await http('turntable', 'POST', { ...config, ...recall, ...profile, ...homing, action: request.action, port: request.port, axis: request.axis,
         ...(request.testSeconds !== undefined ? { testSeconds: request.testSeconds } : {}),
         ...(['cancel_trajectory', 'clear_trajectory_fault'].includes(request.action) && request.expectedTrajectorySession !== undefined
           ? { expectedTrajectorySession: request.expectedTrajectorySession } : {}),

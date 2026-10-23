@@ -1,6 +1,8 @@
 import { isTurntablePort } from "./field-turntable-port";
 import type { FieldSinglePointRequest, FieldSinglePointStatus, FieldSinglePointPreview } from "./field-single-point-types";
 import type { FieldMotionTrialRequest, FieldMotionTrialPreview } from "./field-motion-trial-types";
+/** Shared final angle acceptance; reference, zero-speed and fault checks remain mandatory. */
+export const FIELD_POSITION_TOLERANCE_DEG = .5;
 /** Public renderer contract. Private acquisition-service credentials and URLs remain in Electron. */
 export type FieldUser = { username: string; name: string; role: string };
 /** Safe account metadata only; timestamps are Unix milliseconds, never service tokens or password hashes. */
@@ -66,7 +68,7 @@ export type FieldPointCycleConfig = {
   returnToOrigin?: FieldPointCyclePoint;
   /** Joint-trajectory acceleration limit in output degrees/s²; older clients default to 3. */
   maxMoveAccelerationDegS2?: number;
-  /** In-motion joint following-error limit in degrees; omitted older settings default to 0.75. Arrival tolerance stays 0.1. */
+  /** In-motion joint following-error limit in degrees; omitted older settings default to 0.75. Arrival tolerance is separate. */
   followErrorLimitDeg?: number;
   /** nominalPeriodSeconds=0 means real blade passes are operator-driven, without a nominal phase schedule. */
   mode?: "automatic_stations" | "legacy"; routeOrder?: "configured" | "shortest_safe"; collectionId?: string; nominalPeriodSeconds?: number; maxMoveRpm?: number; geometry?: FieldAutoFollowGeometry;
@@ -107,13 +109,16 @@ export type FieldTurntableMotionCapability = {
 };
 export type FieldTurntableMove = {
   mode: FieldMotionMode; plannedSeconds?: number; actualSeconds?: number; speedLimitRpm?: number;
+  positionProtocol?: "0x19" | null;
   accelerationLimitDegS2?: number; targets?: [number, number]; pointCount?: number;
   adaptiveFollow?: boolean; cycleMs?: number; followErrorLimitDeg?: number;
   arrivalToleranceDeg?: number; waitTimeoutSeconds?: number;
   timingBasis?: "controller_timed_joint_move"; measurementDuringMotion?: false;
   session?: number; status?: Record<string, unknown>; state?: string; error?: string; stopError?: string;
 };
-export type FieldTurntableRecoveryAction = "clear_trajectory_fault" | "clear_guard_fault" | "reset_alarm" | "cancel_trajectory";
+export type FieldTurntableHomingAction = "mechanical_home" | "horizontal_zero";
+export type FieldTurntableHoming = { action: FieldTurntableHomingAction; state: "running" | "complete" | "cancelled" | "error"; phase: string; targetAngleDeg: number; speedDegS: number; effectiveRpm: number; verified?: boolean; referenceRebuilt?: boolean; stopConfirmed?: boolean };
+export type FieldTurntableRecoveryAction = "clear_trajectory_fault" | "clear_guard_fault" | "clear_axis1_reference" | "reset_alarm" | "cancel_trajectory";
 export type FieldDriveMotionProfile = { accel_ms: number; decel_ms: number; s_curve_ms: number };
 export type FieldDriveProfileRead = { axis: 1 | 2; values: FieldDriveMotionProfile; readAt: number; operation: "read" | "write"; verified: true; temporary: true };
 export type FieldTurntableFaultAdvice = { domain: string; code: number | string; title: string; steps: string[]; motor_id: number | null; detail?: string; execution_unknown?: boolean };
@@ -123,7 +128,7 @@ export type FieldTurntableHealthRead = {
   readAt: number; readOnly: true; referenceChangedDuringRead: boolean;
   axes: Record<string, { alarmCode: number | null; runState: number | null; limitFlags: number | null; observedAt: number }>;
 };
-export type FieldTurntableStatus = { motionProfile?: FieldDriveProfileRead; recovery?: { action: FieldTurntableRecoveryAction; axis: number; verified: true; completedAt: number }; health?: FieldTurntableHealthRead; state: string; port?: string; axis?: number; connected?: boolean; effectiveRpm?: number; positionDelta?: number; motionCapability?: FieldTurntableMotionCapability; motionMode?: FieldMotionMode; lastMove?: FieldTurntableMove; recall?: { state: "moving" | "complete" | "cancelled" | "error"; targets: [number, number]; completedAxes: number[]; motionMode?: FieldMotionMode; lastMove?: FieldTurntableMove }; feedback?: { outputRpm: number; motorRpm: number; runState?: number; alarmCode: number; limitFlags: number | null; positionRaw: number; outputAngleDeg?: number | null; axes?: Record<string, FieldAxisFeedback>; observedAt?: number }; error?: string };
+export type FieldTurntableStatus = { homing?: FieldTurntableHoming; motionProfile?: FieldDriveProfileRead; recovery?: { action: FieldTurntableRecoveryAction; axis: number; verified: true; completedAt: number }; health?: FieldTurntableHealthRead; state: string; port?: string; axis?: number; connected?: boolean; effectiveRpm?: number; positionDelta?: number; motionCapability?: FieldTurntableMotionCapability; motionMode?: FieldMotionMode; lastMove?: FieldTurntableMove; recall?: { state: "moving" | "complete" | "cancelled" | "error"; targets: [number, number]; completedAxes: number[]; motionMode?: FieldMotionMode; lastMove?: FieldTurntableMove }; feedback?: { outputRpm: number; motorRpm: number; runState?: number; alarmCode: number; limitFlags: number | null; positionRaw: number; outputAngleDeg?: number | null; axes?: Record<string, FieldAxisFeedback>; observedAt?: number }; error?: string };
 /** A probe releases the serial port afterwards; capability is not a live connection indicator. */
 export function fieldTurntableMotionMode(turntable: FieldTurntableStatus | undefined, port: string): FieldMotionMode | "unknown" {
   if (!port || turntable?.port !== port) return "unknown";
@@ -239,7 +244,7 @@ export type FieldStatus = {
   turntableWarning?: string | null;
   turntableTest?: { passed: boolean; cancelled?: boolean; config: Omit<FieldTurntableConfig, "durationSeconds">; effectiveRpm?: number; positionDelta: number; testedAt: number; error?: string | null } | null;
   turntablePreparation?: { ready: boolean; config: FieldTurntableConfig; checkedAt: number } | null;
-  pointCycle?: { returningToOrigin?: boolean; returnToOrigin?: FieldPointCyclePoint | null; returnOrigin?: FieldPointCyclePoint & { confirmedAt: number; actualAngles: Record<string, number> }; sessionId?: string; mode?: "automatic_stations" | "legacy"; plannedStations?: FieldPlannedStation[]; geometry?: FieldAutoFollowGeometry; targetPointId?: string; targetAxis1AngleDeg?: number; targetAxis2AngleDeg?: number; state: "checking" | "ready" | "positioning" | "holding" | "capturing" | "complete" | "cancelled" | "error"; port?: string; cycles: number; dwellSeconds: number; speedRpm: number; pointCount: number; cycle: number; point: number; currentPoint?: string | null; completedRecords: number; totalRecords: number; routeStrategy?: string; motionMode?: FieldMotionMode; lastMove?: FieldTurntableMove; plannedOrder?: string[]; error?: string | null; rssiTriggerEnabled?: boolean; rssiLeaveThresholdPercent?: number | null; rssiConfirmSamples?: number; rssiMinimumSeconds?: number; latestRssi?: number | null; rssiSamples?: number; rssiBelowSamples?: number; rssiThresholdMode?: "adaptive" | "absolute"; rssiBaselineRatio?: number; rssiConfirmMs?: number; rssiBaseline?: number | null; rssiThreshold?: number | null; rssiPhase?: "waiting_blade" | "confirming_entry" | "blade_present" | "confirming_exit" | "blade_left" | null; rssiSpread?: number | null; rssiEntryMs?: number; rssiEnterSpread?: number; rssiExitSpread?: number; rssiEnterConfirmMs?: number; processPhase?: string; processEvents?: FieldCycleProcessEvent[]; rssiBelowMs?: number; rssiSlope?: number | null; predictedLeaveSeconds?: number | null; requiredLeadSeconds?: number; nextPoint?: string | null; rssiTrigger?: "blade_left" | null } | null;
+  pointCycle?: { returningToOrigin?: boolean; returnToOrigin?: FieldPointCyclePoint | null; returnOrigin?: FieldPointCyclePoint & { confirmedAt: number; actualAngles: Record<string, number> }; sessionId?: string; mode?: "automatic_stations" | "legacy"; plannedStations?: FieldPlannedStation[]; geometry?: FieldAutoFollowGeometry; targetPointId?: string; targetAxis1AngleDeg?: number; targetAxis2AngleDeg?: number; state: "checking" | "ready" | "positioning" | "holding" | "capturing" | "complete" | "cancelled" | "error"; port?: string; cycles: number; dwellSeconds: number; speedRpm: number; pointCount: number; cycle: number; point: number; currentPoint?: string | null; completedRecords: number; totalRecords: number; routeStrategy?: string; motionMode?: FieldMotionMode; lastMove?: FieldTurntableMove; plannedOrder?: string[]; error?: string | null; rssiTriggerEnabled?: boolean; rssiLeaveThresholdPercent?: number | null; rssiConfirmSamples?: number; rssiMinimumSeconds?: number; latestRssi?: number | null; rssiSamples?: number; rssiBelowSamples?: number; rssiThresholdMode?: "adaptive" | "absolute"; rssiBaselineRatio?: number; rssiConfirmMs?: number; rssiBaseline?: number | null; rssiThreshold?: number | null; rssiBackgroundReady?: boolean; rssiBackgroundMs?: number; rssiBackgroundRequiredMs?: number; rssiBackgroundMean?: number | null; rssiPartialPassesIgnored?: number; rssiPhase?: "waiting_background" | "background_ready" | "partial_pass_ignored" | "waiting_blade" | "confirming_entry" | "blade_present" | "confirming_exit" | "blade_left" | null; rssiSpread?: number | null; rssiEntryMs?: number; rssiEnterSpread?: number; rssiExitSpread?: number; rssiEnterConfirmMs?: number; processPhase?: string; processEvents?: FieldCycleProcessEvent[]; rssiBelowMs?: number; rssiSlope?: number | null; predictedLeaveSeconds?: number | null; requiredLeadSeconds?: number; nextPoint?: string | null; rssiTrigger?: "blade_left" | null } | null;
   deviceSettings?: FieldDeviceSettings | null;
   laserStatus?: FieldLaserStatus | null;
   receiver?: Record<string, unknown>;
@@ -268,7 +273,7 @@ export type FieldRequestOptions =
   | { action: "rssiCalibration"; request: FieldRssiCalibrationRequest }
   | { action: "singlePoint"; request: FieldSinglePointRequest }
   | { action: "motionTrial"; request: FieldMotionTrialRequest }
-  | { action: "turntable"; request: { action: "read_motion_profile" | "set_motion_profile" | "probe" | "health" | "test" | "manual_move" | "recall" | "prepare" | "stop" | "reference" | "limits" | FieldTurntableRecoveryAction; port: string; axis: 1 | 2; speedRpm?: number; direction?: FieldTurntableConfig["direction"]; durationSeconds?: number; protocol?: FieldTurntableConfig["protocol"]; targetAngleDeg?: number; axis1AngleDeg?: number; axis2AngleDeg?: number; maxMoveAccelerationDegS2?: number; followErrorLimitDeg?: number; referenceSignature?: string; recordedPort?: string; testSeconds?: number; confirmMotion?: true; confirmRecovery?: boolean; expectedTrajectorySession?: number; motionProfile?: FieldDriveMotionProfile; expectedMotionProfile?: FieldDriveMotionProfile } };
+  | { action: "turntable"; request: { action: "read_motion_profile" | "set_motion_profile" | "probe" | "health" | "test" | "manual_move" | "recall" | "prepare" | "stop" | "reference" | "limits" | FieldTurntableRecoveryAction | FieldTurntableHomingAction; homingSpeedDegS?: number; port: string; axis: 1 | 2; speedRpm?: number; direction?: FieldTurntableConfig["direction"]; durationSeconds?: number; protocol?: FieldTurntableConfig["protocol"]; targetAngleDeg?: number; axis1AngleDeg?: number; axis2AngleDeg?: number; maxMoveAccelerationDegS2?: number; followErrorLimitDeg?: number; referenceSignature?: string; recordedPort?: string; testSeconds?: number; confirmMotion?: true; confirmRecovery?: boolean; expectedTrajectorySession?: number; motionProfile?: FieldDriveMotionProfile; expectedMotionProfile?: FieldDriveMotionProfile } };
 
 export function fieldTurntableMatches(a: FieldTurntableConfig | Omit<FieldTurntableConfig, "durationSeconds"> | undefined, b: FieldTurntableConfig, duration = true) {
   return !!a && a.port === b.port && a.axis === b.axis && a.speedRpm === b.speedRpm && a.direction === b.direction &&
@@ -319,6 +324,22 @@ export function fieldCanStart(status: FieldStatus | null, source: FieldSource = 
 
 export function fieldIsActive(status: FieldStatus | null): boolean {
   return Boolean(status && (["starting", "acquiring", "stopping"].includes(status.state) || status.receiver?.running === true));
+}
+
+/** Allow an explicit recovery request to obtain fresh server-side preflight.
+ * A failed operation or missing health report is not a global recovery lock.
+ * This is only request availability, never permission to bypass device checks.
+ */
+export function fieldCanRequestTurntableRecovery(status: FieldStatus | null, port: string): boolean {
+  const controller = status?.turntable?.port === port ? status.turntable : undefined;
+  if (!controller || !isTurntablePort(port) || status?.service.state !== "ready" ||
+      fieldIsActive(status) || status?.deviceBusy || status?.turntableBusy) return false;
+  const state = controller.motionCapability?.status?.state;
+  if (typeof state === "number" && [1, 2, 3, 4, 5].includes(state)) return false;
+  return ["1", "2"].every(axis => {
+    const value = controller.feedback?.axes?.[axis];
+    return !value || (value.motor_rpm === 0 && [0, 7, 8].includes(value.home_phase));
+  });
 }
 
 export function fieldDate(value?: string | number): Date | null {

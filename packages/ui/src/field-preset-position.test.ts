@@ -21,11 +21,16 @@ const route: FieldCaptureRoute = { kind: "manual", name: "route", errors: [], po
 async function run(patch: {
   route?: FieldCaptureRoute; port?: string; abortAt?: string; drift?: boolean; referenceChanged?: boolean;
   generationChanged?: boolean; lostReply?: boolean; fault?: boolean;
+  alreadyAtTarget?: boolean;
 } = {}) {
   const plan = structuredClone(patch.route || route), initial = structuredClone(ready);
   const port = patch.port || "COM6";
   initial.turntable!.port = plan.cycle!.port = port;
   for (const point of plan.cycle!.points) point.port = port;
+  if (patch.alreadyAtTarget) {
+    initial.turntable!.feedback!.axes!["1"].output_angle_deg = plan.cycle!.points[0].axis1AngleDeg + .5;
+    initial.turntable!.feedback!.axes!["2"].output_angle_deg = plan.cycle!.points[0].axis2AngleDeg - .5;
+  }
   const calls: FieldRequestOptions[] = [], abort = new AbortController();
   const resultStatuses: FieldStatus[] = [];
   let state = structuredClone(initial), recalls = 0, stops = 0;
@@ -45,7 +50,7 @@ async function run(patch: {
         for (const value of Object.values(state.turntable!.feedback!.axes!)) value.fault = 0;
       }
       if (patch.abortAt === action.request.action) abort.abort();
-      if (action.request.action === "probe" && recalls && !stops && patch.drift) state.turntable!.feedback!.axes!["2"].output_angle_deg! += .2;
+      if (action.request.action === "probe" && recalls && !stops && patch.drift) state.turntable!.feedback!.axes!["2"].output_angle_deg! += .6;
     } else {
       state.turntableBusy = false;
       state.turntable!.recall!.state = "complete";
@@ -64,6 +69,11 @@ async function run(patch: {
 }
 
 async function main() {
+  const repeated = await run({ alreadyAtTarget: true });
+  assert.equal(repeated.outcome, "complete", repeated.error);
+  assert.equal(repeated.recalls, 0, "A fresh stopped pose at the absolute preset never starts another positioning job");
+  assert.equal(repeated.stops, 0);
+  assert.deepEqual(repeated.calls.map(call => call.action === "turntable" ? call.request.action : call.action), ["probe"]);
   for (const port of ["COM6", "/dev/cu.usbserial-110"]) {
     const result = await run({ port });
     assert.equal(result.outcome, "complete", result.error);

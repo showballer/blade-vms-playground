@@ -4,14 +4,14 @@ import { Crosshair, Navigation, Radio } from "lucide-react";
 import { headerLaserReadbackState } from "./field-header-laser";
 import type { FieldCaptureRoute } from "./field-capture-route";
 import { turntableReferenceSignature } from "./field-turntable-points";
-import { fieldIsActive, type FieldConfig, type FieldPointCyclePoint, type FieldStatus } from "./field-types";
+import { FIELD_POSITION_TOLERANCE_DEG, fieldIsActive, type FieldConfig, type FieldPointCyclePoint, type FieldStatus } from "./field-types";
 
 type Station = FieldPointCyclePoint & { stationIndex: number };
 export type MotionSample = { at: number; pitch: number; yaw: number; stationary: boolean; reference: string; gapBefore?: boolean };
 const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
 const text = (value: unknown, digits = 3) => finite(value) ? `${Math.abs(value) < .0005 ? 0 : Number(value.toFixed(digits))}` : "—";
 const terminal = new Set(["complete", "cancelled", "error"]);
-const phases: Record<string, string> = { checking: "检查设备", ready: "准备中", positioning: "核对目标", laser_on: "开启激光", laser_on_confirmed: "激光已开，准备移动", laser_off: "关闭激光", laser_off_confirmed: "激光已关闭", moving: "移动中", returning: "返回首个点位", returning_origin: "返回作业原点", origin_arrived: "已回到作业原点", arrived: "到位已确认", starting_capture: "到位，启动采集", waiting_blade: "等待叶片", confirming_entry: "确认叶片进入", blade_present: "叶片经过中", confirming_exit: "确认叶片离开", blade_left: "叶片已离开", saving: "保存记录", record_saved: "记录已保存", complete: "已完成", cancelled: "已停止", error: "流程异常", verifying_initial_pose: "核对首个点位姿态" };
+const phases: Record<string, string> = { checking: "检查设备", ready: "准备中", positioning: "核对目标", laser_on: "开启激光", laser_on_confirmed: "激光已开，准备移动", laser_off: "关闭激光", laser_off_confirmed: "激光已关闭", moving: "移动中", returning: "返回首个点位", returning_origin: "返回作业原点", origin_arrived: "已回到作业原点", arrived: "到位已确认", starting_capture: "到位，启动采集", waiting_background: "等待稳定回波基线", background_ready: "等待完整经过", partial_pass_ignored: "忽略未完整经过", waiting_blade: "等待叶片", confirming_entry: "确认叶片进入", blade_present: "叶片经过中", confirming_exit: "确认叶片离开", blade_left: "叶片已离开", saving: "保存记录", record_saved: "记录已保存", complete: "已完成", cancelled: "已停止", error: "流程异常", verifying_initial_pose: "核对首个点位姿态" };
 
 export function cycleMotionModel(status: FieldStatus | null, route: FieldCaptureRoute | null | undefined, nowMs = Date.now(), unavailable = false) {
   const cycle = status?.pointCycle;
@@ -38,8 +38,8 @@ export function cycleMotionModel(status: FieldStatus | null, route: FieldCapture
   const target: Station | null = origin ? { ...origin, stationIndex: 0 } : (fromRun ? stations.find(point => point.pointId === cycle?.targetPointId) || stations.find(point => point.name === cycle?.currentPoint) || stations[Math.max(0, (cycle?.point || 1) - 1)] : stations[0]) || null;
   const phase = fromRun ? terminal.has(cycle!.state) ? cycle!.state : cycle!.processPhase || cycle!.state : "preview";
   const moving = fromRun && !terminal.has(cycle!.state) && (phase === "moving" || phase === "returning" || phase === "returning_origin" || !!sample && !sample.stationary);
-  const acceptedArrival = fromRun && !moving && ["origin_arrived", "arrived", "starting_capture", "waiting_blade", "confirming_entry", "blade_present", "confirming_exit", "blade_left", "saving", "record_saved", "complete"].includes(phase);
-  const arrived = acceptedArrival && fresh && sample!.stationary && !!target && Math.abs(sample!.pitch - target.axis1AngleDeg) <= .1 + 1e-9 && Math.abs(sample!.yaw - target.axis2AngleDeg) <= .1 + 1e-9;
+  const acceptedArrival = fromRun && !moving && ["origin_arrived", "arrived", "starting_capture", "waiting_background", "background_ready", "partial_pass_ignored", "waiting_blade", "confirming_entry", "blade_present", "confirming_exit", "blade_left", "saving", "record_saved", "complete"].includes(phase);
+  const arrived = acceptedArrival && fresh && sample!.stationary && !!target && Math.abs(sample!.pitch - target.axis1AngleDeg) <= FIELD_POSITION_TOLERANCE_DEG + 1e-9 && Math.abs(sample!.yaw - target.axis2AngleDeg) <= FIELD_POSITION_TOLERANCE_DEG + 1e-9;
   const label = phase === "preview" ? stations.length ? "计划预览" : "等待配置" : moving ? cycle?.returningToOrigin ? "返回作业原点" : "移动中" : fresh && arrived && !terminal.has(phase) ? "已到位 · " + (phases[phase] || "等待采集") : phases[phase] || "等待反馈";
   const geometry = fromRun ? cycle?.geometry : route?.cycle?.geometry;
   const rootDistanceM = target && finite(target.radiusM) && finite(target.rootRadiusM) && target.radiusM >= target.rootRadiusM ? target.radiusM - target.rootRadiusM : undefined;
@@ -102,7 +102,7 @@ export function FieldCycleMotion({ status, route, config, unavailable = false }:
       <div className="field-motion-feedback-heading"><strong>两轴角度</strong><span>{model.fresh ? "实时反馈" : displayed ? "最近反馈 · 当前待确认" : "尚未读取"}</span></div>
       <table className="field-motion-angles" aria-label="两轴当前角度与目标偏差"><thead><tr><th>轴</th><th>当前 °</th><th>目标 °</th><th>偏差 °</th></tr></thead><tbody>{([1, 2] as const).map(axis => { const actual = axis === 1 ? displayed?.pitch : displayed?.yaw, target = axis === 1 ? model.target?.axis1AngleDeg : model.target?.axis2AngleDeg; return <tr key={axis}><th>{axis === 1 ? "俯仰" : "水平"}</th><td>{text(actual)}</td><td>{text(target)}</td><td>{finite(actual) && finite(target) ? text(actual - target) : "—"}</td></tr>; })}</tbody></table>
       <dl className="field-motion-dimensions"><div><dt>距风机转轴中心</dt><dd>{text(model.target?.radiusM)}<small>m</small></dd></div><div><dt>叶片长度</dt><dd>{text(model.target?.bladeLengthM)}<small>m</small></dd></div><div><dt>圆周方位</dt><dd>{text(model.target?.azimuthDeg, 1)}<small>°</small></dd></div></dl>
-      {move?.mode === "drive_internal" && <p className="field-motion-note" aria-label="本段运动参数">本段下发上限 {text(move.speedLimitRpm, 2)} rpm · 驱动器内部定位</p>}
+      {move?.mode === "drive_internal" && <p className="field-motion-note" aria-label="本段运动参数">本段下发上限 {text(move.speedLimitRpm, 2)} rpm · {move.positionProtocol === "0x19" ? "控制器反馈定位" : "驱动器内部定位"}{finite(move.followErrorLimitDeg) ? ` · 行程保护 ${text(move.followErrorLimitDeg, 2)}°` : ""} · 到位容差0.5°</p>}
       {move?.mode === "dual_axis_timed" && <p className="field-motion-note" aria-label="本段运动参数">本段下发上限 {text(move.speedLimitRpm, 2)} rpm · {text(move.accelerationLimitDegS2, 1)} °/s²{move.adaptiveFollow === true ? " · 两轴共同减速，时间可延长" : ""}{finite(move.followErrorLimitDeg) ? ` · 跟随保护 ${text(move.followErrorLimitDeg, 2)}°` : ""}</p>}
       <p className="field-motion-note">{model.fresh ? model.arrived ? "两轴已在目标范围内且停稳。" : "按实际角度更新，到位并停稳后开始采集。" : "缺少新反馈时不确认到位。"}移动期间激光保持开启，暂停叶片进入／离开判定；到位停稳后才启用。{finite(model.geometry?.distanceM) ? ` 设备至叶轮 ${text(model.geometry.distanceM, 2)} m。` : ""}</p>
     </div></div>

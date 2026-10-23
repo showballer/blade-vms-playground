@@ -55,12 +55,12 @@ check("fresh probe发现参考、代际、端口、故障或未停稳时拒绝�
     (value: FieldStatus) => { value.turntable!.state = "stopped"; },
   ]) assert.ok(originReturnTargetError(origin, changed(mutate), "COM3"));
 });
-check("到位须fresh停稳无故障且两轴误差不超过0.1度，任务complete字样不能代替核验", () => {
+check("到位须fresh停稳无故障且两轴误差不超过0.5度，任务complete字样不能代替核验", () => {
   assert.equal(originReturnArrivalError(origin, original, "COM3"), "");
-  const within = changed(value => { value.turntable!.feedback!.axes!["1"].output_angle_deg = 25.1; value.turntable!.feedback!.axes!["2"].output_angle_deg = -5.1; });
+  const within = changed(value => { value.turntable!.feedback!.axes!["1"].output_angle_deg = 25.5; value.turntable!.feedback!.axes!["2"].output_angle_deg = -5.5; });
   assert.equal(originReturnArrivalError(origin, within, "COM3"), "");
-  const outside = structuredClone(within); outside.turntable!.feedback!.axes!["2"].output_angle_deg = -5.101;
-  assert.match(originReturnArrivalError(origin, outside, "COM3"), /轴2.*超过0.1/);
+  const outside = structuredClone(within); outside.turntable!.feedback!.axes!["2"].output_angle_deg = -5.501;
+  assert.match(originReturnArrivalError(origin, outside, "COM3"), /轴2.*超过0.5/);
   const moving = structuredClone(within); moving.turntable!.feedback!.axes!["1"].motor_rpm = .01;
   assert.ok(originReturnArrivalError(origin, moving, "COM3"));
   const completeOnly = changed(value => { value.turntable!.state = "stopped"; value.turntable!.recall = { state: "complete", targets: [25, -5], completedAxes: [1, 2] }; });

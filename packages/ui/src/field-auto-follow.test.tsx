@@ -41,7 +41,7 @@ check("默认30秒模型只生成输入，没有参考位与隐式开机请求",
   assert.ok(html.includes("填 0 表示人手转动叶片"));
   assert.match(html, /aria-label="换点加速度上限 · °\/s²"[^>]*min="0.1"[^>]*max="120"/);
   assert.match(html, /aria-label="运动中跟随误差上限 · °"[^>]*min="0.5"[^>]*max="10"/);
-  assert.ok(html.includes("到位精度仍为0.1°"));
+  assert.ok(html.includes("到位容差为0.5°"));
   assert.ok(html.includes("不能设为0关闭"));
   assert.ok(!html.includes("待校准")); assert.ok(!html.includes("设备与服务设置")); assert.ok(!html.includes("连续轨迹"));
   assert.ok(!html.includes("手动瞄准"));
@@ -191,9 +191,13 @@ check("内部定位显示实际模式，速度沿用上限且不把轨迹加速�
   assert.equal(fieldTurntableMotionMode(next.turntable, "COM3"), "drive_internal");
   assert.equal(fieldTurntableMotionMode(next.turntable, "COM4"), "unknown");
   const html = renderToStaticMarkup(<FieldTurntableManual status={next} disabled={false} request={props.request} />);
-  assert.ok(html.includes("驱动器内部定位"));
+  assert.ok(html.includes("控制器反馈定位"));
   assert.ok(html.includes("运动可重叠"));
   assert.ok(!html.includes("两轴同时启动并按同一时长到位"));
+  const auto = renderToStaticMarkup(<FieldAutoFollow {...props} status={next} />);
+  assert.match(auto, /aria-label="运动中行程误差上限 · °"[^>]*min="0.5"[^>]*max="10"/);
+  assert.ok(!auto.includes('aria-label="换点加速度上限 · °/s²"'));
+  assert.ok(auto.includes("到位容差为0.5°"));
 });
 check("双轴回位提供整次停止，运动反馈使用实际执行方式", () => {
   const next = structuredClone(ready);

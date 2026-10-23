@@ -29,6 +29,17 @@ check("活动任务使用下发计划而非编辑草稿，并跟随显式下一�
   const moving = cycleMotionModel({ ...status, pointCycle: { ...status.pointCycle!, targetPointId: "p-s2", processPhase: "moving" } }, route, now);
   assert.equal(moving.target?.pointId, "p-s2"); assert.equal(moving.moving, true); assert.equal(moving.arrived, false);
 });
+check("到位后显示基线准备与半段回波说明，不冒充已确认进入", () => {
+  const preparing: FieldStatus = { ...status, pointCycle: { ...status.pointCycle!, rssiTriggerEnabled: true,
+    processPhase: "waiting_background", rssiPhase: "waiting_background", rssiBackgroundMs: 20,
+    rssiBackgroundRequiredMs: 50, rssiBackgroundReady: false, rssiPartialPassesIgnored: 1 } };
+  const markup = renderToStaticMarkup(<FieldCycleProgress status={preparing} />);
+  assert.ok(markup.includes("等待稳定回波基线"));
+  assert.ok(markup.includes("确认中 20/50 ms"));
+  assert.ok(markup.includes("已忽略 1 段未见起始背景的回波"));
+  assert.ok(!markup.includes("已确认进入 · 叶片经过中"));
+  assert.equal(cycleMotionModel(preparing, route, now).arrived, true);
+});
 check("回原点显示作业零点目标并暂停叶片判定，不冒充首个点位", () => {
   const returning: FieldStatus = { ...status, pointCycle: { ...status.pointCycle!, returningToOrigin: true,
     returnToOrigin: { name: "作业原点", axis1AngleDeg: 2, axis2AngleDeg: -16 }, processPhase: "returning_origin", state: "positioning" } };
@@ -44,8 +55,8 @@ check("回原点显示作业零点目标并暂停叶片判定，不冒充首个�
 check("只有新鲜、同串口、有效双轴且服务确认到位才显示已到位", () => {
   assert.equal(cycleMotionModel(status, route, now).arrived, true);
   const changed = (patch: Partial<FieldAxisFeedback>) => ({ ...status, turntable: { ...status.turntable!, feedback: { ...status.turntable!.feedback!, axes: { ...status.turntable!.feedback!.axes, "2": { ...axis(7), ...patch } } } } });
-  assert.equal(cycleMotionModel(changed({ output_angle_deg: 7.101 }), route, now).arrived, false);
-  assert.equal(cycleMotionModel(changed({ output_angle_deg: 7.1 }), route, now).arrived, true);
+  assert.equal(cycleMotionModel(changed({ output_angle_deg: 7.501 }), route, now).arrived, false);
+  assert.equal(cycleMotionModel(changed({ output_angle_deg: 7.5 }), route, now).arrived, true);
   for (const patch of [{ fault: 2 }, { output_angle_deg: NaN }, { flags: 16 }, { flags: 2 }, { flags: NaN }, { home_phase: 2 }, { observedAt: at - 3 }]) {
     assert.equal(cycleMotionModel(changed(patch), route, now).fresh, false);
   }
@@ -118,5 +129,13 @@ check("本段展示实际下发的共同减速策略和保护上限，不以草�
   const adjusted = renderToStaticMarkup(<FieldCycleMotion status={value} route={route} config={{ name: "任务", deviceIp: "192.0.2.90", hostIp: "192.0.2.10", object: "", turbine: "", point: "" }} />);
   assert.ok(adjusted.includes("跟随保护 1.5°"));
   assert.ok(!adjusted.includes("跟随保护 0.75°"));
+});
+check("反馈定位标明新协议，旧记录保留原执行方式", () => {
+  const showing = (protocol: "0x19" | null) => renderToStaticMarkup(<FieldCycleMotion
+    status={{ ...status, pointCycle: { ...status.pointCycle!, lastMove: { mode: "drive_internal", speedLimitRpm: 5, positionProtocol: protocol } } }}
+    route={route} config={{ name: "任务", deviceIp: "192.0.2.20", hostIp: "192.0.2.10", object: "", turbine: "", point: "" }} />);
+  assert.ok(showing("0x19").includes("控制器反馈定位"));
+  assert.ok(!showing("0x19").includes("驱动器内部定位"));
+  assert.ok(showing(null).includes("驱动器内部定位"));
 });
 console.log(`PASS ${count} feedback-driven motion checks; no hardware used`);

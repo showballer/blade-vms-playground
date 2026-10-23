@@ -59,7 +59,7 @@ export function planAutoFollow(draft: AutoFollowDraft, anchor: AutoFollowAnchor 
   if (![1, -1].includes(draft.axis1Sign) || ![1, -1].includes(draft.axis2Sign) || !["clockwise", "counterclockwise"].includes(draft.direction)) errors.push("请确认旋向和转盘轴方向");
   if (!finite(draft.maxMoveRpm, 0.02, 10)) errors.push("换点速度上限应为0.02～10 rpm");
   if (!finite(draft.maxMoveAccelerationDegS2, 0.1, 120)) errors.push("换点加速度上限应为0.1～120 °/s²");
-  if (!finite(draft.followErrorLimitDeg, .5, 10)) errors.push("运动中跟随误差上限应为0.5～10°，不能设为0关闭；到位精度仍为0.1°");
+  if (!finite(draft.followErrorLimitDeg, .5, 10)) errors.push("运动中跟随误差上限应为0.5～10°，不能设为0关闭；到位容差为0.5°");
   if (!Number.isInteger(draft.cycles) || !finite(draft.cycles, 1, 100)) errors.push("重复采样圈数应为1～100");
   if (!manualRotation && (!finite(draft.waitRevolutions, 1, 10) || draft.waitRevolutions * draft.periodSeconds > 3600)) errors.push("单站等待时间应为1～10个周期且不超过3600秒");
   if (!finite(draft.rssiEnterSpread, 0.1, 100) || !finite(draft.rssiExitSpread, 0, 99.9) || draft.rssiExitSpread >= draft.rssiEnterSpread) errors.push("进入阈值必须大于离开阈值");

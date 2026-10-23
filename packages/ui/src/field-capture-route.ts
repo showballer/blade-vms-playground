@@ -1,6 +1,6 @@
 import { pointReferenceSignature, turntableAxisLimitsError, turntablePointMotionError, turntableReferenceSignature } from "./field-turntable-points";
 import { isTurntablePort } from "./field-turntable-port";
-import { fieldTurntableMotionMode, type FieldBladePoint, type FieldPointCycleConfig, type FieldStatus } from "./field-types";
+import { FIELD_POSITION_TOLERANCE_DEG, fieldTurntableMotionMode, type FieldBladePoint, type FieldPointCycleConfig, type FieldStatus } from "./field-types";
 import type { FieldWorkOrigin } from "./field-turntable-origin";
 
 export type FieldCaptureRoute = {
@@ -103,7 +103,7 @@ export function captureRouteBlockers(route: FieldCaptureRoute | null, status: Fi
       if (!first || ([1, 2] as const).some(axis => {
         const actual = axes?.[String(axis)]?.output_angle_deg;
         const target = axis === 1 ? first.axis1AngleDeg : first.axis2AngleDeg;
-        return actual == null || !Number.isFinite(actual) || Math.abs(actual - target) > .1 + 1e-9;
+        return actual == null || !Number.isFinite(actual) || Math.abs(actual - target) > FIELD_POSITION_TOLERANCE_DEG + 1e-9;
       })) errors.push("已校准测点的首点位置已变化，请先移动到预设位置或重新瞄准；本次不会自动补移");
     }
     if (fieldTurntableMotionMode(status?.turntable, cycle.port) === "unknown") errors.push("请在转盘点位读取反馈，确认控制器换点方式");

@@ -13,6 +13,25 @@ const idle = () => ({ state: "idle", error: null, receiver: { connected: false }
 const acquiring = () => ({ state: "acquiring", error: null, receiver: { connected: true }, recording: { id: "recording-1", state: "acquiring" } });
 const waveform = values => ({ sampleRate: 1000, unit: "m/s", values, rssi: [], overrange: [] });
 
+test('app5 homing and level return use the same axis1 API for Mac and Windows', async t => {
+  const f = fixture(t);
+  for (const port of ['COM7', '/dev/cu.usbserial-110', 'tcp://192.168.10.50:5000']) for (const action of ['mechanical_home', 'horizontal_zero']) {
+    await f.service.turntable({ action, port, axis: 1, homingSpeedDegS: .6, confirmMotion: true });
+    const body = JSON.parse(f.requests.filter(row => row.route === 'turntable').at(-1).options.body);
+    assert.equal(body.action, action); assert.equal(body.axis, 1); assert.equal(body.port, port);
+    assert.equal(body.homingSpeedDegS, .6); assert.equal(body.confirmMotion, true);
+    assert.equal(body.speedRpm, undefined, 'capture RPM is independent of the homing setting');
+  }
+});
+
+test('homing rejects wrong axes, missing explicit action and invalid speed before any I/O', async t => {
+  const f = fixture(t), base = { action: 'mechanical_home', port: 'COM7', axis: 1, confirmMotion: true };
+  for (const action of ['mechanical_home', 'horizontal_zero']) for (const change of [{ axis: 2 }, { confirmMotion: false },
+    { confirmRecovery: true }, ...[true, null, '0.6', .19, 1.51, NaN, Infinity].map(homingSpeedDegS => ({ homingSpeedDegS }))])
+    await assert.rejects(f.service.turntable({ ...base, action, ...change }), { status: 400 });
+  assert.equal(f.requests.length, 0);
+});
+
 test('drive profile bridge preserves explicit per-axis values on Mac and Windows', async t => {
   const f = fixture(t);
   const values = { accel_ms: 100, decel_ms: 100, s_curve_ms: 0 };
@@ -702,6 +721,18 @@ test("pending trajectory cancellation forwards a verified session on Mac and Win
     await f.service.turntable({ ...request, expectedTrajectorySession: 42, speedRpm: 100, targetAngleDeg: 10 });
     const body = JSON.parse(f.requests.filter(call => call.route === 'turntable').at(-1).options.body);
     assert.deepEqual(body, { ...request, expectedTrajectorySession: 42, confirmMotion: false });
+  }
+});
+
+test("pitch reference clear is explicit and never forwards motion settings on Mac or Windows", async t => {
+  const f = fixture(t);
+  for (const port of ['COM6', '/dev/cu.usbserial-110', 'tcp://192.168.10.50:5000']) {
+    const request = { action: 'clear_axis1_reference', port, axis: 1, confirmRecovery: true };
+    for (const changes of [{ axis: 2 }, { confirmRecovery: false }, { confirmMotion: true }])
+      await assert.rejects(f.service.turntable({ ...request, ...changes }), { status: 400 });
+    await f.service.turntable({ ...request, speedRpm: 100, targetAngleDeg: 30 });
+    const body = JSON.parse(f.requests.filter(call => call.route === 'turntable').at(-1).options.body);
+    assert.deepEqual(body, { ...request, confirmMotion: false });
   }
 });
 

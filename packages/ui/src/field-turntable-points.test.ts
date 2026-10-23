@@ -7,12 +7,12 @@ import { isTurntablePort, normalizeTurntablePort } from "./field-turntable-port"
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 
-test("renderer and Electron share strict Windows/macOS serial-name boundaries", () => {
+test("renderer and Electron share strict Windows/macOS serial and IPv4/TCP boundaries", () => {
   const cases = JSON.parse(readFileSync("scripts/fixtures/turntable-ports.json", "utf8"));
   const require = createRequire(`${process.cwd()}/package.json`);
   const bridge = require("./apps/desktop/electron/field-turntable-port.cjs");
-  for (const port of cases.valid) { assert.equal(isTurntablePort(port), true, port); assert.equal(bridge.isTurntablePort(port), true, port); }
-  for (const port of [...cases.invalid, `/dev/cu.${"a".repeat(129)}`]) { assert.equal(isTurntablePort(port), false, String(port)); assert.equal(bridge.isTurntablePort(port), false, String(port)); }
+  for (const port of [...cases.valid, ...cases.tcpValid]) { assert.equal(isTurntablePort(port), true, port); assert.equal(bridge.isTurntablePort(port), true, port); }
+  for (const port of [...cases.invalid, ...cases.tcpInvalid, `/dev/cu.${"a".repeat(129)}`]) { assert.equal(isTurntablePort(port), false, String(port)); assert.equal(bridge.isTurntablePort(port), false, String(port)); }
   assert.equal(normalizeTurntablePort(" com6 "), "COM6");
   assert.equal(normalizeTurntablePort(" /dev/cu.SLAB_USBtoUART "), "/dev/cu.SLAB_USBtoUART");
 });

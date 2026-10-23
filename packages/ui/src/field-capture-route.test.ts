@@ -89,9 +89,9 @@ assert.equal(calibratedRoute.cycle!.startAtCurrentPose, true);
 assert.deepEqual(captureRouteBlockers(calibratedRoute, status), []);
 assert.deepEqual(prepareCaptureRoute(calibratedRoute, status).cycle, calibratedRoute.cycle);
 for (const axis of [1, 2]) {
-  const drifted = structuredClone(status); drifted.turntable!.feedback!.axes![String(axis)].output_angle_deg = .101;
+  const drifted = structuredClone(status); drifted.turntable!.feedback!.axes![String(axis)].output_angle_deg = .501;
   assert.throws(() => prepareCaptureRoute(calibratedRoute, drifted), /首点位置已变化/);
-  const near = structuredClone(status); near.turntable!.feedback!.axes![String(axis)].output_angle_deg = .1;
+  const near = structuredClone(status); near.turntable!.feedback!.axes![String(axis)].output_angle_deg = .5;
   assert.deepEqual(captureRouteBlockers(calibratedRoute, near), []);
 }
 const stillPositions = structuredClone(theoretical);

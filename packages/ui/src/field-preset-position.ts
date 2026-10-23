@@ -1,6 +1,6 @@
 import { captureRouteBlockers, prepareCaptureRoute, type FieldCaptureRoute } from "./field-capture-route";
 import { turntableReferenceSignature } from "./field-turntable-points";
-import { fieldIsActive, type FieldRequestOptions, type FieldStatus } from "./field-types";
+import { FIELD_POSITION_TOLERANCE_DEG, fieldIsActive, type FieldRequestOptions, type FieldStatus } from "./field-types";
 
 // Explicit positioning may move a calibrated first point. It does not alter
 // calibration, the saved route, or the subsequent capture's initial-pose policy.
@@ -50,6 +50,16 @@ export async function moveToCapturePreset(route: FieldCaptureRoute, initial: Fie
     const prepared = prepareCaptureRoute(positioningRoute(route), last, true), cycle = prepared.cycle!, first = cycle.points[0];
     if (!first?.referenceSignature) throw new Error("预设位置缺少有效参考位，请重新读取转盘");
     const target = [first.axis1AngleDeg, first.axis2AngleDeg];
+    const initialAxes = last.turntable?.feedback?.axes;
+    // Repeated positioning and capture use the same absolute target. A fresh
+    // stopped pose is sufficient; never replay a recall just because a button
+    // was clicked again or rely on a previous success notification.
+    if (turntableReferenceSignature(initialAxes) === first.referenceSignature && target.every((value, i) => {
+      const axis = initialAxes?.[String(i + 1)];
+      return axis?.output_angle_deg != null && Number.isFinite(axis.output_angle_deg) &&
+        axis.motor_rpm === 0 && axis.fault === 0 && !!(axis.flags & 1) && !(axis.flags & 16) &&
+        Math.abs(axis.output_angle_deg - value) <= FIELD_POSITION_TOLERANCE_DEG + 1e-9;
+    })) return "complete";
     started = true; // A lost reply can still mean the controller accepted motion.
     accept(await request<FieldStatus>({ action: "turntable", request: {
       action: "recall", port, recordedPort: first.port || port, axis: 1,
@@ -75,7 +85,7 @@ export async function moveToCapturePreset(route: FieldCaptureRoute, initial: Fie
         if (invalid) throw new Error(invalid);
         if (turntableReferenceSignature(axes) !== first.referenceSignature || target.some((value, i) => {
           const actual = axes?.[String(i + 1)]?.output_angle_deg;
-          return actual == null || !Number.isFinite(actual) || Math.abs(actual - value) > .1 + 1e-9;
+          return actual == null || !Number.isFinite(actual) || Math.abs(actual - value) > FIELD_POSITION_TOLERANCE_DEG + 1e-9;
         })) throw new Error("预设位置到位未确认，请核对角度与参考位");
         started = false;
         return "complete";

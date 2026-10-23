@@ -15,6 +15,22 @@ const ready = (): FieldStatus => ({ service: { state: "ready", dllConfigured: tr
     motionCapability: { supported: true, mode: "dual_axis_timed", protocol: "0x30-0x36", probe: "confirmed", status: { state: 0, fault: 0 } } } });
 let checks = 0;
 function check(name: string, run: () => void) { run(); checks++; console.log(`PASS ${name}`); }
+check("回零参考变化或读取失败只触发重新核查，不全局锁住恢复按钮", () => {
+  const value = ready();
+  value.turntable!.state = "error";
+  value.turntable!.error = "回零定位期间参考位或反馈计数单位变化，已停止";
+  delete value.turntable!.health;
+  delete value.turntable!.motionCapability;
+  assert.equal(turntableRecoveryOptions(value, "COM3").retry, true);
+  assert.equal(turntableRecoveryOptions(value, "COM4").retry, false);
+  value.turntable!.feedback!.axes!["2"].motor_rpm = 1;
+  assert.equal(turntableRecoveryOptions(value, "COM3").retry, false);
+  assert.equal(turntableRecoveryOptions(ready(), "COM3", true).retry, true);
+  for (const state of ["starting", "acquiring", "stopping"]) {
+    value.state = state as FieldStatus["state"];
+    assert.equal(turntableRecoveryOptions(value, "COM3").retry, false);
+  }
+});
 check("双轴报警与轨迹完整读取后才能显示本次无异常", () => {
   assert.equal(turntableHealthReport(ready(), "COM3").tone, "green");
   for (const kind of ["port", "health", "axis", "alarm", "referenceChanged", "service", "trajectory"]) {
@@ -57,6 +73,21 @@ check("第二轴驱动器报警和停止标记不会被第一轴零报警掩盖"
   assert.ok(turntableHealthReport(value, "COM3").problems.some(text => text.includes("水平轴驱动器报警：12")));
   value.turntable!.health!.axes["2"].alarmCode = 0; value.turntable!.health!.axes["2"].limitFlags = 2;
   assert.equal(turntableHealthReport(value, "COM3").tone, "red");
+});
+check("新固件定位执行故障可识别，停稳且参考有效才允许清除", () => {
+  const value = ready();
+  Object.assign(value.turntable!.feedback!.axes!["1"], { fault: 8, home_phase: 8 });
+  const report = turntableHealthReport(value, "COM3");
+  assert.equal(report.tone, "red");
+  assert.match(report.axes[0].fault, /定位执行异常（8）/);
+  assert.equal(turntableRecoveryOptions(value, "COM3").axes[0].guard, true);
+  assert.equal(turntableRecoveryOptions(value, "COM3").axes[0].execution, true);
+  value.turntable!.feedback!.axes!["1"].output_angle_deg = 35.006;
+  assert.equal(turntableRecoveryOptions(value, "COM3").axes[0].guard, false);
+  assert.equal(turntableRecoveryOptions(value, "COM3").axes[0].execution, true, "专用确认由固件检查双限位端点余量");
+  value.turntable!.feedback!.axes!["1"].flags |= 16;
+  assert.equal(turntableRecoveryOptions(value, "COM3").axes[0].guard, false);
+  assert.equal(turntableRecoveryOptions(value, "COM3").axes[0].execution, false);
 });
 check("静态入口不执行查询或故障恢复", () => {
   let calls = 0;

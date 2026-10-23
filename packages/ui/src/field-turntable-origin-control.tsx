@@ -5,7 +5,7 @@ import { Button } from "./common";
 import { isTurntablePort } from "./field-turntable-port";
 import { createWorkOrigin, matchingWorkOrigin, revalidateWorkOrigin, toWorkAngle, type FieldWorkOrigin } from "./field-turntable-origin";
 import { turntablePointMotionError, turntableReferenceSignature } from "./field-turntable-points";
-import { fieldIsActive, fieldTurntableMotionMode, type FieldRequestOptions, type FieldStatus } from "./field-types";
+import { FIELD_POSITION_TOLERANCE_DEG, fieldIsActive, fieldTurntableMotionMode, type FieldRequestOptions, type FieldStatus } from "./field-types";
 import { autoFollowDefaults } from "./field-auto-follow-plan";
 
 export type FieldOriginReturnMotion = { speedRpm: number; maxMoveAccelerationDegS2: number; followErrorLimitDeg?: number };
@@ -17,7 +17,7 @@ export function checkedOriginReturnMotion(value: FieldOriginReturnMotion): Field
     throw new Error("请检查自动跟随的换点转速（0.02～10 rpm）和加速度（0.1～120 °/s²）");
   if (typeof followErrorLimitDeg !== "number" || !Number.isFinite(followErrorLimitDeg) ||
       followErrorLimitDeg < .5 || followErrorLimitDeg > 10)
-    throw new Error("运动中跟随误差上限应为0.5～10°，不能设为0关闭；到位精度仍为0.1°");
+    throw new Error("运动中跟随误差上限应为0.5～10°，不能设为0关闭；到位容差为0.5°");
   return { speedRpm: Number((Math.floor((value.speedRpm + 1e-10) / .02) * .02).toFixed(6)),
     maxMoveAccelerationDegS2: Math.floor((value.maxMoveAccelerationDegS2 + 1e-10) * 1000) / 1000,
     followErrorLimitDeg: Math.floor((followErrorLimitDeg + 1e-10) * 1000) / 1000 };
@@ -49,7 +49,7 @@ export function originReturnArrivalError(origin: FieldWorkOrigin, status: FieldS
   const axes = status.turntable!.feedback!.axes!;
   for (const axis of [1, 2] as const) {
     const target = axis === 1 ? origin.axis1AngleDeg : origin.axis2AngleDeg;
-    if (Math.abs(axes[String(axis)].output_angle_deg! - target) > .1 + 1e-9) return `轴${axis}距原点超过0.1°，尚未确认到位`;
+    if (Math.abs(axes[String(axis)].output_angle_deg! - target) > FIELD_POSITION_TOLERANCE_DEG + 1e-9) return `轴${axis}距原点超过0.5°，尚未确认到位`;
   }
   return "";
 }
@@ -278,7 +278,7 @@ export function FieldTurntableOriginControl({ port, status, disabled, origin, op
           if (run.cancelled) continue;
           const arrival = originReturnArrivalError(run.origin, final, run.port);
           if (arrival) throw new Error(arrival);
-          setReturnNotice("已回到公共光学原点，两轴已停稳（误差不超过0.1°）。"); return;
+          setReturnNotice("已回到公共光学原点，两轴已停稳（误差不超过0.5°）。"); return;
         }
         await new Promise(resolve => window.setTimeout(resolve, 250));
       }
@@ -332,7 +332,7 @@ export function FieldTurntableOriginControl({ port, status, disabled, origin, op
     </div>
     <p className="field-subtext">{current || optical ? "公共光学零点已设置。未校准测点先按尺寸定位，已校准测点沿用其首个点位；恢复设备坐标仅切换角度显示。" : returnCandidate ? "已保留原点坐标；回到原点前会重新读取并核验两轴参考位，无需在当前位置重新归零。" : missingOpticalOrigin ? "请重新将激光调至水平并正对叶轮中线，再设置归零；未单独校准的测点暂不能开始。" : "先将激光调至水平并正对叶轮中线，再设置归零。所有测点共用，归零不会校准某个测点，也不会移动转盘。"}</p>
     {returnCandidate && <p className="field-subtext" aria-label="保存的原点坐标">保存的原点（设备坐标）：俯仰 {angleText(returnCandidate.axis1AngleDeg)} · 水平 {angleText(returnCandidate.axis2AngleDeg)}</p>}
-    {returnCandidate && motion && <p className="field-subtext" aria-label="回原点运动参数">回原点沿用自动跟随设置：转速上限 {motion.speedRpm} rpm。{nativePosition ? "起步与减速使用驱动器内部参数。" : <>轨迹加速度上限 {motion.maxMoveAccelerationDegS2} °/s² · 运动中误差上限 {motion.followErrorLimitDeg}°。</>}到位精度仍为0.1°，修改后下次点击生效。</p>}
+    {returnCandidate && motion && <p className="field-subtext" aria-label="回原点运动参数">回原点沿用自动跟随设置：转速上限 {motion.speedRpm} rpm。{nativePosition ? "起步与减速使用驱动器内部参数。" : <>轨迹加速度上限 {motion.maxMoveAccelerationDegS2} °/s² · 运动中误差上限 {motion.followErrorLimitDeg}°。</>}到位容差为0.5°，修改后下次点击生效。</p>}
     {recoverySession !== null && <div className="field-notice warning" role="status">
       <span>上次轨迹触发跟随误差保护。原点坐标已保留，先清除旧轨迹后再定位。</span>{" "}
       <Button type="button" variant="outline" disabled={disabled || pending || !!returnPhase}

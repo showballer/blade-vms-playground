@@ -73,7 +73,7 @@ check("跟随流程保留短暂进入离开状态，移动与到位动作可回�
 });
 check("转盘手动模式保留单轴微调、定位和两轴记录", () => {
   const html = renderToStaticMarkup(<FieldTurntableManual status={ready} disabled={false} request={async <T,>() => ({} as T)} />);
-  for (const label of ["转盘手动点位控制", "当前轴 −步长", "当前轴 +步长", "移动到目标点", "读取并记录两轴角度", "确认当前为+25°参考", "软限位", "手动瞄准、点位回位与采集路线配置"]) assert.ok(html.includes(label));
+  for (const label of ["转盘手动点位控制", "当前轴 −步长", "当前轴 +步长", "移动到目标点", "读取并记录两轴角度", "机械回零", "软限位", "手动瞄准、点位回位与采集路线配置"]) assert.ok(html.includes(label));
 });
 check("手动水平定位兼容关闭软限位，静止有效参考和俯仰保护仍必须满足", () => {
   const axis = { output_angle_deg: 0, motor_rpm: 0, actual_counts: 0, commanded_counts: 0, error_counts: 0,
