@@ -130,6 +130,15 @@ function createLocalAuth({ file, bootstrap, now = Date.now } = {}) {
     return { ...USER };
   }
 
+  function savePassword(newPassword) {
+    const salt = randomBytes(32).toString("hex");
+    const next = { version: 1, username: USER.username, salt,
+      hash: scryptSync(newPassword, salt, 64).toString("hex"), mustChangePassword: false };
+    try { writeCredentials(file, next); }
+    catch { throw authError(500, "密码未能保存，请检查本机存储后重试"); }
+    credentials = next; failures = 0; lockedUntil = 0;
+  }
+
   return Object.freeze({
     login(username, password) {
       const timestamp = checkThrottle();
@@ -162,19 +171,16 @@ function createLocalAuth({ file, bootstrap, now = Date.now } = {}) {
       }
       if (!matches(currentPassword, credentials)) rejectPassword(timestamp);
       if (matches(newPassword, credentials)) throw authError(400, "新密码不能与当前密码相同");
-      const salt = randomBytes(32).toString("hex");
-      const next = {
-        version: 1, username: USER.username, salt,
-        hash: scryptSync(newPassword, salt, 64).toString("hex"),
-        mustChangePassword: false,
-      };
-      try { writeCredentials(file, next); }
-      catch { throw authError(500, "密码未能保存，请检查本机存储后重试"); }
       // Never acknowledge a new password or unlock protected features until the
       // replacement record has been successfully committed to disk.
-      credentials = next;
-      failures = 0;
-      lockedUntil = 0;
+      savePassword(newPassword);
+      return response();
+    },
+    // Main-process capability, never dispatched through IPC. Unified auth must
+    // verify the bound account before restoring local login with a new password.
+    restoreAfterUnbind(newPassword) {
+      if (!validPassword(newPassword, 12)) throw authError(400, "本机密码须为 12–128 个字符");
+      savePassword(newPassword); authenticated = true;
       return response();
     },
   });

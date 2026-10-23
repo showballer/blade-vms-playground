@@ -76,6 +76,16 @@ async function dispatch(options) {
     await idleRequired();
     const result = await auth.bindAccount({ serverUrl: options.serverUrl, username: options.username, password: options.password, currentPassword: options.currentPassword }); cloudSync.resume(); return result;
   }
+  if (action === 'rebindAccount' || action === 'unbindAccount') {
+    auth.requireSession();
+    await idleRequired();
+    cloudSync.pause({ forgetActive: true });
+    try {
+      return action === 'rebindAccount'
+        ? await auth.rebindAccount({ serverUrl: options.serverUrl, username: options.username, password: options.password, currentPassword: options.currentPassword })
+        : await auth.unbindAccount({ currentPassword: options.currentPassword, newLocalPassword: options.newLocalPassword });
+    } finally { cloudSync.resume(); }
+  }
   if (action === 'logout') {
     auth.requireSession({ allowInitial: true });
     await idleRequired(); cloudSync.pause(); return auth.logout();

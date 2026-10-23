@@ -4,7 +4,7 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { FieldLoginPanel, FieldPasswordPanel, FieldRecordingList, FieldServicePanel, FieldWaveChart, fieldStatusPollError } from "./field-desktop";
 import { fieldCanStart, fieldDate, fieldIsActive, fieldSampleX, validateFieldConfig, type FieldAccountInfo, type FieldRequestOptions, type FieldStatus, type FieldWaveform } from "./field-types";
-import { FieldAccountPanel, FieldCloudSyncPanel, FieldBindAccountDialog, fieldAccountServerDefault, fieldAccountTime, fieldAccountUsesPlainHttp } from "./field-account";
+import { FieldAccountPanel, FieldCloudSyncPanel, FieldBindAccountDialog, FieldUnbindAccountDialog, fieldAccountServerDefault, fieldAccountTime, fieldAccountUsesPlainHttp } from "./field-account";
 import { clampWaveRange, formatWaveTime, waveBounds, waveScaleDraft, type WaveScaleDraft } from "./field-waveform";
 import { FieldDeviceSnapshot } from "./field-device";
 import { FieldCycleProgress } from "./field-cycle-progress";
@@ -348,10 +348,22 @@ check("绑定表单验证双方密码且不预填凭据，提交区独立于滚�
   assert.equal((html.match(/type="password"/g) || []).length, 2);
   assert.equal((html.match(/type="password"[^>]*value=""/g) || []).length, 2);
   assert.match(html, /name="serverUrl"[^>]*value=""/);
-  assert.ok(html.includes("服务器与账号不能更换"));
+  assert.ok(html.includes("更换或解除绑定"));
   assert.ok(html.includes("旧本机密码不再用于登录"));
   assert.ok(html.includes('</p></div><div class="field-form-actions">'));
   assert.ok(html.includes("确认绑定并使用统一账号"));
+});
+check("换绑与解绑要求当前密码，解绑另设本机密码，运行采集时不可提交", () => {
+  const card = renderToStaticMarkup(<FieldAccountPanel account={unifiedAccount} busy={false} active={false} onBind={() => {}} onPassword={() => {}} onRebind={() => {}} onUnbind={() => {}} />);
+  assert.ok(card.includes("更换绑定")); assert.ok(card.includes("解除绑定"));
+  assert.ok(card.includes("不会自动转给新账号")); assert.ok(!card.includes("服务器与账号已锁定"));
+  const rebind = renderToStaticMarkup(<FieldBindAccountDialog mode="rebind" initialServerUrl="https://example.test" initialUsername="existing-user" busy={false} error="" onClose={() => {}} onBind={async () => {}} />);
+  assert.ok(rebind.includes("当前绑定账号密码")); assert.ok(rebind.includes("确认更换绑定"));
+  assert.equal((rebind.match(/type="password"[^>]*value=""/g) || []).length, 2);
+  const unbind = renderToStaticMarkup(<FieldUnbindAccountDialog busy={false} active error="" onClose={() => {}} onUnbind={async () => {}} />);
+  assert.equal((unbind.match(/type="password"/g) || []).length, 3);
+  assert.ok(unbind.includes("本机 admin")); assert.ok(unbind.includes('minLength="12"'));
+  assert.match(unbind, /<button(?=[^>]*type="submit")(?=[^>]*disabled="")[^>]*>/);
 });
 check("发布版默认线上 Web 地址，开发端口保留本机地址，账号时间戳按毫秒处理", () => {
   for (const hostname of ["127.0.0.1", "localhost"]) assert.equal(fieldAccountServerDefault({ protocol: "http:", hostname, port: "5210" }), "http://127.0.0.1:3210");

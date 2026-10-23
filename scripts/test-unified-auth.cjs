@@ -16,6 +16,128 @@ const json = (data, code = 200, headers) => new Response(JSON.stringify(data), {
 const network = (code = "ECONNREFUSED") => Object.assign(new TypeError("fetch failed"), { cause: Object.assign(new Error("network unavailable"), { code }) });
 function deferred() { let resolve; const promise = new Promise(yes => { resolve = yes; }); return { resolve, promise }; }
 
+function destination(f, { origin = "https://second.example.test", oldOffline = false } = {}) {
+  const user = { id: "second-user", username: "second-operator", name: "第二账号", tenant: "second-group", role: "operator", active: 1 };
+  const secret = "second-Web-fixture-password";
+  f.server.handler = (url, options, respond) => {
+    if (url.startsWith(origin + "/")) {
+      if (options.method === "DELETE") return json({ ok: true });
+      const body = JSON.parse(options.body);
+      return body.username === user.username && body.password === secret
+        ? json({ user, token: randomBytes(32).toString("base64url") }) : json({}, 401);
+    }
+    if (oldOffline) throw network();
+    return respond(url, options);
+  };
+  return { origin, user, secret, values: { serverUrl: origin, username: user.username, password: secret, currentPassword: f.server.password } };
+}
+
+test("rebind verifies both passwords and preserves the old binding when the destination rejects login", async t => {
+  const f = fixture(t, { retainSessionToken: true }); await f.bind();
+  const target = destination(f), original = fs.readFileSync(f.file, "utf8");
+  await assert.rejects(f.auth.rebindAccount({ ...target.values, password: "incorrect-new-password" }), status(401));
+  assert.equal(fs.readFileSync(f.file, "utf8"), original);
+  assert.equal(f.auth.info().serverUrl, ORIGIN);
+  assert.equal(f.auth.cloudSession().user.id, f.server.user.id);
+  assert.equal(fs.readFileSync(f.localFile, "utf8"), f.localContents);
+  f.server.requests.length = 0;
+  await assert.rejects(f.auth.rebindAccount({ ...target.values, currentPassword: "wrong-current" }), status(401));
+  assert.ok(f.server.requests.every(r => !r.url.startsWith(target.origin)));
+  assert.equal(f.auth.info().username, f.server.user.username);
+});
+
+test("rebind persists the new identity and verifier without changing local records or exposing tokens", async t => {
+  const f = fixture(t, { retainSessionToken: true }); await f.bind();
+  const target = destination(f), oldToken = f.auth.cloudSession().token;
+  const record = path.join(f.directory, "recording.bin"); fs.writeFileSync(record, "untouched source fixture");
+  const result = await f.auth.rebindAccount(target.values);
+  assert.equal(result.account.serverUrl, target.origin);
+  assert.equal(result.user.username, target.user.username);
+  assert.equal(f.auth.cloudSession().user.id, target.user.id);
+  assert.notEqual(f.auth.cloudSession().token, oldToken);
+  assert.equal(fs.readFileSync(record, "utf8"), "untouched source fixture");
+  assert.equal(fs.readFileSync(f.localFile, "utf8"), f.localContents);
+  const persisted = fs.readFileSync(f.file, "utf8");
+  for (const secret of [oldToken, target.secret, f.server.password, f.auth.cloudSession().token]) assert.ok(!persisted.includes(secret));
+  const restarted = createUnifiedAuth(f.options); f.offline();
+  assert.equal((await restarted.login(target.user.username, target.secret)).account.offline, true);
+});
+
+test("unbind requires current password and a usable local password, and supports restart and binding again", async t => {
+  const f = fixture(t, { retainSessionToken: true }); await f.bind();
+  await assert.rejects(f.auth.unbindAccount({ currentPassword: f.server.password, newLocalPassword: "short" }), status(400));
+  await assert.rejects(f.auth.unbindAccount({ currentPassword: "wrong", newLocalPassword: "local-after-unbind-fixture" }), status(401));
+  assert.equal(fs.readFileSync(f.localFile, "utf8"), f.localContents);
+  const result = await f.auth.unbindAccount({ currentPassword: f.server.password, newLocalPassword: "local-after-unbind-fixture" });
+  assert.deepEqual(result.account, { mode: "local" }); assert.equal(result.user.username, "admin");
+  assert.equal(f.auth.cloudSession(), null); assert.equal(f.auth.cloudBinding(), null);
+  assert.equal(fs.readFileSync(f.file, "utf8").includes(f.server.password), false);
+  const local = createLocalAuth({ file: f.localFile });
+  const restarted = createUnifiedAuth({ ...f.options, localAuth: local });
+  await assert.rejects(restarted.login("admin", f.localPassword), status(401));
+  assert.equal((await restarted.login("admin", "local-after-unbind-fixture")).mustChangePassword, false);
+  const target = destination(f);
+  const rebound = await restarted.bindAccount({ ...target.values, currentPassword: "local-after-unbind-fixture" });
+  assert.equal(rebound.user.username, target.user.username);
+});
+
+test("unbind can use valid offline proof; expired or explicitly revoked proof cannot authorize it", async t => {
+  const f = fixture(t); await f.bind(); f.offline();
+  assert.equal((await f.auth.unbindAccount({ currentPassword: f.server.password, newLocalPassword: "offline-local-fixture" })).account.mode, "local");
+  const expired = fixture(t); await expired.bind(); expired.advance(31 * DAY); expired.offline();
+  await assert.rejects(expired.auth.unbindAccount({ currentPassword: expired.server.password, newLocalPassword: "offline-local-fixture" }), status(403));
+  assert.equal(expired.auth.info().mode, "unified");
+  const revoked = fixture(t); await revoked.bind();
+  await assert.rejects(revoked.auth.login(revoked.server.user.username, "incorrect"), status(401)); revoked.offline();
+  await assert.rejects(revoked.auth.unbindAccount({ currentPassword: revoked.server.password, newLocalPassword: "offline-local-fixture" }), status(403));
+});
+
+test("moving to a reachable new server works when old server is offline and current offline proof is valid", async t => {
+  const f = fixture(t); await f.bind(); const target = destination(f, { oldOffline: true });
+  assert.equal((await f.auth.rebindAccount(target.values)).account.serverUrl, target.origin);
+});
+
+test("failed unbind commit leaves Web login authoritative; local-mode marker survives stale cleanup files", async t => {
+  const f = fixture(t); await f.bind();
+  const rename = fs.renameSync;
+  fs.renameSync = (from, to) => { if (to === f.file) throw Error("fixture disk failure"); return rename(from, to); };
+  try { await assert.rejects(f.auth.unbindAccount({ currentPassword: f.server.password, newLocalPassword: "failed-commit-local-fixture" }), status(500)); }
+  finally { fs.renameSync = rename; }
+  assert.equal(f.auth.info().mode, "unified");
+  assert.equal((await f.auth.login(f.server.user.username, f.server.password)).account.mode, "unified");
+  await f.auth.unbindAccount({ currentPassword: f.server.password, newLocalPassword: "successful-local-fixture" });
+  fs.writeFileSync(f.file + ".online-required", "stale fixture marker", { mode: 0o600 });
+  const local = createLocalAuth({ file: f.localFile });
+  const restarted = createUnifiedAuth({ ...f.options, localAuth: local });
+  assert.equal((await restarted.login("admin", "successful-local-fixture")).user.username, "admin");
+  assert.equal(restarted.info().mode, "local");
+});
+
+test("logout cancels pending rebind and cannot publish a replacement binding", async t => {
+  const f = fixture(t); await f.bind(); const target = destination(f), serve = f.server.handler;
+  const wait = deferred(); let pending = false;
+  f.server.handler = async (url, options, respond) => {
+    if (url.startsWith(target.origin) && options.method !== "DELETE") { pending = true; await wait.promise; }
+    return serve(url, options, respond);
+  };
+  const result = f.auth.rebindAccount(target.values);
+  while (!pending) await new Promise(resolve => setImmediate(resolve));
+  f.auth.logout(); wait.resolve();
+  await assert.rejects(result, status(409)); assert.equal(f.auth.info().serverUrl, ORIGIN);
+});
+
+test("a rebind committed before cleanup failure requires new login and reflects the durable identity", async t => {
+  const f = fixture(t, { retainSessionToken: true }); await f.bind(); const target = destination(f);
+  const unlink = fs.unlinkSync;
+  fs.unlinkSync = file => { if (file === f.file + ".online-required") throw Error("fixture cleanup denied"); return unlink(file); };
+  try { await assert.rejects(f.auth.rebindAccount(target.values), status(500)); }
+  finally { fs.unlinkSync = unlink; }
+  assert.equal(f.auth.info().serverUrl, target.origin);
+  assert.equal(f.auth.info().onlineRequired, true); assert.equal(f.auth.cloudSession(), null);
+  assert.throws(() => f.auth.requireSession(), status(401));
+  assert.equal((await f.auth.login(target.user.username, target.secret)).account.onlineRequired, false);
+});
+
 function fixture(t, authOptions = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "blade-unified-auth-test-"));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));

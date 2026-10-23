@@ -21,7 +21,7 @@ import { captureRouteBlockers, prepareCaptureStartRoute, type FieldCaptureRoute 
 import { moveToCapturePreset, presetPositionError } from "./field-preset-position";
 import { FieldBladeSummary } from "./field-blade-summary";
 import { FieldTaskRecords } from "./field-recording-tasks";
-import { FieldAccountPanel, FieldCloudSyncPanel, FieldBindAccountDialog, fieldAccountServerDefault, fieldAccountTime, type FieldBindValues } from "./field-account";
+import { FieldAccountPanel, FieldCloudSyncPanel, FieldBindAccountDialog, FieldUnbindAccountDialog, fieldAccountServerDefault, fieldAccountTime, type FieldBindValues, type FieldUnbindValues } from "./field-account";
 import {
   fieldCaptureConfig, fieldDate, fieldIsActive, validateFieldConfig,
   type FieldConfig, type FieldRecording,
@@ -231,6 +231,8 @@ export function FieldDesktopApp() {
   const captureStarting = useRef(false);
   const [changingPassword, setChangingPassword] = useState(false);
   const [bindingAccount, setBindingAccount] = useState(false);
+  const [bindingMode, setBindingMode] = useState<"bind" | "rebind">("bind");
+  const [unbindingAccount, setUnbindingAccount] = useState(false);
   const [windowMs, setWindowMs] = useState(1000), [refreshMs, setRefreshMs] = useState(100);
   const contentRef = useRef<HTMLElement>(null);
   useEffect(() => { if (contentRef.current) contentRef.current.scrollTop = 0; }, [screen]);
@@ -239,7 +241,7 @@ export function FieldDesktopApp() {
 
   const clearSession = useCallback(() => {
     generation.current += 1; setSyncStatus(null); setSession(null); setStatus(null); setRecordings([]); setRecordingsLoaded(false); setSelected(null); setRecordsTab("records"); setStatusPollUnavailable(false);
-    setChangingPassword(false); setBindingAccount(false); setPollError(""); setNotice(""); setTurntableVisited(false); setTurntableOperationBusy(false); setLinkEnabled(false); setRoutes({}); setAutoTargetKey(undefined); captureAttempt.current += 1;
+    setChangingPassword(false); setBindingAccount(false); setUnbindingAccount(false); setPollError(""); setNotice(""); setTurntableVisited(false); setTurntableOperationBusy(false); setLinkEnabled(false); setRoutes({}); setAutoTargetKey(undefined); captureAttempt.current += 1;
   }, []);
   const handleError = useCallback((cause: unknown) => {
     if (cause instanceof FieldRequestError && cause.status === 401) clearSession();
@@ -260,6 +262,7 @@ export function FieldDesktopApp() {
     if (mounted.current) setAccount(info);
   }, []);
   const acceptSession = useCallback((next: FieldSession) => {
+    generation.current += 1; setSyncStatus(null);
     setSession(next);
     if (next.account) setAccount(next.account);
   }, []);
@@ -318,9 +321,10 @@ export function FieldDesktopApp() {
   useEffect(() => {
     if (!session || session.mustChangePassword) return;
     let canceled = false, timer: ReturnType<typeof setTimeout>;
+    const epoch = generation.current;
     async function pollSync() {
-      try { const next = await fieldCall<FieldSyncStatus>({ action: "syncStatus" }); if (!canceled) setSyncStatus(next); }
-      catch { if (!canceled) setSyncStatus(previous => previous ? { ...previous, connected: false, state: "error", error: "无法读取同步状态，请稍后重试。" } : null); }
+      try { const next = await fieldCall<FieldSyncStatus>({ action: "syncStatus" }); if (!canceled && epoch === generation.current) setSyncStatus(next); }
+      catch { if (!canceled && epoch === generation.current) setSyncStatus(previous => previous ? { ...previous, connected: false, state: "error", error: "无法读取同步状态，请稍后重试。" } : null); }
       finally { if (!canceled) timer = setTimeout(pollSync, 2000); }
     }
     void pollSync(); return () => { canceled = true; clearTimeout(timer); };
@@ -354,12 +358,28 @@ export function FieldDesktopApp() {
     await refreshAccountInfo().catch(() => {});
   }
   async function bindAccount(values: FieldBindValues) {
-    if (account?.mode !== "local" || fieldIsActive(status) || status?.deviceBusy) return;
+    const replacing = bindingMode === "rebind";
+    if (account?.mode !== (replacing ? "unified" : "local") || fieldIsActive(status) || status?.deviceBusy) return;
     await operate("bind", async () => {
-      const next = await fieldCall<FieldSession>({ action: "bindAccount", ...values });
+      let next: FieldSession;
+      try { next = await fieldCall<FieldSession>({ action: replacing ? "rebindAccount" : "bindAccount", ...values }); }
+      catch (cause) { setError(messageOf(cause)); return; }
       acceptSession(next); setBindingAccount(false);
       if (!next.account) await refreshAccountInfo();
-      setNotice("已绑定统一账号，此后使用 Web 的同一密码登录；原有记录保留在本机，未自动上传。");
+      setSyncStatus(await fieldCall<FieldSyncStatus>({ action: "syncStatus" }));
+      setNotice(replacing ? "已更换 Web 绑定。本机记录保留，旧账号的待上传记录保持原归属；新采集使用当前账号同步。" : "已绑定统一账号，此后使用 Web 的同一密码登录；原有记录保留在本机，未自动上传。");
+    });
+    await refreshAccountInfo().catch(() => {});
+  }
+  async function unbindAccount(values: FieldUnbindValues) {
+    if (account?.mode !== "unified" || fieldIsActive(status) || status?.deviceBusy) return;
+    await operate("unbind", async () => {
+      let next: FieldSession;
+      try { next = await fieldCall<FieldSession>({ action: "unbindAccount", ...values }); }
+      catch (cause) { setError(messageOf(cause)); return; }
+      acceptSession(next); setUnbindingAccount(false);
+      setSyncStatus(await fieldCall<FieldSyncStatus>({ action: "syncStatus" }));
+      setNotice("已解除 Web 绑定。当前使用本机 admin，之后用刚设置的本机密码登录；采集记录保留，旧账号的待上传队列已暂停。");
     });
     await refreshAccountInfo().catch(() => {});
   }
@@ -518,11 +538,12 @@ export function FieldDesktopApp() {
             </div>
             {selected && <FieldRecordingDialog key={selected.id} recording={selected} load={fieldCall} onError={handleRecordingError} onClose={() => setSelected(null)} />}
           </div>}
-          {screen === "service" && <div className="field-settings-grid"><FieldAccountPanel account={account} busy={Boolean(busy)} active={accountLocked} onBind={() => { if (!busy && !accountLocked && account?.mode === "local") { setError(""); setBindingAccount(true); } }} onPassword={openPassword} /><FieldCloudSyncPanel account={account} status={syncStatus} busy={Boolean(busy)} onSampleRate={sampleRate => void operate("sync", async () => { setSyncStatus(await fieldCall<FieldSyncStatus>({ action: "setUploadSampleRate", sampleRate })); })} onAuto={enabled => void operate("sync", async () => { await fieldCall({ action: "setAutoSync", enabled }); setSyncStatus(await fieldCall<FieldSyncStatus>({ action: "syncStatus" })); })} onRetry={() => void operate("sync", async () => { await fieldCall({ action: "retrySync" }); setSyncStatus(await fieldCall<FieldSyncStatus>({ action: "syncStatus" })); })} /><FieldDevicePanel deviceIp={config.deviceIp} hostIp={config.hostIp} onIp={deviceIp => setConfig(previous => ({ ...previous, deviceIp }))} status={status} disabled={Boolean(busy)} onBusy={value => setBusy(value ? "device" : "")} onError={handleError} request={request => fieldCall<FieldDeviceSettings>({ action: "device", request })} calibrate={request => fieldCall<FieldRssiCalibrationResult>({ action: "rssiCalibration", request })} /><FieldServicePanel status={status} busy={Boolean(busy)} onAction={(action) => void serviceAction(action)} /><section className="field-card"><div className="field-section-heading"><h2>设备连接检查</h2></div><ol className="field-checklist"><li><strong>检查运行状态</strong><p>确认采集服务和设备驱动已就绪。</p></li><li><strong>确认设备网络与安全</strong><p>确认设备 IP、本机网卡、网络连接和激光作业安全。</p></li><li><strong>采集、停止并核对保存结果</strong><p>停止后核对原始点数、RSSI、超量程和保存状态。</p></li></ol></section></div>}
+          {screen === "service" && <div className="field-settings-grid"><FieldAccountPanel account={account} busy={Boolean(busy)} active={accountLocked} onBind={() => { if (!busy && !accountLocked && account?.mode === "local") { setError(""); setBindingMode("bind"); setBindingAccount(true); } }} onRebind={() => { if (!busy && !accountLocked) { setError(""); setBindingMode("rebind"); setBindingAccount(true); } }} onUnbind={() => { if (!busy && !accountLocked) { setError(""); setUnbindingAccount(true); } }} onPassword={openPassword} /><FieldCloudSyncPanel account={account} status={syncStatus} busy={Boolean(busy)} onSampleRate={sampleRate => void operate("sync", async () => { setSyncStatus(await fieldCall<FieldSyncStatus>({ action: "setUploadSampleRate", sampleRate })); })} onAuto={enabled => void operate("sync", async () => { await fieldCall({ action: "setAutoSync", enabled }); setSyncStatus(await fieldCall<FieldSyncStatus>({ action: "syncStatus" })); })} onRetry={() => void operate("sync", async () => { await fieldCall({ action: "retrySync" }); setSyncStatus(await fieldCall<FieldSyncStatus>({ action: "syncStatus" })); })} /><FieldDevicePanel deviceIp={config.deviceIp} hostIp={config.hostIp} onIp={deviceIp => setConfig(previous => ({ ...previous, deviceIp }))} status={status} disabled={Boolean(busy)} onBusy={value => setBusy(value ? "device" : "")} onError={handleError} request={request => fieldCall<FieldDeviceSettings>({ action: "device", request })} calibrate={request => fieldCall<FieldRssiCalibrationResult>({ action: "rssiCalibration", request })} /><FieldServicePanel status={status} busy={Boolean(busy)} onAction={(action) => void serviceAction(action)} /><section className="field-card"><div className="field-section-heading"><h2>设备连接检查</h2></div><ol className="field-checklist"><li><strong>检查运行状态</strong><p>确认采集服务和设备驱动已就绪。</p></li><li><strong>确认设备网络与安全</strong><p>确认设备 IP、本机网卡、网络连接和激光作业安全。</p></li><li><strong>采集、停止并核对保存结果</strong><p>停止后核对原始点数、RSSI、超量程和保存状态。</p></li></ol></section></div>}
         </main>
       </div><footer className="field-statusbar"><span><span className={`field-status-dot ${status?.service.state === "ready" ? "green" : ""}`} />{status ? serviceLabels[status.service.state] : "正在读取本机状态"}</span><span>原始数据保存在本机</span></footer>
     </>}
-    {bindingAccount && session && !session.mustChangePassword && account?.mode === "local" && <FieldBindAccountDialog busy={Boolean(busy)} active={accountLocked} error={error} initialServerUrl={fieldAccountServerDefault(typeof window === "undefined" ? undefined : window.location)} onClose={() => { setBindingAccount(false); setError(""); }} onBind={bindAccount} />}
+    {bindingAccount && session && !session.mustChangePassword && account?.mode === (bindingMode === "rebind" ? "unified" : "local") && <FieldBindAccountDialog mode={bindingMode} busy={Boolean(busy)} active={accountLocked} error={error} initialServerUrl={bindingMode === "rebind" ? account.serverUrl : fieldAccountServerDefault(typeof window === "undefined" ? undefined : window.location)} initialUsername={bindingMode === "rebind" ? account.username : ""} onClose={() => { setBindingAccount(false); setError(""); }} onBind={bindAccount} />}
+    {unbindingAccount && session && account?.mode === "unified" && <FieldUnbindAccountDialog busy={Boolean(busy)} active={accountLocked} error={error} onClose={() => { setUnbindingAccount(false); setError(""); }} onUnbind={unbindAccount} />}
     {status?.turntableBusy && busy !== "preposition" && !active && status.turntable?.port && status.turntable.axis && <div className="field-live-controls" aria-label="独立试转控制"><p><strong>转盘检查 / 试转进行中 · {status.turntable.port} 轴 {status.turntable.axis}</strong></p><Button type="button" variant="danger" disabled={!!busy || status.turntable.state === "test_stopping"} onClick={() => void operate("turntableStop", async () => { await fieldCall({ action: "turntable", request: { action: "stop", port: status.turntable!.port!, axis: status.turntable!.axis as 1 | 2, confirmMotion: true } }); setStatus(await fieldCall<FieldStatus>({ action: "status" })); })}>停止独立试转</Button></div>}
   </div>;
 }

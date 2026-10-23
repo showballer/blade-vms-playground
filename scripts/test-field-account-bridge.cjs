@@ -22,6 +22,8 @@ async function harness() {
     login: () => { signedIn = true; return session(); },
     logout: () => { signedIn = false; return { ok: true }; },
     bindAccount: async options => { session(); calls.push(['bind', options]); return session(); },
+    rebindAccount: async options => { session(); calls.push(['rebind', options]); return session(); },
+    unbindAccount: async options => { session(); calls.push(['unbind', options]); return session(); },
     changePassword: async (...args) => { session(); calls.push(['password', args]); return session(); },
   };
   const service = { status: async () => snapshot, frame: async () => snapshot, start: async () => ({}),
@@ -47,7 +49,7 @@ async function harness() {
     if (name === './field-service.cjs') return { createFieldService: options => { serviceOptions = options; return service; }, failure: fail };
     if (name === './field-cloud-sync.cjs') return { createFieldCloudSync: options => { syncOptions = options; return ({
       status: () => ({ enabled: true, connected: true, state: 'ready', items: [] }),
-      resume() {}, pause() {}, dispose() {},
+      resume() { cloudCalls.push(['resume']); }, pause(options) { cloudCalls.push(['pause', options]); }, dispose() {},
       setEnabled: enabled => { cloudCalls.push(['enabled', enabled]); return { enabled }; },
       uploadRecording: id => { cloudCalls.push(['upload', id]); return { items: [] }; }, retry: () => ({ items: [] }),
     }); } };
@@ -76,7 +78,7 @@ test('public account mode never grants a session; untrusted windows cannot read 
   const h = await harness();
   try {
     assert.equal((await h.request({ action: 'accountInfo' })).data.mode, 'local');
-    for (const action of ['bindAccount', 'changePassword', 'status', 'start']) assert.equal((await h.request({ action })).status, 401);
+    for (const action of ['bindAccount', 'rebindAccount', 'unbindAccount', 'changePassword', 'status', 'start']) assert.equal((await h.request({ action })).status, 401);
     assert.equal((await h.request({ action: 'accountInfo' }, { sender: {}, senderFrame: { url: 'file://malicious' } })).status, 403);
     assert.equal(h.calls.length, 0);
   } finally { h.cleanup(); }
@@ -92,9 +94,25 @@ test('binding and password changes cannot interrupt capture, device operations o
       { service: { state: 'ready', error: 'transport unavailable' }, state: 'idle' },
     ]) {
       h.setStatus(state);
-      for (const action of ['bindAccount', 'changePassword']) assert.equal((await h.request({ action })).status, 409);
+      for (const action of ['bindAccount', 'rebindAccount', 'unbindAccount', 'changePassword']) assert.equal((await h.request({ action })).status, 409);
     }
     assert.equal(h.calls.length, 0);
+  } finally { h.cleanup(); }
+});
+
+test('rebind and unbind pause sync and expose only whitelisted fields to the account service', async () => {
+  const h = await harness();
+  try {
+    await h.request({ action: 'login' });
+    const rebind = { action: 'rebindAccount', serverUrl: 'https://next.example.test', username: 'other', password: 'fixture-new-password', currentPassword: 'fixture-current-password', arbitraryPath: '/private/never-pass-through' };
+    assert.equal((await h.request(rebind)).status, 200);
+    assert.deepEqual(Object.keys(h.calls.at(-1)[1]).sort(), ['currentPassword', 'password', 'serverUrl', 'username']);
+    assert.equal((await h.request({ action: 'unbindAccount', currentPassword: 'fixture', newLocalPassword: 'fixture-local-password', arbitraryPath: '/private' })).status, 200);
+    assert.deepEqual(Object.keys(h.calls.at(-1)[1]).sort(), ['currentPassword', 'newLocalPassword']);
+    assert.equal(h.cloudCalls.filter(call => call[0] === 'pause' && call[1].forgetActive).length, 2);
+    assert.equal(h.cloudCalls.at(-1)[0], 'resume');
+    assert.equal((await h.request({ action: 'restoreAfterUnbind', newPassword: 'untrusted' })).status, 400);
+    assert.equal((await h.request(rebind, { sender: {}, senderFrame: { url: 'file://untrusted' } })).status, 403);
   } finally { h.cleanup(); }
 });
 

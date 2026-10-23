@@ -38,6 +38,9 @@ function readBinding(file) {
   const stat = fs.lstatSync(file);
   if (!stat.isFile() || stat.size > FILE_LIMIT || (process.platform !== "win32" && (stat.mode & 0o077))) throw Error("Invalid binding file");
   const value = JSON.parse(fs.readFileSync(file, "utf8"));
+  // A durable local-mode marker commits unbinding independently of cleanup.
+  // A crash after this rename cannot resurrect the previous Web binding.
+  if (keys(value, ["version", "mode"]) && value.version === 2 && value.mode === "local") return null;
   if (!keys(value, ["version", "serverUrl", "user", "salt", "hash", "lastVerifiedAt", "offlineUntil", "lastObservedAt", "onlineRequired"]) ||
       value.version !== 1 || serverOrigin(value.serverUrl) !== value.serverUrl || !validUser(value.user) ||
       typeof value.salt !== "string" || !/^[a-f0-9]{64}$/.test(value.salt) ||
@@ -112,8 +115,8 @@ async function limitedJson(response) {
 function createUnifiedAuth({ file, localAuth, now = Date.now, fetchImpl = global.fetch, retainSessionToken = false } = {}) {
   if (typeof file !== "string" || !path.isAbsolute(file) || typeof now !== "function" || typeof fetchImpl !== "function" ||
       !["login", "logout", "session", "requireSession", "changePassword"].every(key => typeof localAuth?.[key] === "function")) throw fail(500, "统一账号配置无效");
-  let binding = null;
-  try { binding = readBinding(file); }
+  let binding = null, bindingFileExists = false;
+  try { binding = readBinding(file); bindingFileExists = true; }
   catch (error) { if (error.code !== "ENOENT") throw fail(500, "统一账号文件不可用；不会回退本机账号或重置绑定"); }
   const revocationFile = `${file}.online-required`;
   function revocationPending() {
@@ -121,8 +124,8 @@ function createUnifiedAuth({ file, localAuth, now = Date.now, fetchImpl = global
     catch (error) { if (error.code === "ENOENT") return false; throw fail(500, "离线凭证失效标记不可用，请修复本机存储后联网登录"); }
   }
   if (revocationPending()) {
-    if (!binding) throw fail(500, "统一账号绑定文件缺失；不会回退本机账号或重置绑定");
-    binding.onlineRequired = true;
+    if (!binding && !bindingFileExists) throw fail(500, "统一账号绑定文件缺失；不会回退本机账号或重置绑定");
+    if (binding) binding.onlineRequired = true;
   }
   let active = null, busy = false, epoch = 0, failures = 0, lockedUntil = 0;
   let clockHighWater = binding?.lastObservedAt ?? 0;
@@ -193,6 +196,7 @@ function createUnifiedAuth({ file, localAuth, now = Date.now, fetchImpl = global
       throw fail(500, "统一账号信息未能安全保存，请检查本机存储后联网重试", { storage: true });
     }
     binding = next;
+    bindingFileExists = true;
     if (onlineVerified) storageFailed = false;
   }
   function invalidate() {
@@ -282,6 +286,28 @@ function createUnifiedAuth({ file, localAuth, now = Date.now, fetchImpl = global
     clockHighWater = stamp;
   }
 
+  async function verifyBindingPassword(secret, requestEpoch) {
+    if (!binding || !active) throw fail(401, "请先登录已绑定的统一账号");
+    loadCurrent();
+    const stamp = throttle();
+    if (!password(secret)) throw fail(400, "请输入当前绑定账号的密码，最多 128 个字符");
+    try { await authenticate(binding.serverUrl, binding.user.username, secret, binding.user); }
+    catch (error) {
+      if (error.invalidates) invalidate();
+      if (error.status === 401) rejectPassword(stamp.value);
+      if (!error.transport) throw error;
+      const current = clock();
+      if (binding.onlineRequired || storageFailed) throw fail(403, "当前账号需要联网验证，请联网后操作");
+      if (stamp.rolledBack || current.rolledBack || current.value < binding.lastObservedAt || current.value >= binding.offlineUntil) {
+        invalidate(); throw fail(403, "离线验证已失效，请联网验证当前账号后操作");
+      }
+      if (!matches(secret, binding)) rejectPassword(current.value);
+      save({ ...binding, lastObservedAt: current.value });
+    }
+    if (epoch !== requestEpoch || !active) throw fail(409, "本次账号操作已取消，请重新登录");
+    failures = 0; lockedUntil = 0;
+  }
+
   return Object.freeze({
     async login(username, secret) {
       if (localMode()) return localAuth.login(username, secret);
@@ -340,7 +366,7 @@ function createUnifiedAuth({ file, localAuth, now = Date.now, fetchImpl = global
 
     async bindAccount({ serverUrl, username, password: secret, currentPassword } = {}) {
       return operation(async requestEpoch => {
-        if (binding) throw fail(409, "本机已绑定统一账号，不允许自动替换或回退本机账号");
+        if (binding) throw fail(409, "本机已绑定统一账号，请使用更换绑定或解除绑定");
         localMode();
         localAuth.requireSession();
         if (!text(username, 80) || !password(secret) || !password(currentPassword)) throw fail(400, "请提供 Web 账号密码和当前本机密码");
@@ -349,10 +375,53 @@ function createUnifiedAuth({ file, localAuth, now = Date.now, fetchImpl = global
         const identity = await authenticate(origin, username, secret, undefined, retainSessionToken);
         try {
           if (epoch !== requestEpoch) throw fail(409, "本次绑定已取消，请重新登录");
-          verified(origin, identity.user, secret, clock().value, true);
+          verified(origin, identity.user, secret, clock().value, !bindingFileExists);
           localAuth.logout();
           return publish(identity.user, false, requestEpoch, identity.token);
         } finally { await discardUnpublished(identity, origin); }
+      });
+    },
+    async rebindAccount({ serverUrl, username, password: secret, currentPassword } = {}) {
+      return operation(async requestEpoch => {
+        const origin = serverOrigin(serverUrl);
+        if (!text(username, 80) || !password(secret)) throw fail(400, "请输入新 Web 账号和密码");
+        await verifyBindingPassword(currentPassword, requestEpoch);
+        const identity = await authenticate(origin, username, secret, undefined, retainSessionToken);
+        try {
+          if (epoch !== requestEpoch || !active) throw fail(409, "本次换绑已取消，请重新登录");
+          verified(origin, identity.user, secret, clock().value);
+          localAuth.logout();
+          return publish(identity.user, false, requestEpoch, identity.token);
+        } catch (error) {
+          if (error.storage) {
+            // The atomic rename may have committed before marker cleanup
+            // failed. Reflect the durable identity, but grant neither account
+            // a session until a fresh online login repairs the cache.
+            active = null; clearCloudSession(); localAuth.logout(); storageFailed = true;
+            try { binding = readBinding(file); bindingFileExists = true; }
+            catch { /* Keep authentication blocked until storage is repaired. */ }
+            if (binding) binding = { ...binding, onlineRequired: true };
+            throw fail(500, "更换绑定的保存结果需重新核实，请按当前显示的服务器与账号重新联网登录", { storage: true });
+          }
+          throw error;
+        } finally { await discardUnpublished(identity, origin); }
+      });
+    },
+    async unbindAccount({ currentPassword, newLocalPassword } = {}) {
+      return operation(async requestEpoch => {
+        if (!password(newLocalPassword, 12)) throw fail(400, "请设置 12–128 个字符的本机 admin 密码");
+        if (typeof localAuth.restoreAfterUnbind !== "function") throw fail(500, "当前本机认证组件不支持解绑，请更新客户端");
+        await verifyBindingPassword(currentPassword, requestEpoch);
+        if (epoch !== requestEpoch || !active) throw fail(409, "本次解绑已取消，请重新登录");
+        // Commit local credentials first, then atomically commit the mode. If
+        // either write fails, the existing Web identity remains authoritative.
+        localAuth.restoreAfterUnbind(newLocalPassword);
+        try { writeBinding(file, { version: 2, mode: "local" }); }
+        catch { localAuth.logout(); throw fail(500, "解除绑定未能保存，原 Web 绑定仍保留，请检查本机存储后重试"); }
+        binding = null; bindingFileExists = true; storageFailed = false;
+        epoch++; active = null; clockHighWater = 0; clearCloudSession();
+        try { fs.unlinkSync(revocationFile); } catch { /* Local-mode marker makes stale revocation cleanup harmless. */ }
+        return { ...localAuth.session(), account: account() };
       });
     },
     async changePassword(currentPassword, newPassword) {

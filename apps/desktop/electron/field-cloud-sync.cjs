@@ -138,6 +138,7 @@ function createFieldCloudSync({ file, dataDir, auth, getLive, prepareUpload, fet
       assertCurrent(ctx, stamp);
       return result;
     } catch (error) {
+      if (stamp !== generation) throw fail('同步已暂停', 499);
       if (error.status) throw error;
       throw fail('连接 Web 失败，已保留本机队列，联网后自动重试。', 503);
     } finally { clearTimeout(timeout); controllers.delete(controller); }
@@ -266,12 +267,13 @@ function createFieldCloudSync({ file, dataDir, auth, getLive, prepareUpload, fet
     worker = (async () => {
       for (const item of saved.items) {
         const ctx = context(); if (!ctx) break;
+        const stamp = generation;
         if (!owned(item, ctx) || item.state === 'synced' || (item.retryAt || 0) > now()) continue;
         try {
           if (item.recordingId === activeId) continue;
           await upload(item, ctx);
           transientError = '';
-        } catch (error) { recordFailure(item, error); }
+        } catch (error) { if (stamp === generation && owned(item, ctx)) recordFailure(item, error); }
       }
     })().catch(error => { transientError = error.message || '同步暂时失败'; }).finally(() => { worker = null; });
   }
@@ -336,8 +338,9 @@ function createFieldCloudSync({ file, dataDir, auth, getLive, prepareUpload, fet
     })().catch(error => { if (id === activeId && stamp === generation && item.state !== 'synced') recordFailure(item, error); }).finally(() => { liveWork = null; });
   }
   function wake() { pump(); live(); }
-  function pause() {
+  function pause({ forgetActive = false } = {}) {
     paused = true; generation++;
+    if (forgetActive) { activeId = null; transientError = ''; }
     for (const controller of controllers) controller.abort();
   }
   function resume() {
@@ -351,7 +354,9 @@ function createFieldCloudSync({ file, dataDir, auth, getLive, prepareUpload, fet
     const items = saved.items.filter(item => owned(item, binding)).map(item => ({ recordingId: item.recordingId, name: item.name,
       state: item.state, captureId: item.captureId, error: item.error || undefined,
       progress: item.state === 'synced' ? 100 : item.totalBytes ? Math.max(0, Math.min(99, Math.round((item.sentBytes || 0) / item.totalBytes * 100))) : 0 }));
-    let state = !binding ? 'unbound' : paused ? 'signed-out' : !ctx ? 'offline' : worker || liveWork ? 'syncing' : 'ready';
+    const uploading = worker && saved.items.some(item => owned(item, binding) && item.state === 'uploading');
+    const liveForCurrent = liveWork && saved.items.some(item => owned(item, binding) && item.recordingId === activeId);
+    let state = !binding ? 'unbound' : paused ? 'signed-out' : !ctx ? 'offline' : uploading || liveForCurrent ? 'syncing' : 'ready';
     if (storeError || (ctx && transientError)) state = 'error';
     return { enabled: saved.enabled, uploadSampleRate: saved.uploadSampleRate, connected: Boolean(ctx), state, error: storeError || transientError || undefined, items };
   }
@@ -359,6 +364,9 @@ function createFieldCloudSync({ file, dataDir, auth, getLive, prepareUpload, fet
     if (!plain(recording) || !ID.test(recording.id)) throw fail('无效采集记录');
     const binding = auth.cloudBinding();
     if (!binding) { if (manual) throw fail('请先绑定 Web 账号', 409); return status(); }
+    // A delayed old frame/journal callback must not re-enroll another account's
+    // history. Moving old data to the current account requires an explicit upload.
+    if (!manual && saved.items.some(item => item.recordingId === recording.id && !owned(item, binding))) return status();
     // The setting affects enrollment only; queued work always remains resumable.
     if (!manual && !saved.enabled) return status();
     let item = saved.items.find(candidate => candidate.recordingId === recording.id && owned(candidate, binding));
@@ -427,7 +435,7 @@ function createFieldCloudSync({ file, dataDir, auth, getLive, prepareUpload, fet
     setUploadSampleRate(rate) {
       if (!validRate(rate)) throw fail('上传采样率应为 10～100 kHz，或选择原始采样率');
       saved.uploadSampleRate = rate;
-      for (const item of saved.items) if (item.state === 'error' && !item.planHash) item.uploadSampleRate = rate;
+      for (const item of saved.items) if (owned(item) && item.state === 'error' && !item.planHash) item.uploadSampleRate = rate;
       persist(); return status();
     },
     started(recording) { activeId = recording?.id || null; try { return track(recording); } catch (error) { transientError = error.message || '新采集未能加入同步队列'; throw error; } },

@@ -70,6 +70,65 @@ test('failed derivative preparation can switch to original-rate upload without d
   assert.deepEqual(fs.readFileSync(path.join(original.dir, 'chunk-00000000.bin')), original.raw);
 });
 
+test('unbinding and rebinding preserve the old owner queue and never automatically upload it for the new account', async t => {
+  const f = fixture(t), old = f.recording('a'.repeat(32)), fresh = f.recording('b'.repeat(32));
+  const originalIdentity = JSON.parse(JSON.stringify(f.identity));
+  let bound = f.identity; f.auth.cloudBinding = () => bound;
+  const oldOwner = JSON.stringify([bound.serverUrl, bound.user.id, bound.user.tenant]);
+  f.setHandler(() => json({}, 503));
+  const queue = f.create(); queue.resume(); queue.uploadRecording(old.manifest.id); await queue.settled();
+  const calls = f.requests.length;
+  queue.pause({ forgetActive: true }); bound = null; f.setSession(null); queue.resume(); await queue.settled();
+  assert.equal(queue.status().state, 'unbound'); assert.equal(queue.status().items.length, 0);
+  assert.equal(f.requests.length, calls);
+  queue.pause({ forgetActive: true });
+  f.identity.serverUrl = 'https://new.example.test'; f.identity.user = { id: 'owner-two', tenant: 'tenant-two', username: 'second' };
+  bound = f.identity; f.setSession('new-owner-token-fixture'); f.setHandler(null);
+  queue.resume(); await queue.settled();
+  queue.started(old.manifest); queue.finished(old.manifest); queue.retry(); await queue.settled();
+  assert.equal(queue.observeRecording(old.manifest, { owner: oldOwner }), false);
+  assert.equal(queue.status().items.length, 0); assert.equal(f.requests.length, calls);
+  queue.setUploadSampleRate(10000);
+  assert.equal(JSON.parse(fs.readFileSync(f.file, 'utf8')).items.find(row => row.owner === oldOwner).uploadSampleRate, 50000);
+  queue.started(fresh.manifest); queue.finished(fresh.manifest); await queue.settled();
+  assert.deepEqual(queue.status().items.map(row => row.recordingId), [fresh.manifest.id]);
+  assert.equal(f.captures.has(old.manifest.id), false); assert.equal(f.captures.get(fresh.manifest.id).complete, true);
+  queue.pause({ forgetActive: true }); Object.assign(f.identity, originalIdentity); f.setSession('old-owner-relogin-token-fixture'); queue.resume(); await queue.settled();
+  assert.equal(queue.status().items[0].recordingId, old.manifest.id);
+  assert.equal(f.captures.get(old.manifest.id).complete, true);
+  assert.deepEqual(fs.readFileSync(path.join(old.dir, 'chunk-00000000.bin')), old.raw);
+});
+
+test('old in-flight replies cannot mutate the newly bound account or publish an old live frame', async t => {
+  const f = fixture(t), old = f.recording('a'.repeat(32));
+  let release, waiting = false;
+  const gate = new Promise(resolve => { release = resolve; });
+  f.setHandler(async () => { waiting = true; return gate; });
+  const queue = f.create(); queue.resume(); queue.uploadRecording(old.manifest.id);
+  while (!waiting) await new Promise(resolve => setImmediate(resolve));
+  queue.pause({ forgetActive: true });
+  f.identity.user = { id: 'other-owner', tenant: 'other-tenant', username: 'other' }; f.setSession('different-token-fixture');
+  queue.resume(); release(json({}, 401)); await queue.settled();
+  assert.equal(queue.status().connected, true); assert.equal(queue.status().items.length, 0);
+  assert.ok(!queue.status().error);
+  assert.equal(f.token, 'different-token-fixture');
+});
+
+test('a failed old-account sampling job cannot show errors or upload status for the replacement account', async t => {
+  const f = fixture(t), old = f.recording(); old.manifest.sampleRate = 250000;
+  fs.writeFileSync(path.join(old.dir, 'manifest.json'), JSON.stringify(old.manifest));
+  let rejectJob, waiting = false;
+  const job = new Promise((_, reject) => { rejectJob = reject; });
+  const queue = f.create({ prepareUpload: async () => { waiting = true; return job; } });
+  queue.resume(); queue.uploadRecording(old.manifest.id);
+  while (!waiting) await new Promise(resolve => setImmediate(resolve));
+  queue.pause({ forgetActive: true });
+  f.identity.user = { id: 'replacement', tenant: 'replacement-group', username: 'replacement' }; f.setSession('replacement-token-fixture'); queue.resume();
+  assert.equal(queue.status().state, 'ready');
+  rejectJob(Error('old account derivative fixture failed')); await queue.settled();
+  assert.ok(!queue.status().error); assert.equal(queue.status().items.length, 0);
+});
+
 function fixture(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'blade-cloud-sync-'));
   const dataDir = path.join(directory, 'data'); fs.mkdirSync(dataDir);

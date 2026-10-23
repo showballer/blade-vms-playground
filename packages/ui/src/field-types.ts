@@ -261,6 +261,8 @@ export type FieldRequestOptions =
   | { action: "login"; username: string; password: string }
   | { action: "changePassword"; currentPassword: string; newPassword: string }
   | { action: "bindAccount"; serverUrl: string; username: string; password: string; currentPassword: string }
+  | { action: "rebindAccount"; serverUrl: string; username: string; password: string; currentPassword: string }
+  | { action: "unbindAccount"; currentPassword: string; newLocalPassword: string }
   | { action: "start"; config: FieldConfig & { clientRequestedAt?: number } & ({ source?: "device"; confirmLaser: true; confirmMotion?: true; pointCycle?: FieldPointCycleConfig } | { source: "simulation"; simulation: FieldSimulation }) }
   | { action: "recording"; id: string }
   | { action: "exportRecording"; id: string }
