@@ -9,6 +9,8 @@ export type AutoFollowDraft = {
   bladeId: string; periodSeconds: number; stepDeg: number;
   points: { id: string; name: string; radiusM: number }[]; activePointId: string;
   distanceM: number; hubHeightDeltaM: number;
+  /** Installation-specific optical-to-device multipliers; legacy drafts use 1. */
+  pitchAngleScale?: number; yawAngleScale?: number;
   direction: "clockwise" | "counterclockwise"; axis1Sign: 1 | -1; axis2Sign: 1 | -1;
   maxMoveRpm: number; maxMoveAccelerationDegS2: number; followErrorLimitDeg: number; cycles: number; waitRevolutions: number;
   rssiEnterSpread: number; rssiExitSpread: number; rssiEnterConfirmMs: number; rssiConfirmMs: number;
@@ -21,7 +23,7 @@ export const autoFollowDefaults: AutoFollowDraft = {
   diagnosticDetectBeforeSettled: false, diagnosticAngleWindowDeg: 0,
   bladeId: "2", periodSeconds: 30, stepDeg: 90,
   points: [{ id: "p1", name: "P1", radiusM: 0.31 }], activePointId: "p1",
-  distanceM: 2.86, hubHeightDeltaM: 1.46, direction: "clockwise", axis1Sign: 1, axis2Sign: 1,
+  distanceM: 2.86, hubHeightDeltaM: 1.46, pitchAngleScale: 1, yawAngleScale: 1, direction: "clockwise", axis1Sign: 1, axis2Sign: 1,
   maxMoveRpm: 0.6, maxMoveAccelerationDegS2: 3, followErrorLimitDeg: .75, cycles: 1, waitRevolutions: 2,
   rssiEnterSpread: 8, rssiExitSpread: 3, rssiEnterConfirmMs: 20, rssiConfirmMs: 30,
 };
@@ -54,11 +56,15 @@ export function planAutoFollow(draft: AutoFollowDraft, anchor: AutoFollowAnchor 
   const errors: string[] = [];
   const count = 360 / draft.stepDeg;
   const manualRotation = draft.periodSeconds === 0;
+  const pitchAngleScale = draft.pitchAngleScale === undefined ? 1 : draft.pitchAngleScale;
+  const yawAngleScale = draft.yawAngleScale === undefined ? 1 : draft.yawAngleScale;
   if (!draft.bladeId.trim() || draft.bladeId.trim().length > 80) errors.push("请填写叶片编号（最多80字）");
   if (!manualRotation && !finite(draft.periodSeconds, 0.5, 3600)) errors.push("每圈时间填0表示人手转动，或填写0.5～3600秒");
   if (!finite(draft.stepDeg, 5, 180) || !Number.isInteger(count)) errors.push("圆周间隔须能整分360°，范围5～180°");
   if (Number.isInteger(count) && count > 16) errors.push("每个测点最多预存16个圆周点位，请将间隔设为22.5°或更大");
   if (!finite(draft.distanceM, 0.001, 10000) || !finite(draft.hubHeightDeltaM, -10000, 10000)) errors.push("请检查安装距离和高度差");
+  if (!finite(pitchAngleScale, .5, 1.5)) errors.push("俯仰角校正系数应为0.5～1.5，1表示不校正");
+  if (!finite(yawAngleScale, .5, 1.5)) errors.push("水平角校正系数应为0.5～1.5，1表示不校正");
   if (![1, -1].includes(draft.axis1Sign) || ![1, -1].includes(draft.axis2Sign) || !["clockwise", "counterclockwise"].includes(draft.direction)) errors.push("请确认旋向和转盘轴方向");
   if (!finite(draft.maxMoveRpm, 0.02, 10)) errors.push("换点速度上限应为0.02～10 rpm");
   if (!finite(draft.maxMoveAccelerationDegS2, 0.1, 120)) errors.push("换点加速度上限应为0.1～120 °/s²");
@@ -96,15 +102,15 @@ export function planAutoFollow(draft: AutoFollowDraft, anchor: AutoFollowAnchor 
   const capturePort = anchor?.port || base?.port || port;
   if (!anchor && !isTurntablePort(capturePort)) errors.push("请选择有效的转盘串口");
   const origin = stationOpticalAngles(draft.distanceM, draft.hubHeightDeltaM, anchor?.radiusM ?? radial.radiusM, 0, draft.direction);
-  const originAxis1 = anchor?.axis1AngleDeg ?? (base?.axis1AngleDeg ?? 0) + draft.axis1Sign * origin.pitch;
+  const originAxis1 = anchor?.axis1AngleDeg ?? (base?.axis1AngleDeg ?? 0) + draft.axis1Sign * pitchAngleScale * origin.pitch;
   const originAxis2 = anchor?.axis2AngleDeg ?? (base?.axis2AngleDeg ?? 0);
   for (let station = 0; station < count; station++) {
     const azimuthDeg = station * draft.stepDeg;
     const optical = stationOpticalAngles(draft.distanceM, draft.hubHeightDeltaM, radial.radiusM, azimuthDeg, draft.direction);
-    const axis1AngleDeg = round(anchor ? originAxis1 + draft.axis1Sign * (optical.pitch - origin.pitch)
-      : (base?.axis1AngleDeg ?? 0) + draft.axis1Sign * optical.pitch);
-    const axis2AngleDeg = round(anchor ? originAxis2 + draft.axis2Sign * (optical.yaw - origin.yaw)
-      : (base?.axis2AngleDeg ?? 0) + draft.axis2Sign * optical.yaw);
+    const axis1AngleDeg = round(anchor ? originAxis1 + draft.axis1Sign * pitchAngleScale * (optical.pitch - origin.pitch)
+      : (base?.axis1AngleDeg ?? 0) + draft.axis1Sign * pitchAngleScale * optical.pitch);
+    const axis2AngleDeg = round(anchor ? originAxis2 + draft.axis2Sign * yawAngleScale * (optical.yaw - origin.yaw)
+      : (base?.axis2AngleDeg ?? 0) + draft.axis2Sign * yawAngleScale * optical.yaw);
     if (!finite(axis1AngleDeg, -35, 35) || !finite(axis2AngleDeg, -180, 180)) errors.push(`${radial.name} ${azimuthDeg}°目标超出机械角度范围`);
     result.points.push({ pointId: `${radial.id}-s${station + 1}`, name: `${radial.name.trim()} · ${azimuthDeg}°`,
       port: capturePort, ...(anchor || base ? { referenceSignature: (anchor || base)!.referenceSignature } : {}), axis1AngleDeg, axis2AngleDeg,
@@ -143,7 +149,7 @@ export function planAutoFollow(draft: AutoFollowDraft, anchor: AutoFollowAnchor 
     nominalPeriodSeconds: draft.periodSeconds, maxMoveRpm: manualRotation ? result.speedRpm : draft.maxMoveRpm,
     maxMoveAccelerationDegS2: draft.maxMoveAccelerationDegS2,
     followErrorLimitDeg: draft.followErrorLimitDeg,
-    geometry: { distanceM: draft.distanceM, hubHeightDeltaM: draft.hubHeightDeltaM,
+    geometry: { distanceM: draft.distanceM, hubHeightDeltaM: draft.hubHeightDeltaM, pitchAngleScale, yawAngleScale,
       rotationDirection: draft.direction, axis1Sign: draft.axis1Sign, axis2Sign: draft.axis2Sign,
       anchorRadiusM: anchor?.radiusM ?? radial.radiusM, anchorAxis1AngleDeg: originAxis1, anchorAxis2AngleDeg: originAxis2 },
     cycles: draft.cycles, dwellSeconds: manualRotation ? manualBladeRotationWaitSeconds : Math.max(1, draft.periodSeconds * draft.waitRevolutions), speedRpm: result.speedRpm,

@@ -207,12 +207,14 @@ class PointCycleGeometry(BaseModel):
     rotationDirection: Literal["clockwise", "counterclockwise"] = "clockwise"
     axis1Sign: Literal[-1, 1] = 1
     axis2Sign: Literal[-1, 1] = 1
+    pitchAngleScale: float = Field(default=1, ge=0.5, le=1.5, allow_inf_nan=False)
+    yawAngleScale: float = Field(default=1, ge=0.5, le=1.5, allow_inf_nan=False)
     anchorRadiusM: float = Field(gt=0, le=1000, allow_inf_nan=False)
     anchorAxis1AngleDeg: float = Field(ge=-35, le=35, allow_inf_nan=False)
     anchorAxis2AngleDeg: float = Field(ge=-180, le=180, allow_inf_nan=False)
 
     @field_validator("distanceM", "hubHeightDeltaM", "axis1Sign", "axis2Sign", "anchorRadiusM",
-                     "anchorAxis1AngleDeg", "anchorAxis2AngleDeg", mode="before")
+                     "anchorAxis1AngleDeg", "anchorAxis2AngleDeg", "pitchAngleScale", "yawAngleScale", mode="before")
     @classmethod
     def numeric(cls, value):
         if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -228,8 +230,8 @@ class PointCycleGeometry(BaseModel):
         pitch = math.degrees(math.atan2(y, math.hypot(self.distanceM, x)))
         yaw = math.degrees(math.atan2(x, self.distanceM))
         base_pitch = math.degrees(math.atan2(self.hubHeightDeltaM - self.anchorRadiusM, self.distanceM))
-        return (self.anchorAxis1AngleDeg + self.axis1Sign * (pitch - base_pitch),
-                self.anchorAxis2AngleDeg + self.axis2Sign * yaw)
+        return (self.anchorAxis1AngleDeg + self.axis1Sign * self.pitchAngleScale * (pitch - base_pitch),
+                self.anchorAxis2AngleDeg + self.axis2Sign * self.yawAngleScale * yaw)
 
 
 class PointCycleConfig(BaseModel):

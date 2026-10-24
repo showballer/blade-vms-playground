@@ -73,12 +73,25 @@ app.whenReady().then(async()=>{try{
  win.webContents.session.webRequest.onBeforeRequest((d,cb)=>cb({cancel:!d.url.startsWith('file:')&&!d.url.startsWith('data:')}));
  await win.loadFile(path.join(output,'index.html'));await wait('!!document.querySelector("input[aria-label=联动转盘与测振仪]")');
  await click('document.querySelector("input[aria-label=联动转盘与测振仪]")');await mode('分段采集');
+ await check('两轴校正从配置保存并传入分段定位，测点半径保持不变',async()=>{
+  await click(button('转盘点位'));await mode('分段采集');
+  await wait('!!document.querySelector("input[aria-label=俯仰角校正系数]")');
+  await js('(()=>{const input=document.querySelector("input[aria-label=俯仰角校正系数]");Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set.call(input,"0.896932");input.dispatchEvent(new Event("input",{bubbles:true}));})()');
+  await wait('JSON.parse(localStorage.getItem("blade-auto-follow-draft-v1")).settings.pitchAngleScale===.896932');
+  await js('(()=>{const input=document.querySelector("input[aria-label=水平角校正系数]");Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set.call(input,"0.950153");input.dispatchEvent(new Event("input",{bubbles:true}));})()');
+  await wait('JSON.parse(localStorage.getItem("blade-auto-follow-draft-v1")).settings.yawAngleScale===.950153');
+  assert.equal(await js('JSON.parse(localStorage.getItem("blade-auto-follow-draft-v1")).blades[0].points[0].radiusM'),.58);
+  await click(button('数据采集'));await pause(100);
+ });
  await wait(station(180)+'?.getAttribute("aria-disabled")==="false"');
  await check('分段点位双击只定位一次，成功后同步本段与段后位置',async()=>{
   await js('window.__positionFixture.holdRecall=true');
   const before=await js(calls('recall')+'.length');
   await js('(()=>{const n='+station(180)+';n.dispatchEvent(new MouseEvent("click",{bubbles:true}));n.dispatchEvent(new MouseEvent("click",{bubbles:true}));})()');
   await wait('!!window.__positionFixture.releaseRecall');assert.equal(await js(calls('recall')+'.length'),before+1);
+  const corrected=await js(calls('recall')+'.at(-1).request');
+  assert.ok(Math.abs(corrected.axis1AngleDeg-.896932*Math.atan2(.73+.58,2.5)*180/Math.PI)<.001);
+  assert.ok(Math.abs(corrected.axis2AngleDeg)<.001);
   assert.equal(await js('window.__positionFixture.calls.filter(c=>c.action==="start").length'),0);
   assert.ok((await js('document.querySelector(".field-auto-capture-scroll table tbody").innerText')).includes('0° → 90°'));
   await js('window.__positionFixture.holdRecall=false;window.__positionFixture.releaseRecall()');await settled();
@@ -105,6 +118,9 @@ app.whenReady().then(async()=>{try{
   await wait('document.querySelector(".field-auto-capture-scroll table tbody").innerText.includes("270° → 0°")');
   const recalls=await js(calls('recall')+'.length');await click('document.querySelector("button[aria-label^=开始采集叶片]")');await wait('window.__positionFixture.calls.some(c=>c.action==="start")');
   const start=await js('window.__positionFixture.calls.findLast(c=>c.action==="start")');assert.deepEqual(start.config.pointCycle.points.map(p=>p.azimuthDeg),[270,0]);assert.equal(start.config.pointCycle.nextWaitPoint.azimuthDeg,90);assert.equal(await js(calls('recall')+'.length'),recalls);await settled();
+  assert.equal(start.config.pointCycle.geometry.pitchAngleScale,.896932);
+  assert.equal(start.config.pointCycle.geometry.yawAngleScale,.950153);
+  assert.ok(Math.abs(start.config.pointCycle.points[0].axis2AngleDeg-.950153*Math.atan2(.58,2.5)*180/Math.PI)<.001);
  });
  await check('自动跟随图保持只读',async()=>{await mode('自动跟随');assert.equal(await js('document.querySelectorAll(".field-cycle-motion g[role=button]").length'),0);const n=await js(calls('recall')+'.length');await click(station(90));await pause(100);assert.equal(await js(calls('recall')+'.length'),n)});
  await check('手动图定位M2后按M2到M1采集，Space可定位',async()=>{

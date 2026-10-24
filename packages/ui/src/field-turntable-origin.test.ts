@@ -194,6 +194,14 @@ check("可恢复漏传返回参数的计算路线原点，不能从校准点或�
   const origin = recoverCalculatedWorkOrigin(status)!;
   near(origin.axis1AngleDeg, -.47); near(origin.axis2AngleDeg, -16.73);
   assert.notEqual(origin.axis1AngleDeg, axes(status)["1"].output_angle_deg);
+  const idealPitch = Math.atan2(.85 - .078, 3.3) * 180 / Math.PI;
+  Object.assign(config.geometry, { pitchAngleScale: .896932, anchorAxis1AngleDeg: -.47 + .896932 * idealPitch });
+  near(recoverCalculatedWorkOrigin(status)!.axis1AngleDeg, -.47);
+  for (const pitchAngleScale of [null, 0, 1.6, NaN]) {
+    Object.assign(config.geometry, { pitchAngleScale });
+    assert.equal(recoverCalculatedWorkOrigin(status), null);
+  }
+  Object.assign(config.geometry, { pitchAngleScale: .896932 });
   config.startAtCurrentPose = true;
   assert.equal(recoverCalculatedWorkOrigin(status), null);
   config.startAtCurrentPose = false; status.pointCycle.sessionId = "another-task";

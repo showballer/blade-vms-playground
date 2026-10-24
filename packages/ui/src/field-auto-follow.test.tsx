@@ -135,7 +135,7 @@ check("仅恢复草稿字段，丢弃伪造参考和安全确认，保留用户�
 });
 check("当前测点或安装变化必须废弃参考，周期和其它测点变化可保留参考", () => {
   const key = autoFollowAnchorKey(autoFollowDefaults, "COM3");
-  for (const patch of [{ distanceM: 3 }, { hubHeightDeltaM: 2 }, { direction: "counterclockwise" as const }, { axis1Sign: -1 as const }, { axis2Sign: -1 as const }, { activePointId: "p2", points: [{ id: "p2", name: "P2", radiusM: .31 }] }, { points: [{ id: "p1", name: "P1", radiusM: .4 }] }]) assert.notEqual(autoFollowAnchorKey({ ...autoFollowDefaults, ...patch }, "COM3"), key);
+  for (const patch of [{ pitchAngleScale: .9 }, { yawAngleScale: .95 }, { distanceM: 3 }, { hubHeightDeltaM: 2 }, { direction: "counterclockwise" as const }, { axis1Sign: -1 as const }, { axis2Sign: -1 as const }, { activePointId: "p2", points: [{ id: "p2", name: "P2", radiusM: .31 }] }, { points: [{ id: "p1", name: "P1", radiusM: .4 }] }]) assert.notEqual(autoFollowAnchorKey({ ...autoFollowDefaults, ...patch }, "COM3"), key);
   assert.notEqual(autoFollowAnchorKey(autoFollowDefaults, "COM4"), key);
   assert.equal(autoFollowAnchorKey({ ...autoFollowDefaults, periodSeconds: 20, points: [...autoFollowDefaults.points, { id: "p2", name: "P2", radiusM: .5 }] }, "COM3"), key);
   assert.equal(autoFollowAnchorKey({ ...autoFollowDefaults, periodSeconds: 0 }, "COM3"), key, "人手转动不改变已确认测点的光学位置");

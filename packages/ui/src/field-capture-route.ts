@@ -185,6 +185,8 @@ function theoreticalRouteErrors(route: FieldCaptureRoute): string[] {
       cycle.maxMoveRpm !== undefined && cycle.speedRpm > cycle.maxMoveRpm) errors.push("请核对叶轮周期、等待时间与转盘速度");
   const geometry = cycle.geometry;
   if (!geometry || !finite(geometry.distanceM, .001, 10000) || !finite(geometry.hubHeightDeltaM, -10000, 10000) ||
+      geometry.pitchAngleScale !== undefined && !finite(geometry.pitchAngleScale, .5, 1.5) ||
+      geometry.yawAngleScale !== undefined && !finite(geometry.yawAngleScale, .5, 1.5) ||
       !finite(geometry.anchorRadiusM, .001, 1000) || !finite(geometry.anchorAxis1AngleDeg, -35, 35) || !finite(geometry.anchorAxis2AngleDeg, -180, 180) ||
       ![1, -1].includes(geometry.axis1Sign) || ![1, -1].includes(geometry.axis2Sign) || !["clockwise", "counterclockwise"].includes(geometry.rotationDirection)) errors.push("请完善自动跟随测量几何与轴方向参数");
   if (!cycle.rssiTriggerEnabled || !finite(cycle.rssiEnterSpread, .1, 100) || !finite(cycle.rssiExitSpread, 0, 99.9) ||

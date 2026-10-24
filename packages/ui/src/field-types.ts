@@ -48,6 +48,7 @@ export type FieldTurntableConfig = { port: string; axis: 1 | 2; speedRpm: number
 export type FieldAutoFollowGeometry = {
   distanceM: number; hubHeightDeltaM: number; rotationDirection: "clockwise" | "counterclockwise";
   axis1Sign: 1 | -1; axis2Sign: 1 | -1; anchorRadiusM: number;
+  pitchAngleScale?: number; yawAngleScale?: number;
   anchorAxis1AngleDeg: number; anchorAxis2AngleDeg: number;
 };
 export type FieldPointCyclePoint = { pointId?: string; name: string; axis1AngleDeg: number; axis2AngleDeg: number; port?: string; referenceSignature?: string;

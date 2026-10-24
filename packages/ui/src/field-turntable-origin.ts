@@ -74,14 +74,18 @@ export function recoverCalculatedWorkOrigin(status: FieldStatus | null): FieldWo
   if (!status || fieldIsActive(status) || !validGeneration(status.service.generation)) return null;
   const record = status.recording as unknown as { pointCycle?: { sessionId?: string; referenceSignature?: string };
     turntable?: { config?: { mode?: string; startAtCurrentPose?: boolean; port?: string; geometry?: {
-      distanceM: number; hubHeightDeltaM: number; anchorRadiusM: number; anchorAxis1AngleDeg: number; anchorAxis2AngleDeg: number; axis1Sign: number } } } } | undefined;
+      distanceM: number; hubHeightDeltaM: number; anchorRadiusM: number; anchorAxis1AngleDeg: number; anchorAxis2AngleDeg: number; axis1Sign: number; pitchAngleScale?: number; yawAngleScale?: number } } } } | undefined;
   const config = record?.turntable?.config, geometry = config?.geometry;
+  const pitchAngleScale = geometry?.pitchAngleScale === undefined ? 1 : geometry.pitchAngleScale;
+  const yawAngleScale = geometry?.yawAngleScale === undefined ? 1 : geometry.yawAngleScale;
   if (config?.mode !== "automatic_stations" || config.startAtCurrentPose !== false || !geometry ||
       !record?.pointCycle?.sessionId || record.pointCycle.sessionId !== status.pointCycle?.sessionId ||
       ![geometry.distanceM, geometry.hubHeightDeltaM, geometry.anchorRadiusM, geometry.anchorAxis1AngleDeg, geometry.anchorAxis2AngleDeg].every(Number.isFinite) ||
-      geometry.distanceM <= 0 || geometry.anchorRadiusM <= 0 || ![1, -1].includes(geometry.axis1Sign)) return null;
+      geometry.distanceM <= 0 || geometry.anchorRadiusM <= 0 || ![1, -1].includes(geometry.axis1Sign) ||
+      !Number.isFinite(pitchAngleScale) || pitchAngleScale < .5 || pitchAngleScale > 1.5 ||
+      !Number.isFinite(yawAngleScale) || yawAngleScale < .5 || yawAngleScale > 1.5) return null;
   const origin = { port: config.port!, generation: status.service.generation, referenceSignature: record.pointCycle.referenceSignature!,
-    axis1AngleDeg: normalized(geometry.anchorAxis1AngleDeg - geometry.axis1Sign *
+    axis1AngleDeg: normalized(geometry.anchorAxis1AngleDeg - geometry.axis1Sign * pitchAngleScale *
       Math.atan2(geometry.hubHeightDeltaM - geometry.anchorRadiusM, geometry.distanceM) * 180 / Math.PI),
     axis2AngleDeg: geometry.anchorAxis2AngleDeg };
   return originValid(origin) && matchingWorkOrigin(origin, status, origin.port) ? origin : null;

@@ -76,16 +76,18 @@ function pointCycleConfig(value) {
   if (automatic) {
     const number = (v, min, max) => typeof v === 'number' && Number.isFinite(v) && v >= min && v <= max;
     const geometry = value.geometry;
-    const fields = ['distanceM', 'hubHeightDeltaM', 'rotationDirection', 'axis1Sign', 'axis2Sign', 'anchorRadiusM', 'anchorAxis1AngleDeg', 'anchorAxis2AngleDeg'];
+    const fields = ['distanceM', 'hubHeightDeltaM', 'rotationDirection', 'axis1Sign', 'axis2Sign', 'anchorRadiusM', 'anchorAxis1AngleDeg', 'anchorAxis2AngleDeg', 'pitchAngleScale', 'yawAngleScale'];
     if (value.rssiTriggerEnabled !== true || !(value.nominalPeriodSeconds === 0 || number(value.nominalPeriodSeconds, 0.5, 3600)) ||
         !number(value.maxMoveRpm, 0.02, 10) || value.speedRpm > value.maxMoveRpm || Math.abs(value.speedRpm / 0.02 - Math.round(value.speedRpm / 0.02)) > 1e-7 ||
         !geometry || typeof geometry !== 'object' || Array.isArray(geometry) || Object.keys(geometry).some(key => !fields.includes(key)) ||
         !number(geometry.distanceM, 0.001, 10000) || !number(geometry.hubHeightDeltaM, -10000, 10000) ||
         !number(geometry.anchorRadiusM, 0.001, 1000) || !number(geometry.anchorAxis1AngleDeg, -35, 35) || !number(geometry.anchorAxis2AngleDeg, -180, 180) ||
+        geometry.pitchAngleScale !== undefined && !number(geometry.pitchAngleScale, 0.5, 1.5) ||
+        geometry.yawAngleScale !== undefined && !number(geometry.yawAngleScale, 0.5, 1.5) ||
         !['clockwise', 'counterclockwise'].includes(geometry.rotationDirection) || ![-1, 1].includes(geometry.axis1Sign) || ![-1, 1].includes(geometry.axis2Sign))
       throw failure('自动跟随需要有效安装几何、周期、速度上限及进入离开判定', 400);
     Object.assign(follow, { mode: 'automatic_stations', nominalPeriodSeconds: value.nominalPeriodSeconds,
-      maxMoveRpm: value.maxMoveRpm, geometry: Object.fromEntries(fields.map(key => [key, geometry[key]])) });
+      maxMoveRpm: value.maxMoveRpm, geometry: Object.fromEntries(fields.filter(key => geometry[key] !== undefined).map(key => [key, geometry[key]])) });
   }
   const normalizePoint = point => {
     if (!point || (point.pointId !== undefined && (typeof point.pointId !== 'string' || !point.pointId.trim() || point.pointId.length > 120)) ||

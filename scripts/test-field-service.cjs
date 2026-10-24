@@ -649,6 +649,8 @@ test('automatic stations preserve physical geometry and multi-point classificati
   for (const change of [{ mode: 'unknown' }, { mode: 'legacy' }, { collectionId: '' }, { collectionId: 'c'.repeat(32) + '\n' }, { collectionId: true }, { collectionId: null }, { collectionId: 'C'.repeat(32) }, { rssiTriggerEnabled: false }, { nominalPeriodSeconds: .1 }, { nominalPeriodSeconds: -1 }, { nominalPeriodSeconds: true }, { maxMoveRpm: .2 }, { speedRpm: .231, maxMoveRpm: .231 },
     ...[0, -.1, .099, 120.001, NaN, Infinity, true, '30', null].map(maxMoveAccelerationDegS2 => ({ maxMoveAccelerationDegS2 })),
     { geometry: { ...pointCycle.geometry, axis1Sign: true } }, { geometry: { ...pointCycle.geometry, calibrated: true } },
+    ...[0, .4999, 1.5001, true, null, '0.9', NaN, Infinity].map(pitchAngleScale => ({ geometry: { ...pointCycle.geometry, pitchAngleScale } })),
+    ...[0, .4999, 1.5001, true, null, '0.95', NaN, Infinity].map(yawAngleScale => ({ geometry: { ...pointCycle.geometry, yawAngleScale } })),
     { points: [{ ...pointCycle.points[0], radialPointId: '' }] }, { points: [{ ...pointCycle.points[0], azimuthDeg: 360 }] },
     ...[{ rootRadiusM: true }, { rootRadiusM: -.1 }, { rootRadiusM: .4 }, { rootRadiusM: Infinity },
       { bladeLengthM: 0 }, { bladeLengthM: '1' }, { bladeLengthM: .1 }].map(change => ({ points: [{ ...pointCycle.points[0], ...change }] }))]) {
@@ -657,6 +659,12 @@ test('automatic stations preserve physical geometry and multi-point classificati
   assert.equal(f.requests.length, 0);
   await f.service.begin({ ...config, pointCycle: { ...pointCycle, sessionId: 'invented', identityVerified: true } });
   assert.deepEqual(JSON.parse(f.requests.find(request => request.route === 'start').options.body).pointCycle, pointCycle);
+  for (const port of ['COM6', '/dev/cu.usbserial-110', 'tcp://192.168.10.50:5000']) {
+    const corrected = { ...pointCycle, port, geometry: { ...pointCycle.geometry, pitchAngleScale: .896932, yawAngleScale: .950153 },
+      points: pointCycle.points.map(point => ({ ...point, port })) };
+    await f.service.begin({ ...config, pointCycle: corrected });
+    assert.deepEqual(JSON.parse(f.requests.filter(row => row.route === 'start').at(-1).options.body).pointCycle, corrected);
+  }
   const operator = { ...pointCycle, nominalPeriodSeconds: 0, speedRpm: .22, maxMoveRpm: .22, dwellSeconds: 60 };
   await f.service.begin({ ...config, pointCycle: operator });
   assert.deepEqual(JSON.parse(f.requests.filter(request => request.route === 'start').at(-1).options.body).pointCycle, operator);
