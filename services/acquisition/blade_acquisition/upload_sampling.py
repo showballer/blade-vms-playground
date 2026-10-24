@@ -16,7 +16,7 @@ from scipy.signal import resample_poly
 
 from .csv_export import prepare_export
 from .native_capture import SAMPLES
-from .storage import HEADER, MAGIC, RECORD, atomic_json
+from .storage import HEADER, MAGIC, RECORD, atomic_json, normalize_recording_name
 
 VERSION = 1
 
@@ -83,7 +83,7 @@ def prepare_upload(store, recording_id, target_rate, cache_root):
     if destination.is_symlink():
         raise ValueError("上传缓存目录无效。")
     if destination.exists():
-        cached = json.loads((destination / "manifest.json").read_text("utf-8"))
+        cached = normalize_recording_name(json.loads((destination / "manifest.json").read_text("utf-8")))
         if cached.get("sampling", {}).get("sourceFingerprint") == fingerprint:
             return {"directory": str(destination), "recording": cached}
         raise ValueError("上传缓存校验失败。")

@@ -64,8 +64,25 @@ POINT_LIST_FIELDS = (
 )
 
 
+def normalize_recording_name(manifest: dict) -> dict:
+    """Remove only the suffix added by older early-detection builds, without disk writes."""
+    original = manifest.get("originalTaskName")
+    if isinstance(original, str):
+        return {**manifest, "name": original}
+    name = manifest.get("name")
+    cycle = manifest.get("pointCycle")
+    evidence = cycle.get("diagnosticDetection") if isinstance(cycle, dict) else None
+    suffix = " [未停稳判定测试]"
+    if (manifest.get("diagnosticOnly") is True and isinstance(evidence, dict) and
+            evidence.get("enabled") is True and isinstance(name, str) and name.endswith(suffix)):
+        # Strip one application-added suffix, preserving a user's literal suffix.
+        return {**manifest, "name": name[:-len(suffix)], "originalTaskName": name[:-len(suffix)]}
+    return manifest
+
+
 def recording_summary(manifest: dict) -> dict:
     """List-only metadata; detail/export/upload retain the original full manifest."""
+    manifest = normalize_recording_name(manifest)
     result = {key: copy.deepcopy(manifest[key]) for key in RECORDING_LIST_FIELDS if key in manifest}
     for source, target in ((manifest, result), (manifest.get("sourceMetadata"), {})):
         if not isinstance(source, dict) or "pointCycle" not in source:
@@ -173,14 +190,14 @@ class RecordingStore:
             raise KeyError("无效采集记录目录。")
         return path
 
-    def _read_manifest(self, directory: Path) -> dict:
+    def _read_manifest(self, directory: Path, *, normalize_name: bool = True) -> dict:
         path = directory / "manifest.json"
         if path.is_symlink() or path.stat().st_size > 1024 * 1024:
             raise ValueError("无效采集元数据文件。")
         manifest = json.loads(path.read_text(encoding="utf-8"))
         if manifest.get("id") != directory.name:
             raise ValueError("采集元数据 ID 不一致。")
-        return manifest
+        return normalize_recording_name(manifest) if normalize_name else manifest
 
     def chunks(self, directory: Path) -> list[Path]:
         return sorted(path for path in directory.iterdir()
@@ -191,7 +208,7 @@ class RecordingStore:
             if not ID_PATTERN.fullmatch(directory.name) or not directory.is_dir() or directory.is_symlink():
                 continue
             try:
-                manifest = self._read_manifest(directory)
+                manifest = self._read_manifest(directory, normalize_name=False)
                 if manifest.get("status") == "incomplete":
                     count, tail_bytes, valid_chunks, previous_end = 0, 0, 0, 0
                     for path in self.chunks(directory):
@@ -220,7 +237,7 @@ class RecordingStore:
         try:
             with closing(sqlite3.connect(self.index_path)) as database, database:
                 rows = database.execute("SELECT manifest FROM recordings ORDER BY started_at DESC LIMIT 1000").fetchall()
-            return [json.loads(row[0]) for row in rows]
+            return [normalize_recording_name(json.loads(row[0])) for row in rows]
         except (sqlite3.Error, ValueError):
             records = []
             for path in self.root.iterdir():

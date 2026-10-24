@@ -165,7 +165,7 @@ export function FieldServicePanel({ status, busy, onAction }: {
     {(service?.error || status?.error) && <p className="field-error" role="alert">{service?.error || status?.error}</p>}
     {service?.state === "missing" && <p className="field-notice">未找到采集服务，请检查本机采集服务安装。</p>}
     {service && !service.dllConfigured && <p className="field-notice">尚未配置厂商 SDK。可以查看已保存记录，不能开始真实采集。厂商驱动需按安装说明准备。</p>}
-    <div className="field-service-actions"><Button disabled={busy || active || service?.launcher === "python-module"} onClick={() => onAction("configureService")}><FolderOpen size={14} />选择采集服务 EXE</Button><Button disabled={busy || active} onClick={() => onAction("configureDll")}><FolderOpen size={14} />选择设备 SDK</Button><Button disabled={busy || active} onClick={() => onAction("restartService")}><RefreshCw size={14} />重启采集服务</Button><Button disabled={busy} onClick={() => onAction("openDataDirectory")}><HardDrive size={14} />打开数据目录</Button></div>
+    <div className="field-service-actions"><Button disabled={busy || active || (service?.launcher === "python-module" || service?.launcher === "macos-bundle")} onClick={() => onAction("configureService")}><FolderOpen size={14} />选择采集服务 EXE</Button><Button disabled={busy || active} onClick={() => onAction("configureDll")}><FolderOpen size={14} />选择设备 SDK</Button><Button disabled={busy || active} onClick={() => onAction("restartService")}><RefreshCw size={14} />重启采集服务</Button><Button disabled={busy} onClick={() => onAction("openDataDirectory")}><HardDrive size={14} />打开数据目录</Button></div>
     {active && <p className="field-subtext">采集期间不能更换或重启服务，请先停止并保存。</p>}
   </section>;
 }

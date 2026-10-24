@@ -6,8 +6,28 @@ const os = require('node:os');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
 const { createFieldCloudSync } = require('../apps/desktop/electron/field-cloud-sync.cjs');
+const { normalizeRecordingName } = require('../apps/desktop/electron/field-recording-name.cjs');
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const json = (data, status = 200) => new Response(JSON.stringify(data), { status });
+
+test('diagnostic names keep user text and legacy uploads do not rewrite local records', async t => {
+  const f = fixture(t), current = f.recording();
+  const name = '用户任务 [未停稳判定测试]';
+  const evidence = { diagnosticOnly: true, validMeasurement: false, pointCycle: { diagnosticDetection: { enabled: true } } };
+  assert.equal(normalizeRecordingName({ name }).name, name);
+  assert.equal(normalizeRecordingName({ ...evidence, name, originalTaskName: name }).name, name);
+  Object.assign(current.manifest, evidence, { name: name + ' [未停稳判定测试]' });
+  const file = path.join(current.dir, 'manifest.json');
+  fs.writeFileSync(file, JSON.stringify(current.manifest));
+  const before = fs.readFileSync(file);
+  const queue = f.create(); queue.resume(); queue.uploadRecording(current.manifest.id); await queue.settled();
+  const capture = f.captures.get(current.manifest.id);
+  assert.equal(capture.recording.name, name);
+  assert.equal(capture.recording.diagnosticOnly, true);
+  assert.equal(capture.complete, true);
+  assert.equal(queue.status().items[0].name, name);
+  assert.deepEqual(fs.readFileSync(file), before);
+});
 
 test('upload sampling persists, freezes across retry, and never modifies source bytes', async t => {
   const f = fixture(t), original = f.recording();

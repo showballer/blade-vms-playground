@@ -11,11 +11,46 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 from blade_acquisition.receiver import Batch
 from blade_acquisition.service import Settings, create_app
-from blade_acquisition.storage import atomic_json, recording_summary
+from blade_acquisition.storage import atomic_json, recording_summary, normalize_recording_name
 from blade_acquisition.task_export import build_task_archive, prepare_task_export, segmented_coverage
 
 
 class TaskExportTests(unittest.TestCase):
+    def test_legacy_diagnostic_names_are_clean_for_reads_and_export_without_rewriting_raw(self):
+        record = self.record()
+        original = record['name']
+        record.update(name=original + ' [未停稳判定测试]', diagnosticOnly=True, validMeasurement=False)
+        record['pointCycle']['diagnosticDetection'] = {'enabled': True}
+        path = self.store.directory(record['id']) / 'manifest.json'
+        atomic_json(path, record)
+        self.store.update_index(record)
+        before = path.read_bytes()
+        self.assertEqual(self.store.list()[0]['name'], original)
+        self.assertEqual(self.store.get(record['id'])['recording']['name'], original)
+        self.assertEqual(recording_summary(record)['name'], original)
+        with build_task_archive(self.store, [record['id']]) as output, zipfile.ZipFile(output) as archive:
+            index = json.loads(archive.read('task.json'))
+            exported = json.loads(archive.read(index['records'][0]['manifest']))
+            self.assertEqual(exported['name'], original)
+            self.assertTrue(exported['diagnosticOnly'])
+            self.assertFalse(exported['validMeasurement'])
+        from blade_acquisition.upload_sampling import prepare_upload
+        uploaded = prepare_upload(self.store, record['id'], 0, Path(self.temp.name) / 'upload-cache')
+        self.assertEqual(uploaded['recording']['name'], original)
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_user_names_are_not_blindly_stripped_and_normalization_is_idempotent(self):
+        name = '自定义 [未停稳判定测试]'
+        self.assertEqual(normalize_recording_name({'name': name})['name'], name)
+        diagnostic = {'diagnosticOnly': True, 'pointCycle': {'diagnosticDetection': {'enabled': True}}}
+        new = {**diagnostic, 'name': name, 'originalTaskName': name}
+        self.assertEqual(normalize_recording_name(new)['name'], name)
+        old = {**diagnostic, 'name': name + ' [未停稳判定测试]'}
+        clean = normalize_recording_name(old)
+        self.assertEqual(clean['name'], name)
+        self.assertEqual(normalize_recording_name(clean), clean)
+        self.assertNotEqual(old['name'], clean['name'])
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

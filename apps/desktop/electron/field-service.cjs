@@ -289,6 +289,8 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     return { python: fs.existsSync(candidate) ? candidate : null, root: servicesRoot };
   }
   function executable() {
+    const bundledMac = path.join(resourcesDir, 'acquisition', 'BladeAcquisition');
+    if (platform === 'darwin' && fs.existsSync(bundledMac)) return bundledMac;
     if (platform !== 'win32') {
       const resolved = pythonLauncher();
       return resolved.python || path.join(resolved.root, '.venv', 'bin', 'python');
@@ -302,9 +304,15 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
   function serviceInfo() {
     return { state, error, generation, executable: executable(),
       dllConfigured: isSdkFile(dllPath(), platform), sdkPath: dllPath(),
-      launcher: platform === 'win32' ? 'windows-bundle' : 'python-module' };
+      launcher: platform === 'win32' ? 'windows-bundle' :
+        platform === 'darwin' && executable() === path.join(resourcesDir, 'acquisition', 'BladeAcquisition') ? 'macos-bundle' : 'python-module' };
   }
   function launchSpec() {
+    if (serviceInfo().launcher === 'macos-bundle') {
+      const file = executable();
+      return { file, args: [], cwd: path.dirname(file),
+        environment: ({ port, secret }) => posixServiceEnvironment({ dataDir, dll: dllPath(), port, secret, source: environment }) };
+    }
     if (platform === 'win32') {
       const file = executable();
       if (!fs.existsSync(file)) {
@@ -433,7 +441,7 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
         processChild.stdout?.on('data', capture); processChild.stderr?.on('data', capture);
         processChild.once('error', () => {
           if (current !== generation) return;
-          error = '采集服务进程启动失败，请核对 Windows x64 服务包及依赖。'; state = 'error';
+          error = '采集服务进程启动失败，请核对当前系统的服务包及依赖。'; state = 'error';
         });
         const exited = code => {
           exitedChildren.add(processChild);

@@ -13,7 +13,7 @@
     "build": "vite build",
     "verify:windows-payload": "node ../../scripts/verify-windows-payload.cjs --write-nsis",
     "package:windows": "npm run verify:windows-payload && npm run build && electron-builder --win nsis zip --x64",
-    "package:mac": "npm run build && electron-builder --mac dir --arm64"
+    "package:mac": "node ../../scripts/package-macos.cjs"
   },
   "devDependencies": {
     "@blade/ui": "*",

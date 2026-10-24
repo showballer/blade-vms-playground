@@ -243,7 +243,7 @@ export type FieldStatus = {
     executable?: string;
     dllConfigured: boolean;
     sdkPath?: string;
-    launcher?: "windows-bundle" | "python-module";
+    launcher?: "windows-bundle" | "macos-bundle" | "python-module";
   };
   state: "idle" | "starting" | "acquiring" | "stopping" | "error";
   error?: string;

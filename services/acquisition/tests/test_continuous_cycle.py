@@ -265,6 +265,8 @@ class ContinuousCycleTests(unittest.TestCase):
                 self.assertEqual(sdk.events.count('start'), 1)
                 self.assertEqual(len(paths), 2)
                 second = json.loads(paths[1].read_text())
+                self.assertEqual(second['name'], START['name'])
+                self.assertEqual(second['originalTaskName'], START['name'])
                 self.assertTrue(second['diagnosticOnly'])
                 self.assertFalse(second['validMeasurement'])
                 pc = second['pointCycle']

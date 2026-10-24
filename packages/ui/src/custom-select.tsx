@@ -4,7 +4,7 @@ import { createPortal } from "react-dom";
 import { Check, ChevronDown } from "lucide-react";
 
 /** Single-select replacement. The native element is retained only for forms and change events. */
-export type CustomSelectProps = Omit<React.SelectHTMLAttributes<HTMLSelectElement>, "multiple" | "size"> & { multiple?: false; size?: 1 };
+export type CustomSelectProps = Omit<React.SelectHTMLAttributes<HTMLSelectElement>, "multiple" | "size"> & { multiple?: false; size?: 1; searchable?: boolean; searchPlaceholder?: string };
 type Choice = { value: string; label: string; disabled: boolean; hidden: boolean; index: number };
 type ChoiceGroup = { label?: string; choices: Choice[] };
 const useClientLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
@@ -36,10 +36,12 @@ function collectChoices(children: React.ReactNode): { choices: Choice[]; groups:
 
 export const CustomSelect = forwardRef<HTMLSelectElement, CustomSelectProps>(function CustomSelect({
   children, value, defaultValue, onChange, onInvalid, onFocus, className = "", style, id, disabled = false,
-  required, tabIndex, autoFocus, multiple: _multiple, size: _size, ...props
+  required, tabIndex, autoFocus, multiple: _multiple, size: _size, searchable = false, searchPlaceholder = "搜索选项", ...props
 }, forwardedRef) {
   const generatedId = useId(), triggerId = id || `custom-select-${generatedId}`, listId = `${triggerId}-listbox`, errorId = `${triggerId}-error`;
   const rootRef = useRef<HTMLSpanElement>(null), nativeRef = useRef<HTMLSelectElement>(null), triggerRef = useRef<HTMLButtonElement>(null), popupRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null), listRef = useRef<HTMLDivElement>(null);
+  const [query, setQuery] = useState("");
   useImperativeHandle(forwardedRef, () => nativeRef.current!, []);
   const { choices, groups } = useMemo(() => collectChoices(children), [children]);
   const [uncontrolledValue, setUncontrolledValue] = useState(() => String(defaultValue ?? choices.find(choice => !choice.disabled)?.value ?? ""));
@@ -50,17 +52,20 @@ export const CustomSelect = forwardRef<HTMLSelectElement, CustomSelectProps>(fun
   const [position, setPosition] = useState({ left: 0, top: 0, width: 0, maxHeight: 320 });
   const typeahead = useRef({ text: "", time: 0 });
   const isDisabled = disabled || inheritedDisabled;
-  const enabled = choices.filter(choice => !choice.disabled && !choice.hidden);
+  const terms = searchable ? query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean) : [];
+  const visible = choices.filter(choice => !choice.hidden && terms.every(term => choice.label.toLocaleLowerCase().includes(term)));
+  const enabled = visible.filter(choice => !choice.disabled);
   const longestLabel = choices.reduce((longest, choice) => choice.label.length > longest.length ? choice.label : longest, "");
   const ariaProps = Object.fromEntries(Object.entries(props).filter(([key]) => key.startsWith("aria-"))) as React.AriaAttributes;
 
   const close = useCallback((restoreFocus = false) => {
-    setOpen(false); typeahead.current = { text: "", time: 0 };
+    setOpen(false); setQuery(""); typeahead.current = { text: "", time: 0 };
     if (restoreFocus && !triggerRef.current?.matches(":disabled")) triggerRef.current?.focus({ preventScroll: true });
   }, []);
   const blocked = () => Boolean(disabled || nativeRef.current?.matches(":disabled"));
   function openList(edge?: "first" | "last") {
     if (blocked() || !choices.length) return;
+    setQuery("");
     setPortalHost(triggerRef.current?.closest("dialog") || document.body);
     setActiveIndex((edge === "first" ? enabled[0] : edge === "last" ? enabled.at(-1) : enabled.find(choice => choice.index === selected?.index) ?? enabled[0])?.index ?? -1);
     setOpen(true);
@@ -107,10 +112,10 @@ export const CustomSelect = forwardRef<HTMLSelectElement, CustomSelectProps>(fun
     if (native?.validity.valid) setValidationMessage("");
   }, [choices, controlled, currentValue, uncontrolledValue]);
   useEffect(() => {
-    if (open && !choices.some(choice => choice.index === activeIndex && !choice.disabled && !choice.hidden)) {
+    if (open && !enabled.some(choice => choice.index === activeIndex)) {
       setActiveIndex(enabled.find(choice => choice.index === selected?.index)?.index ?? enabled[0]?.index ?? -1);
     }
-  }, [open, choices, activeIndex]);
+  }, [open, choices, activeIndex, query]);
   useEffect(() => { if (autoFocus && !blocked()) triggerRef.current?.focus(); }, [autoFocus]);
 
   useClientLayoutEffect(() => {
@@ -146,13 +151,29 @@ export const CustomSelect = forwardRef<HTMLSelectElement, CustomSelectProps>(fun
     };
   }, [open, portalHost, close]);
   useClientLayoutEffect(() => {
+    if (open && searchable && position.width > 0) searchRef.current?.focus({ preventScroll: true });
+  }, [open, searchable, portalHost, position.width]);
+  useClientLayoutEffect(() => {
     if (!open || !popupRef.current) return;
-    const item = document.getElementById(`${listId}-${activeIndex}`), popup = popupRef.current;
-    if (!item) return;
+    const item = document.getElementById(`${listId}-${activeIndex}`), popup = listRef.current;
+    if (!item || !popup) return;
     const bounds = item.getBoundingClientRect(), visible = popup.getBoundingClientRect();
     if (bounds.top < visible.top + 5) popup.scrollTop -= visible.top + 5 - bounds.top;
     else if (bounds.bottom > visible.bottom - 5) popup.scrollTop += bounds.bottom - visible.bottom + 5;
   }, [open, activeIndex, listId, position.maxHeight]);
+
+  function onSearchKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
+    if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+    if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); close(true); }
+    else if (event.key === "Tab") close(true);
+    else if (event.key === "Enter") { event.preventDefault(); choose(enabled.find(choice => choice.index === activeIndex)); }
+    else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const index = enabled.findIndex(choice => choice.index === activeIndex);
+      const next = Math.max(0, Math.min(enabled.length - 1, index + (event.key === "ArrowDown" ? 1 : -1)));
+      setActiveIndex(enabled[next]?.index ?? -1);
+    }
+  }
 
   function onKeyDown(event: React.KeyboardEvent<HTMLButtonElement>) {
     if (blocked()) return;
@@ -201,17 +222,23 @@ export const CustomSelect = forwardRef<HTMLSelectElement, CustomSelectProps>(fun
         if (!firstInvalid || firstInvalid === event.currentTarget) triggerRef.current?.focus({ preventScroll: false });
       }}>{children}</select>
     {validationMessage && <span id={errorId} className="custom-select-validation" role="alert">{validationMessage}</span>}
-    {open && portalHost && createPortal(<div ref={popupRef} id={listId} role="listbox" aria-label={props["aria-label"] || undefined} aria-labelledby={props["aria-labelledby"] || (!props["aria-label"] ? triggerId : undefined)}
-      className="custom-select-popup" popover="manual" style={{ ...position, visibility: position.width ? "visible" : "hidden" }} onPointerDown={event => event.preventDefault()}>
-      {groups.map((group, index) => <div key={index} role={group.label === undefined ? "presentation" : "group"} aria-label={group.label}>
+    {open && portalHost && createPortal(<div ref={popupRef}
+      className="custom-select-popup" popover="manual" style={{ ...position, visibility: position.width ? "visible" : "hidden" }} onPointerDown={event => { if (event.target !== searchRef.current) event.preventDefault(); }}>
+      {searchable && <div className="custom-select-search"><input ref={searchRef} type="search" role="combobox" autoComplete="off"
+        aria-label={`${props["aria-label"] || "选项"}搜索`} aria-expanded="true" aria-autocomplete="list" aria-controls={listId}
+        aria-activedescendant={activeIndex >= 0 ? `${listId}-${activeIndex}` : undefined}
+        placeholder={searchPlaceholder} value={query} onChange={event => { setQuery(event.target.value); setActiveIndex(-1); }} onKeyDown={onSearchKeyDown} /></div>}
+      <div ref={listRef} id={listId} role="listbox" className="custom-select-options" aria-label={props["aria-label"] || undefined} aria-labelledby={props["aria-labelledby"] || (!props["aria-label"] ? triggerId : undefined)}>
+      {groups.filter(group => group.choices.some(choice => visible.includes(choice))).map((group, index) => <div key={index} role={group.label === undefined ? "presentation" : "group"} aria-label={group.label}>
         {group.label !== undefined && <div className="custom-select-group" aria-hidden="true">{group.label}</div>}
-        {group.choices.filter(choice => !choice.hidden).map(choice => <div key={choice.index} id={`${listId}-${choice.index}`} role="option" aria-selected={choice.index === selected?.index} aria-disabled={choice.disabled || undefined}
+        {group.choices.filter(choice => visible.includes(choice)).map(choice => <div key={choice.index} id={`${listId}-${choice.index}`} role="option" aria-selected={choice.index === selected?.index} aria-disabled={choice.disabled || undefined}
           className={`custom-select-option ${choice.index === activeIndex ? "is-active" : ""} ${choice.index === selected?.index ? "is-selected" : ""}`}
           onPointerMove={() => { if (!choice.disabled) setActiveIndex(choice.index); }} onClick={() => choose(choice)}>
           <span>{choice.label}</span>{choice.index === selected?.index && <Check size={15} aria-hidden="true" />}
         </div>)}
       </div>)}
-      {!choices.some(choice => !choice.hidden) && <div className="custom-select-empty">暂无可选项</div>}
+      {!visible.length && <div className="custom-select-empty" role="status">{query.trim() ? "没有匹配的选项" : "暂无可选项"}</div>}
+      </div>
     </div>, portalHost)}
   </span>;
 });

@@ -519,6 +519,27 @@ test("missing Windows bundle reports missing without spawning", async (t) => {
   assert.equal(f.children.length, 0);
 });
 
+test("Mac bundle starts its own service without source or a Python installation", async (t) => {
+  const f = fixture(t, { options: { platform: "darwin", environment: {
+    PATH: "/usr/bin:/bin", PYTHONHOME: "/foreign", PYTHONPATH: "/foreign", VIRTUAL_ENV: "/foreign",
+  } } });
+  const file = path.join(f.directory, "acquisition", "BladeAcquisition");
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, "test fixture; never executed", { mode: 0o755 });
+  const result = await f.service.start();
+  assert.equal(result.service.state, "ready");
+  assert.equal(result.service.launcher, "macos-bundle");
+  assert.equal(result.service.executable, file);
+  const child = f.children[0];
+  assert.equal(child.file, file);
+  assert.deepEqual(child.args, []);
+  assert.equal(child.options.cwd, path.dirname(file));
+  assert.equal(child.options.shell, false);
+  assert.equal(child.options.env.BLADE_DATA_DIR, path.join(f.directory, "data"));
+  for (const key of ["PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV"])
+    assert.equal(Object.hasOwn(child.options.env, key), false);
+});
+
 test("non-Windows platform without a virtualenv reports missing without spawning", async (t) => {
   const f = fixture(t, { options: { platform: "darwin" } });
   const result = await f.service.start();

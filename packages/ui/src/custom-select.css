@@ -74,13 +74,15 @@
   white-space: nowrap !important;
 }
 .custom-select-popup {
+  display: flex;
+  flex-direction: column;
   position: fixed;
   inset: auto;
   margin: 0;
   padding: 5px;
   box-sizing: border-box;
   z-index: 2147483000;
-  overflow: auto;
+  overflow: hidden;
   overscroll-behavior: contain;
   scrollbar-width: thin;
   border: 1px solid #d9e3f0;
@@ -94,6 +96,10 @@
   text-align: left;
 }
 .custom-select-popup::backdrop { background: transparent; pointer-events: none; }
+.custom-select-options { min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; }
+.custom-select-search { flex: none; padding: 3px 3px 7px; }
+.custom-select-search input { box-sizing: border-box; width: 100%; min-width: 0; padding: 9px 10px; border: 1px solid #a4b9d4; border-radius: 5px; color: inherit; background: #fff; font: inherit; }
+.custom-select-search input:focus { outline: 2px solid #2d6cc033; border-color: var(--accent, #2d6cc0); }
 .custom-select-option { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 34px; padding: 8px 10px; border-radius: 5px; cursor: pointer; }
 .custom-select-option > span { min-width: 0; overflow-wrap: anywhere; }
 .custom-select-option > svg { flex: none; color: var(--accent, #2d6cc0); }

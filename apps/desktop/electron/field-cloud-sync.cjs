@@ -5,6 +5,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { createHash, randomUUID } = require('node:crypto');
+const { normalizeRecordingName } = require('./field-recording-name.cjs');
 const ID = /^[a-f0-9]{32}$/;
 const FILE = /^(?:chunk-[0-9]{8}\.bin|unpaired-rssi\.bin|turntable\.jsonl)$/;
 const SHA = /^[a-f0-9]{64}$/;
@@ -105,7 +106,7 @@ function createFieldCloudSync({ file, dataDir, auth, getLive, prepareUpload, fet
     const { target } = safeFile(directory, 'manifest.json', 1024 * 1024);
     const value = JSON.parse(fs.readFileSync(target, 'utf8'));
     if (!plain(value) || value.id !== id || !['incomplete', 'complete', 'error'].includes(value.status) || !Number.isSafeInteger(value.samples) || value.samples < 0) throw fail('本机采集元数据无效');
-    return value;
+    return normalizeRecordingName(value);
   }
   function assertCurrent(ctx, stamp) {
     if (stamp !== generation || !context() || context().token !== ctx.token || scope(context()) !== scope(ctx)) throw fail('同步已暂停', 499);
@@ -171,7 +172,7 @@ function createFieldCloudSync({ file, dataDir, auth, getLive, prepareUpload, fet
           prepared.recording.sampleRate !== item.uploadSampleRate || typeof prepared.directory !== 'string' ||
           path.dirname(prepared.directory) !== cacheRoot || fs.lstatSync(prepared.directory).isSymbolicLink() ||
           path.dirname(fs.realpathSync(prepared.directory)) !== fs.realpathSync(cacheRoot)) throw fail('上传副本校验失败', 409);
-      directory = prepared.directory; recording = prepared.recording;
+      directory = prepared.directory; recording = normalizeRecordingName(prepared.recording);
     }
     const names = fs.readdirSync(directory);
     if (names.some(name => /^chunk-.*\.part$/.test(name))) throw fail('原始分块尚未完整保存', 409);
@@ -351,7 +352,7 @@ function createFieldCloudSync({ file, dataDir, auth, getLive, prepareUpload, fet
   }
   function status() {
     const binding = auth.cloudBinding(), ctx = context();
-    const items = saved.items.filter(item => owned(item, binding)).map(item => ({ recordingId: item.recordingId, name: item.name,
+    const items = saved.items.filter(item => owned(item, binding)).map(item => ({ recordingId: item.recordingId, name: item.recording ? normalizeRecordingName(item.recording).name : item.name,
       state: item.state, captureId: item.captureId, error: item.error || undefined,
       progress: item.state === 'synced' ? 100 : item.totalBytes ? Math.max(0, Math.min(99, Math.round((item.sentBytes || 0) / item.totalBytes * 100))) : 0 }));
     const uploading = worker && saved.items.some(item => owned(item, binding) && item.state === 'uploading');

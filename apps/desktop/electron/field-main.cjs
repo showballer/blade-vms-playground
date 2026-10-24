@@ -39,7 +39,7 @@ async function idleRequired() {
 async function chooseProgram(kind) {
   await idleRequired();
   const isDll = kind === 'dll';
-  if (!isDll && process.platform !== 'win32') throw failure('当前系统使用项目内 Python 采集服务，无需选择 Windows EXE。', 400);
+  if (!isDll && process.platform !== 'win32') throw failure('当前系统自动使用本机采集服务，无需选择 Windows EXE。', 400);
   const extension = isDll ? sdkExtension(process.platform) : 'exe';
   if (!extension) throw failure('当前操作系统尚不支持厂商 SDK。', 400);
   const selected = await dialog.showOpenDialog(win, {

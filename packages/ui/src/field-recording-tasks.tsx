@@ -43,7 +43,7 @@ export function FieldTaskRecords({ recordings, busy, exporting, onExportTask, ch
   const selected = tasks.find(task => task.key === selectedKey);
   return <>
     {tasks.length > 0 && <div className="field-task-export-toolbar">
-      <label>采集任务<CustomSelect aria-label="筛选采集任务" value={selected?.key || ""} disabled={busy} onChange={event => setSelectedKey(event.target.value)}>
+      <label>采集任务<CustomSelect searchable searchPlaceholder="搜索任务名、风场或风机" aria-label="筛选采集任务" value={selected?.key || ""} disabled={busy} onChange={event => setSelectedKey(event.target.value)}>
         <option value="">全部任务（{tasks.length}）</option>
         {tasks.map(task => <option key={task.key} value={task.key}>{task.name} · {[task.windFarm, task.turbine].filter(Boolean).join(" / ") || "未填写风机"} · {task.records.length} 条 · {fieldDate(task.records[0].startedAt)?.toLocaleString("zh-CN", { hour12: false }) || task.records[0].id.slice(0, 8)}</option>)}
       </CustomSelect></label>

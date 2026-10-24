@@ -2863,7 +2863,7 @@ class AcquisitionController:
                                   **({"pointId": point.pointId} if point.pointId is not None else {}),
                                   **({"actualAngles": actual_angles} if actual_angles is not None else {})}
         if early is not None:
-            metadata.update(diagnosticOnly=True, validMeasurement=False, name=str(metadata.get("name", "")) + " [未停稳判定测试]")
+            metadata.update(diagnosticOnly=True, validMeasurement=False, originalTaskName=metadata.get("name", ""))
             metadata["pointCycle"]["diagnosticDetection"] = early.evidence()
             with self.lock:
                 triggered = early.detector.trigger is not None

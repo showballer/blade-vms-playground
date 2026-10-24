@@ -4,11 +4,14 @@ import json
 from pathlib import Path
 import shutil
 import sys
+import sysconfig
 
 
 def collect(destination: Path) -> None:
     destination.mkdir(parents=True, exist_ok=True)
     python_license = Path(sys.base_prefix) / "LICENSE.txt"
+    if not python_license.is_file():
+        python_license = Path(sysconfig.get_path("stdlib")) / "LICENSE.txt"
     if not python_license.is_file():
         raise FileNotFoundError(f"Python distribution license is missing: {python_license}")
     shutil.copy2(python_license, destination / "Python-LICENSE.txt")
