@@ -58,7 +58,8 @@ export const FieldAutoCaptureList = memo(function FieldAutoCaptureList({ segment
   const saved = useMemo(() => {
     const summary = summarizeBladeRecords(recordings);
     return new Map(targets.map(target => [target.key, getAutoCaptureTargetState(recordings, { collectionId,
-      bladeId: target.bladeId, radialPointId: target.pointId, cycles: target.cycles, stationCount: target.stations, radiusM: target.radiusM,
+      bladeId: target.bladeId, radialPointId: target.pointId, cycles: target.cycles,
+      stationCount: target.route.cycle?.executionMode === "manual_segments" ? target.route.cycle.totalStationCount ?? 0 : target.stations, radiusM: target.radiusM,
       windFarm: config.windFarm || "", turbine: config.turbine.trim() || config.name.trim(), measurementObject: config.object }, summary)]));
   }, [recordings, collectionId, targets, config.windFarm, config.turbine, config.name, config.object]);
   const cycle = status?.pointCycle;
@@ -95,12 +96,12 @@ export const FieldAutoCaptureList = memo(function FieldAutoCaptureList({ segment
         <tbody>{group.targets.map(target => {
           const running = activeKey === target.key, isSelected = selected?.key === target.key;
           const configured = !!target.route.cycle, targetBlockers = captureRouteRequestBlockers(target.route, status), archived = saved.get(target.key);
-          const label = running ? status?.state === "stopping" ? "正在停止" : "正在采集" : !configured ? "待配置" : targetBlockers.length ? "未就绪" : segmented ? "待采集" : archived === "complete" ? "已完成" : archived === "partial" ? "待补采" : "待采集";
+          const label = running ? status?.state === "stopping" ? "正在停止" : "正在采集" : !configured ? "待配置" : targetBlockers.length ? "未就绪" : archived === "complete" ? "已完成" : archived === "diagnostic_complete" ? "测试采集完成" : archived === "partial" ? "待补采" : "待采集";
           return <tr key={target.key} aria-current={running ? "true" : undefined} data-selected={isSelected || undefined}
             data-selectable={!disabled && !!onSelect || undefined} onClick={() => { if (!disabled) onSelect?.(target.key); }}>
             <th scope="row"><button type="button" className="field-auto-capture-point" aria-label={`选择叶片 ${target.bladeId} 测点 ${target.pointName}`} aria-pressed={isSelected} disabled={disabled || !onSelect} onClick={event => { event.stopPropagation(); if (!disabled) onSelect?.(target.key); }}><span className="field-auto-capture-radio" aria-hidden="true" />{target.pointName || "未命名测点"}</button></th>
             <td className="mono">{radius(target.radiusM)}</td><td>{segmented ? target.route.cycle?.points.map(point => `${point.azimuthDeg}°`).join(" → ") || "待配置" : `${target.stations} 个`}</td><td>{segmented ? `${target.route.cycle?.nextWaitPoint?.azimuthDeg ?? "—"}°` : `${target.cycles} 轮`}</td>
-            <td><span title={targetBlockers[0]} className={`field-badge ${running || archived === "complete" ? "green" : archived === "partial" ? "amber" : ""}`}>{label}</span></td>
+            <td><span title={targetBlockers[0]} className={`field-badge ${running || archived === "complete" ? "green" : archived === "partial" || archived === "diagnostic_complete" ? "amber" : ""}`}>{label}</span></td>
           </tr>;
         })}</tbody>
       </table></div>

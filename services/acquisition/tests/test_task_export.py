@@ -80,6 +80,52 @@ class TaskExportTests(unittest.TestCase):
             self.assertEqual([float(row["azimuthDeg"]) for row in rows], [0, 60, 120, 180, 240, 300])
             self.assertTrue(all(row["state"] == "observed" for row in rows))
 
+    def test_segmented_diagnostic_coverage_exports_without_claiming_normal_measurement(self):
+        records = [self.segmented_record(index, when=1000 + index) for index in range(1, 7)]
+        for record in records:
+            record["pointCycle"].update(completion="diagnostic_pass", passCompleteness="confirmed")
+            record.update(diagnosticOnly=True, validMeasurement=False)
+            atomic_json(self.store.directory(record["id"]) / "manifest.json", record)
+            self.store.update_index(record)
+        before = copy.deepcopy(records)
+        with build_task_archive(self.store, [record["id"] for record in records]) as output, zipfile.ZipFile(output) as archive:
+            group, = json.loads(archive.read("task.json"))["segmentedCoverage"]
+            self.assertEqual((group["diagnosticCount"], group["observedCount"], group["coveredCount"]), (6, 0, 6))
+            self.assertTrue(group["coverageComplete"])
+            self.assertFalse(group["complete"])
+            rows = list(csv.DictReader(io.StringIO(archive.read("分段点位汇总.csv").decode("utf-8-sig"))))
+            self.assertTrue(all(row["state"] == "diagnostic_pass" and row["coverageComplete"] == "True" and row["complete"] == "False" for row in rows))
+            entries = json.loads(archive.read("task.json"))["records"]
+            for entry in entries:
+                manifest = json.loads(archive.read(entry["manifest"]))
+                self.assertTrue(manifest["diagnosticOnly"])
+                self.assertFalse(manifest["validMeasurement"])
+        self.assertEqual(records, before)
+        self.assertFalse(segmented_coverage(records[:-1])[0][0]["coverageComplete"])
+        records[0]["pointCycle"]["completion"] = "confirmed_pass"
+        mixed = segmented_coverage(records)[0][0]
+        self.assertTrue(mixed["coverageComplete"])
+        self.assertFalse(mixed["complete"])
+        self.assertEqual((mixed["observedCount"], mixed["diagnosticCount"]), (1, 5))
+        retry = self.segmented_record(6, when=2000, error="未确认离开")
+        self.assertFalse(segmented_coverage([*records, retry])[0][0]["coverageComplete"])
+
+    def test_diagnostic_test_coverage_requires_confirmed_nonempty_real_record(self):
+        records = [self.segmented_record(index) for index in range(1, 7)]
+        for record in records:
+            record["pointCycle"].update(completion="diagnostic_pass", passCompleteness="confirmed")
+        mutations = [lambda item: item.update(samples=0), lambda item: item.update(source="simulation"),
+                     lambda item: item.update(status="error"), lambda item: item.update(error="写盘失败"),
+                     lambda item: item["pointCycle"].update(passCompleteness="unconfirmed"),
+                     lambda item: item["pointCycle"].pop("passCompleteness"),
+                     lambda item: item["pointCycle"].update(completion="missing_exit")]
+        for mutate in mutations:
+            changed = copy.deepcopy(records)
+            mutate(changed[-1])
+            group = segmented_coverage(changed)[0][0]
+            self.assertEqual(group["diagnosticCount"], 5)
+            self.assertFalse(group["coverageComplete"])
+
     def test_segmented_duplicate_cannot_fill_missing_station_and_latest_failure_wins(self):
         records = [self.segmented_record(index, when=1000 + index) for index in range(1, 6)]
         records.append(self.segmented_record(1, when=1010))

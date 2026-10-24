@@ -1,6 +1,6 @@
 import { fieldDate, type FieldAutomaticRecord, type FieldPlannedStation, type FieldRecording, type FieldSyncItem } from "./field-types";
 
-export type BladeStationState = "observed" | "unconfirmed_pass" | "missing_entry" | "missing_exit" | "signal_gap" | "cancelled" | "failed" | "incomplete" | "unrecorded";
+export type BladeStationState = "observed" | "diagnostic_pass" | "unconfirmed_pass" | "missing_entry" | "missing_exit" | "signal_gap" | "cancelled" | "failed" | "incomplete" | "unrecorded";
 export type BladeStationSummary = {
   id: string; index: number; azimuthDeg: number | null; planned: boolean;
   state: BladeStationState; records: FieldRecording[]; samples: number;
@@ -9,7 +9,7 @@ export type BladeRecordGroup = {
   key: string; sessionId: string; sessionIds: string[]; executionMode: "continuous" | "manual_segments"; collectionId: string | null; taskName: string; bladeId: string; radialPointId: string; radialPointName: string;
   windFarm: string; turbine: string; measurementObject: string;
   radiusM: number | null; lapIndex: number; plannedCount: number | null; stations: BladeStationSummary[];
-  observedCount: number; gapCount: number; failedCount: number; incompleteCount: number; pendingCount: number;
+  observedCount: number; diagnosticCount: number; gapCount: number; failedCount: number; incompleteCount: number; pendingCount: number;
   recordCount: number; samples: number; uploadedCount: number; pendingUploadCount: number; failedUploadCount: number;
   unknownUploadCount: number; planConflict: boolean; hasSimulation: boolean; latestAt: number;
 };
@@ -132,6 +132,9 @@ function state(record: FieldRecording): BladeStationState {
   if (record.status !== "complete") return "incomplete";
   // A saved file or an RSSI value alone does not prove a confirmed passage.
   if (completion === "unconfirmed_pass") return "unconfirmed_pass";
+  // Early-arrival diagnostics are saved passes, but not validated measurements.
+  if (completion === "diagnostic_pass") return record.pointCycle?.passCompleteness !== "confirmed" ? "unconfirmed_pass" :
+    sampleCount(record.samples) > 0 && realRecord(record) ? "diagnostic_pass" : "incomplete";
   if (completion === "confirmed_pass" && sampleCount(record.samples) > 0 && realRecord(record)) return "observed";
   return "incomplete";
 }
@@ -140,7 +143,7 @@ function emptyGroup(sessionId: string, bladeId: string, radialPointId: string, r
   return { key: key(sessionId, objectScope(session), bladeId, radialPointId, lapIndex), sessionId, sessionIds: [...session.sessionIds], executionMode: session.executionMode, collectionId: session.collectionConflict ? null : session.collectionId,
     windFarm: session.windFarm, turbine: session.turbine, measurementObject: session.measurementObject,
     taskName: session.taskName, bladeId, radialPointId, radialPointName, radiusM, lapIndex,
-    plannedCount: null, stations: [], observedCount: 0, gapCount: 0, failedCount: 0, incompleteCount: 0, pendingCount: 0,
+    plannedCount: null, stations: [], observedCount: 0, diagnosticCount: 0, gapCount: 0, failedCount: 0, incompleteCount: 0, pendingCount: 0,
     recordCount: 0, samples: 0, uploadedCount: 0, pendingUploadCount: 0, failedUploadCount: 0, unknownUploadCount: 0,
     planConflict: session.conflict || session.collectionConflict, hasSimulation: false, latestAt: session.latestAt };
 }
@@ -236,6 +239,7 @@ export function summarizeBladeRecords(recordings: readonly FieldRecording[], syn
       group.samples += station.samples;
       group.recordCount += station.records.length;
       if (station.state === "observed") group.observedCount++;
+      if (station.state === "diagnostic_pass") group.diagnosticCount++;
       if (["missing_entry", "missing_exit", "signal_gap"].includes(station.state)) group.gapCount++;
       if (station.state === "failed") group.failedCount++;
       if (["incomplete", "cancelled", "unconfirmed_pass"].includes(station.state)) group.incompleteCount++;
@@ -289,7 +293,7 @@ export type AutoCaptureTarget = {
 
 /** Saved-data status only; the active worker's point-cycle status belongs to the caller. */
 export function getAutoCaptureTargetState(recordings: readonly FieldRecording[], target: AutoCaptureTarget,
-  summary: BladeRecordSummary = summarizeBladeRecords(recordings)): "complete" | "partial" | "empty" {
+  summary: BladeRecordSummary = summarizeBladeRecords(recordings)): "complete" | "diagnostic_complete" | "partial" | "empty" {
   if (!collectionId(target.collectionId)) return "empty";
   if (target.radiusM !== undefined && (!finite(target.radiusM) || target.radiusM < .001 || target.radiusM > 1000)) return "empty";
   const candidates = summary.groups.filter(group => group.collectionId === target.collectionId &&
@@ -309,14 +313,14 @@ export function getAutoCaptureTargetState(recordings: readonly FieldRecording[],
   if (latest.length !== target.cycles) return "partial";
   for (let lap = 1; lap <= target.cycles; lap++) {
     const group = latest.find(item => item.lapIndex === lap);
-    if (!group || group.planConflict || group.plannedCount !== target.stationCount || group.observedCount !== target.stationCount ||
+    if (!group || group.planConflict || group.plannedCount !== target.stationCount || group.observedCount + group.diagnosticCount !== target.stationCount ||
       group.stations.length !== target.stationCount || group.pendingCount || group.gapCount || group.failedCount || group.incompleteCount) return "partial";
     // Check the latest session rather than reviving an older session whose
     // radius matches an edited-back value. A reused ID does not prove that
     // observations belong to the newly configured physical location.
     if (target.radiusM !== undefined && (group.radiusM === null || !finite(group.radiusM) || Math.abs(group.radiusM - target.radiusM) > 1e-9)) return "partial";
   }
-  return "complete";
+  return latest.some(group => group.diagnosticCount > 0) ? "diagnostic_complete" : "complete";
 }
 
-export const bladeStationLabel = (value: BladeStationState) => ({ unconfirmed_pass: "完整性待确认", observed: "已观测回波通过", missing_entry: "未确认进入", missing_exit: "未确认离开", signal_gap: "信号中断", cancelled: "已取消", failed: "采集失败", incomplete: "记录未完成", unrecorded: "未收到记录" })[value];
+export const bladeStationLabel = (value: BladeStationState) => ({ diagnostic_pass: "测试经过已记录", unconfirmed_pass: "完整性待确认", observed: "已观测回波通过", missing_entry: "未确认进入", missing_exit: "未确认离开", signal_gap: "信号中断", cancelled: "已取消", failed: "采集失败", incomplete: "记录未完成", unrecorded: "未收到记录" })[value];

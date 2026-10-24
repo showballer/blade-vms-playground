@@ -27,6 +27,7 @@ for(let p=1;p<=5;p++)add('a','2',p,p===2?2:4);
 add('a','1',1);add('a','3',1);add('b','2',1);
 const old={...records.find(r=>r.pointCycle.radialPointId==='P3'),id:'history-retry',status:'error',error:'等待离开超时'};old.pointCycle={...old.pointCycle,completion:'missing_exit',sessionId:'f'.repeat(32)};old.startedAt-=10;old.endedAt-=10;records.push(old);
 const failed=records.find(r=>r.pointCycle.radialPointId==='P4');failed.status='error';failed.error='定位异常';failed.pointCycle.completion='device_error';
+for(const record of records.filter(r=>r.pointCycle.radialPointId==='P5')){record.pointCycle.completion='diagnostic_pass';record.pointCycle.passCompleteness='confirmed';}
 add('a','2',1,1,'continuous',true);
 const f=window.__summaryFixture={records,exports:[],opened:[],summary:summarizeBladeRecords(records),expected:(task,blade,point)=>recordingExportIds(records,task,blade,point)};
 function App(){const [items,setItems]=useState(records),[busy,setBusy]=useState(false);f.setItems=setItems;f.setBusy=setBusy;
@@ -71,6 +72,15 @@ app.whenReady().then(async()=>{try{
   await click('.field-blade-history-list > div:last-child button');
   assert.equal(await js('window.__summaryFixture.opened.at(-1)'),'history-retry');
   await js('document.querySelector('+JSON.stringify(point3)+').scrollIntoView({block:"start"})');await sleep(60);await shot('detail-1366.png');
+ });
+ await check('测试记录完成覆盖单独标注，不显示为漏采或正常观测',async()=>{
+  const point5='details.field-blade-point[aria-label="叶片 2 · P5"]';
+  await click(point5+' > summary');
+  const text=await js('document.querySelector('+JSON.stringify(point5)+').innerText');
+  assert.match(text,/4 \/ 4/);assert.match(text,/测试采集完成/);assert.match(text,/未计为正常测量观测/);
+  assert.doesNotMatch(text,/观测不完整|记录未完成/);
+  assert.equal((text.match(/测试经过已记录/g)||[]).length,4);
+  await js('document.querySelector('+JSON.stringify(point5)+').scrollIntoView({block:"start"})');await sleep(60);await shot('diagnostic-detail-1366.png');
  });
  await check('三级导出范围准确，测点导出包含全部历史与批次',async()=>{
   await checkExport('.field-blade-task-picker > button',taskA,undefined,undefined,'task');

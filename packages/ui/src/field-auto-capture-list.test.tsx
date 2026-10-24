@@ -45,6 +45,34 @@ check("分段采集显示本段角度和下一等待点，完成后仍可再次�
   assert.doesNotMatch(html, /新固件会预存|按编号换点|每轮覆盖全部配置点位/);
 });
 
+check("分段采集状态按整圈记录累计，正常完成与测试完成区分且都可重采", () => {
+  const collectionId = "c".repeat(32), points = targets[0].route.cycle!.points;
+  const plannedStations = points.map((point, index) => ({ ...point, pointId: point.pointId!, bladeId: "1", radialPointId: "P1", radialPointName: "P1",
+    radiusM: .31, azimuthDeg: index * 90, stationIndex: index + 1, stationCount: 4 }));
+  const records: FieldRecording[] = points.map((point, index) => ({ id: `saved-segment-${index}`, name: config.name, object: config.object, turbine: config.turbine,
+    source: "polytec_ivs500", status: "complete", samples: 100, sampleRate: 1000, startedAt: 1000 + index, endedAt: 1001 + index,
+    pointCycle: { ...point, pointName: point.name, pointIndex: 1, cycle: 1, dwellSeconds: 60,
+      targetAxis1AngleDeg: point.axis1AngleDeg, targetAxis2AngleDeg: point.axis2AngleDeg,
+      mode: "automatic_stations", executionMode: "manual_segments", collectionId, sessionId: String(index + 1).padStart(32, "0"),
+      stationCount: 4, totalStationCount: 4, stationIndex: index + 1, lapIndex: 1, cycles: 1, segmentStepDeg: 90,
+      segmentStationIds: [point.pointId!], plannedStations, completion: "confirmed_pass", passCompleteness: "confirmed" } }));
+  for (const pointsPerStart of [1, 2]) {
+    const segment: FieldAutoCaptureTarget = { ...targets[0], stations: pointsPerStart, cycles: 1, route: { ...targets[0].route, kind: "segmented",
+      cycle: { ...targets[0].route.cycle!, executionMode: "manual_segments", cycles: 1, totalStationCount: 4, segmentStepDeg: 90,
+        points: points.slice(0, pointsPerStart), segmentStations: points, nextWaitPoint: points[pointsPerStart] } } };
+    const markup = (recordings: FieldRecording[]) => render({ segmented: true, targets: [segment], collectionId, recordings });
+    assert.match(markup(records), />已完成</);
+    assert.match(markup(records.slice(0, 1)), />待补采</);
+    assert.match(markup([]), />待采集</);
+    const diagnostic = records.map(record => ({ ...record, pointCycle: { ...record.pointCycle!, completion: "diagnostic_pass" as const } }));
+    assert.match(markup(diagnostic), />测试采集完成</);
+    assert.doesNotMatch(startButton(markup(diagnostic), "1", "P1"), /disabled/);
+    assert.doesNotMatch(startButton(markup(records), "1", "P1"), /disabled/);
+    const invalid = { ...records[3], status: "error" as const, error: "采集失败" };
+    assert.match(markup([...records.slice(0, 3), invalid]), />待补采</);
+  }
+});
+
 check("停止失败后的stopping状态仍可重试，仅本次停止请求进行中禁用", () => {
   const stopping: FieldStatus = { ...ready, state: "stopping", receiver: { running: true }, pointCycle: {
     state: "capturing", cycles: 1, pointCount: 4, point: 1, cycle: 1, completedRecords: 0, totalRecords: 4, speedRpm: 5, dwellSeconds: 60,

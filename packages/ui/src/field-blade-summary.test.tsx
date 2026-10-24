@@ -390,4 +390,40 @@ check("分段计划、参考位、任务和测点不可跨组补齐，缺关键�
   assert.equal(summarizeBladeRecords([...records, continuous]).groups.length, 2);
 });
 
+check("四次分段测试覆盖完整，测试记录不能混为正常观测或未完成记录", () => {
+  const records = [1, 2, 3, 4].map(index => segmentRecord(index, {}, { completion: "diagnostic_pass", passCompleteness: "confirmed" }));
+  const before = JSON.stringify(records);
+  const group = summarizeBladeRecords(records).groups[0];
+  assert.deepEqual([group.observedCount, group.diagnosticCount, group.incompleteCount, group.pendingCount], [0, 4, 0, 0]);
+  assert.ok(group.stations.every(station => station.state === "diagnostic_pass"));
+  const target = { collectionId: segmentTask, bladeId: "2", radialPointId: "P1", cycles: 1, stationCount: 4 };
+  assert.equal(getAutoCaptureTargetState(records, target), "diagnostic_complete");
+  assert.equal(getAutoCaptureTargetState(records.slice(0, 3), target), "partial");
+  const html = renderToStaticMarkup(<FieldBladeSummary recordings={records} />);
+  assert.match(html, /4 \/ 4/); assert.match(html, /测试采集完成/); assert.match(html, /测试经过已记录/);
+  assert.doesNotMatch(html, /观测不完整|记录未完成/);
+  assert.match(html, /未计为正常测量观测/);
+  assert.equal(JSON.stringify(records), before);
+  const mixed = [...records.slice(0, 1), ...[2, 3, 4].map(index => segmentRecord(index))];
+  assert.equal(getAutoCaptureTargetState(mixed, target), "diagnostic_complete");
+  assert.match(renderToStaticMarkup(<FieldBladeSummary recordings={mixed} />), /采集完成（含测试）/);
+});
+check("测试缺口、空数据及最新失败重采仍不能补齐整圈", () => {
+  const records = [1, 2, 3, 4].map(index => segmentRecord(index, {}, { completion: "diagnostic_pass", passCompleteness: "confirmed" }));
+  const target = { collectionId: segmentTask, bladeId: "2", radialPointId: "P1", cycles: 1, stationCount: 4 };
+  const invalid = [
+    segmentRecord(4, {}, { completion: "diagnostic_pass", passCompleteness: "unconfirmed" }),
+    segmentRecord(4, {}, { completion: "diagnostic_pass", passCompleteness: undefined }),
+    ...[{ samples: 0 }, { source: "simulation" }, { status: "error" }, { error: "写盘失败" }].map(values => segmentRecord(4, values as Partial<FieldRecording>, { completion: "diagnostic_pass", passCompleteness: "confirmed" })),
+    ...(["missing_exit", "missing_entry", "signal_gap", "cancelled"] as const).map(completion => segmentRecord(4, {}, { completion })),
+  ];
+  for (const failed of invalid) {
+    const current = [...records.slice(0, 3), failed];
+    assert.equal(getAutoCaptureTargetState(current, target), "partial");
+    assert.equal(summarizeBladeRecords(current).groups[0].diagnosticCount, 3);
+  }
+  const retry = segmentRecord(4, { id: "failed-test-retry", endedAt: 3000, status: "error" }, { sessionId: "e".repeat(32), completion: "missing_exit" });
+  assert.equal(getAutoCaptureTargetState([...records, retry], target), "partial");
+});
+
 console.log(`PASS ${checks} blade record summary checks; no hardware used`);

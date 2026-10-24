@@ -27,9 +27,10 @@ function groupLabel(group: BladeRecordGroup) {
   if (group.failedCount) return "含失败记录";
   if (group.plannedCount === null) return "缺少点位计划";
   if (group.gapCount || group.incompleteCount || group.pendingCount) return "观测不完整";
+  if (group.diagnosticCount) return group.diagnosticCount === group.plannedCount ? "测试采集完成" : "采集完成（含测试）";
   return "计划点位已记录";
 }
-const groupTone = (group: BladeRecordGroup) => group.failedCount || group.planConflict ? "red" : group.gapCount || group.incompleteCount || group.pendingCount || group.plannedCount === null ? "amber" : "green";
+const groupTone = (group: BladeRecordGroup) => group.failedCount || group.planConflict ? "red" : group.diagnosticCount || group.gapCount || group.incompleteCount || group.pendingCount || group.plannedCount === null ? "amber" : "green";
 function uploadLabel(group: BladeRecordGroup) {
   if (!group.recordCount) return "尚无记录";
   const parts = [];
@@ -86,7 +87,7 @@ function PointSummary({ groups, exportIds, busy, exporting, onExportTask, onOpen
   return <details className="field-blade-point" aria-label={`叶片 ${group.bladeId} · ${group.radialPointName}`}>
     <summary>
       <div className="field-blade-point-name"><strong>{group.radialPointName}</strong><span>{group.radiusM === null ? "距中心未记录" : `距中心 ${(group.radiusM * 100).toLocaleString("zh-CN", { maximumFractionDigits: 1 })} cm`}</span></div>
-      <div className="field-blade-coverage"><div><strong>{group.observedCount} / {group.plannedCount ?? "—"}</strong><span className={`field-badge ${tone}`}>{groupLabel(group)}</span></div><span>{selected ? "当前观测组" : "最新观测组"} · {groupMode(group)}{groups.length > 1 && ` · 共 ${groups.length} 组`}</span></div>
+      <div className="field-blade-coverage"><div><strong>{group.observedCount + group.diagnosticCount} / {group.plannedCount ?? "—"}</strong><span className={`field-badge ${tone}`}>{groupLabel(group)}</span></div><span>{selected ? "当前观测组" : "最新观测组"} · {groupMode(group)}{groups.length > 1 && ` · 共 ${groups.length} 组`}</span></div>
       <div className="field-blade-point-time"><span>采集时间</span><strong>{timeText(timing.startedAt)}</strong></div>
       <div className="field-blade-point-duration"><span>采集时长</span><strong>{bladeDurationText(timing.durationSeconds)}{timing.partialDuration && "（部分）"}</strong></div>
       <ChevronDown size={16} className="field-blade-point-chevron" aria-hidden="true" />
@@ -99,6 +100,7 @@ function PointSummary({ groups, exportIds, busy, exporting, onExportTask, onOpen
       <div className="field-blade-group-meta"><span>{group.recordCount} 条记录 · {number(group.samples)} 样本</span><span>{uploadLabel(group)}</span></div>
       {group.executionMode === "manual_segments" && <p className="field-blade-note">同计划的分段累计覆盖；不代表同一物理圈的连续波形。</p>}
       {group.hasSimulation && <p className="field-blade-notice">本组含模拟数据，未计为实测回波观测。</p>}
+      {!!group.diagnosticCount && <p className="field-blade-notice">{group.diagnosticCount} 个点位为未停稳判定测试记录，已计入采集覆盖；可能包含运动扰动，未计为正常测量观测。</p>}
       {group.planConflict && <p className="field-blade-notice">记录的点位计划或位置不一致，请核对原始记录；汇总不视为完整。</p>}
       <StationRecords key={group.key} group={group} onOpenRecording={onOpenRecording} />
     </div>
@@ -141,7 +143,7 @@ export function FieldBladeSummary({ recordings, syncItems = [], onOpenRecording,
         <div className="field-blade-collection-heading"><span>{blade.pointCount} 个测点 · {blade.sessionCount} 次采集</span><ExportButton label="导出叶片 ZIP" ariaLabel={`导出叶片 ${blade.bladeId}全部数据`} ids={recordingExportIds(recordings, task.key, blade.bladeId)} level="blade" busy={busy} exporting={exporting} onExportTask={onExportTask} /></div>
         <div className="field-blade-points">{points.map(groups => <PointSummary key={groups[0].radialPointId} groups={groups} exportIds={recordingExportIds(recordings, task.key, blade.bladeId, groups[0].radialPointId)} busy={busy} exporting={exporting} onExportTask={onExportTask} onOpenRecording={onOpenRecording} />)}</div>
       </div>
-      <details className="field-blade-explanation"><summary>统计说明</summary><p>观测 / 计划点位按当前所选观测组统计，重采记录可展开“历史”查看。分段采集仅累计相同坐标计划，其他批次和轮次分别展示。</p><p>采集时长按已保存样本数 ÷ 采样率计算，不含换点间隔。叶片编号由人工指定；点位记录不代表连续整圈测量，也不等于已核实叶片身份。</p></details>
+      <details className="field-blade-explanation"><summary>统计说明</summary><p>已采集 / 计划点位按当前所选观测组统计，测试记录单独标注；重采记录可展开“历史”查看。分段采集仅累计相同坐标计划，其他批次和轮次分别展示。</p><p>采集时长按已保存样本数 ÷ 采样率计算，不含换点间隔。叶片编号由人工指定；点位记录不代表连续整圈测量，也不等于已核实叶片身份。</p></details>
     </section>}
     {summary.ungroupedCount > 0 && <p className="field-blade-note">{summary.ungroupedCount} 条点位记录缺少有效的批次或测点信息，仍可在原始记录列表查看。</p>}
   </section>;

@@ -65,7 +65,7 @@ export type FieldAutomaticRecord = FieldSegmentExecution & {
   radiusM?: number; azimuthDeg?: number; stationIndex?: number; stationCount?: number; lapIndex?: number;
   identitySource?: "operator_assigned"; identityVerified?: false; coverageKind?: "sparse_station_passes" | "manual_segment_passes";
   passCompleteness?: "confirmed" | "unconfirmed"; completenessReason?: string | null;
-  completion?: "unconfirmed_pass" | "confirmed_pass" | "missing_entry" | "missing_exit" | "signal_gap" | "cancelled" | "device_error";
+  completion?: "unconfirmed_pass" | "confirmed_pass" | "diagnostic_pass" | "missing_entry" | "missing_exit" | "signal_gap" | "cancelled" | "device_error";
   plannedStations?: FieldPlannedStation[]; nominalPeriodSeconds?: number;
 };
 export type FieldPointCycleConfig = FieldSegmentExecution & {

@@ -117,6 +117,11 @@ def _observation_state(record):
         return "incomplete"
     if completion == "unconfirmed_pass":
         return completion
+    if completion == "diagnostic_pass":
+        if point_cycle(record).get("passCompleteness") != "confirmed":
+            return "unconfirmed_pass"
+        return "diagnostic_pass" if (type(record.get("samples")) is int and record["samples"] > 0 and
+            record.get("source") == "polytec_ivs500" and not record.get("simulation")) else "incomplete"
     if (completion == "confirmed_pass" and type(record.get("samples")) is int and record["samples"] > 0 and
             record.get("source") == "polytec_ivs500" and not record.get("simulation")):
         return "observed"
@@ -214,10 +219,14 @@ def segmented_coverage(records):
                            latestRecordingId=station_records[0]["id"] if station_records else None,
                            state=_observation_state(station_records[0]) if station_records else "unrecorded")
         group["observedCount"] = sum(station["state"] == "observed" for station in group["stations"])
+        group["diagnosticCount"] = sum(station["state"] == "diagnostic_pass" for station in group["stations"])
+        group["coveredCount"] = group["observedCount"] + group["diagnosticCount"]
         group["pendingCount"] = sum(station["state"] == "unrecorded" for station in group["stations"])
         group["planConflict"] = any(len(session_plans[session_id]) != 1 or None in session_plans[session_id]
                                     for session_id in group["sessionIds"])
         group["complete"] = not group["planConflict"] and group["observedCount"] == group["plannedCount"]
+        # Keep measurement completeness separate from completed diagnostic coverage.
+        group["coverageComplete"] = not group["planConflict"] and group["coveredCount"] == group["plannedCount"]
     return list(groups.values()), excluded
 
 
@@ -306,13 +315,14 @@ def build_task_archive(store, recording_ids, level="task"):
                 table = io.StringIO(newline="")
                 writer = csv.writer(table, lineterminator="\n")
                 writer.writerow(["planKey", "bladeId", "radialPointId", "radiusM", "segmentStepDeg", "observedCount",
-                                 "plannedCount", "complete", "stationIndex", "azimuthDeg", "state", "latestRecordingId", "recordingIds"])
+                                 "plannedCount", "complete", "stationIndex", "azimuthDeg", "state", "latestRecordingId", "recordingIds",
+                                 "diagnosticCount", "coveredCount", "coverageComplete"])
                 for group in coverage:
                     for station in group["stations"]:
                         writer.writerow([csv_cell(value) for value in [group["planKey"], group["bladeId"], group["radialPointId"],
                             group["radiusM"], group["segmentStepDeg"], group["observedCount"], group["plannedCount"], group["complete"],
                             station["stationIndex"], station["azimuthDeg"], station["state"], station["latestRecordingId"],
-                            ";".join(station["recordingIds"]) ]])
+                            ";".join(station["recordingIds"]), group["diagnosticCount"], group["coveredCount"], group["coverageComplete"] ]])
                 archive.writestr("分段点位汇总.csv", table.getvalue().encode("utf-8-sig"))
             table = io.StringIO(newline="")
             columns = [key for key in entries[0] if key != "rawFiles"]
@@ -329,6 +339,8 @@ def build_task_archive(store, recording_ids, level="task"):
                 "分段记录的 lap 是该次开始内的局部轮次，不能按 lap=1 推断已采完一圈；站数及移动间隔见 stationCount/totalStationCount/segmentStepDeg。\n"
                 "分段点位汇总.csv / task.json.segmentedCoverage 按同任务、同叶片测点、相同全圈计划与参考累计；每点按最新记录判定，旧重采记录全部保留。\n"
                 "complete 仅表示计划点位均已确认经过，不表示连续整圈或已核实目标叶片身份；计划信息不全的记录列入 unassignedSegmentedRecordingIds，不补判完整。\n"
+                "diagnosticCount 为未停稳判定测试点数，coveredCount 为正常观测与测试记录的覆盖总数，coverageComplete 为计划点位是否全部覆盖。\n"
+                "测试记录单独标为 diagnostic_pass，不计入 observedCount 或正常观测 complete；采集覆盖完整不等于正常测量完整。\n"
                 "waveform.csv：完整原始波形，时间单位秒、速度 m/s、RSSI %；保留原采样率，不降采样。\n"
                 "manifest.json：完整点位计划、设备参数、进入/离开判定和有效样本区间等已有元数据。\n"
                 "turntable.jsonl：该记录已保存的转盘反馈（若有）。\n"
