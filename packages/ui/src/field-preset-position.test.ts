@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { moveToCapturePreset, presetPositionError } from "./field-preset-position";
 import { captureRouteBlockers, type FieldCaptureRoute } from "./field-capture-route";
 import { autoFollowDefaults, planAutoFollow } from "./field-auto-follow-plan";
+import { planSegmentedFollow, segmentedDefaults } from "./field-segmented-plan";
 import { turntableReferenceSignature } from "./field-turntable-points";
 import type { FieldAxisFeedback, FieldRequestOptions, FieldStatus } from "./field-types";
 
@@ -107,6 +108,21 @@ async function main() {
   const calculatedRecall = theoretical.calls.find(call => call.action === "turntable" && call.request.action === "recall");
   assert.ok(calculatedRecall?.action === "turntable");
   assert.equal(calculatedRecall.request.referenceSignature, turntableReferenceSignature(axes), "Calculated route binds fresh hardware reference");
+  for (const port of ["COM6", "/dev/cu.usbserial-110", "tcp://192.168.10.50:5000"]) {
+    const segment = planSegmentedFollow(autoFollowDefaults, { ...segmentedDefaults, startAzimuthDeg: 90 }, null, "drive_internal", port);
+    const segmentedRoute: FieldCaptureRoute = { kind: "segmented", name: "分段采集", pointNames: [], errors: segment.errors,
+      referenceMode: "read_at_start", cycle: segment.pointCycle! };
+    const moved = await run({ route: segmentedRoute, port });
+    assert.equal(moved.outcome, "complete", moved.error);
+    const direct = moved.calls.find(call => call.action === "turntable" && call.request.action === "recall");
+    assert.ok(direct?.action === "turntable");
+    assert.equal(direct.request.directPositionOnly, true, "Segment positioning requires direct motor control");
+    assert.equal(direct.request.preloadPoints, undefined, "No point bank is uploaded for manually started segments");
+    assert.equal(direct.request.preloadReturnPoint, undefined);
+    const repeated = await run({ route: segmentedRoute, port, alreadyAtTarget: true });
+    assert.equal(repeated.outcome, "complete", repeated.error);
+    assert.equal(repeated.recalls, 0, "A prepared segment starts without duplicate positioning or bank upload");
+  }
   for (const patch of [{ abortAt: "probe" }, { abortAt: "recall" }]) {
     const cancelled = await run(patch);
     assert.equal(cancelled.outcome, "cancelled", cancelled.error);

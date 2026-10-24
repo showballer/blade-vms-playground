@@ -13,6 +13,10 @@ const parameters = [
 type Draft = Record<keyof FieldDriveMotionProfile, string>;
 type AxisState = { draft: Draft; read?: FieldDriveProfileRead; error?: string; notice?: string };
 const emptyAxis = (): AxisState => ({ draft: { accel_ms: "", decel_ms: "", s_curve_ms: "" } });
+export const driveProfileFastPreset = {
+  speedRpm: 5,
+  values: { accel_ms: 100, decel_ms: 100, s_curve_ms: 0 },
+} as const;
 
 export function checkedDriveProfile(draft: Draft): FieldDriveMotionProfile {
   const result = {} as FieldDriveMotionProfile;
@@ -37,9 +41,10 @@ export function checkedDriveProfileReply(next: FieldStatus, port: string, axis: 
   return read;
 }
 
-export function FieldDriveProfile({ port, status, disabled, request, onStatus, onBusy }: {
+export function FieldDriveProfile({ port, status, disabled, request, onStatus, onBusy, expanded, onFastPreset }: {
   port: string; status: FieldStatus | null; disabled: boolean;
   request: <T>(options: FieldRequestOptions) => Promise<T>; onStatus: (status: FieldStatus) => void; onBusy: (busy: boolean) => void;
+  expanded?: boolean; onFastPreset?: () => void;
 }) {
   const [axes, setAxes] = useState<Record<1 | 2, AxisState>>(() => ({ 1: emptyAxis(), 2: emptyAxis() }));
   const [pending, setPending] = useState<{ axis: 1 | 2; operation: "read" | "write" } | null>(null);
@@ -51,6 +56,16 @@ export function FieldDriveProfile({ port, status, disabled, request, onStatus, o
   const blocked = disabled || status?.service.state !== "ready" || !isTurntablePort(port) ||
     fieldIsActive(status) || !!status?.deviceBusy || !!status?.turntableBusy;
   const patchAxis = (axis: 1 | 2, patch: Partial<AxisState>) => setAxes(previous => ({ ...previous, [axis]: { ...previous[axis], ...patch } }));
+  const fillFastPreset = () => {
+    if (blocked || inFlight.current || !axes[1].read || !axes[2].read || !onFastPreset) return;
+    const draft: Draft = { accel_ms: String(driveProfileFastPreset.values.accel_ms),
+      decel_ms: String(driveProfileFastPreset.values.decel_ms), s_curve_ms: String(driveProfileFastPreset.values.s_curve_ms) };
+    setAxes(previous => ({
+      1: { ...previous[1], draft: { ...draft }, error: "", notice: "快速预设已填入，尚未应用到驱动器" },
+      2: { ...previous[2], draft: { ...draft }, error: "", notice: "快速预设已填入，尚未应用到驱动器" },
+    }));
+    onFastPreset();
+  };
   async function run(axis: 1 | 2, operation: "read" | "write") {
     if (blocked || inFlight.current) return;
     const selected = axes[axis], generation = status?.service.generation;
@@ -82,9 +97,13 @@ export function FieldDriveProfile({ port, status, disabled, request, onStatus, o
       if (alive.current) { setPending(null); onBusy(false); }
     }
   }
-  return <details className="field-card field-drive-profile">
+  return <details className="field-card field-drive-profile" open={expanded || undefined}>
     <summary>驱动器加减速设置 <span className="field-subtext">PA40 / PA41 / PA42</span></summary>
-    <p className="field-subtext">分别读取两轴参数后修改并应用。内部定位使用此处的加减速时间；掉电后可能恢复驱动器原保存值，请重新读取。PA42 为 0 时使用梯形加减速。</p>
+    {onFastPreset && <div className="field-drive-profile-footer">
+      <span className="field-subtext">{driveProfileFastPreset.speedRpm} rpm · 100 / 100 / 0 ms</span>
+      <Button type="button" disabled={blocked || !!pending || !axes[1].read || !axes[2].read}
+        onClick={fillFastPreset}>填入快速预设</Button>
+    </div>}
     {!isTurntablePort(port) && <p className="field-subtext">请先在下方选择转盘串口。</p>}
     <div className="field-drive-profile-axes">{([1, 2] as const).map(axis => {
       const item = axes[axis], name = axis === 1 ? "俯仰轴" : "水平轴";

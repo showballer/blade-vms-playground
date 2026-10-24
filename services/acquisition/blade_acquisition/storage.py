@@ -59,7 +59,8 @@ POINT_LIST_FIELDS = (
     "radiusM", "azimuthDeg", "stationIndex", "stationCount", "lapIndex", "identitySource",
     "identityVerified", "coverageKind", "completion", "passCompleteness", "completenessReason", "plannedStations", "nominalPeriodSeconds",
     "cycle", "pointIndex", "pointId", "pointName", "cycles", "dwellSeconds",
-    "targetAxis1AngleDeg", "targetAxis2AngleDeg", "actualAngles",
+    "targetAxis1AngleDeg", "targetAxis2AngleDeg", "actualAngles", "recordedPort", "referenceSignature",
+    "executionMode", "segmentStepDeg", "totalStationCount", "segmentStationIds", "nextWaitPoint",
 )
 
 

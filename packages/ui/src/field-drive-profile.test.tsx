@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { checkedDriveProfile, checkedDriveProfileReply, FieldDriveProfile } from "./field-drive-profile";
+import { checkedDriveProfile, checkedDriveProfileReply, driveProfileFastPreset, FieldDriveProfile } from "./field-drive-profile";
 import type { FieldStatus } from "./field-types";
 
 const values = { accel_ms: 100, decel_ms: 100, s_curve_ms: 0 };
@@ -46,8 +46,22 @@ test("both axes are visible with no invented default or write before explicit re
     assert.match(html, new RegExp(`<button(?![^>]*disabled)[^>]*aria-label="读取${axis}驱动参数"`));
     assert.match(html, new RegExp(`<button[^>]*disabled[^>]*aria-label="应用${axis}驱动参数"`));
   }
-  assert.match(html, /掉电后可能恢复/);
+  assert.match(html, /尚未读取当前轴/);
   assert.doesNotMatch(html, /value="100"/);
   const busy = renderToStaticMarkup(<FieldDriveProfile {...props} status={{ ...ready(), turntableBusy: true }} />);
   assert.match(busy, /<button[^>]*disabled[^>]*aria-label="读取俯仰轴驱动参数"/);
+});
+test("optional fast preset is visible and expanded without treating it as a read or writing hardware", () => {
+  let calls = 0, presetCalls = 0;
+  const html = renderToStaticMarkup(<FieldDriveProfile port="COM3" status={ready()} disabled={false} expanded
+    onBusy={() => {}} onStatus={() => {}} onFastPreset={() => { presetCalls++; }}
+    request={async <T,>() => { calls++; throw new Error("No hardware"); }} />);
+  assert.match(html, /<details[^>]*open=""/);
+  assert.match(html, /<button[^>]*disabled[^>]*>填入快速预设<\/button>/);
+  assert.match(html, /5 rpm · 100 \/ 100 \/ 0 ms/);
+  assert.doesNotMatch(html, /value="100"/);
+  assert.equal(calls, 0); assert.equal(presetCalls, 0);
+  assert.equal(driveProfileFastPreset.speedRpm, 5);
+  assert.deepEqual(checkedDriveProfile({ accel_ms: String(driveProfileFastPreset.values.accel_ms),
+    decel_ms: String(driveProfileFastPreset.values.decel_ms), s_curve_ms: String(driveProfileFastPreset.values.s_curve_ms) }), values);
 });

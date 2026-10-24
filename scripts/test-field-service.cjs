@@ -9,9 +9,96 @@ const { gunzipSync } = require("node:zlib");
 const { EventEmitter } = require("node:events");
 const { createFieldService, windowsServiceEnvironment } = require("../apps/desktop/electron/field-service.cjs");
 
-const idle = () => ({ state: "idle", error: null, receiver: { connected: false }, recording: null });
+const idle = () => ({ state: "idle", error: null, receiver: { connected: false }, recording: null,
+  pointCycleExecutionModes: ['continuous', 'manual_segments'] });
 const acquiring = () => ({ state: "acquiring", error: null, receiver: { connected: true }, recording: { id: "recording-1", state: "acquiring" } });
 const waveform = values => ({ sampleRate: 1000, unit: "m/s", values, rssi: [], overrange: [] });
+
+function segmentedCycle(port, count = 1, stepDeg = 90) {
+  const referenceSignature = '[[0,3,10000,17],[0,3,10000,17]]';
+  const segmentStations = Array.from({length: 360 / stepDeg}, (_, i) => i * stepDeg).map((azimuthDeg, i) => ({ pointId: `p1-s${i}`, name: `P1 ${azimuthDeg}`,
+    port, referenceSignature, axis1AngleDeg: 10 + i, axis2AngleDeg: i,
+    bladeId: '2', radialPointId: 'p1', radialPointName: 'P1', radiusM: .31, azimuthDeg }));
+  return { mode: 'automatic_stations', executionMode: 'manual_segments', port, cycles: 1, dwellSeconds: 60, speedRpm: 5,
+    nominalPeriodSeconds: 5, maxMoveRpm: 5, rssiTriggerEnabled: true, rssiEnterConfirmMs: 20, rssiConfirmMs: 30,
+    geometry: { distanceM: 2.5, hubHeightDeltaM: .73, rotationDirection: 'clockwise', axis1Sign: 1, axis2Sign: 1,
+      anchorRadiusM: .31, anchorAxis1AngleDeg: 10, anchorAxis2AngleDeg: 0 },
+    segmentStepDeg: stepDeg, totalStationCount: segmentStations.length, segmentStations, points: segmentStations.slice(0, count),
+    nextWaitPoint: segmentStations[count % segmentStations.length], motionLaserPolicy: 'continuous', startAtCurrentPose: false };
+}
+
+test('segmented two-point capture requires 90 degrees; single-point intervals remain configurable', async t => {
+  const f = fixture(t);
+  for (const port of ['COM7', '/dev/cu.usbserial-110', 'tcp://192.168.10.50:5000']) {
+    for (const stepDeg of [180, 120, 60, 45, 30, 22.5]) {
+      const start = count => ({ source: 'device', deviceIp: '192.168.106.90', hostIp: '192.168.106.10', name: 'Segment',
+        object: '', turbine: 'T1', point: 'P1', confirmLaser: true, confirmMotion: true, pointCycle: segmentedCycle(port, count, stepDeg) });
+      const before = f.requests.length;
+      await assert.rejects(f.service.begin(start(2)), /两点采集的圆周移动间隔固定为90/);
+      assert.equal(f.requests.length, before, 'Invalid pair must fail before network or device I/O');
+      await f.service.begin(start(1));
+      const body = JSON.parse(f.requests.filter(row => row.route === 'start').at(-1).options.body);
+      assert.equal(body.pointCycle.segmentStepDeg, stepDeg);
+      assert.equal(body.pointCycle.points.length, 1);
+    }
+  }
+});
+
+test('segmented Start preserves one/two-point boundaries and waiting coordinates on Mac, Windows and TCP', async t => {
+  const f = fixture(t);
+  for (const port of ['/dev/cu.usbserial-110', 'COM7', 'tcp://192.168.10.50:5000']) for (const count of [1, 2]) {
+    const pointCycle = segmentedCycle(port, count);
+    await f.service.begin({ source: 'device', deviceIp: '192.168.106.90', hostIp: '192.168.106.10', name: 'Segment',
+      object: '', turbine: 'T1', point: 'P1', confirmLaser: true, confirmMotion: true, pointCycle });
+    const body = JSON.parse(f.requests.filter(row => row.route === 'start').at(-1).options.body);
+    assert.deepEqual(body.pointCycle, pointCycle);
+    assert.equal(body.pointCycle.points.length, count);
+    assert.equal(body.pointCycle.nextWaitPoint.azimuthDeg, count * 90);
+    assert.equal(body.pointCycle.returnToOrigin, undefined);
+  }
+});
+
+test('segmented malformed sequence and incompatible auto-stop policy are rejected before I/O', async t => {
+  const f = fixture(t), cycle = segmentedCycle('COM7');
+  for (const change of [{ executionMode: 'unknown' }, { executionMode: 'continuous' }, { cycles: 2 },
+    { points: cycle.segmentStations.slice(0, 3) }, { startAtCurrentPose: true }, { motionLaserPolicy: 'off_during_motion' },
+    { nextWaitPoint: undefined }, { nextWaitPoint: cycle.segmentStations[3] }, { totalStationCount: 2 },
+    { segmentStepDeg: 0 }, { segmentStations: cycle.segmentStations.slice().reverse() },
+    { returnToOrigin: cycle.segmentStations[0] }, { points: [cycle.segmentStations[1], cycle.segmentStations[3]] }]) {
+    const requests = f.requests.length;
+    await assert.rejects(f.service.begin({ source: 'device', deviceIp: '192.168.106.90', hostIp: '192.168.106.10', name: 'Segment',
+      object: '', turbine: '', point: '', confirmLaser: true, confirmMotion: true, pointCycle: { ...cycle, ...change } }), { status: 400 });
+    assert.equal(f.requests.length, requests);
+  }
+});
+
+test('direct segment preposition never uploads a bank or starts acquisition', async t => {
+  const f = fixture(t);
+  for (const port of ['COM7', '/dev/cu.usbserial-110', 'tcp://192.168.10.50:5000']) {
+    const point = segmentedCycle(port).points[0];
+    const request = { action: 'recall', port, recordedPort: port, axis: 1, confirmMotion: true, speedRpm: 5,
+      axis1AngleDeg: point.axis1AngleDeg, axis2AngleDeg: point.axis2AngleDeg,
+      referenceSignature: point.referenceSignature, directPositionOnly: true };
+    await f.service.turntable(request);
+    const body = JSON.parse(f.requests.filter(row => row.route === 'turntable').at(-1).options.body);
+    assert.equal(body.directPositionOnly, true);
+    assert.equal(body.preloadPoints, undefined);
+    assert.ok(!f.requests.some(row => row.route === 'start' || row.route === 'device'));
+    for (const change of [{ action: 'probe' }, { directPositionOnly: 'true' }, { preloadPoints: [[10, 0]] }])
+      await assert.rejects(f.service.turntable({ ...request, ...change }), { status: 400 });
+  }
+});
+
+test('old packaged services cannot silently turn a manual segment into automatic following', async t => {
+  const f = fixture(t, { fetch: async () => response({ ...idle(), pointCycleExecutionModes: undefined }) });
+  const pointCycle = segmentedCycle('COM7');
+  await assert.rejects(f.service.begin({ source: 'device', deviceIp: '192.168.106.90', hostIp: '192.168.106.10', name: 'Segment',
+    object: '', turbine: '', point: '', confirmLaser: true, confirmMotion: true, pointCycle }), /不支持分段采集/);
+  await assert.rejects(f.service.turntable({ action: 'recall', port: 'COM7', recordedPort: 'COM7', axis: 1,
+    confirmMotion: true, speedRpm: 5, axis1AngleDeg: 10, axis2AngleDeg: 0,
+    referenceSignature: pointCycle.points[0].referenceSignature, directPositionOnly: true }), /不支持分段直接定位/);
+  assert.ok(!f.requests.some(row => row.route === 'start' || row.route === 'turntable'));
+});
 
 test('indexed capture preposition forwards the full route without starting acquisition on Mac and Windows', async t => {
   const f = fixture(t);

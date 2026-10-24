@@ -3,6 +3,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { Button } from "./common";
 import { CustomSelect } from "./custom-select";
 import { manualCaptureRoute, manualRouteKey, readManualRouteSettings, type FieldCaptureRoute } from "./field-capture-route";
+import type { FieldPositionedStation } from "./field-route-position";
 import { isTurntablePort, normalizeTurntablePort } from "./field-turntable-port";
 import { loadSharedTurntablePoints, saveSharedTurntablePoints, newTurntablePointId as newPointId,
   pointReferenceSignature, turntableReferenceSignature, turntablePointMotionError, turntableAxisLimitsError } from "./field-turntable-points";
@@ -54,13 +55,15 @@ export function manualAxisMotionError(value: FieldAxisFeedback | undefined, axis
   return turntableAxisLimitsError(value, axis, target);
 }
 
-export function FieldTurntableManual({ status, disabled, request, onBusy, onStatus, onRoute, onAcquisition, workOrigin, onPortChange, connectionPort }: {
+export function FieldTurntableManual({ status, disabled, request, onBusy, onStatus, onRoute, onAcquisition, workOrigin, onPortChange, connectionPort, positionedStation }: {
   status: FieldStatus | null; disabled: boolean; request: <T>(options: FieldRequestOptions) => Promise<T>;
   onBusy?: (value: boolean) => void; onStatus?: (status: FieldStatus) => void;
   onRoute?: (route: FieldCaptureRoute) => void; onAcquisition?: () => void;
   connectionPort?: string; workOrigin?: FieldWorkOrigin | null; onPortChange?: (port: string) => void;
+  positionedStation?: FieldPositionedStation;
 }) {
   const banks = useRef(axisDrafts());
+  const appliedPositionSequence = useRef(0);
   const [localPort, setPort] = useState(status?.turntable?.port || banks.current[1]?.port || ""), [axis, setAxis] = useState<1 | 2>(1), [target, setTarget] = useState<number | undefined>(banks.current[1]?.targetAngleDeg), [step, setStep] = useState(0.1);
   const [speedRpm, setSpeedRpm] = useState(banks.current[1]?.speedRpm ?? 0.2);
   const [durationSeconds, setDurationSeconds] = useState(banks.current[1]?.durationSeconds ?? 0);
@@ -113,6 +116,15 @@ export function FieldTurntableManual({ status, disabled, request, onBusy, onStat
   useEffect(() => { if (loaded) try { localStorage.setItem(manualRouteKey, JSON.stringify(routeSettings)); } catch { /* Editable route only. */ } }, [loaded, routeSettings]);
   const route = manualCaptureRoute(points, port, routeSettings, status?.service.generation, origin);
   const routeKey = JSON.stringify(route);
+  useEffect(() => {
+    if (!loaded || locked || status?.deviceBusy || !positionedStation || positionedStation.kind !== "manual" ||
+        positionedStation.sequence <= appliedPositionSequence.current) return;
+    appliedPositionSequence.current = positionedStation.sequence;
+    if (positionedStation.port !== port || positionedStation.generation !== status?.service.generation ||
+        !route.cycle?.points.some(point => point.pointId === positionedStation.pointId)) return;
+    setRouteSettings(previous => ({ ...previous, startPointId: positionedStation.pointId }));
+    setError("");
+  }, [loaded, locked, status?.deviceBusy, status?.service.generation, positionedStation, port, routeKey]);
   useEffect(() => { if (loaded) onRoute?.(route); }, [loaded, routeKey, onRoute]);
   useEffect(() => { onPortChange?.(port); }, [port, onPortChange]);
   const reorder = (index: number, offset: number) => setPoints(previous => {
@@ -249,7 +261,7 @@ export function FieldTurntableManual({ status, disabled, request, onBusy, onStat
     </>}
     <section className="field-turntable-block field-route-settings" aria-label="手动点位联动采集配置">
       <div className="field-section-heading"><div><h3>联动采集路线</h3><p>按列表顺序执行勾选点位，确认叶片进入并离开后换点。</p></div><Button type="button" onClick={onAcquisition}>前往数据采集</Button></div>
-      <p className="field-route-order">{route.pointNames.length ? route.pointNames.join(" → ") : "尚未选择采集点位"}</p>
+      <p className="field-route-order">{route.pointNames.length ? `采集顺序：${route.pointNames.join(" → ")}` : "尚未选择采集点位"}</p>
       <fieldset className="field-config-grid" disabled={locked}>
         <label>循环次数<input aria-label="手动路线循环次数" type="number" min={1} max={100} value={Number.isFinite(routeSettings.cycles) ? routeSettings.cycles : ""} onChange={event => setRouteSettings(previous => ({ ...previous, cycles: event.target.valueAsNumber }))} /></label>
         <label>每点最长等待 · 秒<input aria-label="手动路线每点最长等待" type="number" min={1} max={3600} value={Number.isFinite(routeSettings.waitSeconds) ? routeSettings.waitSeconds : ""} onChange={event => setRouteSettings(previous => ({ ...previous, waitSeconds: event.target.valueAsNumber }))} /></label>

@@ -1,14 +1,16 @@
 "use client";
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { Crosshair, Hand, LoaderCircle, Plus, RefreshCw, Route, Trash2 } from "lucide-react";
+import { Crosshair, Hand, LoaderCircle, Plus, RefreshCw, Route, StepForward, Trash2 } from "lucide-react";
 import { Button, CustomSelect } from "./common";
 import { FieldLaserControl } from "./field-device";
 import { FieldTurntableManual } from "./field-turntable";
-import { FieldDriveProfile } from "./field-drive-profile";
+import { FieldDriveProfile, driveProfileFastPreset } from "./field-drive-profile";
 import { FieldTurntableOriginControl, type FieldOriginReturnMotion } from "./field-turntable-origin-control";
 import { matchingWorkOrigin, workOriginForPlanning, toWorkAngle, readSavedWorkOrigins, revalidateWorkOrigin, recoverCalculatedWorkOrigin, workOriginStorageKey, type FieldWorkOrigin } from "./field-turntable-origin";
 import type { FieldCaptureRoute, FieldAutoCaptureTarget } from "./field-capture-route";
+import type { FieldPositionedStation } from "./field-route-position";
 import { planAutoFollow, manualBladeRotationWaitSeconds, type AutoFollowAnchor, type AutoFollowDraft, type AutoFollowPlan } from "./field-auto-follow-plan";
+import { planSegmentedFollow, readSegmentSettings, segmentedDefaults, segmentedPairStepDeg, segmentedStorageKey, type SegmentSettings } from "./field-segmented-plan";
 import { turntableAxisLimitsError, turntablePointMotionError, turntableReferenceSignature } from "./field-turntable-points";
 import { isTurntablePort, normalizeTurntablePort } from "./field-turntable-port";
 import { fieldIsActive, fieldTurntableMotionMode, validateFieldConfig, type FieldAxisFeedback, type FieldConfig, type FieldRequestOptions, type FieldStatus } from "./field-types";
@@ -25,7 +27,9 @@ type Props = {
   onAcquisition?: () => void; onRoute?: (route: FieldCaptureRoute) => void;
   autoTargetKey?: string; onAutoTarget?: (key: string) => void;
   visible?: boolean; connectionPort?: string;
-  routeMode?: "manual" | "auto"; onRouteMode?: (mode: "manual" | "auto") => void;
+  routeMode?: "manual" | "auto" | "segmented"; onRouteMode?: (mode: "manual" | "auto" | "segmented") => void;
+  onPositionTarget?: (key: string, azimuthDeg?: number) => void;
+  positionedStation?: FieldPositionedStation;
   workOrigin?: FieldWorkOrigin | null; opticalOrigin?: FieldWorkOrigin | null; opticalOriginRequired?: boolean; onPortChange?: (port: string) => void;
 };
 
@@ -102,7 +106,7 @@ export function autoFollowBlockers(config: FieldConfig, status: FieldStatus | nu
 }
 
 export function FieldTurntableWorkspace(props: Props) {
-  const [localMode, setMode] = useState<"manual" | "auto">("manual");
+  const [localMode, setMode] = useState<"manual" | "auto" | "segmented">("manual");
   const mode = props.routeMode || localMode;
   const [autoBusy, setAutoBusy] = useState(false), [originBusy, setOriginBusy] = useState(false), [profileBusy, setProfileBusy] = useState(false);
   const savedOrigins = () => { try { return readSavedWorkOrigins(localStorage.getItem(workOriginStorageKey)); } catch { return readSavedWorkOrigins(null); } };
@@ -120,7 +124,7 @@ export function FieldTurntableWorkspace(props: Props) {
   const busyChanged = useCallback((value: boolean) => setAutoBusy(value), []);
   const manualPortChanged = useCallback((port: string) => setSelectedPorts(previous => previous.manual === port ? previous : { ...previous, manual: port }), []);
   const autoPortChanged = useCallback((port: string) => setSelectedPorts(previous => previous.auto === port ? previous : { ...previous, auto: port }), []);
-  const activePort = props.connectionPort || selectedPorts[mode];
+  const activePort = props.connectionPort || selectedPorts[mode === "manual" ? "manual" : "auto"];
   useEffect(() => { props.onPortChange?.(activePort); }, [activePort, props.onPortChange]);
   const originCheck = useRef("");
   const originLive = useRef({ activePort, status: props.status, workOrigin, opticalOrigin });
@@ -174,7 +178,7 @@ export function FieldTurntableWorkspace(props: Props) {
   const editingLocked = props.disabled || autoBusy || profileBusy || fieldIsActive(props.status) || !!props.status?.deviceBusy;
   const baseLocked = editingLocked || !!props.status?.turntableBusy;
   const locked = baseLocked || originBusy;
-  const selectMode = (next: "manual" | "auto") => { if (!locked) { setMode(next); props.onRouteMode?.(next); } };
+  const selectMode = (next: "manual" | "auto" | "segmented") => { if (!locked) { setMode(next); props.onRouteMode?.(next); } };
   return <div className="field-turntable-workspace field-servo-ui">
     <FieldTurntableOriginControl port={activePort} deviceIp={props.config.deviceIp} status={props.status} disabled={editingLocked || !originBusy && !!props.status?.turntableBusy} origin={workOrigin} opticalOrigin={opticalOrigin} opticalOriginRequired={opticalOriginRequired} returnMotion={returnMotion}
       request={props.request} onVerifiedOrigin={origin => { setOpticalOrigin(origin); if (workOrigin) setWorkOrigin(origin); }} onOrigin={origin => {
@@ -184,26 +188,33 @@ export function FieldTurntableWorkspace(props: Props) {
           try { localStorage.setItem(opticalOriginRequiredKey, "true"); } catch { /* Keep the session fail-closed even if persistence is unavailable. */ }
         }
       }} onStatus={props.onStatus} onBusy={setOriginBusy} />
-    <FieldDriveProfile port={activePort} status={props.status} disabled={props.disabled || autoBusy || originBusy || !!props.pollUnavailable}
-      request={props.request} onStatus={props.onStatus} onBusy={setProfileBusy} />
-    <div className="field-view-tabs" data-active={mode === "manual" ? "wave" : "analysis"} role="tablist" aria-label="转盘作业方式">
-      {(["manual", "auto"] as const).map((value, index) => <button key={value} ref={node => { tabs.current[index] = node; }} type="button" role="tab" id={`${id}-${value}-tab`} aria-controls={`${id}-${value}-panel`} aria-selected={mode === value} tabIndex={mode === value ? 0 : -1} disabled={locked} onClick={() => selectMode(value)} onKeyDown={event => {
+    {mode !== "segmented" && <FieldDriveProfile port={activePort} status={props.status} disabled={props.disabled || autoBusy || originBusy || !!props.pollUnavailable}
+      request={props.request} onStatus={props.onStatus} onBusy={setProfileBusy} />}
+    <div className="field-view-tabs field-turntable-mode-tabs" data-active={mode} role="tablist" aria-label="转盘作业方式">
+      {(["manual", "auto", "segmented"] as const).map((value, index) => <button key={value} ref={node => { tabs.current[index] = node; }} type="button" role="tab" id={`${id}-${value}-tab`} aria-controls={`${id}-${value === "manual" ? "manual" : "calculated"}-panel`} aria-selected={mode === value} tabIndex={mode === value ? 0 : -1} disabled={locked} onClick={() => selectMode(value)} onKeyDown={event => {
         if (locked || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
-        event.preventDefault(); const next = event.key === "Home" ? 0 : event.key === "End" ? 1 : 1 - index;
-        selectMode(next ? "auto" : "manual"); tabs.current[next]?.focus();
-      }}>{value === "manual" ? <Hand size={16} /> : <Route size={16} />}{value === "manual" ? "手动控制" : "自动跟随"}</button>)}
+        event.preventDefault(); const next = event.key === "Home" ? 0 : event.key === "End" ? 2 : (index + (event.key === "ArrowRight" ? 1 : 2)) % 3;
+        selectMode((["manual", "auto", "segmented"] as const)[next]); tabs.current[next]?.focus();
+      }}>{value === "manual" ? <Hand size={16} /> : value === "auto" ? <Route size={16} /> : <StepForward size={16} />}{value === "manual" ? "手动控制" : value === "auto" ? "自动跟随" : "分段采集"}</button>)}
     </div>
-    <div hidden={mode !== "manual"} role="tabpanel" id={`${id}-manual-panel`} aria-labelledby={`${id}-manual-tab`}><FieldLaserControl deviceIp={props.config.deviceIp} status={props.status} disabled={props.disabled || autoBusy || originBusy || profileBusy} request={props.request} /><FieldTurntableManual status={props.status} disabled={props.disabled || autoBusy || originBusy || profileBusy} request={props.request} onBusy={busyChanged} onStatus={props.onStatus} onRoute={props.onRoute} onAcquisition={props.onAcquisition} workOrigin={workOrigin} connectionPort={props.connectionPort} onPortChange={manualPortChanged} /></div>
-    <div hidden={mode !== "auto"} role="tabpanel" id={`${id}-auto-panel`} aria-labelledby={`${id}-auto-tab`}><FieldAutoFollow {...props} disabled={props.disabled || originBusy || profileBusy} workOrigin={workOrigin} opticalOrigin={opticalOrigin} opticalOriginRequired={opticalOriginRequired} onPortChange={autoPortChanged} visible={props.visible !== false && mode === "auto"} onBusy={busyChanged} onReturnMotion={setReturnMotion} /></div>
+    <div hidden={mode !== "manual"} role="tabpanel" id={`${id}-manual-panel`} aria-labelledby={`${id}-manual-tab`}><FieldLaserControl deviceIp={props.config.deviceIp} status={props.status} disabled={props.disabled || autoBusy || originBusy || profileBusy} request={props.request} /><FieldTurntableManual status={props.status} disabled={props.disabled || autoBusy || originBusy || profileBusy} request={props.request} onBusy={busyChanged} onStatus={props.onStatus} onRoute={props.onRoute} onAcquisition={props.onAcquisition} workOrigin={workOrigin} connectionPort={props.connectionPort} onPortChange={manualPortChanged} positionedStation={props.positionedStation} /></div>
+    <div hidden={mode === "manual"} role="tabpanel" id={`${id}-calculated-panel`} aria-labelledby={`${id}-${mode === "segmented" ? "segmented" : "auto"}-tab`}><FieldAutoFollow {...props} routeMode={mode} disabled={props.disabled || originBusy || profileBusy} workOrigin={workOrigin} opticalOrigin={opticalOrigin} opticalOriginRequired={opticalOriginRequired} onPortChange={autoPortChanged} visible={props.visible !== false && mode !== "manual"} onBusy={busyChanged} onReturnMotion={setReturnMotion} /></div>
   </div>;
 }
 
-export function FieldAutoFollow({ config, onConfig, status, disabled, request, onStatus, onRecords, onService, onBusy, onRoute, onAcquisition, autoTargetKey, onAutoTarget, visible = true, workOrigin, opticalOrigin, opticalOriginRequired = false, onPortChange, onReturnMotion, connectionPort }: Props & { onBusy?: (busy: boolean) => void; onReturnMotion?: (motion: FieldOriginReturnMotion) => void }) {
+export function FieldAutoFollow({ config, onConfig, status, disabled, pollUnavailable = false, request, onStatus, onRecords, onService, onBusy, onRoute, onAcquisition, autoTargetKey, onAutoTarget, visible = true, workOrigin, opticalOrigin, opticalOriginRequired = false, onPortChange, onReturnMotion, connectionPort, routeMode, onPositionTarget, positionedStation }: Props & { onBusy?: (busy: boolean) => void; onReturnMotion?: (motion: FieldOriginReturnMotion) => void }) {
   const [survey, setSurvey] = useState<AutoFollowSurvey>(defaultAutoFollowSurvey);
+  const segmented = routeMode === "segmented";
+  const [segment, setSegment] = useState<SegmentSettings>({ ...segmentedDefaults });
+  const [segmentStarts, setSegmentStarts] = useState<Record<string, number>>({});
+  const completedSegmentSession = useRef(status?.pointCycle?.state === "complete" ? status.pointCycle.sessionId : undefined);
+  const observedSegment = useRef<{ sessionId: string; context: string } | null>(null);
+  const appliedPositionSequence = useRef(0);
   const [loaded, setLoaded] = useState(false), [ports, setPorts] = useState<{ port: string; description: string }[]>([]);
   const [anchors, setAnchors] = useState<Record<string, { value: AutoFollowAnchor; fingerprint: string; generation?: number }>>({});
   const [pending, setPending] = useState(""), [error, setError] = useState(""), [notice, setNotice] = useState("");
   const [generationError, setGenerationError] = useState("");
+  const [profileBusy, setProfileBusy] = useState(false);
   const [portsBusy, setPortsBusy] = useState(false), [portsError, setPortsError] = useState("");
   const portsEntered = useRef(false), portRequest = useRef(0), portEdited = useRef(0);
   const operation = useRef(0), generation = useRef<number | undefined>(status?.service.generation);
@@ -212,7 +223,7 @@ export function FieldAutoFollow({ config, onConfig, status, disabled, request, o
   // pointCycle is retained as last-run history. Only the current service/receiver
   // owner may lock editing, not a stale phase from a finished or failed run.
   const active = fieldIsActive(status), cycleRunning = active && !!status?.pointCycle && !["complete", "cancelled", "error"].includes(status.pointCycle.state);
-  const locked = disabled || !!pending || active || cycleRunning || !!status?.deviceBusy || !!status?.turntableBusy;
+  const locked = disabled || !!pending || profileBusy || active || cycleRunning || !!status?.deviceBusy || !!status?.turntableBusy;
   const latestLocked = useRef(locked); latestLocked.current = locked;
   const port = connectionPort || survey.port, draft = useMemo(() => surveyDraft(survey), [survey]);
   const currentOrigin = matchingWorkOrigin(workOrigin, status, port);
@@ -234,11 +245,34 @@ export function FieldAutoFollow({ config, onConfig, status, disabled, request, o
   const anchor = currentCalibration?.value || null;
   const originError = autoFollowOpticalOriginError(opticalOriginRequired, !!anchor, commonOrigin);
   const lengthError = autoFollowPointLengthError(currentPoint?.radiusM ?? NaN, blade?.lengthM);
-  const plan = useMemo(() => planAutoFollow(draft, anchor, motionMode, port, commonOrigin), [draft, anchor, motionMode, port, commonOrigin]);
+  const segmentFor = (key: string): SegmentSettings => ({ ...segment, startAzimuthDeg: segmentStarts[key] ?? 0 });
+  const autoPlan = useMemo(() => planAutoFollow(draft, anchor, motionMode, port, commonOrigin), [draft, anchor, motionMode, port, commonOrigin]);
+  const segmentPlan = useMemo(() => planSegmentedFollow(draft, segmentFor(selectedKey), anchor, motionMode, port, commonOrigin), [draft, segment, segmentStarts, selectedKey, anchor, motionMode, port, commonOrigin]);
+  const plan = segmented ? segmentPlan : autoPlan;
   const identityErrors = useMemo(() => surveyIdentityErrors(survey), [survey]);
   const blockers = [...new Set([...identityErrors, ...autoFollowBlockers(config, status, plan, anchor, port), ...(originError ? [originError] : []), ...(lengthError ? [lengthError] : [])])];
   useEffect(() => { alive.current = true; return () => { alive.current = false; operation.current += 1; portRequest.current += 1; }; }, []);
-  useEffect(() => { setSurvey(readAutoFollowSurvey(localStorage.getItem(storageKey))); setLoaded(true); }, []);
+  useEffect(() => {
+    const savedSurvey = readAutoFollowSurvey(localStorage.getItem(storageKey));
+    setSurvey(savedSurvey);
+    const raw = localStorage.getItem(segmentedStorageKey);
+    const restoredSegment = readSegmentSettings(raw, savedSurvey.settings.stepDeg);
+    setSegment(restoredSegment);
+    try {
+      const saved = JSON.parse(raw || "null");
+      if (saved?.starts && typeof saved.starts === "object" && !Array.isArray(saved.starts) &&
+          !(restoredSegment.pointsPerStart === 2 && saved.stepDeg !== segmentedPairStepDeg)) {
+        setSegmentStarts(Object.fromEntries(Object.entries(saved.starts).filter((entry): entry is [string, number] =>
+          typeof entry[1] === "number" && Number.isFinite(entry[1]) && entry[1] >= 0 && entry[1] < 360 && entry[1] % restoredSegment.stepDeg === 0)));
+      }
+    } catch { /* A malformed draft does not restore a running task. */ }
+    setLoaded(true);
+  }, []);
+  useEffect(() => {
+    if (!loaded) return;
+    try { localStorage.setItem(segmentedStorageKey, JSON.stringify({ ...segment, starts: segmentStarts })); }
+    catch { /* Keep editable state in memory. */ }
+  }, [loaded, segment, segmentStarts]);
   useEffect(() => {
     if (loaded) onReturnMotion?.({ speedRpm: survey.settings.maxMoveRpm,
       maxMoveAccelerationDegS2: survey.settings.maxMoveAccelerationDegS2, followErrorLimitDeg: survey.settings.followErrorLimitDeg });
@@ -250,7 +284,7 @@ export function FieldAutoFollow({ config, onConfig, status, disabled, request, o
       localStorage.setItem(storageKey, JSON.stringify({ ...survey, collectionId: saved.collectionId, collectionContext: saved.collectionContext }));
     } catch { /* Saving editable configuration never persists hardware calibration. */ }
   }, [loaded, survey]);
-  useEffect(() => { onBusy?.(!!pending); return () => onBusy?.(false); }, [pending, onBusy]);
+  useEffect(() => { onBusy?.(!!pending || profileBusy); return () => onBusy?.(false); }, [pending, profileBusy, onBusy]);
   useEffect(() => {
     if (!visible) { portsEntered.current = false; portRequest.current += 1; setPortsBusy(false); return; }
     if (!loaded || locked || connectionPort || portsEntered.current) return;
@@ -277,26 +311,81 @@ export function FieldAutoFollow({ config, onConfig, status, disabled, request, o
     setAnchors(previous => Object.entries(previous).some(([key, item]) => valid.get(key) !== item.fingerprint)
       ? Object.fromEntries(Object.entries(previous).filter(([key, item]) => valid.get(key) === item.fingerprint)) : previous);
   }, [survey, context]);
-  const targets: FieldAutoCaptureTarget[] = useMemo(() => survey.blades.flatMap(one => one.points.map(point => {
-    const oneDraft = surveyDraft(survey, one.id, point.id), calibration = usableAnchor(oneDraft, one.id, point.id);
-    const onePlan = planAutoFollow(oneDraft, calibration?.value || null, motionMode, port, commonOrigin);
-    const pointOriginError = autoFollowOpticalOriginError(opticalOriginRequired, !!calibration, commonOrigin);
-    const rootRadiusM = 0;
-    const bladeLengthM = Number.isFinite(one.lengthM) && one.lengthM! > 0 && one.lengthM! <= 1000 ? one.lengthM : undefined;
-    const lengthError = autoFollowPointLengthError(point.radiusM, one.lengthM);
-    const pointCycle = onePlan.pointCycle ? { ...onePlan.pointCycle, points: onePlan.pointCycle.points.map(item => ({ ...item, rootRadiusM, ...(bladeLengthM !== undefined ? { bladeLengthM } : {}) })) } : null;
-    return { key: autoFollowTargetKey(one.id, point.id), bladeKey: one.id, bladeId: one.name.trim(), pointId: point.id,
-      pointName: point.name.trim(), radiusM: point.radiusM, rootRadiusM, ...(bladeLengthM !== undefined ? { bladeLengthM } : {}), stations: onePlan.stationsPerPoint, cycles: oneDraft.cycles,
-      route: { kind: "auto", name: `叶片 ${one.name.trim()} · ${point.name.trim()}`, pointNames: onePlan.points.map(item => item.name),
-        cycle: identityErrors.length || pointOriginError || lengthError ? null : pointCycle,
-        errors: [...new Set([...identityErrors, ...onePlan.errors, ...(pointOriginError ? [pointOriginError] : []), ...(lengthError ? [lengthError] : [])])], generation: calibration?.generation ?? commonOrigin?.generation,
-        ...(!calibration && commonOrigin && !verifiedOrigin ? { verifyReferenceAtStart: true as const } : {}),
-        ...(!calibration && !commonOrigin ? { referenceMode: "read_at_start" as const } : {}) } as FieldCaptureRoute };
-  })), [survey, anchors, motionMode, context, status?.service.generation, commonOrigin, verifiedOrigin, opticalOriginRequired]);
+  const { targets, segmentTargets } = useMemo(() => {
+    const buildTargets = (useSegments: boolean): FieldAutoCaptureTarget[] => survey.blades.flatMap(one => one.points.map(point => {
+      const oneDraft = surveyDraft(survey, one.id, point.id), calibration = usableAnchor(oneDraft, one.id, point.id);
+      const targetKey = autoFollowTargetKey(one.id, point.id);
+      const onePlan = useSegments
+        ? planSegmentedFollow(oneDraft, segmentFor(targetKey), calibration?.value || null, motionMode, port, commonOrigin)
+        : planAutoFollow(oneDraft, calibration?.value || null, motionMode, port, commonOrigin);
+      const pointOriginError = autoFollowOpticalOriginError(opticalOriginRequired, !!calibration, commonOrigin);
+      const rootRadiusM = 0;
+      const bladeLengthM = Number.isFinite(one.lengthM) && one.lengthM! > 0 && one.lengthM! <= 1000 ? one.lengthM : undefined;
+      const lengthError = autoFollowPointLengthError(point.radiusM, one.lengthM);
+      const dimensions = { rootRadiusM, ...(bladeLengthM !== undefined ? { bladeLengthM } : {}) };
+      const pointCycle = onePlan.pointCycle ? { ...onePlan.pointCycle,
+        points: onePlan.pointCycle.points.map(item => ({ ...item, ...dimensions })),
+        ...(onePlan.pointCycle.segmentStations ? { segmentStations: onePlan.pointCycle.segmentStations.map(item => ({ ...item, ...dimensions })) } : {}),
+        ...(onePlan.pointCycle.nextWaitPoint ? { nextWaitPoint: { ...onePlan.pointCycle.nextWaitPoint, ...dimensions } } : {}),
+      } : null;
+      return { key: targetKey, bladeKey: one.id, bladeId: one.name.trim(), pointId: point.id,
+        pointName: point.name.trim(), radiusM: point.radiusM, ...dimensions, stations: onePlan.stationsPerPoint, cycles: useSegments ? 1 : oneDraft.cycles,
+        route: { kind: useSegments ? "segmented" : "auto", name: `叶片 ${one.name.trim()} · ${point.name.trim()}`, pointNames: onePlan.points.map(item => item.name),
+          cycle: identityErrors.length || pointOriginError || lengthError ? null : pointCycle,
+          errors: [...new Set([...identityErrors, ...onePlan.errors, ...(pointOriginError ? [pointOriginError] : []), ...(lengthError ? [lengthError] : [])])], generation: calibration?.generation ?? commonOrigin?.generation,
+          ...(!calibration && commonOrigin && !verifiedOrigin ? { verifyReferenceAtStart: true as const } : {}),
+          ...(!calibration && !commonOrigin ? { referenceMode: "read_at_start" as const } : {}) } as FieldCaptureRoute };
+    }));
+    return { targets: buildTargets(false), segmentTargets: buildTargets(true) };
+  }, [survey, segment, segmentStarts, anchors, motionMode, port, context, status?.service.generation, commonOrigin, verifiedOrigin, opticalOriginRequired]);
+  const segmentRunContext = JSON.stringify([context, port, status?.service.generation, survey.settings, survey.heights, survey.blades,
+    segment.pointsPerStart, segment.stepDeg]);
+  useEffect(() => {
+    const cycle = status?.pointCycle;
+    if (!loaded || cycle?.executionMode !== "manual_segments" || !cycle.sessionId) return;
+    const terminal = ["complete", "error", "cancelled"].includes(cycle.state);
+    if (!terminal) {
+      // Only a live session observed by this editor may advance its draft.
+      // Old snapshots and mounting after a finished run must not move a cursor.
+      if (fieldIsActive(status) && cycle.port === port && cycle.segmentStepDeg === segment.stepDeg &&
+          observedSegment.current?.sessionId !== cycle.sessionId)
+        observedSegment.current = { sessionId: cycle.sessionId, context: segmentRunContext };
+      return;
+    }
+    if (cycle.sessionId === completedSegmentSession.current) return;
+    completedSegmentSession.current = cycle.sessionId;
+    const observed = observedSegment.current;
+    observedSegment.current = null;
+    if (cycle.state !== "complete" || !cycle.waitingPoint || observed?.sessionId !== cycle.sessionId ||
+        observed.context !== segmentRunContext || cycle.port !== port || cycle.segmentStepDeg !== segment.stepDeg) return;
+    const next = cycle.waitingPoint;
+    const target = segmentTargets.find(item => item.bladeId === next.bladeId && item.pointId === next.radialPointId);
+    const expected = target?.route.cycle?.nextWaitPoint;
+    if (!expected || expected.azimuthDeg !== next.azimuthDeg || (["axis1AngleDeg", "axis2AngleDeg"] as const).some(key =>
+        !Number.isFinite(next[key]) || Math.abs(next[key] - expected[key]) > 1e-6)) return;
+    setSegmentStarts(previous => ({ ...previous, [target!.key]: next.azimuthDeg! }));
+  }, [loaded, status, segmentRunContext, segment.stepDeg, port, segmentTargets]);
+  useEffect(() => {
+    if (!loaded || locked || !positionedStation || positionedStation.kind !== "segmented" ||
+        positionedStation.sequence <= appliedPositionSequence.current) return;
+    appliedPositionSequence.current = positionedStation.sequence;
+    if (positionedStation.port !== port || positionedStation.generation !== status?.service.generation) return;
+    const target = segmentTargets.find(item => item.key === positionedStation.targetKey);
+    const station = target?.route.cycle?.segmentStations?.find(item => item.pointId === positionedStation.pointId);
+    if (!target || !station || station.azimuthDeg !== positionedStation.azimuthDeg || !Number.isFinite(station.azimuthDeg)) return;
+    setSegmentStarts(previous => ({ ...previous, [target.key]: station.azimuthDeg! }));
+    setSurvey(previous => selectSurveyTarget(previous, target.key));
+    onAutoTarget?.(target.key);
+    setError(""); setNotice("");
+  }, [loaded, locked, positionedStation, port, status?.service.generation, segmentTargets, onAutoTarget]);
   const selectedTarget = targets.find(item => item.key === selectedKey);
+  const selectedSegmentTarget = segmentTargets.find(item => item.key === selectedKey);
   const captureRoute: FieldCaptureRoute = useMemo(() => ({ ...(selectedTarget?.route || { kind: "auto", name: "自动跟随路线", pointNames: [], cycle: null, errors: ["请添加叶片和测点"] }), targets, selectedTargetKey: selectedKey }), [selectedTarget, targets, selectedKey]);
+  const segmentRoute: FieldCaptureRoute = useMemo(() => ({ ...(selectedSegmentTarget?.route || { kind: "segmented", name: "分段采集路线", pointNames: [], cycle: null, errors: ["请添加叶片和测点"] }), targets: segmentTargets, selectedTargetKey: selectedKey }), [selectedSegmentTarget, segmentTargets, selectedKey]);
   const captureRouteKey = useMemo(() => JSON.stringify(captureRoute), [captureRoute]);
+  const segmentRouteKey = useMemo(() => JSON.stringify(segmentRoute), [segmentRoute]);
   useEffect(() => { if (loaded) onRoute?.(captureRoute); }, [loaded, captureRouteKey, onRoute]);
+  useEffect(() => { if (loaded) onRoute?.(segmentRoute); }, [loaded, segmentRouteKey, onRoute]);
   async function refreshPorts() {
     if (latestLocked.current) return;
     const epoch = ++portRequest.current, revision = portEdited.current, requestedGeneration = latestGeneration.current;
@@ -311,6 +400,14 @@ export function FieldAutoFollow({ config, onConfig, status, disabled, request, o
       if (!available.length) setPortsError("未发现转盘串口，请连接设备后刷新");
     } catch (cause) { if (alive.current && epoch === portRequest.current) setPortsError(messageOf(cause)); }
     finally { if (alive.current && epoch === portRequest.current) setPortsBusy(false); }
+  }
+  function editSegment(patch: Partial<SegmentSettings>) {
+    if (locked) return;
+    const next = { ...segment, ...patch };
+    if (next.pointsPerStart === 2) next.stepDeg = segmentedPairStepDeg;
+    setSegment(next);
+    if (next.stepDeg !== segment.stepDeg) setSegmentStarts({});
+    setError(""); setNotice("");
   }
   function editSettings(patch: Partial<AutoFollowSettings>) { if (!locked) { setSurvey(previous => ({ ...previous, settings: { ...previous.settings, ...patch } })); setError(""); setNotice(""); } }
   function editHeight(key: "hubHeightM" | "laserHeightM", value: string) {
@@ -365,9 +462,11 @@ export function FieldAutoFollow({ config, onConfig, status, disabled, request, o
   }
   const numeric = (label: string, key: keyof AutoFollowSettings, min: number, max: number, step: number) => <label>{label}<input aria-label={label} type="number" min={min} max={max} step={step} value={Number.isFinite(survey.settings[key]) ? String(survey.settings[key]) : ""} disabled={locked} onChange={event => editSettings({ [key]: event.target.value === "" ? NaN : Number(event.target.value) })} /></label>;
   return <div className="field-auto-follow field-servo-ui">
-    <section className="field-card"><div className="field-section-heading"><div><h2>自动跟随配置</h2><p>{config.turbine || config.name || "请先在数据采集填写风机任务"}</p></div><Button type="button" variant="ghost" disabled={locked} onClick={onAcquisition}>前往数据采集</Button></div>
-      <div className="field-auto-core field-auto-survey-core">{numeric("叶轮每圈时间 · s", "periodSeconds", 0, 3600, .5)}<label>圆周点位间隔<CustomSelect aria-label="圆周点位间隔" value={draft.stepDeg} disabled={locked} onChange={event => editSettings({ stepDeg: Number(event.target.value) })}>{[180, 120, 90, 60, 45, 30, 22.5, ...(draft.stepDeg < 22.5 ? [draft.stepDeg] : [])].map(value => <option key={value} value={value}>{value}° · {360 / value} 个点位{value < 22.5 ? "（超过预存上限，请调整）" : ""}</option>)}</CustomSelect></label>{numeric("每个测点采集轮数", "cycles", 1, 100, 1)}</div>
-      <p className="field-subtext">{plan.manualRotation ? `人手转动叶片，确认进入并离开后换点；每个点位最多等待 ${manualBladeRotationWaitSeconds} 秒。` : "填 0 表示人手转动叶片，确认叶片进入并离开后换点。"}</p>
+    <section className="field-card"><div className="field-section-heading"><div><h2>{segmented ? "分段采集配置" : "自动跟随配置"}</h2><p>{config.turbine || config.name || "请先在数据采集填写风机任务"}</p></div><Button type="button" variant="ghost" disabled={locked} onClick={onAcquisition}>前往数据采集</Button></div>
+      <div className="field-auto-core field-auto-survey-core">{numeric("叶轮每圈时间 · s", "periodSeconds", 0, 3600, .5)}{segmented ? <>
+        <label>每次开始采集<CustomSelect aria-label="每次开始采集" value={segment.pointsPerStart} disabled={locked} onChange={event => editSegment({ pointsPerStart: Number(event.target.value) as 1 | 2 })}><option value={1}>单点采集</option><option value={2}>两点采集</option></CustomSelect></label>
+        <label>圆周移动间隔<CustomSelect aria-label="圆周移动间隔" value={segment.stepDeg} disabled={locked || segment.pointsPerStart === 2} onChange={event => editSegment({ stepDeg: Number(event.target.value) })}>{(segment.pointsPerStart === 2 ? [segmentedPairStepDeg] : [180, 120, 90, 60, 45, 30, 22.5]).map(value => <option key={value} value={value}>{value}° · 一圈 {360 / value} 个点位{segment.pointsPerStart === 2 ? "（固定）" : ""}</option>)}</CustomSelect></label>
+      </> : <><label>圆周点位间隔<CustomSelect aria-label="圆周点位间隔" value={draft.stepDeg} disabled={locked} onChange={event => editSettings({ stepDeg: Number(event.target.value) })}>{[180, 120, 90, 60, 45, 30, 22.5, ...(draft.stepDeg < 22.5 ? [draft.stepDeg] : [])].map(value => <option key={value} value={value}>{value}° · {360 / value} 个点位{value < 22.5 ? "（超过预存上限，请调整）" : ""}</option>)}</CustomSelect></label>{numeric("每个测点采集轮数", "cycles", 1, 100, 1)}</>}</div>
       <details className="field-auto-setup"><summary>测量与连接设置 <span>距离、离地高度与设备连接</span></summary>
         <div className="field-auto-grid">{numeric("设备至叶轮平面 · m", "distanceM", .001, 10000, .01)}<label>激光出射点离地高度 · m<input aria-label="激光出射点离地高度 · m" type="number" min={0} max={10000} step={.01} placeholder="填写出射点的实际高度" value={Number.isFinite(survey.heights?.laserHeightM) ? survey.heights?.laserHeightM : ""} disabled={locked} onChange={event => editHeight("laserHeightM", event.target.value)} /></label><label>叶轮旋向<CustomSelect aria-label="叶轮旋向" value={draft.direction} disabled={locked} onChange={event => editSettings({ direction: event.target.value as AutoFollowDraft["direction"] })}><option value="clockwise">顺时针</option><option value="counterclockwise">逆时针</option></CustomSelect></label></div>
         <div className="field-auto-heights">
@@ -407,9 +506,10 @@ export function FieldAutoFollow({ config, onConfig, status, disabled, request, o
       </div>
       <div className="field-auto-points" role="radiogroup" aria-label="本次采集测点">{blade.points.map((point, index) => {
         const pointDraft = surveyDraft(survey, blade.id, point.id), calibration = usableAnchor(pointDraft, blade.id, point.id);
-        const pointPlan = planAutoFollow(pointDraft, calibration?.value || null, motionMode, port, commonOrigin), start = pointPlan.points[0];
-        const calculatedStart = calibration ? planAutoFollow(pointDraft, null, motionMode, port, commonOrigin).points[0] : null;
         const key = autoFollowTargetKey(blade.id, point.id);
+        const segmentedPointPlan = segmented ? planSegmentedFollow(pointDraft, segmentFor(key), calibration?.value || null, motionMode, port, commonOrigin) : null;
+        const pointPlan = segmentedPointPlan || planAutoFollow(pointDraft, calibration?.value || null, motionMode, port, commonOrigin), start = pointPlan.points[0];
+        const calculatedStart = calibration ? planAutoFollow(pointDraft, null, motionMode, port, commonOrigin).points[0] : null;
         return <div className="field-auto-point" data-selected={point.id === survey.selectedPointId} key={point.id || index}>
           <input className="field-auto-point-choice" type="radio" name="auto-follow-point" aria-label={`选择测点${index + 1}`} checked={point.id === survey.selectedPointId} disabled={locked} onChange={() => selectTarget(blade.id, point.id)} />
           <label>测点名称<input aria-label={`测点${index + 1}名称`} value={point.name} maxLength={80} disabled={locked} onChange={event => editPoint({ name: event.target.value }, point.id)} /></label>
@@ -419,18 +519,21 @@ export function FieldAutoFollow({ config, onConfig, status, disabled, request, o
             setSurvey(previous => ({ ...previous, blades: previous.blades.map(item => item.id === blade.id ? { ...item, points } : item), selectedPointId: selected }));
             onAutoTarget?.(autoFollowTargetKey(blade.id, selected));
           }}><Trash2 size={15} /></Button>
-          <div className="field-auto-point-tools"><span className="field-auto-point-angle">首个点位：俯仰 {numberText(toWorkAngle(start?.axis1AngleDeg, 1, currentOrigin), 3)}° · 水平 {numberText(toWorkAngle(start?.axis2AngleDeg, 2, currentOrigin), 3)}°</span>{calibration && <span className="field-badge green">已记录首个点位</span>}<div className="field-auto-point-buttons"><Button type="button" disabled={locked || !isTurntablePort(port) || !Number.isFinite(point.radiusM) || point.radiusM <= 0} aria-label={`校准测点${index + 1}`} onClick={() => void readAnchor(point.id)}><Crosshair size={14} />{pending === `calibrate:${key}` ? "读取中…" : "校准"}</Button>{calibration && <Button type="button" variant="ghost" disabled={locked} aria-label={`恢复测点${index + 1}计算角度`} onClick={() => setAnchors(previous => { const next = { ...previous }; delete next[key]; return next; })}>恢复计算</Button>}</div>{calibration && calculatedStart && <span className="field-auto-point-offset field-auto-point-angle" aria-label={`测点${index + 1}整圈修正量`}>整圈角度修正：俯仰 {numberText(calibration.value.axis1AngleDeg - calculatedStart.axis1AngleDeg, 3)}° · 水平 {numberText(calibration.value.axis2AngleDeg - calculatedStart.axis2AngleDeg, 3)}°</span>}</div></div>;
+          <div className="field-auto-point-tools"><span className="field-auto-point-angle">{segmented ? `本段起点 ${segmentFor(key).startAzimuthDeg}°：` : "首个点位："}俯仰 {numberText(toWorkAngle(start?.axis1AngleDeg, 1, currentOrigin), 3)}° · 水平 {numberText(toWorkAngle(start?.axis2AngleDeg, 2, currentOrigin), 3)}°</span>{calibration && <span className="field-badge green">已记录首个点位</span>}<div className="field-auto-point-buttons"><Button type="button" disabled={locked || !isTurntablePort(port) || !Number.isFinite(point.radiusM) || point.radiusM <= 0} aria-label={`校准测点${index + 1}`} onClick={() => void readAnchor(point.id)}><Crosshair size={14} />{pending === `calibrate:${key}` ? "读取中…" : segmented ? "校准0°点" : "校准"}</Button>{calibration && <Button type="button" variant="ghost" disabled={locked} aria-label={`恢复测点${index + 1}计算角度`} onClick={() => setAnchors(previous => { const next = { ...previous }; delete next[key]; return next; })}>恢复计算</Button>}</div>{calibration && calculatedStart && <span className="field-auto-point-offset field-auto-point-angle" aria-label={`测点${index + 1}整圈修正量`}>整圈角度修正：俯仰 {numberText(calibration.value.axis1AngleDeg - calculatedStart.axis1AngleDeg, 3)}° · 水平 {numberText(calibration.value.axis2AngleDeg - calculatedStart.axis2AngleDeg, 3)}°</span>}</div></div>;
       })}</div></>}
-      <p className="field-subtext">未校准时按安装尺寸计算瞄准位置，开始后先自动定位，再等待叶片。已校准测点在其首个点位等待叶片，离开后换点。校准只读取当前两轴角度，不会识别光斑是否对准测点；其修正量用于此测点的全部圆周点位。校准前将实际测点置于旋转中心正下方并准确瞄准，公共归零不能替代测点校准。每次只采集一个测点。</p>
+      <p className="field-subtext">校准前，将测点放在旋转中心正下方并瞄准；未校准时按尺寸计算。</p>
       <div className="field-inline-help"><label><input type="checkbox" aria-label="测试：未停稳时判定叶片" checked={survey.settings.diagnosticDetectBeforeSettled === true} disabled={locked} onChange={event => editSettings({ diagnosticDetectBeforeSettled: event.target.checked })} /> 测试：未停稳时判定叶片</label>{survey.settings.diagnosticDetectBeforeSettled && <label>未停稳判定角度范围<CustomSelect aria-label="未停稳判定角度范围" value={survey.settings.diagnosticAngleWindowDeg ?? 0} disabled={locked} onChange={event => editSettings({ diagnosticAngleWindowDeg: Number(event.target.value) })}>{[.5, 1, 2, 3, 5, 10].map(value => <option key={value} value={value}>±{value}°</option>)}<option value={0}>不限制角度</option></CustomSelect></label>}<p>{(survey.settings.diagnosticAngleWindowDeg ?? 0) > 0 ? `两轴进入目标 ±${survey.settings.diagnosticAngleWindowDeg}° 范围后开始判定` : "不限制距目标的角度，移动途中即判定"}，跳过初段扰动过滤；进入20 ms、离开30 ms沿用下方设置。提前判定的经过会保留，当前运动结束后再换点。仅用于流程测试，记录标记为诊断数据。</p></div>
       <details className="field-auto-setup"><summary>叶片进入与离开判定 <span>使用 RSSI 回波</span></summary><div className="field-auto-grid">{!plan.manualRotation && numeric("单站最多等待 · 圈", "waitRevolutions", 1, 10, 1)}{numeric("进入回波波动阈值 · 百分点", "rssiEnterSpread", .1, 100, .1)}{numeric("离开回波波动阈值 · 百分点", "rssiExitSpread", 0, 99.9, .1)}{numeric("进入确认时间 · ms", "rssiEnterConfirmMs", 10, 1000, 10)}{numeric("离开确认时间 · ms", "rssiConfirmMs", 10, 1000, 10)}</div></details>
-      <details className="field-auto-setup field-auto-turntable-setup"><summary>转盘安装设置 <span>安装或接线变化时调整</span></summary><div className="field-auto-grid"><label>俯仰轴方向<CustomSelect aria-label="俯仰轴方向" value={draft.axis1Sign} disabled={locked} onChange={event => editSettings({ axis1Sign: Number(event.target.value) as 1 | -1 })}><option value={1}>抬高瞄准点时角度增加</option><option value={-1}>抬高瞄准点时角度减小</option></CustomSelect></label><label>水平轴方向<CustomSelect aria-label="水平轴方向" value={draft.axis2Sign} disabled={locked} onChange={event => editSettings({ axis2Sign: Number(event.target.value) as 1 | -1 })}><option value={1}>向右瞄准时角度增加</option><option value={-1}>向右瞄准时角度减小</option></CustomSelect></label>{numeric("两轴换点转速上限 · rpm", "maxMoveRpm", .02, 10, .02)}{motionMode !== "drive_internal" && numeric("换点加速度上限 · °/s²", "maxMoveAccelerationDegS2", .1, 120, .1)}{numeric(motionMode === "drive_internal" ? "运动中行程误差上限 · °" : "运动中跟随误差上限 · °", "followErrorLimitDeg", .5, 10, .05)}</div><p className="field-subtext">{motionMode === "drive_internal" ? "支持预存点位的固件会提前保存本测点的整圈坐标与转速；叶片离开后只按编号换点，加减速由下位机执行。每个测点最多预存16个圆周点位，间隔应不少于22.5°。旧固件保留反馈定位。两轴到位停稳后才等待叶片。驱动器加减速参数可在转盘状态中查看。修改速度后，下次采集或回原点生效。运动中行程误差上限允许控制器在目标附近修正，超过设置值则停止；到位容差为0.5°，两轴停稳后才采集。" : <>{plan.manualRotation ? "人手转动时按此处设置的速度上限换点。" : "根据叶轮周期、点位间隔和两轴行程自动计算每段速度，均不超过此上限。"}转盘停稳后等待叶片，离开后再换点。加速度控制双轴轨迹的起步与减速快慢，任务回原点沿用此值；旧控制器按驱动器自身的加减速设置执行。跟随误差上限控制运动中实际位置与轨迹目标允许相差多少，范围0.5～10°；到位容差为0.5°。修改后下次开始采集或回原点生效，不能设为0关闭。</>}</p></details>
+      <details className="field-auto-setup field-auto-turntable-setup" open={segmented}><summary>转盘安装设置 <span>{segmented ? "移动速度与驱动加减速" : "安装或接线变化时调整"}</span></summary><div className="field-auto-grid"><label>俯仰轴方向<CustomSelect aria-label="俯仰轴方向" value={draft.axis1Sign} disabled={locked} onChange={event => editSettings({ axis1Sign: Number(event.target.value) as 1 | -1 })}><option value={1}>抬高瞄准点时角度增加</option><option value={-1}>抬高瞄准点时角度减小</option></CustomSelect></label><label>水平轴方向<CustomSelect aria-label="水平轴方向" value={draft.axis2Sign} disabled={locked} onChange={event => editSettings({ axis2Sign: Number(event.target.value) as 1 | -1 })}><option value={1}>向右瞄准时角度增加</option><option value={-1}>向右瞄准时角度减小</option></CustomSelect></label>{numeric(segmented ? "点位移动速度 · rpm" : "两轴换点转速上限 · rpm", "maxMoveRpm", .02, 10, .02)}{motionMode !== "drive_internal" && numeric(segmented ? "旧轨迹加速度上限 · °/s²" : "换点加速度上限 · °/s²", "maxMoveAccelerationDegS2", .1, 120, .1)}{numeric(motionMode === "drive_internal" ? "运动中行程误差上限 · °" : "运动中跟随误差上限 · °", "followErrorLimitDeg", .5, 10, .05)}</div>
+        {segmented && <>
+          <FieldDriveProfile port={port} status={status} disabled={disabled || !!pending || pollUnavailable}
+            request={request} onStatus={onStatus} onBusy={setProfileBusy} expanded
+            onFastPreset={() => editSettings({ maxMoveRpm: driveProfileFastPreset.speedRpm })} />
+        </>}
+      </details>
     </section>
-    <section className="field-card"><div className="field-section-heading"><div><h2>当前测点路线</h2><p>叶片 {blade?.name || "—"} · {currentPoint?.name || "—"} · {anchor ? "已记录首个点位 · 原地等待叶片" : originError ? "公共光学零点待重设 · 暂不能开始" : commonOrigin ? "按公共光学零点计算 · 先定位再等待" : "按设备坐标计算 · 先定位再等待"}{motionMode === "drive_internal" ? " · 控制器反馈定位" : motionMode === "dual_axis_timed" ? " · 双轴同时换点" : motionMode === "sequential" ? " · 两轴依次换点" : " · 待读取控制器"}</p></div><span className="field-badge">{plan.manualRotation ? "人手转动叶片" : `${numberText(plan.nominalRpm)} rpm · ${draft.periodSeconds} s / 圈`}</span></div><div className="field-auto-metrics"><div><span>圆周点位</span><strong>{plan.stationsPerPoint} 个点位</strong></div><div><span>采集轮数 / 计划记录</span><strong>{draft.cycles} 轮 / {Number.isFinite(plan.totalRecords) ? plan.totalRecords : "—"} 条</strong></div><div><span>换点速度上限（每轴）</span><strong>{plan.speedRpm && (plan.manualRotation || motionMode !== "unknown") ? numberText(plan.speedRpm) : "—"} rpm</strong></div><div><span>{motionMode === "drive_internal" ? "匀速行程下限（不含通信与起停）" : "最长点位间运动估算"}</span><strong>{plan.speedRpm && motionMode !== "unknown" ? numberText(plan.plannedMoveSeconds) : "—"} s</strong></div></div><p className="field-subtext">{motionMode === "drive_internal" ? "显示的行程下限仅按角度和速度计算；实际换点还需两轴指令下发、驱动器起停、到位确认和采集准备，能否赶上需以实测为准。" : plan.manualRotation ? "按设定上限换点，并计入起停加减速、通讯和停稳确认；不按叶轮周期估算相位。" : "每段执行时依据相邻点位重新计算速度，并计入起停加减速、通讯和停稳确认。"}{plan.mayMissNextPass && motionMode !== "unknown" ? "可能赶不上下一次经过，到位后继续等待。" : "确认叶片进入并离开后，才切换下一个点位。"}任务完成后自动回到作业原点，停止采集并保持激光开启。</p>
-      {plan.points.length > 0 && <details className="field-auto-route"><summary>查看 {plan.points.length} 个点位的目标角度{currentOrigin ? " · 作业坐标" : ""}</summary><div className="field-table-scroll"><table className="field-table"><thead><tr><th>顺序</th><th>测点</th><th>圆周角</th><th>俯仰目标</th><th>水平目标</th></tr></thead><tbody>{plan.points.map((point, index) => <tr key={point.pointId}><td>{index + 1}</td><td>{point.radialPointName}</td><td>{point.azimuthDeg}°</td><td>{numberText(toWorkAngle(point.axis1AngleDeg, 1, currentOrigin), 3)}°</td><td>{numberText(toWorkAngle(point.axis2AngleDeg, 2, currentOrigin), 3)}°</td></tr>)}</tbody></table></div></details>}
       {blockers.length > 0 && !cycleRunning && <div className="field-auto-blockers" role="status"><strong>当前测点还需完成</strong><ul>{blockers.map(item => <li key={item}>{item}</li>)}</ul></div>}
       {error && <p className="field-error" role="alert">{error}</p>}{notice && <p className="field-success" role="status">{notice}</p>}
-      <div className="field-auto-actions"><Button type="button" variant="primary" onClick={onAcquisition}>前往数据采集</Button><Button type="button" variant="ghost" onClick={onRecords}>查看本机记录</Button></div>
-    </section>
+
   </div>;
 }

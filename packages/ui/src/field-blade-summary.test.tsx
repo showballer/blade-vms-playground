@@ -122,7 +122,7 @@ check("模拟与未知来源不计实测，组件不凭空显示振幅或核实�
 check("记录内容按文本转义，不在汇总中执行或触发采集", () => {
   const html = renderToStaticMarkup(<FieldBladeSummary recordings={[recording(1, { name: "<script>unsafe</script>" })]} onOpenRecording={() => { throw new Error("SSR must not trigger an action"); }} />);
   assert.ok(html.includes("&lt;script&gt;unsafe&lt;/script&gt;")); assert.ok(!html.includes("<script>"));
-  assert.ok(html.includes("查看记录"));
+  assert.ok(html.includes("查看波形"));
 });
 const task = "c".repeat(32);
 function pointRecord(point: string, run: string, index = 1, collection: string | undefined = task, blade = "2") {
@@ -144,8 +144,9 @@ check("同任务分别启动的P1和P2集中展示，仍保留各自批次计划
   assert.ok(collection.groups.every(group => group.stations.every(station => station.id.startsWith(group.radialPointId))));
   const html = renderToStaticMarkup(<FieldBladeSummary recordings={records} />);
   assert.equal((html.match(/class="field-blade-task"/g) || []).length, 1);
-  assert.ok(html.includes("叶片检测任务 · 叶片 2")); assert.ok(html.includes("2 个测点 · 2 次采集"));
+  assert.ok(html.includes('aria-label="叶片 2 · P1"')); assert.ok(html.includes("2 个测点 · 2 次采集"));
   assert.ok(html.includes("叶片 2 · P1")); assert.ok(html.includes("叶片 2 · P2"));
+  assert.equal((html.match(/class="field-blade-point"/g) || []).length, 2);
 });
 
 check("同测点重采另建批次，完整重采不覆盖原批次缺口", () => {
@@ -208,8 +209,9 @@ check("风机任务为外层，多个叶片的同名点位独立归档", () => {
   assert.ok(summary.tasks[0].blades.every(blade => blade.groups.every(group => group.bladeId === blade.bladeId)));
   const html = renderToStaticMarkup(<FieldBladeSummary recordings={records} />);
   assert.equal((html.match(/class="field-blade-task"/g) || []).length, 1);
-  assert.equal((html.match(/class="field-blade-collection"/g) || []).length, 2);
+  assert.equal((html.match(/class="field-blade-collection"/g) || []).length, 1, "Only the selected blade panel is rendered");
   assert.ok(html.includes("1 个任务 · 2 个叶片")); assert.ok(html.includes("FJ-001 · 2 个叶片 · 3 个测点 · 3 次采集"));
+  assert.equal((html.match(/role="tab"/g) || []).length, 2);
 });
 
 check("复用任务或批次编号也不能跨风机和对象合并", () => {
@@ -308,7 +310,7 @@ check("采集时长累加去重后的原始样本，换点间隔不计入且缺�
   assert.equal(bladeDurationText(3661.25), "1 小时 1 分 1.25 秒");
   assert.equal(bladeDurationText(null), "未知");
   const html = renderToStaticMarkup(<FieldBladeSummary recordings={[first, second]} />);
-  for (const label of ["累计采集时长", "5 秒", "<th>采集时间</th>", "<th>采集时长</th>", "开始", "结束"]) assert.ok(html.includes(label), label);
+  for (const label of ["累计采集时长", "5 秒", "<th>最近采集时间</th>", "<th>采集时长</th>", "结束"]) assert.ok(html.includes(label), label);
 });
 
 check("同名风机按风场隔离归档和完成状态，旧记录没有风场仍可查看", () => {
@@ -323,6 +325,69 @@ check("同名风机按风场隔离归档和完成状态，旧记录没有风场�
   assert.equal(getAutoCaptureTargetState([...records, other], { ...target, windFarm: "WF-002" }), "partial");
   assert.equal(summarizeBladeRecords([recording()]).tasks[0].windFarm, "");
   assert.ok(renderToStaticMarkup(<FieldBladeSummary recordings={records} />).includes("风场 WF-001"));
+});
+
+
+const segmentTask = "d".repeat(32);
+const segmentPlan = plan.map((station, index) => ({ ...station, axis1AngleDeg: index + 1, axis2AngleDeg: index - 1 }));
+function segmentRecord(index: number, values: Partial<FieldRecording> = {}, metadata: Partial<NonNullable<FieldRecording["pointCycle"]>> = {}): FieldRecording {
+  const station = segmentPlan[index - 1];
+  return recording(index, { id: `segment-${index}`, ...values }, { collectionId: segmentTask,
+    executionMode: "manual_segments", coverageKind: "manual_segment_passes", segmentStepDeg: 90, totalStationCount: 4,
+    sessionId: index.toString(16).padStart(32, "0"), segmentStationIds: [station.pointId], plannedStations: segmentPlan,
+    recordedPort: "COM3", referenceSignature: "reference-a", targetAxis1AngleDeg: station.axis1AngleDeg,
+    targetAxis2AngleDeg: station.axis2AngleDeg, ...metadata });
+}
+check("分段单点跨四次启动累计整圈，保留原批次身份与采集时长", () => {
+  const records = [1, 2, 3, 4].map(index => segmentRecord(index));
+  const summary = summarizeBladeRecords(records), group = summary.groups[0];
+  assert.equal(summary.groups.length, 1); assert.equal(group.executionMode, "manual_segments");
+  assert.equal(group.observedCount, 4); assert.equal(group.pendingCount, 0); assert.equal(group.planConflict, false);
+  assert.equal(group.recordCount, 4); assert.equal(group.sessionIds.length, 4);
+  assert.equal(summary.tasks[0].sessionCount, 4); assert.equal(summary.collections[0].sessionCount, 4);
+  assert.equal(getAutoCaptureTargetState(records, { collectionId: segmentTask, bladeId: "2", radialPointId: "P1", cycles: 1, stationCount: 4 }), "complete");
+  const html = renderToStaticMarkup(<FieldBladeSummary recordings={records} />);
+  assert.ok(html.includes("分段累计 · 4 次采集")); assert.ok(html.includes("计划点位已记录"));
+  assert.ok(!html.includes("观测不完整")); assert.ok(html.includes("不代表同一物理圈的连续波形"));
+});
+check("分段两点跨零角度也可累计，各点重采只更新最新状态且保留全部记录", () => {
+  const records = [4, 1, 2, 3].map(index => segmentRecord(index, {}, { sessionId: (index === 4 || index === 1 ? "a" : "b").repeat(32), segmentStationIds: index === 4 || index === 1 ? ["p4", "p1"] : ["p2", "p3"] }));
+  const summary = summarizeBladeRecords(records);
+  assert.equal(summary.groups[0].observedCount, 4); assert.equal(summary.groups[0].planConflict, false);
+  assert.equal(summary.tasks[0].sessionCount, 2);
+  const retry = segmentRecord(2, { id: "segment-retry", startedAt: 2000, endedAt: 2001, status: "error" }, { sessionId: "e".repeat(32), completion: "missing_exit" });
+  const failed = summarizeBladeRecords([...records, retry]).groups[0];
+  assert.equal(failed.recordCount, 5); assert.equal(failed.observedCount, 3); assert.equal(failed.gapCount, 1);
+  assert.equal(failed.stations[1].records.length, 2);
+  const fixed = { ...retry, id: "segment-retry-ok", endedAt: 2002, status: "complete" as const, pointCycle: { ...retry.pointCycle!, completion: "confirmed_pass" as const } };
+  const recovered = summarizeBladeRecords([...records, retry, fixed]).groups[0];
+  assert.equal(recovered.recordCount, 6); assert.equal(recovered.observedCount, 4); assert.equal(recovered.gapCount, 0);
+});
+check("分段计划、参考位、任务和测点不可跨组补齐，缺关键元数据不能声称整圈完整", () => {
+  const records = [1, 2, 3, 4].map(index => segmentRecord(index));
+  const changedPlan = segmentPlan.map(station => ({ ...station, axis1AngleDeg: station.axis1AngleDeg + 1 }));
+  for (const patch of [
+    { plannedStations: changedPlan, targetAxis1AngleDeg: changedPlan[3].axis1AngleDeg },
+    { referenceSignature: "reference-b" }, { collectionId: "f".repeat(32) },
+    { totalStationCount: 6 }, { plannedStations: plan }, { segmentStationIds: ["not-in-plan"] },
+    { targetAxis1AngleDeg: 999 }, { collectionId: undefined },
+  ]) {
+    const changed = [...records.slice(0, 3), segmentRecord(4, {}, patch)];
+    const groups = summarizeBladeRecords(changed).groups;
+    assert.ok(groups.every(group => group.planConflict || group.observedCount < 4), JSON.stringify(patch));
+  }
+  const rename = records.map(record => ({ ...record, pointCycle: { ...record.pointCycle!, plannedStations: record.pointCycle!.plannedStations!.map(station => ({ ...station, radialPointName: `renamed ${record.id}` })) } }));
+  assert.equal(summarizeBladeRecords(rename).groups[0].planConflict, false, "Display names do not change physical coordinates");
+  for (const patch of [{ referenceSignature: "reference-b" }, { segmentStationIds: ["not-in-plan"] }]) {
+    const contradictory = segmentRecord(1, { id: "contradictory-retry", endedAt: 3000 }, patch);
+    const groups = summarizeBladeRecords([...records, contradictory]).groups;
+    assert.ok(groups.every(group => group.planConflict), "Same raw session cannot hide changed reference or invalid metadata in another group");
+  }
+  const otherPoint = segmentRecord(1, { id: "other-point" }, { radialPointId: "P2", plannedStations: segmentPlan.map(station => ({ ...station, radialPointId: "P2" })) });
+  const mixed = summarizeBladeRecords([...records, otherPoint]);
+  assert.equal(mixed.groups.length, 2); assert.equal(mixed.groups.find(group => group.radialPointId === "P2")?.pendingCount, 3);
+  const continuous = segmentRecord(1, { id: "continuous" }, { executionMode: "continuous", sessionId: "f".repeat(32) });
+  assert.equal(summarizeBladeRecords([...records, continuous]).groups.length, 2);
 });
 
 console.log(`PASS ${checks} blade record summary checks; no hardware used`);

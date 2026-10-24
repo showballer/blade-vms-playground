@@ -100,7 +100,7 @@ const render = (status: FieldStatus) => renderToStaticMarkup(<FieldAutoCaptureLi
 
 test("both actions are clickable with a pending origin and unknown laser badge; SDK failure explains capture-only disable", () => {
   const html = render(idle);
-  for (const label of ["移动到预设位置：叶片 2 测点 P1", "开始采集叶片 2 测点 P1"]) {
+  for (const label of ["移动到预设位置：叶片 2 · P1", "开始采集叶片 2 · P1"]) {
     const button = [...html.matchAll(/<button\b[^>]*>/g)].find(match => match[0].includes(label))?.[0];
     assert.ok(button); assert.doesNotMatch(button!, /disabled/);
   }

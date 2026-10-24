@@ -6,6 +6,7 @@ import { FieldAcquisition } from "./field-acquisition";
 import { activeAutoCaptureKey, FieldAutoCaptureList } from "./field-auto-capture-list";
 import { turntableReferenceSignature } from "./field-turntable-points";
 import { autoFollowDefaults, planAutoFollow } from "./field-auto-follow-plan";
+import { planSegmentedFollow } from "./field-segmented-plan";
 import type { FieldAutoCaptureTarget, FieldCaptureRoute } from "./field-capture-route";
 import type { FieldAxisFeedback, FieldConfig, FieldRecording, FieldStatus } from "./field-types";
 
@@ -25,7 +26,24 @@ const targets = [target("1", "P1"), target("1", "P2"), target("2", "P1")];
 const noop = () => {};
 const props = { targets, selectedTargetKey: targets[0].key, config, status: ready, busy: "", pollError: "", onSelect: noop, onStart: noop, onPosition: noop, onConfigure: noop, onConfigureAll: noop, onStop: noop };
 const render = (patch: Partial<React.ComponentProps<typeof FieldAutoCaptureList>> = {}) => renderToStaticMarkup(<FieldAutoCaptureList {...props} {...patch} />);
-const startButton = (html: string, blade: string, point: string) => html.match(new RegExp(`<button[^>]*aria-label="开始采集叶片 ${blade} 测点 ${point}"[^>]*>`))?.[0] || "";
+const startButton = (html: string, blade: string, point: string) => html.match(new RegExp(`<button[^>]*aria-label="开始采集叶片 ${blade} · ${point}"[^>]*>`))?.[0] || "";
+
+check("分段采集显示本段角度和下一等待点，完成后仍可再次人工开始", () => {
+  const plan = planSegmentedFollow({ ...autoFollowDefaults, bladeId: "1" }, { pointsPerStart: 2, stepDeg: 90, startAzimuthDeg: 0 }, null, "drive_internal", "COM6");
+  assert.equal(plan.errors.length, 0);
+  const segment: FieldAutoCaptureTarget = { ...targets[0], stations: 2, cycles: 1,
+    route: { kind: "segmented", name: "分段", pointNames: plan.points.map(point => point.name), cycle: plan.pointCycle!, errors: [], referenceMode: "read_at_start" } };
+  const html = render({ segmented: true, targets: [segment], status: { ...ready, state: "idle", pointCycle: {
+    executionMode: "manual_segments", state: "complete", waitingPoint: { ...plan.nextStartPoint!, confirmedAt: 1, actualAngles: { "1": 10, "2": 0 } },
+    cycles: 1, pointCount: 2, point: 2, cycle: 1, completedRecords: 2, totalRecords: 2, speedRpm: 5, dwellSeconds: 60,
+  } } });
+  assert.match(html, /本段圆周角度/);
+  assert.match(html, /0° → 90°/);
+  assert.match(html, /段后等待位置/);
+  assert.match(html, /已保存 · 等待于 180°/);
+  assert.ok(!startButton(html, "1", "P1").includes("disabled"));
+  assert.doesNotMatch(html, /新固件会预存|按编号换点|每轮覆盖全部配置点位/);
+});
 
 check("停止失败后的stopping状态仍可重试，仅本次停止请求进行中禁用", () => {
   const stopping: FieldStatus = { ...ready, state: "stopping", receiver: { running: true }, pointCycle: {
@@ -39,34 +57,61 @@ check("停止失败后的stopping状态仍可重试，仅本次停止请求进�
   assert.match(stopButton(render({ status: stopping, stopping: true })), /disabled/);
 });
 
-check("多叶片测点分别分组，展示半径、点位与圈数，每行独立采集", () => {
+check("多叶片测点分别分组，选择测点后共用唯一的采集按钮", () => {
   const html = render();
   assert.ok(html.includes('aria-label="叶片 1 采集测点"'));
   assert.ok(html.includes('aria-label="叶片 2 采集测点"'));
-  assert.equal((html.match(/aria-label="开始采集叶片/g) || []).length, 3);
+  assert.equal((html.match(/aria-label="开始采集叶片/g) || []).length, 1);
   assert.ok(html.includes("31 cm")); assert.ok(html.includes("4 个")); assert.ok(html.includes("2 轮"));
-  assert.ok(html.includes("每轮覆盖全部配置点位，可能跨叶轮实际多圈"));
+  assert.equal((html.match(/aria-label="选择叶片/g) || []).length, 3);
+  assert.doesNotMatch(html, /field-auto-capture-row-actions/);
   assert.ok(startButton(html, "1", "P1")); assert.ok(!startButton(html, "1", "P1").includes("disabled"));
 });
 check("缺失参数只阻止该行采集，配置入口不再要求光斑校准", () => {
   const missing = { ...targets[1], route: { ...targets[1].route, cycle: null, errors: ["请先填写当前测点参数"] } };
   const html = render({ targets: [targets[0], missing] });
-  assert.ok(startButton(html, "1", "P2").includes("disabled"));
+  const invalid = render({ targets: [targets[0], missing], selectedTargetKey: missing.key });
+  assert.ok(startButton(invalid, "1", "P2").includes("disabled"));
   assert.ok(!startButton(html, "1", "P1").includes("disabled"));
-  assert.ok(html.includes("待配置")); assert.ok(html.includes("配置测点"));
+  assert.ok(html.includes("待配置"));
   assert.ok(!html.includes("待校准")); assert.ok(!html.includes("去校准"));
-  assert.equal((html.match(/请先填写当前测点参数/g) || []).length, 3, "Both button titles and a visible status explain the blocker");
+  assert.match(invalid, /field-auto-capture-feedback[^>]*>请先填写当前测点参数/);
 });
 check("预定位不要求任务名或激光驱动，运行期间不能重复定位或采集", () => {
-  const button = (html: string) => html.match(/<button[^>]*aria-label="移动到预设位置：叶片 1 测点 P1"[^>]*>/)?.[0] || "";
+  const button = (html: string) => html.match(/<button[^>]*aria-label="移动到预设位置：叶片 1 · P1"[^>]*>/)?.[0] || "";
   const emptyTask = render({ config: { ...config, name: "" }, status: { ...ready, service: { ...ready.service, dllConfigured: false } } });
   assert.ok(button(emptyTask)); assert.ok(!button(emptyTask).includes("disabled"));
   assert.ok(startButton(emptyTask, "1", "P1").includes("disabled"));
-  for (const patch of [{ busy: "preposition" }, { status: { ...ready, turntableBusy: true } }, { pollError: "连接失败" }]) {
+  for (const patch of [{ status: { ...ready, turntableBusy: true } }, { pollError: "连接失败" }]) {
     const html = render(patch);
     assert.ok(button(html).includes("disabled"));
     assert.ok(startButton(html, "1", "P1").includes("disabled"));
   }
+});
+check("统一操作栏预定位期间可停止，启动未返回也可停止保存", () => {
+  const pending = render({ busy: "preposition", onCancelPosition: noop });
+  assert.match(pending, /<button(?![^>]*disabled)[^>]*aria-label="停止定位"/);
+  assert.match(render({ busy: "preposition", positionStopping: true, onCancelPosition: noop }), /<button[^>]*disabled[^>]*aria-label="停止定位"/);
+  assert.match(render({ busy: "start" }), /<button(?![^>]*disabled)[^>]*aria-label="停止并保存"/);
+});
+check("瞬时设备忙只禁用操作，不增添行内等待提示，真实异常仍显示", () => {
+  const positionButton = (html: string) => html.match(/<button[^>]*aria-label="移动到预设位置：叶片 1 · P1"[^>]*>/)?.[0] || "";
+  const inlineNotices = (html: string) => html.match(/<div class="field-auto-capture-feedback"[^>]*>[\s\S]*?<\/div>/g) || [];
+  for (const patch of [{ turntableBusy: true }, { deviceBusy: true }]) {
+    const status = { ...ready, ...patch };
+    const html = render({ status, segmented: true });
+    assert.match(positionButton(html), /disabled/);
+    assert.match(startButton(html, "1", "P1"), /disabled/);
+    assert.match(html, />待采集<\/span>/);
+    assert.ok(inlineNotices(html).every(notice => !notice.includes("请等待")), "Busy polling uses disabled controls, not changing notices");
+    const failed = render({ status: { ...status, deviceWarning: "激光状态读取失败" } });
+    assert.ok(inlineNotices(failed).some(notice => notice.includes("激光状态读取失败")));
+    const serviceFailed = render({ status: { ...status, service: { ...status.service, error: "采集服务连接失败" } } });
+    assert.ok(inlineNotices(serviceFailed).some(notice => notice.includes("采集服务连接失败")));
+    const sdkMissing = render({ status: { ...status, service: { ...status.service, dllConfigured: false } } });
+    assert.ok(inlineNotices(sdkMissing).some(notice => notice.includes("尚未配置测振仪 SDK")));
+  }
+  assert.doesNotMatch(startButton(render(), "1", "P1"), /disabled/);
 });
 check("无光斑校准和缓存反馈的计算路线可发起新核验，仍需服务与SDK就绪", () => {
   const plan = planAutoFollow(autoFollowDefaults, null, "unknown", "COM6");
@@ -75,7 +120,7 @@ check("无光斑校准和缓存反馈的计算路线可发起新核验，仍需�
   const noCachedMotor: FieldStatus = { service: ready.service, state: "idle" };
   const html = render({ targets: [theoretical], status: noCachedMotor });
   assert.ok(!startButton(html, "1", "P1").includes("disabled"));
-  assert.ok(html.includes("待采集")); assert.ok(html.includes("先读取转盘参考位"));
+  assert.ok(html.includes("待采集"));
   assert.ok(!html.includes("待校准")); assert.ok(!html.includes("去校准"));
   const failed = structuredClone(ready); failed.turntable!.feedback!.axes!["1"].fault = 2;
   assert.ok(!startButton(render({ targets: [theoretical], status: failed }), "1", "P1").includes("disabled"), "Cached fault may request a new probe; the coordinator must reject any fault still returned");
@@ -94,8 +139,9 @@ check("当前采集身份优先于编辑选择，换点位间隙保留启动测�
     pointCycle: { mode: "automatic_stations", bladeId: "2", radialPointId: "P1", cycle: 1, cycles: 2, pointIndex: 1, pointName: "点位2", dwellSeconds: 60, targetAxis1AngleDeg: 0, targetAxis2AngleDeg: 0 } } };
   assert.equal(activeAutoCaptureKey(targets, status, targets[0].key), targets[2].key);
   const html = render({ status });
-  assert.ok(startButton(html, "1", "P1").includes("disabled"));
-  assert.ok(html.includes("第 1/2 轮 · 点位 2/4"));
+  assert.equal((html.match(/aria-label="开始采集叶片/g) || []).length, 0);
+  assert.match(html, /叶片 2 · P1/);
+  assert.ok(html.includes("点位 2/4"));
   assert.equal((html.match(/>停止并保存<\/button>/g) || []).length, 1);
   assert.equal(activeAutoCaptureKey(targets, { ...status, recording: undefined }, targets[2].key), targets[2].key);
   assert.equal(activeAutoCaptureKey(targets, ready, targets[0].key), undefined);
@@ -113,7 +159,7 @@ check("完成状态要求最新批次所有圈所有站有效，重采缺口不�
   const records = [1, 2].flatMap(lap => [1, 2, 3, 4].map(station => record(station, lap)));
   const complete = render({ recordings: records, collectionId });
   assert.equal((complete.match(/>已完成<\/span>/g) || []).length, 1);
-  assert.ok(complete.includes("重新采集"));
+  assert.ok(startButton(complete, "1", "P1"));
   const relocatedTargets = targets.map(target => target.key === targets[0].key ? { ...target, radiusM: .4 } : target);
   const relocated = render({ recordings: records, collectionId, targets: relocatedTargets });
   assert.ok(!relocated.includes(">已完成</span>"), "同ID旧半径记录不能当作新测量位置的已完成数据");
@@ -141,11 +187,12 @@ check("数据采集自动模式隐藏重复开始入口，保留普通与手动�
   assert.ok(!automatic.includes("另一个未校准测点不应阻塞当前行"));
   for (const label of ["风机任务", "风机编号", "手动点位", "自动跟随", "叶片与测点", "实时采集波形", "实时分析"]) assert.ok(automatic.includes(label), label);
   assert.ok(!automatic.includes("模拟"));
+  for (const removed of ["本次记录", "叶片跟随流程", "field-capture-status", "field-capture-aside"]) assert.ok(!automatic.includes(removed), removed);
   const manual = renderToStaticMarkup(<FieldAcquisition {...acquisitionProps} link={{ ...acquisitionProps.link!, mode: "manual", route: { ...route, kind: "manual" } }} />);
-  assert.ok(manual.includes('type="submit"')); assert.ok(!manual.includes('aria-label="风机叶片逐点采集"'));
+  assert.ok(manual.includes("field-plain-capture-toolbar")); assert.ok(!manual.includes('aria-label="风机叶片逐点采集"'));
   assert.ok(manual.includes("移动到预设位置"));
   const ordinary = renderToStaticMarkup(<FieldAcquisition {...acquisitionProps} link={{ ...acquisitionProps.link!, enabled: false }} />);
-  assert.ok(ordinary.includes('type="submit"')); assert.ok(!ordinary.includes('aria-label="风机叶片逐点采集"'));
+  assert.ok(ordinary.includes("field-plain-capture-toolbar")); assert.ok(!ordinary.includes('aria-label="风机叶片逐点采集"'));
   assert.ok(!ordinary.includes("移动到预设位置"));
 });
 console.log(`${count} acquisition target presentation checks passed; no hardware or user data touched.`);

@@ -30,9 +30,12 @@ check("已结束的采集异常不冒充轮询失败，服务或传输失败仍�
     { ...failed, service: { ...failed.service, state: "error" as const, error: "采集服务连接失败" } },
     { ...failed, service: { ...failed.service, state: "ready" as const, error: "服务进程仍在但 HTTP 连接失败" } },
     { ...failed, deviceBusy: true }, { ...failed, turntableBusy: true },
-    { ...failed, deviceWarning: "设备状态未确认" }, { ...failed, receiver: { running: true } },
+    { ...failed, deviceWarning: "设备状态未确认" },
   ]) assert.match(start(render(status)), /disabled=""/);
   assert.match(start(render(failed, "读取状态失败")), /disabled=""/);
+  const running = render({ ...failed, receiver: { running: true } });
+  assert.ok(!start(running));
+  assert.match(running, /<button(?![^>]*disabled)[^>]*class="[^"]*field-auto-capture-primary"[^>]*>.*?停止并保存<\/button>/s);
   const bridgeFailure = { ...failed, service: { ...failed.service, error: "本机状态请求失败" } };
   assert.equal(fieldStatusPollError(bridgeFailure), "本机状态请求失败");
   assert.equal(fieldCanStart(bridgeFailure), false);

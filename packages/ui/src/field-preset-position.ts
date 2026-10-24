@@ -60,7 +60,8 @@ export async function moveToCapturePreset(route: FieldCaptureRoute, initial: Fie
     // was clicked again or rely on a previous success notification.
     // Automatic routes still go through the service to preload/validate the
     // whole bank. It checks actual pose and skips RUN when already at the first.
-    if (cycle.mode !== "automatic_stations" && turntableReferenceSignature(initialAxes) === first.referenceSignature && target.every((value, i) => {
+    const directSegment = cycle.executionMode === "manual_segments";
+    if ((cycle.mode !== "automatic_stations" || directSegment) && turntableReferenceSignature(initialAxes) === first.referenceSignature && target.every((value, i) => {
       const axis = initialAxes?.[String(i + 1)];
       return axis?.output_angle_deg != null && Number.isFinite(axis.output_angle_deg) &&
         axis.motor_rpm === 0 && axis.fault === 0 && !!(axis.flags & 1) && !(axis.flags & 16) &&
@@ -72,7 +73,8 @@ export async function moveToCapturePreset(route: FieldCaptureRoute, initial: Fie
       axis1AngleDeg: target[0], axis2AngleDeg: target[1], referenceSignature: first.referenceSignature,
       speedRpm: cycle.maxMoveRpm ?? cycle.speedRpm, maxMoveAccelerationDegS2: cycle.maxMoveAccelerationDegS2,
       followErrorLimitDeg: cycle.followErrorLimitDeg, confirmMotion: true,
-      ...(cycle.mode === "automatic_stations" ? {
+      ...(directSegment ? { directPositionOnly: true } : {}),
+      ...(cycle.mode === "automatic_stations" && !directSegment ? {
         preloadPoints: cycle.points.map(point => [point.axis1AngleDeg, point.axis2AngleDeg] as [number, number]),
         ...(cycle.returnToOrigin ? { preloadReturnPoint: [cycle.returnToOrigin.axis1AngleDeg, cycle.returnToOrigin.axis2AngleDeg] as [number, number] } : {}),
       } : {}),

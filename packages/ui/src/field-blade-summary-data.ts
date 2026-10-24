@@ -6,7 +6,7 @@ export type BladeStationSummary = {
   state: BladeStationState; records: FieldRecording[]; samples: number;
 };
 export type BladeRecordGroup = {
-  key: string; sessionId: string; collectionId: string | null; taskName: string; bladeId: string; radialPointId: string; radialPointName: string;
+  key: string; sessionId: string; sessionIds: string[]; executionMode: "continuous" | "manual_segments"; collectionId: string | null; taskName: string; bladeId: string; radialPointId: string; radialPointName: string;
   windFarm: string; turbine: string; measurementObject: string;
   radiusM: number | null; lapIndex: number; plannedCount: number | null; stations: BladeStationSummary[];
   observedCount: number; gapCount: number; failedCount: number; incompleteCount: number; pendingCount: number;
@@ -24,7 +24,7 @@ export type BladeTaskSummary = {
 export type BladeRecordSummary = { groups: BladeRecordGroup[]; collections: BladeCollectionSummary[]; tasks: BladeTaskSummary[]; taskCount: number; ungroupedCount: number };
 type AutomaticRecord = FieldRecording & { pointCycle: NonNullable<FieldRecording["pointCycle"]> & Required<Pick<FieldAutomaticRecord,
   "sessionId" | "bladeId" | "radialPointId" | "lapIndex" | "stationIndex" | "stationCount">> & { pointId: string } };
-type Session = { records: AutomaticRecord[]; plan: FieldPlannedStation[] | null; cycles: number; conflict: boolean; latestAt: number;
+type Session = { executionMode: "continuous" | "manual_segments"; sessionIds: Set<string>; records: AutomaticRecord[]; plan: FieldPlannedStation[] | null; cycles: number; conflict: boolean; latestAt: number;
   collectionId: string | null; collectionConflict: boolean; taskName: string; windFarm: string; turbine: string; measurementObject: string };
 
 const id = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0 && value.length <= 180;
@@ -67,6 +67,8 @@ export function bladeRecordingTiming(records: readonly FieldRecording[]): BladeR
     partialDuration: durations > 0 && durations < unique.size };
 }
 
+const planSignature = (plan: FieldPlannedStation[]) => JSON.stringify(plan.map(({ radialPointName: _name, ...station }) => station));
+
 const realRecord = (record: FieldRecording) => record.source === "polytec_ivs500" && !record.simulation;
 
 function automatic(record: FieldRecording): record is AutomaticRecord {
@@ -88,9 +90,36 @@ function stationPlan(value: unknown): FieldPlannedStation[] | null {
     if (seen.has(identity)) return null;
     seen.add(identity);
     result.push({ pointId: item.pointId, bladeId: item.bladeId, radialPointId: item.radialPointId, radialPointName: item.radialPointName,
-      radiusM: item.radiusM, azimuthDeg: item.azimuthDeg, stationIndex: item.stationIndex, stationCount: item.stationCount });
+      radiusM: item.radiusM, azimuthDeg: item.azimuthDeg, stationIndex: item.stationIndex, stationCount: item.stationCount,
+      ...Object.fromEntries(["axis1AngleDeg", "axis2AngleDeg", "rootRadiusM", "bladeLengthM", "distanceFromRootM"].filter(field => item[field] !== undefined).map(field => [field, item[field]])) });
   }
   return result.sort((a, b) => key(a.bladeId, a.radialPointId).localeCompare(key(b.bladeId, b.radialPointId)) || a.stationIndex - b.stationIndex || a.pointId.localeCompare(b.pointId));
+}
+
+/** Only explicit, compatible full-circle segment plans can pool observations
+ * across manual starts. This is coverage, not proof of one physical revolution. */
+function segmentedCoverageKey(record: AutomaticRecord, plan: FieldPlannedStation[] | null): string | null {
+  const meta = record.pointCycle, task = collectionId(meta.collectionId);
+  if (meta.executionMode !== "manual_segments" || !task || !plan || meta.cycles !== 1 || meta.lapIndex !== 1 ||
+      !integer(meta.totalStationCount, 16) || meta.totalStationCount < 2 || plan.length !== meta.totalStationCount ||
+      meta.stationCount !== meta.totalStationCount || !finite(meta.segmentStepDeg) ||
+      Math.abs(meta.segmentStepDeg * meta.totalStationCount - 360) > 1e-9 ||
+      [meta.recordedPort, meta.referenceSignature].some(value => value !== undefined && typeof value !== "string") ||
+      !Array.isArray(meta.segmentStationIds) || meta.segmentStationIds.length < 1 || meta.segmentStationIds.length > 2 ||
+      new Set(meta.segmentStationIds).size !== meta.segmentStationIds.length || !meta.segmentStationIds.includes(meta.pointId)) return null;
+  if (plan.some((station, index) => station.bladeId !== meta.bladeId || station.radialPointId !== meta.radialPointId ||
+      station.radiusM !== meta.radiusM || station.stationCount !== plan.length || station.stationIndex !== index + 1 ||
+      Math.abs(station.azimuthDeg - index * meta.segmentStepDeg!) > 1e-9 ||
+      !finite(station.axis1AngleDeg) || !finite(station.axis2AngleDeg) ||
+      [station.rootRadiusM, station.bladeLengthM, station.distanceFromRootM].some(value => value !== undefined && !finite(value))) ||
+      meta.segmentStationIds.some(pointId => !plan.some(station => station.pointId === pointId))) return null;
+  const station = plan.find(item => item.pointId === meta.pointId);
+  if (!station || station.stationIndex !== meta.stationIndex || station.azimuthDeg !== meta.azimuthDeg ||
+      station.axis1AngleDeg !== meta.targetAxis1AngleDeg || station.axis2AngleDeg !== meta.targetAxis2AngleDeg) return null;
+  // Display names do not change the measured location. Coordinate/reference,
+  // radius, angle grid and task changes do; never fill one plan from another.
+  return key("manual-segments", task, meta.bladeId, meta.radialPointId, meta.segmentStepDeg, meta.totalStationCount,
+    planSignature(plan), text(meta.recordedPort), text(meta.referenceSignature));
 }
 
 function state(record: FieldRecording): BladeStationState {
@@ -108,7 +137,7 @@ function state(record: FieldRecording): BladeStationState {
 }
 
 function emptyGroup(sessionId: string, bladeId: string, radialPointId: string, radialPointName: string, radiusM: number | null, lapIndex: number, session: Session): BladeRecordGroup {
-  return { key: key(sessionId, objectScope(session), bladeId, radialPointId, lapIndex), sessionId, collectionId: session.collectionConflict ? null : session.collectionId,
+  return { key: key(sessionId, objectScope(session), bladeId, radialPointId, lapIndex), sessionId, sessionIds: [...session.sessionIds], executionMode: session.executionMode, collectionId: session.collectionConflict ? null : session.collectionId,
     windFarm: session.windFarm, turbine: session.turbine, measurementObject: session.measurementObject,
     taskName: session.taskName, bladeId, radialPointId, radialPointName, radiusM, lapIndex,
     plannedCount: null, stations: [], observedCount: 0, gapCount: 0, failedCount: 0, incompleteCount: 0, pendingCount: 0,
@@ -126,6 +155,7 @@ export function summarizeBladeRecords(recordings: readonly FieldRecording[], syn
   }
   const sessions = new Map<string, Session>();
   const sessionScopes = new Map<string, Set<string>>();
+  const sessionPlans = new Map<string, Set<string>>();
   let ungroupedCount = 0;
   // Earlier snapshots establish the original plan; contradictory later plans are visible.
   for (const record of [...unique.values()].sort((a, b) => recordTime(a) - recordTime(b) || a.id.localeCompare(b.id))) {
@@ -134,23 +164,29 @@ export function summarizeBladeRecords(recordings: readonly FieldRecording[], syn
     const meta = record.pointCycle;
     const taskId = collectionId(meta.collectionId);
     const scope = { windFarm: text(record.windFarm), turbine: text(record.turbine), measurementObject: text(record.object) };
-    const sessionKey = key(meta.sessionId, objectScope(scope));
+    const plan = stationPlan(meta.plannedStations);
+    const segmentKey = segmentedCoverageKey(record, plan);
+    const sessionKey = key(segmentKey || meta.sessionId, objectScope(scope));
+    const plans = sessionPlans.get(meta.sessionId) || new Set<string>();
+    if (meta.executionMode === "manual_segments") plans.add(segmentKey || "invalid-manual-segment-plan");
+    else if (plan) plans.add(key(taskId || "", meta.executionMode || "continuous", JSON.stringify(plan)));
+    sessionPlans.set(meta.sessionId, plans);
     const scopes = sessionScopes.get(meta.sessionId) || new Set<string>();
     scopes.add(objectScope(scope)); sessionScopes.set(meta.sessionId, scopes);
     let session = sessions.get(sessionKey);
-    if (!session) { session = { records: [], plan: null, cycles: meta.cycles, conflict: false, latestAt: 0,
+    if (!session) { session = { executionMode: meta.executionMode === "manual_segments" ? "manual_segments" : "continuous", sessionIds: new Set(), records: [], plan: null, cycles: meta.cycles, conflict: false, latestAt: 0,
       collectionId: taskId, collectionConflict: meta.collectionId !== undefined && taskId === null,
       taskName: text(record.name) || "未命名采集任务", ...scope }; sessions.set(sessionKey, session); }
     // A malformed or contradictory task identity must never join another run.
     if (session.collectionId !== taskId || meta.collectionId !== undefined && taskId === null) session.collectionConflict = true;
-    session.records.push(record);
+    session.records.push(record); session.sessionIds.add(meta.sessionId);
+    if (meta.executionMode === "manual_segments" && !segmentKey) session.conflict = true;
     session.latestAt = Math.max(session.latestAt, recordTime(record));
     if (session.cycles !== meta.cycles) session.conflict = true;
     session.cycles = Math.max(session.cycles, meta.cycles);
-    const plan = stationPlan(meta.plannedStations);
     if (meta.plannedStations !== undefined && !plan) session.conflict = true;
     if (plan) {
-      if (session.plan && JSON.stringify(session.plan) !== JSON.stringify(plan)) session.conflict = true;
+      if (session.plan && (session.executionMode === "manual_segments" ? planSignature(session.plan) !== planSignature(plan) : JSON.stringify(session.plan) !== JSON.stringify(plan))) session.conflict = true;
       else session.plan = plan;
       const byPoint = new Map<string, FieldPlannedStation[]>();
       for (const station of plan) {
@@ -165,7 +201,7 @@ export function summarizeBladeRecords(recordings: readonly FieldRecording[], syn
     const sessionId = session.records[0].pointCycle.sessionId;
     // Never pool contradictory imported wind-turbine identities, even when a
     // copied manifest reuses both the collection and session identifiers.
-    if ((sessionScopes.get(sessionId)?.size || 0) > 1) session.conflict = true;
+    if ([...session.sessionIds].some(id => (sessionScopes.get(id)?.size || 0) > 1 || (sessionPlans.get(id)?.size || 0) > 1)) session.conflict = true;
     for (const station of session.plan || []) for (let lap = 1; lap <= session.cycles; lap++) {
       const groupKey = key(sessionKey, station.bladeId, station.radialPointId, lap);
       let group = groups.get(groupKey);
@@ -190,7 +226,8 @@ export function summarizeBladeRecords(recordings: readonly FieldRecording[], syn
     }
   }
   const sync = new Map(syncItems.map(item => [item.recordingId, item]));
-  for (const group of groups.values()) {
+  for (const [groupKey, group] of groups) {
+    group.key = groupKey;
     group.stations.sort((a, b) => a.index - b.index || a.id.localeCompare(b.id));
     for (const station of group.stations) {
       station.records.sort((a, b) => recordTime(b) - recordTime(a) || a.id.localeCompare(b.id));
@@ -227,7 +264,7 @@ export function summarizeBladeRecords(recordings: readonly FieldRecording[], syn
   }
   for (const collection of collections.values()) {
     collection.pointCount = new Set(collection.groups.map(group => group.radialPointId)).size;
-    collection.sessionCount = new Set(collection.groups.map(group => group.sessionId)).size;
+    collection.sessionCount = new Set(collection.groups.flatMap(group => group.sessionIds)).size;
   }
   const tasks = new Map<string, BladeTaskSummary>();
   for (const collection of collections.values()) {
@@ -240,7 +277,7 @@ export function summarizeBladeRecords(recordings: readonly FieldRecording[], syn
   }
   for (const task of tasks.values()) {
     task.blades.sort((a, b) => a.bladeId.localeCompare(b.bladeId, "zh-CN", { numeric: true }));
-    task.sessionCount = new Set(task.blades.flatMap(blade => blade.groups.map(group => group.sessionId))).size;
+    task.sessionCount = new Set(task.blades.flatMap(blade => blade.groups.flatMap(group => group.sessionIds))).size;
   }
   return { groups: ordered, collections: [...collections.values()], tasks: [...tasks.values()], taskCount: tasks.size, ungroupedCount };
 }

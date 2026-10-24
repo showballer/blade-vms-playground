@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { manualCaptureRoute, manualRouteDefaults, readManualRouteSettings, captureRouteBlockers, prepareCaptureRoute, prepareCaptureStartRoute, type FieldCaptureRoute } from "./field-capture-route";
 import { autoFollowDefaults, planAutoFollow } from "./field-auto-follow-plan";
+import { planSegmentedFollow, segmentedDefaults } from "./field-segmented-plan";
 import { turntableReferenceSignature } from "./field-turntable-points";
 import type { FieldAxisFeedback, FieldBladePoint, FieldStatus } from "./field-types";
 const axis = (limit: number): FieldAxisFeedback => ({ output_angle_deg: 0, motor_rpm: 0, actual_counts: 0, commanded_counts: 0, error_counts: 0,
@@ -25,6 +26,17 @@ originOutside.turntable!.feedback!.axes!["2"].guard.minimum_deg = -10;
 assert.ok(captureRouteBlockers(zeroRoute, originOutside).some(x => x.includes("作业原点") && x.includes("软限位")));
 assert.deepEqual(manualCaptureRoute(points, "COM6", { ...manualRouteDefaults, excludedIds: ["p1"] }, 1).pointNames, ["M0", "M2"]);
 assert.deepEqual(manualCaptureRoute([points[2], points[0]], "COM6", manualRouteDefaults, 1).pointNames, ["M2", "M0"]);
+const pointSnapshot = structuredClone(points);
+const selectedStart = manualCaptureRoute(points, "COM6", { ...manualRouteDefaults, startPointId: "p1" }, 1, workZero);
+assert.deepEqual(selectedStart.pointNames, ["M1", "M2", "M0"], "Clicking a saved manual station sets the next acquisition start and preserves cyclic order");
+assert.deepEqual(selectedStart.cycle!.points.map(point => point.axis1AngleDeg), [20, 1, 0]);
+assert.deepEqual(selectedStart.cycle!.returnToOrigin, zeroRoute.cycle!.returnToOrigin, "Selecting a station never changes the work origin");
+assert.deepEqual(points, pointSnapshot, "Selecting a start does not rewrite saved point coordinates or order");
+assert.deepEqual(captureRouteBlockers(selectedStart, status), []);
+assert.deepEqual(manualCaptureRoute(points, "COM6", { ...manualRouteDefaults, startPointId: "missing" }, 1).pointNames, route.pointNames);
+assert.deepEqual(manualCaptureRoute(points, "COM6", { ...manualRouteDefaults, excludedIds: ["p1"], startPointId: "p1" }, 1).pointNames,
+  ["M0", "M2"], "An excluded start cannot reintroduce an excluded station");
+assert.deepEqual(manualCaptureRoute(points, "COM6", { ...manualRouteDefaults, excludedIds: ["p1"], startPointId: "p2" }, 1).pointNames, ["M2", "M0"]);
 assert.ok(captureRouteBlockers(route, { ...status, service: { ...status.service, generation: 2 } }).some(x => x.includes("重启")));
 const changed = structuredClone(status); changed.turntable!.feedback!.axes!["1"].origin_counts++;
 assert.ok(captureRouteBlockers(route, changed).some(x => x.includes("参考位")));
@@ -50,6 +62,9 @@ const missing = structuredClone(points); delete missing[0].referenceSignature;
 assert.equal(manualCaptureRoute(missing, "COM6", manualRouteDefaults).cycle, null);
 assert.deepEqual(readManualRouteSettings("bad json"), manualRouteDefaults);
 assert.equal("enabled" in readManualRouteSettings('{"enabled":true,"excludedIds":["p1",2]}'), false);
+assert.equal(readManualRouteSettings('{"startPointId":"p2"}').startPointId, "p2");
+assert.equal(readManualRouteSettings('{"startPointId":42}').startPointId, undefined);
+assert.equal(readManualRouteSettings('{"startPointId":"  "}').startPointId, undefined);
 for (const port of ["COM3", "/dev/cu.usbserial-1140"]) {
   const next = structuredClone(status); next.turntable!.port = port;
   const route = manualCaptureRoute(points.map(point => ({ ...point, port })), port, manualRouteDefaults, 1);
@@ -72,6 +87,25 @@ assert.ok(prepared.cycle!.points.every(point => point.port === "COM6" && point.r
 assert.deepEqual(prepared.cycle!.geometry, theoretical.cycle!.geometry, "Binding references never shifts planned geometry or target angles");
 assert.deepEqual(prepared.cycle!.points.map(point => [point.axis1AngleDeg, point.axis2AngleDeg]), plan.points.map(point => [point.axis1AngleDeg, point.axis2AngleDeg]));
 assert.deepEqual(theoretical, snapshot, "The confirmation snapshot is immutable");
+const segment = planSegmentedFollow(autoFollowDefaults, segmentedDefaults, null, "drive_internal", "COM6");
+const segmentRoute: FieldCaptureRoute = { kind: "segmented", name: "分段采集", errors: segment.errors, pointNames: [],
+  referenceMode: "read_at_start", cycle: segment.pointCycle! };
+assert.deepEqual(captureRouteBlockers(segmentRoute, noCachedMotor), []);
+const boundSegment = prepareCaptureRoute(segmentRoute, status);
+assert.equal(boundSegment.cycle!.nextWaitPoint!.referenceSignature, turntableReferenceSignature(axes));
+assert.ok(boundSegment.cycle!.segmentStations!.every(point => point.referenceSignature === turntableReferenceSignature(axes)));
+assert.equal(segmentRoute.cycle!.nextWaitPoint!.referenceSignature, undefined, "Reference binding cannot mutate saved geometry");
+const unsafeNext = structuredClone(segmentRoute);
+unsafeNext.cycle!.nextWaitPoint!.axis1AngleDeg = 40;
+assert.ok(captureRouteBlockers(unsafeNext, noCachedMotor).length, "The post-capture waiting move must be range checked");
+const changedNextReference = structuredClone(boundSegment);
+changedNextReference.cycle!.nextWaitPoint!.referenceSignature = JSON.stringify([[123, 3, 10000, 17], [0, 3, 10000, 17]]);
+assert.ok(captureRouteBlockers(changedNextReference, status).some(message => message.includes("参考")));
+const skippedSegment = structuredClone(segmentRoute);
+skippedSegment.cycle!.nextWaitPoint = skippedSegment.cycle!.segmentStations![2];
+assert.ok(captureRouteBlockers(skippedSegment, noCachedMotor).some(message => message.includes("顺序")));
+const repeatingSegment = structuredClone(segmentRoute); repeatingSegment.cycle!.cycles = 2;
+assert.ok(captureRouteBlockers(repeatingSegment, noCachedMotor).length, "Every segment must require another manual start");
 const manualBladePlan = planAutoFollow({ ...autoFollowDefaults, periodSeconds: 0 }, null, "sequential", "COM6");
 const manualBladeRoute: FieldCaptureRoute = { kind: "auto", name: "人手转动", pointNames: manualBladePlan.points.map(point => point.name), errors: [], referenceMode: "read_at_start", cycle: manualBladePlan.pointCycle! };
 assert.deepEqual(captureRouteBlockers(manualBladeRoute, noCachedMotor), []);

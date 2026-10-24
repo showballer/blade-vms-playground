@@ -1,3 +1,4 @@
+import copy
 import csv
 import io
 import json
@@ -11,7 +12,7 @@ from fastapi.testclient import TestClient
 from blade_acquisition.receiver import Batch
 from blade_acquisition.service import Settings, create_app
 from blade_acquisition.storage import atomic_json, recording_summary
-from blade_acquisition.task_export import build_task_archive, prepare_task_export
+from blade_acquisition.task_export import build_task_archive, prepare_task_export, segmented_coverage
 
 
 class TaskExportTests(unittest.TestCase):
@@ -37,8 +38,136 @@ class TaskExportTests(unittest.TestCase):
         writer.finish(error)
         return writer.manifest
 
+    def segmented_record(self, station=1, when=1000, error=None):
+        record = self.record(point="P3", station=station, error=error)
+        plan = [{"pointId": f"P3-{index}", "bladeId": "1", "radialPointId": "P3", "radialPointName": "P3",
+                 "radiusM": .31, "azimuthDeg": index * 60, "stationIndex": index + 1, "stationCount": 6,
+                 "axis1AngleDeg": index / 10, "axis2AngleDeg": -index / 10} for index in range(6)]
+        record.update(startedAt=when, endedAt=when + .003)
+        record["pointCycle"].update(executionMode="manual_segments", coverageKind="manual_segment_passes",
+            sessionId=record["id"], cycles=1, lapIndex=1, pointId=f"P3-{station - 1}", stationCount=6,
+            azimuthDeg=(station - 1) * 60, segmentStepDeg=60, totalStationCount=6,
+            segmentStationIds=[f"P3-{station - 1}"], plannedStations=plan,
+            recordedPort="COM3", referenceSignature="same-reference",
+            targetAxis1AngleDeg=(station - 1) / 10, targetAxis2AngleDeg=-(station - 1) / 10)
+        atomic_json(self.store.directory(record["id"]) / "manifest.json", record)
+        self.store.update_index(record)
+        return record
+
     def post(self, records, level="task"):
         return self.client.post("/api/field/recordings/export-task", json={"recordingIds": [r["id"] for r in records], "level": level})
+
+    def test_segmented_task_accumulates_latest_positions_and_keeps_all_retries(self):
+        failed = self.segmented_record(1, when=900, error="回波离开未确认")
+        records = [failed] + [self.segmented_record(index, when=1000 + index) for index in range(1, 7)]
+        with build_task_archive(self.store, [record["id"] for record in records]) as output, zipfile.ZipFile(output) as archive:
+            index = json.loads(archive.read("task.json"))
+            self.assertEqual(index["recordCount"], 7)
+            self.assertEqual(index["unassignedSegmentedRecordingIds"], [])
+            group, = index["segmentedCoverage"]
+            self.assertEqual((group["observedCount"], group["plannedCount"], group["recordCount"]), (6, 6, 7))
+            self.assertTrue(group["complete"])
+            self.assertFalse(group["continuousMeasurement"])
+            self.assertEqual(len(group["sessionIds"]), 7)
+            self.assertEqual(group["stations"][0]["recordingIds"], [records[1]["id"], failed["id"]])
+            self.assertEqual(group["stations"][0]["latestRecordingId"], records[1]["id"])
+            self.assertTrue(all("/分段采集/" in entry["manifest"] and "/轮次_1/" not in entry["manifest"] for entry in index["records"]))
+            failed_entry = next(entry for entry in index["records"] if entry["recordingId"] == failed["id"])
+            self.assertIsNone(failed_entry["waveform"])
+            self.assertTrue(failed_entry["rawFiles"])
+            rows = list(csv.DictReader(io.StringIO(archive.read("分段点位汇总.csv").decode("utf-8-sig"))))
+            self.assertEqual(len(rows), 6)
+            self.assertEqual([float(row["azimuthDeg"]) for row in rows], [0, 60, 120, 180, 240, 300])
+            self.assertTrue(all(row["state"] == "observed" for row in rows))
+
+    def test_segmented_duplicate_cannot_fill_missing_station_and_latest_failure_wins(self):
+        records = [self.segmented_record(index, when=1000 + index) for index in range(1, 6)]
+        records.append(self.segmented_record(1, when=1010))
+        groups, excluded = segmented_coverage(records)
+        self.assertEqual(excluded, [])
+        self.assertEqual((groups[0]["observedCount"], groups[0]["pendingCount"]), (5, 1))
+        self.assertFalse(groups[0]["complete"])
+        records.append(self.segmented_record(6, when=1020))
+        self.assertTrue(segmented_coverage(records)[0][0]["complete"])
+        records.append(self.segmented_record(2, when=1030, error="未完整经过"))
+        group = segmented_coverage(records)[0][0]
+        self.assertEqual(group["observedCount"], 5)
+        self.assertEqual(group["stations"][1]["state"], "missing_exit")
+        self.assertFalse(group["complete"])
+
+    def test_segmented_geometry_reference_and_task_scope_never_mix(self):
+        original = [self.segmented_record(index) for index in range(1, 7)]
+        mutations = [lambda item: item["pointCycle"].update(referenceSignature="other"),
+                     lambda item: item["pointCycle"].update(recordedPort="COM4"),
+                     lambda item: item["pointCycle"]["plannedStations"][0].update(axis1AngleDeg=5),
+                     lambda item: item.update(turbine="另一台风机")]
+        for mutate in mutations:
+            with self.subTest(mutation=mutate):
+                records = copy.deepcopy(original)
+                mutate(records[-1])
+                groups, excluded = segmented_coverage(records)
+                self.assertEqual(excluded, [])
+                self.assertEqual(len(groups), 2)
+                self.assertFalse(any(group["complete"] for group in groups))
+
+    def test_segmented_incomplete_or_inconsistent_plan_cannot_claim_coverage(self):
+        original = self.segmented_record()
+        mutations = [lambda item: item["pointCycle"].pop("plannedStations"),
+                     lambda item: item["pointCycle"]["plannedStations"].pop(),
+                     lambda item: item["pointCycle"]["plannedStations"][1].update(stationIndex=1),
+                     lambda item: item["pointCycle"].update(segmentStepDeg=90),
+                     lambda item: item["pointCycle"].update(totalStationCount=18, segmentStepDeg=20),
+                     lambda item: item["pointCycle"].pop("sessionId"),
+                     lambda item: item["pointCycle"].pop("targetAxis1AngleDeg"),
+                     lambda item: item["pointCycle"].update(targetAxis2AngleDeg=99),
+                     lambda item: item["pointCycle"].update(segmentStationIds=["P3-0", "P3-0"]),
+                     lambda item: item["pointCycle"].update(segmentStationIds=["P3-1"]),
+                     lambda item: item["pointCycle"].update(segmentStationIds=["P3-0", "unknown"]),
+                     lambda item: item["pointCycle"].update(cycles=2)]
+        for mutate in mutations:
+            record = copy.deepcopy(original)
+            mutate(record)
+            self.assertEqual(segmented_coverage([record]), ([], [record["id"]]))
+
+    def test_segmented_same_session_conflict_does_not_hide_in_separate_groups(self):
+        first = self.segmented_record(1)
+        second = self.segmented_record(2)
+        second["pointCycle"]["sessionId"] = first["pointCycle"]["sessionId"]
+        second["pointCycle"]["referenceSignature"] = "changed-in-session"
+        groups, excluded = segmented_coverage([first, second])
+        self.assertEqual(len(groups), 2)
+        self.assertEqual(excluded, [])
+        self.assertTrue(all(group["planConflict"] and not group["complete"] for group in groups))
+        second["pointCycle"].pop("targetAxis1AngleDeg")
+        groups, excluded = segmented_coverage([first, second])
+        self.assertEqual(excluded, [second["id"]])
+        self.assertTrue(groups[0]["planConflict"])
+
+    def test_segmented_labels_numeric_encoding_and_plan_order_do_not_split_geometry(self):
+        first = self.segmented_record(1)
+        second = self.segmented_record(2)
+        second["pointCycle"]["radialPointName"] = "修改名称"
+        for item in second["pointCycle"]["plannedStations"]:
+            item["radialPointName"] = "修改名称"
+            item["azimuthDeg"] = float(item["azimuthDeg"])
+        second["pointCycle"]["plannedStations"].reverse()
+        groups, excluded = segmented_coverage([first, second])
+        self.assertEqual(excluded, [])
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]["observedCount"], 2)
+
+    def test_segmented_requires_real_nonempty_confirmed_record_and_preserves_reference_summary(self):
+        first = self.segmented_record(1)
+        second = self.segmented_record(2)
+        first["simulation"] = {"kind": "test"}
+        second["samples"] = 0
+        groups, excluded = segmented_coverage([first, second, self.record()])
+        self.assertEqual(excluded, [])
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]["observedCount"], 0)
+        summary = recording_summary(first)["pointCycle"]
+        self.assertEqual(summary["recordedPort"], "COM3")
+        self.assertEqual(summary["referenceSignature"], "same-reference")
 
     def test_task_zip_preserves_every_point_lap_waveform_and_telemetry(self):
         records = [self.record(), self.record(station=2), self.record(point="P2"), self.record(blade="2"), self.record(lap=2)]
@@ -51,6 +180,9 @@ class TaskExportTests(unittest.TestCase):
             self.assertIsNone(archive.testzip())
             index = json.loads(archive.read("task.json"))
             self.assertEqual(index["recordCount"], 5)
+            self.assertEqual(index["segmentedCoverage"], [])
+            self.assertNotIn("分段点位汇总.csv", archive.namelist())
+            self.assertTrue(all("/轮次_" in entry["manifest"] for entry in index["records"]))
             self.assertEqual(index["exportLevel"], "task")
             self.assertEqual({r["recordingId"] for r in index["records"]}, {r["id"] for r in records})
             self.assertEqual(len(list(csv.DictReader(io.StringIO(archive.read("任务清单.csv").decode("utf-8-sig"))))), 5)

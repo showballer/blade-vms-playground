@@ -1,10 +1,10 @@
 import { pointReferenceSignature, turntableAxisLimitsError, turntablePointMotionError, turntableReferenceSignature } from "./field-turntable-points";
 import { isTurntablePort } from "./field-turntable-port";
-import { FIELD_POSITION_TOLERANCE_DEG, fieldTurntableMotionMode, type FieldBladePoint, type FieldPointCycleConfig, type FieldStatus } from "./field-types";
+import { FIELD_POSITION_TOLERANCE_DEG, fieldTurntableMotionMode, type FieldBladePoint, type FieldPointCycleConfig, type FieldPointCyclePoint, type FieldStatus } from "./field-types";
 import type { FieldWorkOrigin } from "./field-turntable-origin";
 
 export type FieldCaptureRoute = {
-  kind: "manual" | "auto"; name: string; pointNames: string[];
+  kind: "manual" | "auto" | "segmented"; name: string; pointNames: string[];
   cycle: FieldPointCycleConfig | null; errors: string[]; generation?: number;
   targets?: FieldAutoCaptureTarget[]; selectedTargetKey?: string;
   referenceMode?: "read_at_start";
@@ -17,6 +17,7 @@ export type FieldAutoCaptureTarget = {
 export type ManualRouteSettings = {
   excludedIds: string[]; cycles: number; speedRpm: number; waitSeconds: number;
   rssiEnterSpread: number; rssiExitSpread: number; rssiEnterConfirmMs: number; rssiConfirmMs: number;
+  startPointId?: string;
 };
 export const manualRouteKey = "blade-manual-capture-route-v1";
 export const manualRouteDefaults: ManualRouteSettings = {
@@ -30,13 +31,18 @@ export function readManualRouteSettings(raw: string | null): ManualRouteSettings
     if (!saved || typeof saved !== "object") return defaults;
     for (const key of Object.keys(defaults) as (keyof ManualRouteSettings)[]) {
       if (key === "excludedIds") defaults.excludedIds = Array.isArray(saved[key]) ? saved[key].filter((id: unknown) => typeof id === "string") : [];
-      else if (typeof saved[key] === "number") defaults[key] = saved[key];
+      else if (key !== "startPointId" && typeof saved[key] === "number") defaults[key] = saved[key];
     }
+    if (typeof saved.startPointId === "string" && saved.startPointId.trim()) defaults.startPointId = saved.startPointId;
   } catch { /* Optional configuration never restores a running acquisition. */ }
   return defaults;
 }
 export function manualCaptureRoute(points: FieldBladePoint[], port: string, settings: ManualRouteSettings, generation?: number, origin?: FieldWorkOrigin | null): FieldCaptureRoute {
-  const selected = points.filter(point => !settings.excludedIds.includes(point.pointId || ""));
+  const configured = points.filter(point => !settings.excludedIds.includes(point.pointId || ""));
+  const start = configured.findIndex(point => point.pointId === settings.startPointId);
+  // Selecting an already saved point only changes where this route starts;
+  // preserve every selected point and the original order around the cycle.
+  const selected = start > 0 ? [...configured.slice(start), ...configured.slice(0, start)] : configured;
   const errors: string[] = [];
   if (!selected.length) errors.push("请在转盘点位保存并勾选至少一个采集点位");
   if (selected.length > 200) errors.push("每条路线最多选择200个点位");
@@ -67,6 +73,36 @@ export function captureRouteRequestBlockers(route: FieldCaptureRoute | null, sta
   return captureRouteBlockers(route, status, motionOnly, true);
 }
 
+/** Include the unrecorded next waiting pose and complete-circle metadata in
+ * reference/range checks; neither may introduce an unchecked movement. */
+function routeMotionPoints(cycle: FieldPointCycleConfig): FieldPointCyclePoint[] {
+  return [...cycle.points, ...(cycle.returnToOrigin ? [cycle.returnToOrigin] : []),
+    ...(cycle.nextWaitPoint ? [cycle.nextWaitPoint] : []), ...(cycle.segmentStations || [])];
+}
+
+function segmentedRouteErrors(route: FieldCaptureRoute): string[] {
+  const cycle = route.cycle;
+  if (!cycle) return [];
+  if (route.kind !== "segmented" && cycle.executionMode !== "manual_segments") return [];
+  const errors: string[] = [];
+  const stations = cycle.segmentStations || [];
+  if (route.kind !== "segmented" || cycle.executionMode !== "manual_segments" || cycle.mode !== "automatic_stations" ||
+      cycle.cycles !== 1 || ![1, 2].includes(cycle.points.length) || cycle.returnToOrigin ||
+      !cycle.nextWaitPoint || !Number.isFinite(cycle.segmentStepDeg) || !cycle.segmentStepDeg ||
+      !Number.isInteger(360 / cycle.segmentStepDeg) || cycle.segmentStepDeg < 5 || cycle.segmentStepDeg > 180 ||
+      cycle.totalStationCount !== 360 / cycle.segmentStepDeg || stations.length !== cycle.totalStationCount)
+    errors.push("请核对分段采集的单点／两点设置、圆周间隔与下一等待点");
+  const same = (a: FieldPointCyclePoint | undefined, b: FieldPointCyclePoint | undefined) => !!a && !!b &&
+    a.pointId === b.pointId && a.azimuthDeg === b.azimuthDeg && a.axis1AngleDeg === b.axis1AngleDeg && a.axis2AngleDeg === b.axis2AngleDeg;
+  const start = stations.findIndex(point => same(point, cycle.points[0]));
+  if (start < 0 || cycle.points.some((point, offset) => !same(point, stations[(start + offset) % stations.length])) ||
+      !same(cycle.nextWaitPoint, stations[(start + cycle.points.length) % stations.length]) ||
+      stations.some((point, index) => !point.pointId || point.azimuthDeg !== index * cycle.segmentStepDeg!) ||
+      new Set(stations.map(point => point.pointId)).size !== stations.length)
+    errors.push("分段采集点位顺序或下一等待点与整圈计算结果不一致");
+  return errors;
+}
+
 export function captureRouteBlockers(route: FieldCaptureRoute | null, status: FieldStatus | null, motionOnly = false, requestOnly = false): string[] {
   if (!route) return ["请先到转盘点位配置采集路线"];
   const errors = [...route.errors], cycle = route.cycle;
@@ -77,11 +113,12 @@ export function captureRouteBlockers(route: FieldCaptureRoute | null, status: Fi
   if (!cycle) errors.push("请先完善采集测点与路线参数");
   if (!requestOnly && !readAtStart && route.generation !== status?.service.generation) errors.push("采集服务已重启，请重新读取转盘反馈并校准路线");
   if (cycle) {
+    errors.push(...segmentedRouteErrors(route));
     if (cycle.startAtCurrentPose !== undefined && typeof cycle.startAtCurrentPose !== "boolean") errors.push("首个点位启动方式无效，请重新配置路线");
     if (cycle.startAtCurrentPose && cycle.mode !== "automatic_stations") errors.push("首个点位原地采集仅适用于自动跟随测点");
     if (requestOnly) {
       if (readAtStart) errors.push(...theoreticalRouteErrors(route));
-      else if (!isTurntablePort(cycle.port) || !cycle.points.length || cycle.points.some(point =>
+      else if (!isTurntablePort(cycle.port) || !cycle.points.length || routeMotionPoints(cycle).some(point =>
         !pointReferenceSignature(point) || !Number.isFinite(point.axis1AngleDeg) || !Number.isFinite(point.axis2AngleDeg)))
         errors.push("采集路线缺少有效的连接、点位或参考位信息");
       return [...new Set(errors)];
@@ -106,7 +143,7 @@ export function captureRouteBlockers(route: FieldCaptureRoute | null, status: Fi
       const rangeError = turntableAxisLimitsError(value, axis);
       if (rangeError) errors.push(rangeError);
     }
-    for (const point of [...cycle.points, ...(cycle.returnToOrigin ? [cycle.returnToOrigin] : [])]) {
+    for (const point of routeMotionPoints(cycle)) {
       const error = turntablePointMotionError(point, axes, cycle.port);
       if (error) errors.push(`${point.name}：${error}`);
     }
@@ -139,7 +176,7 @@ function theoreticalRouteErrors(route: FieldCaptureRoute): string[] {
   const errors: string[] = [];
   const points = Array.isArray(cycle.points) ? cycle.points : [];
   const finite = (value: unknown, min: number, max: number) => typeof value === "number" && Number.isFinite(value) && value >= min && value <= max;
-  if (route.kind !== "auto" || cycle.mode !== "automatic_stations") errors.push("启动时读取参考位仅适用于自动跟随计算路线");
+  if (!["auto", "segmented"].includes(route.kind) || cycle.mode !== "automatic_stations") errors.push("启动时读取参考位仅适用于自动跟随或分段采集计算路线");
   if (!isTurntablePort(cycle.port)) errors.push("请选择有效的转盘串口");
   if (!points.length || points.length > 200 ||
       !Number.isInteger(cycle.cycles) || cycle.cycles < 1 || cycle.cycles > 100 || points.length * cycle.cycles > 2000) errors.push("请核对点位数量与采集轮数");
@@ -153,10 +190,13 @@ function theoreticalRouteErrors(route: FieldCaptureRoute): string[] {
   if (!cycle.rssiTriggerEnabled || !finite(cycle.rssiEnterSpread, .1, 100) || !finite(cycle.rssiExitSpread, 0, 99.9) ||
       cycle.rssiEnterSpread! <= cycle.rssiExitSpread! || !finite(cycle.rssiEnterConfirmMs, 10, 1000) || !finite(cycle.rssiConfirmMs, 10, 1000)) errors.push("请核对叶片进入和离开的回波判定参数");
   const ids = new Set<string>();
-  for (const point of [...points, ...(cycle.returnToOrigin ? [cycle.returnToOrigin] : [])]) {
-    if (point !== cycle.returnToOrigin && (!point.pointId || ids.has(point.pointId)) || typeof point.name !== "string" || !point.name.trim() || !finite(point.axis1AngleDeg, -35, 35) || !finite(point.axis2AngleDeg, -180, 180) ||
-        point.port !== undefined && point.port !== cycle.port) errors.push("计算点位角度、名称、标识或串口无效");
+  for (const point of points) {
+    if (!point.pointId || ids.has(point.pointId)) errors.push("计算点位标识重复或无效");
     ids.add(point.pointId || "");
+  }
+  for (const point of routeMotionPoints(cycle)) {
+    if (typeof point.name !== "string" || !point.name.trim() || !finite(point.axis1AngleDeg, -35, 35) || !finite(point.axis2AngleDeg, -180, 180) ||
+        point.port !== undefined && point.port !== cycle.port) errors.push("计算点位角度、名称、标识或串口无效");
     if (point.referenceSignature !== undefined || (point as { references?: unknown }).references !== undefined) errors.push("计算路线不能覆盖已保存的参考位，请重新配置测点");
   }
   return errors;
@@ -174,8 +214,11 @@ export function prepareCaptureRoute(route: FieldCaptureRoute, checked: FieldStat
     const signature = turntableReferenceSignature(axes);
     if (!signature) throw new Error("请读取两轴有效参考位，确认控制器参考姿态和软限位后再开始");
     if (!Number.isInteger(checked.service.generation) || checked.service.generation! < 0) throw new Error("采集服务代际信息无效，请重新读取设备状态");
-    prepared.cycle = { ...cycle, points: cycle.points.map(point => ({ ...point, port: cycle.port, referenceSignature: signature })),
-      ...(cycle.returnToOrigin ? { returnToOrigin: { ...cycle.returnToOrigin, port: cycle.port, referenceSignature: signature } } : {}) };
+    const bind = (point: FieldPointCyclePoint) => ({ ...point, port: cycle.port, referenceSignature: signature });
+    prepared.cycle = { ...cycle, points: cycle.points.map(bind),
+      ...(cycle.returnToOrigin ? { returnToOrigin: bind(cycle.returnToOrigin) } : {}),
+      ...(cycle.nextWaitPoint ? { nextWaitPoint: bind(cycle.nextWaitPoint) } : {}),
+      ...(cycle.segmentStations ? { segmentStations: cycle.segmentStations.map(bind) } : {}) };
     prepared.generation = checked.service.generation;
     delete prepared.referenceMode;
   }

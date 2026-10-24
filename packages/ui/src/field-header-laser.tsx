@@ -1,7 +1,7 @@
 "use client";
 import React, { useEffect, useId, useRef, useState } from "react";
 import { AlertCircle, LoaderCircle, Power, RefreshCw } from "lucide-react";
-import { Button, Dialog } from "./common";
+import { Button } from "./common";
 import { fieldIsActive, type FieldDeviceSettings, type FieldLaserStatus, type FieldRequestOptions, type FieldStatus } from "./field-types";
 
 type Props = {
@@ -37,7 +37,7 @@ export function FieldHeaderLaser({ deviceIp, status, disabled, pollUnavailable =
   const scope = JSON.stringify([ip, status?.service.generation, ready]);
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null), [reading, setReading] = useState(false), [writing, setWriting] = useState(false);
   const [readError, setReadError] = useState(""), [commandError, setCommandError] = useState("");
-  const [confirm, setConfirm] = useState<string | null>(null), [, tick] = useState(0);
+  const [, tick] = useState(0);
   const alive = useRef(false), readVersion = useRef(0), readFlight = useRef<Promise<void> | null>(null), writeFlight = useRef(false);
   const latest = useRef({ ip, scope, ready, status, disabled, pollUnavailable, request });
   latest.current = { ip, scope, ready, status, disabled, pollUnavailable, request };
@@ -91,12 +91,12 @@ export function FieldHeaderLaser({ deviceIp, status, disabled, pollUnavailable =
     return () => { alive.current = false; readVersion.current++; if (writeFlight.current) busyCallback.current?.(false); };
   }, []);
   useEffect(() => {
-    setSnapshot(null); setReadError(""); setCommandError(""); setConfirm(null);
+    setSnapshot(null); setReadError(""); setCommandError("");
     void readLaser();
     const timer = window.setInterval(() => { tick(value => value + 1); void readLaser(); }, 1000);
     return () => window.clearInterval(timer);
   }, [scope]);
-  useEffect(() => { if (pollUnavailable) { setSnapshot(null); setConfirm(null); readVersion.current++; } }, [pollUnavailable]);
+  useEffect(() => { if (pollUnavailable) { setSnapshot(null); readVersion.current++; } }, [pollUnavailable]);
   useEffect(() => {
     if (!snapshot || snapshot.scope !== scope || typeof snapshot.value.readAt !== "number") return;
     const remaining = snapshot.value.readAt * 1000 + 3000 - Date.now();
@@ -104,16 +104,13 @@ export function FieldHeaderLaser({ deviceIp, status, disabled, pollUnavailable =
     const timer = window.setTimeout(() => tick(value => value + 1), remaining + 1);
     return () => window.clearTimeout(timer);
   }, [snapshot, scope]);
-  useEffect(() => {
-    if (confirm && (confirm !== scope || view !== "off" || blocked || writing)) setConfirm(null);
-  }, [confirm, scope, view, blocked, writing]);
 
   async function command(on: boolean) {
     const current = latest.current;
     if (writeFlight.current || !validIp(current.ip) || headerLaserWriteBlock(current.status, current.disabled, current.pollUnavailable) ||
-        currentReadback() !== (on ? "off" : "on")) { setConfirm(null); return; }
+        currentReadback() !== (on ? "off" : "on")) return;
     const requestedScope = current.scope, generation = current.status?.service.generation, initialReadback = snapshot?.value;
-    writeFlight.current = true; readVersion.current++; setWriting(true); setConfirm(null); setSnapshot(null); setReadError(""); setCommandError(""); busyCallback.current?.(true);
+    writeFlight.current = true; readVersion.current++; setWriting(true); setSnapshot(null); setReadError(""); setCommandError(""); busyCallback.current?.(true);
     try {
       if (readFlight.current) await readFlight.current;
       if (!inScope(requestedScope) || latest.current.pollUnavailable) return;
@@ -144,8 +141,7 @@ export function FieldHeaderLaser({ deviceIp, status, disabled, pollUnavailable =
     if (writeFlight.current) return;
     if (view === "unknown") { setCommandError(""); void readLaser(); return; }
     if (blocked || !validIp(ip)) return;
-    if (view === "on") void command(false);
-    else setConfirm(scope);
+    void command(view === "off");
   }
 
   return <div className="field-header-laser field-servo-ui" aria-label="激光状态与控制" data-state={view}>
@@ -159,10 +155,5 @@ export function FieldHeaderLaser({ deviceIp, status, disabled, pollUnavailable =
       {writing ? "处理中…" : label}
     </Button>
     {error && <span className="field-header-laser-error" title={error}><AlertCircle size={14} aria-hidden="true" /><span className="field-header-laser-message" id={messageId} role="alert">{error}</span></span>}
-    {confirm && <Dialog title="确认开启激光" onClose={() => setConfirm(null)}>
-      <div className="field-header-laser-confirm field-servo-ui"><p>将开启设备 {ip} 的激光并保持发射。请确认现场人员、目标和光路安全，完成后关闭激光。</p>
-        <div className="field-header-laser-confirm-actions"><Button type="button" onClick={() => setConfirm(null)}>取消</Button><Button type="button" variant="primary" disabled={!!blocked || writing} onClick={() => void command(true)}>确认开启激光</Button></div>
-      </div>
-    </Dialog>}
   </div>;
 }

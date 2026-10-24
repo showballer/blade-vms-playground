@@ -14,9 +14,11 @@ import { isTurntablePort, readSavedTurntableConnection, turntableConnectionKey }
 import { FieldAnalysis } from "./field-analysis";
 import { WebBladePasses } from "./web-blade-passes";
 import type { BladePassRecording, BladePassResult } from "./web-blade-passes-data";
-import { FieldAcquisition } from "./field-acquisition";
+import { FieldAcquisition, FieldCaptureStatusTags } from "./field-acquisition";
 import { FieldTurntableWorkspace, autoFollowCollection, autoFollowCollectionContext } from "./field-auto-follow";
 import { autoFollowStorageKey, readAutoFollowSurvey } from "./field-auto-follow-config";
+import { segmentedRouteAtAzimuth } from "./field-segmented-plan";
+import { positioningRouteContext, replacePositionedTarget, routeAtPositionedStation, type FieldPositionedStation } from "./field-route-position";
 import { captureRouteRequestBlockers, prepareCaptureStartRoute, type FieldCaptureRoute } from "./field-capture-route";
 import { moveToCapturePreset, presetPositionRequestError } from "./field-preset-position";
 import { FieldBladeSummary } from "./field-blade-summary";
@@ -204,21 +206,26 @@ export function FieldDesktopApp() {
     try { localStorage.setItem(turntableConnectionKey, JSON.stringify({ version: 1, endpoint })); } catch { /* Remain usable for this session. */ }
   }, []);
   const [linkEnabled, setLinkEnabled] = useState(false);
-  const [routeMode, setRouteMode] = useState<"manual" | "auto">("manual");
+  const [routeMode, setRouteMode] = useState<"manual" | "auto" | "segmented">("manual");
   const [autoTargetKey, setAutoTargetKey] = useState<string>();
   const [autoCollection, setAutoCollection] = useState({ collectionId: "", collectionContext: "" });
-  const [routes, setRoutes] = useState<Partial<Record<"manual" | "auto", FieldCaptureRoute>>>({});
+  const [routes, setRoutes] = useState<Partial<Record<"manual" | "auto" | "segmented", FieldCaptureRoute>>>({});
   const onRoute = useCallback((route: FieldCaptureRoute) => setRoutes(previous => JSON.stringify(previous[route.kind]) === JSON.stringify(route) ? previous : { ...previous, [route.kind]: route }), []);
   const currentRoute = routes[routeMode] || null;
   const routeErrors = captureRouteRequestBlockers(currentRoute, status);
   const captureAttempt = useRef(0);
   const presetRun = useRef<AbortController | null>(null);
+  const [presetRoute, setPresetRoute] = useState<FieldCaptureRoute | null>(null);
+  const [positionedStation, setPositionedStation] = useState<FieldPositionedStation>();
+  const positionSequence = useRef(0);
   const [presetStopping, setPresetStopping] = useState(false);
   const [turntableOperationBusy, setTurntableOperationBusy] = useState(false);
   const [stoppingCapture, setStoppingCapture] = useState(false);
   const stopPending = useRef(false);
   const [config, setConfig] = useState<FieldConfig>(blankConfig);
   const [configLoaded, setConfigLoaded] = useState(false);
+  const latestPositionContext = useRef({ routes, routeMode, config });
+  latestPositionContext.current = { routes, routeMode, config };
   const collectionId = autoCollection.collectionContext === autoFollowCollectionContext(config) ? autoCollection.collectionId : undefined;
   const [busy, setBusy] = useState("");
   const headerLaserBusyChanged = useCallback((value: boolean) => setBusy(previous => value ? previous || "laser" : previous === "laser" ? "" : previous), []);
@@ -242,7 +249,7 @@ export function FieldDesktopApp() {
 
   const clearSession = useCallback(() => {
     generation.current += 1; setSyncStatus(null); setSession(null); setStatus(null); setRecordings([]); setRecordingsLoaded(false); setSelected(null); setRecordsTab("records"); setStatusPollUnavailable(false);
-    setChangingPassword(false); setBindingAccount(false); setUnbindingAccount(false); setPollError(""); setNotice(""); setTurntableVisited(false); setTurntableOperationBusy(false); setLinkEnabled(false); setRoutes({}); setAutoTargetKey(undefined); captureAttempt.current += 1;
+    setChangingPassword(false); setBindingAccount(false); setUnbindingAccount(false); setPollError(""); setNotice(""); setTurntableVisited(false); setTurntableOperationBusy(false); setLinkEnabled(false); setRoutes({}); setAutoTargetKey(undefined); setPositionedStation(undefined); setPresetRoute(null); captureAttempt.current += 1;
   }, []);
   const handleError = useCallback((cause: unknown) => {
     if (cause instanceof FieldRequestError && cause.status === 401) clearSession();
@@ -408,22 +415,41 @@ export function FieldDesktopApp() {
     finally { stopPending.current = false; if (mounted.current) setStoppingCapture(false); }
   }
 
-  function requestPresetPosition(targetKey?: string) {
-    if (presetRun.current || captureStarting.current || busy || stoppingCapture || turntableOperationBusy || !linkEnabled || !status || statusPollUnavailable) return;
-    const target = routeMode === "auto" ? routes.auto?.targets?.find(item => item.key === (targetKey || routes.auto?.selectedTargetKey)) : undefined;
-    const route = routeMode === "auto" ? target?.route || null : currentRoute;
+  function requestPresetPosition(targetKey?: string, azimuthDeg?: number, fromConfiguration = false, stationId?: string) {
+    if (presetRun.current || captureStarting.current || busy || stoppingCapture || turntableOperationBusy || !linkEnabled && !fromConfiguration || !status || statusPollUnavailable) return;
+    const selected = routes[routeMode];
+    const target = routeMode !== "manual" ? selected?.targets?.find(item => item.key === (targetKey || selected?.selectedTargetKey)) : undefined;
+    let route = routeMode !== "manual" ? target?.route || null : currentRoute;
+    const sourceRoute = route, context = positioningRouteContext(route), taskContext = autoFollowCollectionContext(config);
+    if (route && stationId !== undefined) {
+      try { route = routeAtPositionedStation(route, stationId); } catch (cause) { handleError(cause); return; }
+    }
+    if (route?.kind === "segmented" && azimuthDeg !== undefined) {
+      try { route = segmentedRouteAtAzimuth(route, azimuthDeg); } catch (cause) { handleError(cause); return; }
+    }
     const invalid = presetPositionRequestError(route, status);
     if (invalid || !route) { setError(invalid); return; }
     if (target) setAutoTargetKey(target.key);
     const run = new AbortController(), epoch = generation.current;
-    presetRun.current = run; setPresetStopping(false);
+    presetRun.current = run; setPresetStopping(false); setPresetRoute(route);
     void operate("preposition", async () => {
       const result = await moveToCapturePreset(structuredClone(route), status, fieldCall, {
         signal: run.signal, current: () => mounted.current && epoch === generation.current, onStatus: setStatus,
       });
       if (!mounted.current || epoch !== generation.current) return;
+      if (result === "complete" && sourceRoute && (route.kind === "manual" || route.kind === "segmented")) {
+        const latest = latestPositionContext.current, latestRoute = latest.routes[route.kind];
+        const liveSelection = target ? latestRoute?.targets?.find(item => item.key === target.key)?.route : latestRoute;
+        if (latest.routeMode !== route.kind || positioningRouteContext(liveSelection) !== context ||
+            autoFollowCollectionContext(latest.config) !== taskContext)
+          throw new Error("已完成定位，但配置已变化；请重新核对采集起点");
+        const first = route.cycle!.points[0];
+        setRoutes(previous => ({ ...previous, [route.kind]: replacePositionedTarget(previous[route.kind] || route, route, target?.key) }));
+        setPositionedStation({ sequence: ++positionSequence.current, kind: route.kind, pointId: first.pointId!,
+          targetKey: target?.key, azimuthDeg: first.azimuthDeg, port: route.cycle!.port, generation: status.service.generation });
+      }
       setNotice(result === "complete" ? "已到预设位置并停稳，尚未采集。点击“开始采集”即可；位置未变化时不会重复移动。" : "已取消预定位，未开始采集。");
-    }).finally(() => { if (presetRun.current === run) presetRun.current = null; if (mounted.current) setPresetStopping(false); });
+    }).finally(() => { if (presetRun.current === run) presetRun.current = null; if (mounted.current) { setPresetStopping(false); setPresetRoute(null); } });
   }
   function cancelPresetPosition() {
     presetRun.current?.abort(); setPresetStopping(true);
@@ -433,9 +459,10 @@ export function FieldDesktopApp() {
     const clientRequestedAt = Date.now() / 1000;
     let route = linkEnabled ? currentRoute : null;
     let capture = fieldCaptureConfig(config);
-    if (linkEnabled && routeMode === "auto") {
-      const target = routes.auto?.targets?.find(item => item.key === (targetKey || routes.auto?.selectedTargetKey));
-      if (!target) { setError("请先在自动跟随配置叶片和测点。"); return; }
+    if (linkEnabled && routeMode !== "manual") {
+      const selected = routes[routeMode];
+      const target = selected?.targets?.find(item => item.key === (targetKey || selected?.selectedTargetKey));
+      if (!target) { setError("请先配置当前模式的叶片和测点。"); return; }
       setAutoTargetKey(target.key);
       targetKey = target.key;
       route = target.route;
@@ -452,7 +479,7 @@ export function FieldDesktopApp() {
       const invalid = validateFieldConfig(normalized); if (invalid) throw new Error(invalid);
       let pointCycle = route?.cycle ? structuredClone(route.cycle) : undefined;
       if (route && pointCycle) {
-        const latestRoute = selection.targetKey ? routes.auto?.targets?.find(item => item.key === selection.targetKey)?.route : currentRoute;
+        const latestRoute = selection.targetKey ? routes[route.kind]?.targets?.find(item => item.key === selection.targetKey)?.route : currentRoute;
         if (!linkEnabled || routeMode !== route.kind || latestRoute?.kind !== route.kind || JSON.stringify(latestRoute) !== JSON.stringify(route) ||
             autoFollowCollectionContext(config) !== autoFollowCollectionContext(normalized)) throw new Error("风机任务或采集路线已变化，请重新核对并开始。");
         // Bind the displayed reference identity. The service performs the
@@ -479,7 +506,6 @@ export function FieldDesktopApp() {
       const nextStatus = await fieldCall<FieldStatus>({ action: "status" });
       if (attempt !== captureAttempt.current || epoch !== generation.current) return;
       setConfig(plain); setStatus(nextStatus); setScreen("acquisition");
-      setNotice("已向设备发送采集请求，请核对真实接收值与保存状态。");
     }).finally(() => { captureStarting.current = false; });
   }
   const active = fieldIsActive(status);
@@ -487,6 +513,8 @@ export function FieldDesktopApp() {
   const accountLocked = active || turntableOperationBusy || stoppingCapture || Boolean(status?.deviceBusy || status?.turntableBusy);
   const unifiedAccount = account?.mode === "unified";
   function openPassword() { if (!busy && !accountLocked) { setError(""); setChangingPassword(true); } }
+  const captureControls = (active || stoppingCapture || busy === "start") && <div className="field-live-controls" aria-label="采集安全控制"><p><strong>{stoppingCapture ? "正在停止并保存" : busy === "start" ? "正在检查并启动采集" : status ? stateLabels[status.state] : "采集服务运行中"}</strong></p><Button type="button" variant="danger" disabled={stoppingCapture} onClick={() => void stopAcquisition()}>{stoppingCapture ? <LoaderCircle className="spin" size={15} /> : <Square size={13} />}停止并保存</Button></div>;
+  const positionControls = busy === "preposition" && <div className="field-live-controls" aria-label="预定位控制"><p><strong>{presetStopping ? "正在停止预定位" : "正在移动到预设位置"}</strong><span>仅定位，未采集数据</span></p><Button type="button" variant="danger" disabled={presetStopping} onClick={cancelPresetPosition}><Square size={13} />停止定位</Button></div>;
 
   return <div className="field-app"><FieldTitlebar />
     {loading ? <div className="field-loading"><LoaderCircle className="spin" size={25} /><p>正在打开本机工作台…</p></div> : !session ? <FieldLoginPanel available={Boolean(fieldBridge())} account={account} accountUnavailable={!account} onRetry={() => void operate("account", refreshAccountInfo)} busy={Boolean(busy)} error={error} onLogin={async (username, password) => {
@@ -494,28 +522,39 @@ export function FieldDesktopApp() {
       await refreshAccountInfo().catch(() => {});
     }} /> : session.mustChangePassword || changingPassword ? <main className="field-password-shell"><FieldPasswordPanel mandatory={session.mustChangePassword} account={account} busy={Boolean(busy)} error={error} onSave={savePassword} onCancel={() => { if (session.mustChangePassword) void logout(); else { setChangingPassword(false); setError(""); } }} /></main> : <>
       <header className="field-header"><div className="field-brand"><div className="field-brand-icon"><Activity size={19} /></div><span>BladeVMS <small>现场采集工作台</small></span></div><div className="field-header-right"><FieldHeaderLaser deviceIp={config.deviceIp} status={status} disabled={Boolean(busy) || turntableOperationBusy || stoppingCapture} pollUnavailable={statusPollUnavailable} request={fieldCall} onBusy={headerLaserBusyChanged} /><span className={`field-account-header ${account?.offline ? "offline" : ""}`} title={unifiedAccount ? `已绑定 ${account.serverUrl || "Web"}；离线有效期至 ${fieldAccountTime(account.offlineUntil)}` : "原始记录保存在本机"}><ShieldCheck size={13} />{unifiedAccount ? account.offline ? "统一账号 · 离线验证" : "统一账号" : "本机账号"}</span><span className="field-header-user"><span className="field-avatar">{(session.user.name || session.user.username).slice(0, 1).toUpperCase()}</span>{session.user.name || session.user.username}</span><Button variant="ghost" disabled={Boolean(busy) || accountLocked} onClick={openPassword} aria-label={unifiedAccount ? "修改统一密码" : "修改本机密码"}><LockKeyhole size={15} /></Button><Button variant="ghost" disabled={Boolean(busy) || active} onClick={() => void logout()} title={active ? "请先停止并保存采集" : "退出账号"}><LogOut size={15} />退出</Button></div></header>
-      {(active || stoppingCapture || busy === "start") && <div className="field-live-controls" aria-label="采集安全控制"><p><strong>{stoppingCapture ? "正在停止并保存" : busy === "start" ? "正在检查并启动采集" : status ? stateLabels[status.state] : "采集服务运行中"}</strong></p><Button type="button" variant="danger" disabled={stoppingCapture} onClick={() => void stopAcquisition()}>{stoppingCapture ? <LoaderCircle className="spin" size={15} /> : <Square size={13} />}停止并保存</Button></div>}
-      {busy === "preposition" && <div className="field-live-controls" aria-label="预定位控制"><p><strong>{presetStopping ? "正在停止预定位" : "正在移动到预设位置"}</strong><span>仅定位，未采集数据</span></p><Button type="button" variant="danger" disabled={presetStopping} onClick={cancelPresetPosition}><Square size={13} />停止定位</Button></div>}
+      {screen !== "acquisition" && <>{captureControls}{positionControls}</>}
       <div className="field-workspace"><aside className="field-sidebar"><p>现场作业</p><button disabled={turntableOperationBusy} className={screen === "acquisition" ? "active" : ""} onClick={() => setScreen("acquisition")}><Activity size={17} />数据采集</button><button disabled={turntableOperationBusy} className={screen === "turntable" ? "active" : ""} onClick={() => { setTurntableVisited(true); setScreen("turntable"); }}><Settings size={17} />转盘点位</button><button disabled={turntableOperationBusy} className={screen === "recordings" ? "active" : ""} onClick={() => { setScreen("recordings"); void operate("recordings", refreshRecordings); }}><HardDrive size={17} />本机记录</button><button disabled={turntableOperationBusy} className={screen === "service" ? "active" : ""} onClick={() => setScreen("service")}><Settings size={17} />设备与服务</button><p>记录分析</p><button disabled={turntableOperationBusy} className={screen === "analysis" ? "active" : ""} onClick={() => setScreen("analysis")}><AudioLines size={17} />信号处理</button><button disabled={turntableOperationBusy} className={screen === "blade-passes" ? "active" : ""} onClick={() => setScreen("blade-passes")}><Layers3 size={17} />叶片片段分析</button></aside>
-        <main className="field-content" ref={contentRef}><div className="field-page-heading"><div className={screen === "turntable" ? "field-turntable-heading field-servo-ui" : undefined}><h1>{screen === "acquisition" ? "数据采集" : screen === "turntable" ? "转盘点位控制" : screen === "recordings" ? "本机记录" : screen === "analysis" ? "信号处理" : screen === "blade-passes" ? "叶片片段分析" : "设备与本机服务"}</h1>{screen === "turntable" && <FieldTurntableHealth onConnectionChange={changeTurntableConnection} port={turntablePort} status={status} disabled={Boolean(busy) && busy !== "turntable-health" || turntableOperationBusy} pollUnavailable={statusPollUnavailable} request={fieldCall} onStatus={setStatus} onBusy={turntableHealthBusyChanged} />}</div><div className="field-page-tools"><span className={`field-badge ${status?.state === "acquiring" ? "green" : status?.state === "error" ? "red" : ""}`}><span className="field-status-dot" />{status ? stateLabels[status.state] : "读取状态中"}</span></div></div>
+        <main className="field-content" ref={contentRef}>
+          <div className={`field-page-heading${screen === "acquisition" ? " field-acquisition-heading" : ""}`}>
+            <div className={screen === "turntable" ? "field-turntable-heading field-servo-ui" : screen === "acquisition" ? "field-acquisition-title" : undefined}>
+              <div className="field-page-title-line"><h1>{screen === "acquisition" ? "数据采集" : screen === "turntable" ? "转盘点位控制" : screen === "recordings" ? "本机记录" : screen === "analysis" ? "信号处理" : screen === "blade-passes" ? "叶片片段分析" : "设备与本机服务"}</h1>
+                {screen === "acquisition" && <span className={`field-badge field-acquisition-state ${active ? "green" : status?.state === "error" ? "red" : ""}`} title={notice || undefined} role="status"><span className="field-status-dot" />{stoppingCapture ? "正在停止" : busy === "preposition" ? "正在定位" : busy === "start" ? "正在启动" : status ? stateLabels[status.state] : "读取状态中"}</span>}
+              </div>
+              {screen === "acquisition" && <FieldCaptureStatusTags status={status} />}
+              {screen === "turntable" && <FieldTurntableHealth onConnectionChange={changeTurntableConnection} port={turntablePort} status={status} disabled={Boolean(busy) && busy !== "turntable-health" || turntableOperationBusy} pollUnavailable={statusPollUnavailable} request={fieldCall} onStatus={setStatus} onBusy={turntableHealthBusyChanged} />}
+            </div>
+            <div className="field-page-tools">{screen === "acquisition" ? unifiedAccount && syncStatus && <button type="button" className={`field-sync-chip ${syncStatus.state === "error" ? "is-error" : ""}`} onClick={() => setScreen("service")} title={`${syncStatus.enabled ? "自动同步已开启" : "自动同步已关闭"}；${syncStatus.items.filter(item => item.state === "synced").length} 条近期已上传 / ${syncStatus.items.filter(item => item.state !== "synced").length} 条待完成。点击查看同步设置`}><span className="field-status-dot" />Web 同步 · {syncStatus.state === "syncing" ? "同步中" : syncStatus.state === "ready" ? "已连接" : syncStatus.state === "error" ? "异常" : "未连接"}</button>
+              : <span className={`field-badge ${status?.state === "acquiring" ? "green" : status?.state === "error" ? "red" : ""}`}><span className="field-status-dot" />{status ? stateLabels[status.state] : "读取状态中"}</span>}</div>
+          </div>
           {(error || pollError) && <div className="field-error field-global-message" role="alert"><AlertTriangle size={17} /><span>{error || pollError}</span></div>}
           {captureError && captureError !== error && captureError !== pollError && <div className="field-error field-global-message" role="alert"><AlertTriangle size={17} /><span>上次采集异常：{captureError}。请检查设备状态与点位配置后重新开始。</span></div>}
           {busy === "export" && <div className="field-notice field-global-message" role="status"><LoaderCircle size={17} className="spin" />正在导出完整原始波形，大记录需要一些时间，请等待保存完成。</div>}
-          {notice && <div className="field-success field-global-message" role="status"><Check size={17} /><span>{notice}</span></div>}
+          {notice && screen !== "acquisition" && <div className="field-success field-global-message" role="status"><Check size={17} /><span>{notice}</span></div>}
           {status?.deviceWarning && <p className="field-notice warning" role="alert">{status.deviceWarning}</p>}
           {busy === "device" && <p className="field-notice warning">设备配置操作进行中，请等待结果。自动聚焦涉及激光，请留意现场状态。</p>}
           {status?.indexWarning && <div className="field-notice warning field-global-message" role="status"><AlertTriangle size={17} /><span>本机索引提示：{status.indexWarning}</span></div>}
           {screen === "analysis" && <FieldAnalysis request={fieldCall} onError={handleError} />}
           {screen === "blade-passes" && <WebBladePasses canAnalyze refreshKey={0} preferredIds={[]} onError={handleError} localData={localBladeData} />}
           <div hidden={screen !== "turntable"}>{turntableVisited && <FieldTurntableWorkspace connectionPort={turntableConnection || undefined} pollUnavailable={statusPollUnavailable} visible={screen === "turntable"} onPortChange={setTurntablePort} onOperationBusy={setTurntableOperationBusy} config={config} onConfig={setConfig} status={status} disabled={Boolean(busy)} request={fieldCall} onStatus={setStatus} onService={() => setScreen("service")} onRecords={() => { setScreen("recordings"); void operate("recordings", refreshRecordings); }}
-            routeMode={routeMode} onRouteMode={setRouteMode} autoTargetKey={autoTargetKey} onAutoTarget={setAutoTargetKey} onRoute={onRoute} onAcquisition={() => setScreen("acquisition")} />}</div>
-          {screen === "acquisition" && unifiedAccount && syncStatus && <div className="field-cloud-sync-inline" role="status"><strong>Web 同步 · {syncStatus.state === "syncing" ? "正在同步" : syncStatus.state === "ready" ? "已连接" : syncStatus.state === "offline" ? "等待联网登录" : syncStatus.state === "error" ? "同步异常" : "等待联网登录"}</strong><span>{syncStatus.enabled ? "自动同步已开启" : "自动同步已关闭"}</span><span>{syncStatus.items.filter(item => item.state === "synced").length} 条近期已上传 / {syncStatus.items.filter(item => item.state !== "synced").length} 条待完成</span><Button variant="ghost" onClick={() => setScreen("service")}>同步设置</Button></div>}
-          {screen === "acquisition" && <FieldAcquisition source="device" config={config} onConfig={setConfig} status={status} busy={busy} pollError={pollError} stopping={stoppingCapture}
+            routeMode={routeMode} onRouteMode={setRouteMode} autoTargetKey={autoTargetKey} onAutoTarget={setAutoTargetKey} onRoute={onRoute} positionedStation={positionedStation} onPositionTarget={(key, angle) => requestPresetPosition(key, angle, true)} onAcquisition={() => { setLinkEnabled(true); setScreen("acquisition"); }} />}</div>
+          {screen === "acquisition" && <FieldAcquisition source="device" config={config} onConfig={setConfig} status={status} busy={busy} pollError={pollError} stopping={stoppingCapture} positionStopping={presetStopping} onCancelPosition={cancelPresetPosition}
             windowMs={windowMs} onWindow={setWindowMs} refreshMs={refreshMs} onRefresh={setRefreshMs} request={fieldCall}
             link={{ enabled: linkEnabled, onEnabled: value => { setLinkEnabled(value); if (value) setTurntableVisited(true); }, route: currentRoute, errors: routeErrors,
               mode: routeMode, onMode: value => { setRouteMode(value); setTurntableVisited(true); },
               onSelectTarget: setAutoTargetKey, onStartTarget: key => requestCapture(key), onPosition: key => requestPresetPosition(key),
-              onConfigureTarget: key => { setAutoTargetKey(key); setRouteMode("auto"); setTurntableVisited(true); setScreen("turntable"); },
+              onPositionStation: pointId => requestPresetPosition(undefined, undefined, false, pointId), positioningRoute: presetRoute,
+              positionDisabledReason: turntableOperationBusy ? "转盘操作进行中，请等待完成" : "",
+              onConfigureTarget: key => { setAutoTargetKey(key); setRouteMode(routeMode === "segmented" ? "segmented" : "auto"); setTurntableVisited(true); setScreen("turntable"); },
               collectionId, recordings,
               onConfigure: () => { setTurntableVisited(true); setScreen("turntable"); } }}
             onDeviceStart={() => requestCapture()}
@@ -541,7 +580,7 @@ export function FieldDesktopApp() {
           </div>}
           {screen === "service" && <div className="field-settings-grid"><FieldAccountPanel account={account} busy={Boolean(busy)} active={accountLocked} onBind={() => { if (!busy && !accountLocked && account?.mode === "local") { setError(""); setBindingMode("bind"); setBindingAccount(true); } }} onRebind={() => { if (!busy && !accountLocked) { setError(""); setBindingMode("rebind"); setBindingAccount(true); } }} onUnbind={() => { if (!busy && !accountLocked) { setError(""); setUnbindingAccount(true); } }} onPassword={openPassword} /><FieldCloudSyncPanel account={account} status={syncStatus} busy={Boolean(busy)} onSampleRate={sampleRate => void operate("sync", async () => { setSyncStatus(await fieldCall<FieldSyncStatus>({ action: "setUploadSampleRate", sampleRate })); })} onAuto={enabled => void operate("sync", async () => { await fieldCall({ action: "setAutoSync", enabled }); setSyncStatus(await fieldCall<FieldSyncStatus>({ action: "syncStatus" })); })} onRetry={() => void operate("sync", async () => { await fieldCall({ action: "retrySync" }); setSyncStatus(await fieldCall<FieldSyncStatus>({ action: "syncStatus" })); })} /><FieldDevicePanel deviceIp={config.deviceIp} hostIp={config.hostIp} onIp={deviceIp => setConfig(previous => ({ ...previous, deviceIp }))} status={status} disabled={Boolean(busy)} onBusy={deviceBusyChanged} onError={handleError} request={request => fieldCall<FieldDeviceSettings>({ action: "device", request })} calibrate={request => fieldCall<FieldRssiCalibrationResult>({ action: "rssiCalibration", request })} /><FieldServicePanel status={status} busy={Boolean(busy)} onAction={(action) => void serviceAction(action)} /><section className="field-card"><div className="field-section-heading"><h2>设备连接检查</h2></div><ol className="field-checklist"><li><strong>检查运行状态</strong><p>确认采集服务和设备驱动已就绪。</p></li><li><strong>确认设备网络与安全</strong><p>确认设备 IP、本机网卡、网络连接和激光作业安全。</p></li><li><strong>采集、停止并核对保存结果</strong><p>停止后核对原始点数、RSSI、超量程和保存状态。</p></li></ol></section></div>}
         </main>
-      </div><footer className="field-statusbar"><span><span className={`field-status-dot ${status?.service.state === "ready" ? "green" : ""}`} />{status ? serviceLabels[status.service.state] : "正在读取本机状态"}</span><span>原始数据保存在本机</span></footer>
+      </div>{screen !== "acquisition" && screen !== "turntable" && <footer className="field-statusbar"><span><span className={`field-status-dot ${status?.service.state === "ready" ? "green" : ""}`} />{status ? serviceLabels[status.service.state] : "正在读取本机状态"}</span><span>原始数据保存在本机</span></footer>}
     </>}
     {bindingAccount && session && !session.mustChangePassword && account?.mode === (bindingMode === "rebind" ? "unified" : "local") && <FieldBindAccountDialog mode={bindingMode} busy={Boolean(busy)} active={accountLocked} error={error} initialServerUrl={bindingMode === "rebind" ? account.serverUrl : fieldAccountServerDefault(typeof window === "undefined" ? undefined : window.location)} initialUsername={bindingMode === "rebind" ? account.username : ""} onClose={() => { setBindingAccount(false); setError(""); }} onBind={bindAccount} />}
     {unbindingAccount && session && account?.mode === "unified" && <FieldUnbindAccountDialog busy={Boolean(busy)} active={accountLocked} error={error} onClose={() => { setUnbindingAccount(false); setError(""); }} onUnbind={unbindAccount} />}

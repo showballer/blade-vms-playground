@@ -40,7 +40,7 @@
 .field-auto-label-line small { color: var(--field-ui-muted); font-size: var(--field-ui-caption); }
 .field-auto-start-note { flex-basis: 100%; margin: 0; color: var(--field-ui-secondary); font-size: var(--field-ui-label); }
 
-.field-auto-point[data-selected="true"] { border-color: var(--field-ui-primary); background: var(--field-ui-primary-soft); }
+.field-auto-point[data-selected="true"] { border-color: var(--field-ui-primary); background: var(--field-ui-primary-soft); box-shadow: inset 3px 0 0 var(--field-ui-primary); }
 .field-auto-survey-core { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .field-auto-blade-choices { display: flex; flex-wrap: wrap; gap: var(--field-ui-space-2); margin-bottom: var(--field-ui-space-4); }
 .field-auto-blade-choice { display: flex; flex-direction: column; align-items: flex-start; gap: var(--field-ui-space-1); min-width: 112px; padding: var(--field-ui-space-3) var(--field-ui-space-4); border: 1px solid var(--field-ui-line); border-radius: var(--field-ui-control-radius); color: var(--field-ui-secondary); background: var(--field-ui-panel); cursor: pointer; }
@@ -75,3 +75,11 @@
 @media (max-width: 640px) { .field-auto-survey-core { grid-template-columns: minmax(0, 1fr); } .field-auto-point > .field-badge { grid-column: 2; width: fit-content; } .field-auto-blade-editor label { max-width: none; flex-basis: 100%; } }
 .field-app .field-auto-follow .field-auto-point-choice { width: 18px; height: 18px; min-height: 18px; margin: 0; accent-color: var(--field-ui-primary); cursor: pointer; }
 @media (max-width: 640px) { .field-auto-point-choice { grid-column: 1; grid-row: 1; align-self: center; } }
+
+.field-turntable-workspace > .field-turntable-mode-tabs { grid-template-columns: repeat(3, minmax(0, 1fr)); width: 492px; }
+.field-turntable-mode-tabs::before { width: calc((100% - 8px) / 3); }
+.field-turntable-mode-tabs[data-active="auto"]::before { transform: translateX(100%); }
+.field-turntable-mode-tabs[data-active="segmented"]::before { transform: translateX(200%); }
+.field-segment-point-position { display: flex; flex-basis: 100%; align-items: end; flex-wrap: wrap; gap: var(--field-ui-space-3); margin-top: var(--field-ui-space-2); }
+.field-segment-point-position > label { width: 160px; }
+.field-segment-point-position > .field-subtext { margin: 0; align-self: center; }

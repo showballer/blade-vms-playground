@@ -23,6 +23,22 @@ const status: FieldStatus = { service: { state: "ready", dllConfigured: true, ge
   turntable: { state: "holding", port: "COM6", feedback: { outputRpm: 0, motorRpm: 0, alarmCode: 0, limitFlags: null, positionRaw: 100, axes: { "1": axis(13), "2": axis(7) } } },
   pointCycle: { state: "holding", port: "COM6", mode: "automatic_stations", sessionId: "run-one", currentPoint: "P1 · 0°", targetPointId: "p-s1", cycle: 1, cycles: 1, point: 1, pointCount: 2, speedRpm: .2, dwellSeconds: 60, completedRecords: 0, totalRecords: 2,
     processPhase: "waiting_blade", plannedStations: points.map((p, i) => ({ ...p, pointId: p.pointId!, bladeId: p.bladeId!, radialPointId: p.radialPointId!, radialPointName: p.radialPointName!, radiusM: p.radiusM!, azimuthDeg: p.azimuthDeg!, stationIndex: i + 1, stationCount: 2 })) } };
+check("分段完成显示下一等待点，不误显示上一采集点或回原点", () => {
+  const segmentRoute: FieldCaptureRoute = { ...route, kind: "segmented", cycle: { ...route.cycle!, executionMode: "manual_segments",
+    points: [points[0]], segmentStations: points, nextWaitPoint: points[1] } };
+  const completed: FieldStatus = { ...status, state: "idle", turntableBusy: false,
+    turntable: { ...status.turntable!, feedback: { ...status.turntable!.feedback!, axes: { "1": axis(14), "2": axis(8) } } },
+    pointCycle: { ...status.pointCycle!, state: "complete", executionMode: "manual_segments", rssiTriggerEnabled: true,
+      nextWaitPoint: points[1], waitingPoint: { ...points[1], confirmedAt: at, actualAngles: { "1": 14, "2": 8 } } } };
+  const model = cycleMotionModel(completed, segmentRoute, now);
+  assert.equal(model.target?.pointId, "p-s2");
+  assert.equal(model.arrived, true); assert.equal(model.moving, false);
+  assert.match(model.label, /等待人工开始/);
+  const markup = renderToStaticMarkup(<FieldCycleProgress status={completed} />);
+  assert.match(markup, /等待人工开始/); assert.doesNotMatch(markup, /正常完成后自动回到作业原点/);
+  const positioning = cycleMotionModel({ ...completed, state: "acquiring", pointCycle: { ...completed.pointCycle!, state: "positioning", movingToWaitPoint: true } }, segmentRoute, now);
+  assert.equal(positioning.moving, true); assert.equal(positioning.target?.pointId, "p-s2");
+});
 check("活动任务使用下发计划而非编辑草稿，并跟随显式下一目标", () => {
   const model = cycleMotionModel(status, { ...route, cycle: { ...route.cycle!, points: [{ ...points[0], axis2AngleDeg: -90 }] } }, now);
   assert.equal(model.target?.axis2AngleDeg, 7);
@@ -138,7 +154,6 @@ check("反馈定位标明新协议，旧记录保留原执行方式", () => {
   assert.ok(!showing("0x19").includes("驱动器内部定位"));
   assert.ok(showing(null).includes("驱动器内部定位"));
 });
-console.log(`PASS ${count} feedback-driven motion checks; no hardware used`);
 
 check("移动关灯策略按实际任务显示，开灯前不显示叶片判定", () => {
   const dark: FieldStatus = { ...status, pointCycle: { ...status.pointCycle!, laserPolicy: "off_during_motion", rssiTriggerEnabled: true, processPhase: "motion_stopped_before_laser_on" } };
@@ -151,3 +166,61 @@ check("移动关灯策略按实际任务显示，开灯前不显示叶片判定"
   assert.ok(progress.includes("两轴已停稳，准备开激光"));
   assert.ok(!progress.includes("最近采集 RSSI"));
 });
+
+check("空闲交互优先新起点，旧完成和异常任务不覆盖当前路线", () => {
+  const selected = { ...route, kind: "segmented" as const, cycle: { ...route.cycle!, points: [points[1]], segmentStations: points } };
+  for (const state of ["complete", "error", "cancelled"] as const) {
+    const idle: FieldStatus = { ...status, state: "idle", turntableBusy: false, pointCycle: { ...status.pointCycle!, state } };
+    const model = cycleMotionModel(idle, selected, now, false, { preferRoute: true });
+    assert.equal(model.fromRun, false); assert.equal(model.target?.pointId, points[1].pointId);
+    assert.equal(model.target?.axis1AngleDeg, 14); assert.equal(model.phase, "preview");
+  }
+  const active = cycleMotionModel(status, selected, now, false, { preferRoute: true });
+  assert.equal(active.fromRun, true); assert.equal(active.target?.pointId, points[0].pointId);
+});
+check("预定位中的目标独立显示，指令未完成时不提前宣称到位", () => {
+  const idle: FieldStatus = { ...status, state: "idle", turntableBusy: false, pointCycle: null };
+  const pending = cycleMotionModel(idle, route, now, false, { preferRoute: true, positioningPointId: points[1].pointId });
+  assert.equal(pending.target?.pointId, points[1].pointId); assert.equal(pending.moving, true); assert.equal(pending.arrived, false);
+  assert.match(pending.label, /正在定位/);
+  const same = cycleMotionModel(idle, route, now, false, { preferRoute: true, positioningPointId: points[0].pointId });
+  assert.equal(same.arrived, false, "反馈看似到目标，但本次请求尚未结束");
+});
+check("空闲预定位到位仅使用新鲜停稳反馈，错误参考或旧代次不确认", () => {
+  const idle: FieldStatus = { ...status, state: "idle", turntableBusy: false, pointCycle: null };
+  const model = cycleMotionModel(idle, route, now, false, { preferRoute: true });
+  assert.equal(model.arrived, true); assert.match(model.label, /等待人工开始/);
+  assert.equal(cycleMotionModel(idle, route, now + 2001, false, { preferRoute: true }).arrived, false);
+  assert.equal(cycleMotionModel(idle, { ...route, generation: 1 }, now, false, { preferRoute: true }).arrived, false);
+  const badReference = { ...route, cycle: { ...route.cycle!, points: [{ ...points[0], referenceSignature: "other-reference" }] } };
+  assert.equal(cycleMotionModel(idle, badReference, now, false, { preferRoute: true }).arrived, false);
+  assert.equal(cycleMotionModel({ ...idle, turntableBusy: true }, route, now, false, { preferRoute: true }).arrived, false);
+});
+check("仅手动点位和分段采集暴露可聚焦点击点，自动跟随始终只读", () => {
+  const idle: FieldStatus = { ...status, state: "idle", turntableBusy: false, pointCycle: null };
+  const config = { name: "任务", deviceIp: "192.0.2.90", hostIp: "192.0.2.10", object: "", turbine: "", point: "" };
+  for (const kind of ["manual", "segmented"] as const) {
+    const markup = renderToStaticMarkup(<FieldCycleMotion status={idle} route={{ ...route, kind }} config={config} onPositionStation={() => assert.fail("render must not dispatch")} />);
+    assert.equal((markup.match(/role="button"/g) || []).length, 2);
+    assert.equal((markup.match(/tabindex="0"/g) || []).length, 2);
+    assert.ok(markup.includes('aria-disabled="false"'));
+    assert.ok(markup.includes("field-motion-hit-area")); assert.ok(markup.includes("2 · 90°"));
+    assert.ok(markup.includes("不自动开始采集"));
+  }
+  const markup = renderToStaticMarkup(<FieldCycleMotion status={idle} route={route} config={config} onPositionStation={() => assert.fail("readonly")} />);
+  assert.ok(!markup.includes('role="button"')); assert.ok(!markup.includes('tabindex="0"'));
+});
+check("采集、设备操作、移动、断线禁用图上定位，并展示原因", () => {
+  const idle: FieldStatus = { ...status, state: "idle", turntableBusy: false, pointCycle: null };
+  const config = { name: "任务", deviceIp: "192.0.2.90", hostIp: "192.0.2.10", object: "", turbine: "", point: "" };
+  for (const [value, unavailable, reason] of [
+    [status, false, "采集或保存期间"], [{ ...idle, deviceBusy: true }, false, "设备操作"],
+    [{ ...idle, turntableBusy: true }, false, "正在定位"], [idle, true, "连接状态待确认"],
+  ] as const) {
+    const markup = renderToStaticMarkup(<FieldCycleMotion status={value} route={{ ...route, kind: "segmented" }} config={config} unavailable={unavailable} onPositionStation={() => assert.fail("render must not dispatch")} />);
+    assert.ok(markup.includes('aria-disabled="true"')); assert.ok(!markup.includes('tabindex="0"')); assert.ok(markup.includes(reason));
+  }
+  const blocked = renderToStaticMarkup(<FieldCycleMotion status={idle} route={{ ...route, kind: "manual" }} config={config} positionDisabledReason="请配置点位" onPositionStation={() => {}} />);
+  assert.ok(blocked.includes("请配置点位")); assert.ok(blocked.includes('aria-disabled="true"'));
+});
+console.log(`PASS ${count} feedback-driven motion checks; no hardware used`);

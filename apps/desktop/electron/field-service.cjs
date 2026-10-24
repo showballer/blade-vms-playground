@@ -87,7 +87,7 @@ function pointCycleConfig(value) {
     Object.assign(follow, { mode: 'automatic_stations', nominalPeriodSeconds: value.nominalPeriodSeconds,
       maxMoveRpm: value.maxMoveRpm, geometry: Object.fromEntries(fields.map(key => [key, geometry[key]])) });
   }
-  const points = value.points.map(point => {
+  const normalizePoint = point => {
     if (!point || (point.pointId !== undefined && (typeof point.pointId !== 'string' || !point.pointId.trim() || point.pointId.length > 120)) ||
         typeof point.name !== 'string' || !point.name.trim() || point.name.length > 120 ||
         typeof point.axis1AngleDeg !== 'number' || !Number.isFinite(point.axis1AngleDeg) || Math.abs(point.axis1AngleDeg) > 35 ||
@@ -117,7 +117,35 @@ function pointCycleConfig(value) {
       throw failure('测点必须位于叶根到叶尖范围内', 400);
     return { ...identity, ...(point.pointId !== undefined ? { pointId: point.pointId.trim() } : {}), name: point.name.trim(), axis1AngleDeg: point.axis1AngleDeg, axis2AngleDeg: point.axis2AngleDeg,
       port: point.port, referenceSignature: point.referenceSignature };
-  });
+  };
+  const points = value.points.map(normalizePoint);
+  if (value.executionMode !== undefined && !['continuous', 'manual_segments'].includes(value.executionMode))
+    throw failure('无效分段采集执行方式', 400);
+  if (value.executionMode === 'manual_segments') {
+    if (points.length === 2 && value.segmentStepDeg !== 90)
+      throw failure('两点采集的圆周移动间隔固定为90°，请更新分段配置', 400);
+    if (!automatic || value.cycles !== 1 || points.length > 2 || value.returnToOrigin !== undefined ||
+        value.startAtCurrentPose === true || value.motionLaserPolicy === 'off_during_motion' ||
+        typeof value.segmentStepDeg !== 'number' || !Number.isFinite(value.segmentStepDeg) || value.segmentStepDeg < 22.5 || value.segmentStepDeg > 180 ||
+        !Number.isInteger(value.totalStationCount) || value.totalStationCount !== 360 / value.segmentStepDeg ||
+        !Array.isArray(value.segmentStations) || value.segmentStations.length !== value.totalStationCount)
+      throw failure('分段采集每次仅采1或2点，需完整圆周计划和下一等待点，且保持激光常亮', 400);
+    const stations = value.segmentStations.map(normalizePoint), next = normalizePoint(value.nextWaitPoint);
+    const first = points[0], same = (a, b) => a.pointId === b.pointId && a.azimuthDeg === b.azimuthDeg &&
+      a.axis1AngleDeg === b.axis1AngleDeg && a.axis2AngleDeg === b.axis2AngleDeg && a.referenceSignature === b.referenceSignature;
+    if (stations.some((p, i) => p.azimuthDeg !== i * value.segmentStepDeg || p.bladeId !== first.bladeId ||
+        p.radialPointId !== first.radialPointId || p.radiusM !== first.radiusM || p.referenceSignature !== first.referenceSignature) ||
+        new Set(stations.map(p => p.pointId)).size !== stations.length)
+      throw failure('分段圆周计划顺序或测点身份不一致', 400);
+    const start = stations.findIndex(p => same(p, first));
+    if (start < 0 || points.some((p, i) => !same(p, stations[(start + i) % stations.length])) ||
+        !same(next, stations[(start + points.length) % stations.length]))
+      throw failure('本段点位或下一等待点与圆周计划不一致', 400);
+    Object.assign(follow, { executionMode: 'manual_segments', segmentStepDeg: value.segmentStepDeg,
+      totalStationCount: value.totalStationCount, segmentStations: stations, nextWaitPoint: next });
+  } else if (['segmentStepDeg', 'totalStationCount', 'segmentStations', 'nextWaitPoint'].some(key => value[key] !== undefined)) {
+    throw failure('仅分段采集可配置下一等待点', 400);
+  }
   if (value.returnToOrigin !== undefined) {
     const origin = value.returnToOrigin;
     if (!origin || typeof origin !== 'object' || Array.isArray(origin) ||
@@ -529,7 +557,13 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
       if (typeof config.windFarm !== 'string' || config.windFarm.length > 120 || config.windFarm.includes('\0')) throw failure('风场编号最多120字，不能包含空字符', 400);
       body.windFarm = config.windFarm.trim();
     }
-    await ready(); closeSocket();
+    await ready();
+    if (body.pointCycle?.executionMode === 'manual_segments') {
+      const current = await http('status');
+      if (!current.pointCycleExecutionModes?.includes('manual_segments'))
+        throw failure('当前采集服务不支持分段采集，请更新桌面客户端及采集服务后重启', 409);
+    }
+    closeSocket();
     snapshotEpoch += 1;
     try { lastStatus = await http('start', 'POST', body); stream(); return envelope(); }
     finally { snapshotEpoch += 1; }
@@ -711,6 +745,12 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     const config = ['test', 'manual_move', 'prepare'].includes(request.action) ? turntableConfig({ port: request.port, axis: request.axis,
       speedRpm: request.speedRpm, direction: request.direction, durationSeconds: request.durationSeconds, protocol: request.protocol, targetAngleDeg: request.targetAngleDeg }) : {};
     const preloaded = {};
+    if (request.directPositionOnly !== undefined) {
+      if (request.action !== 'recall' || typeof request.directPositionOnly !== 'boolean' ||
+          request.preloadPoints !== undefined || request.preloadReturnPoint !== undefined)
+        throw failure('直接定位仅用于点位回位，不能同时预存路径', 400);
+      preloaded.directPositionOnly = request.directPositionOnly;
+    }
     if (request.preloadPoints !== undefined || request.preloadReturnPoint !== undefined) {
       const validPair = pair => Array.isArray(pair) && pair.length === 2 && pair.every((value, index) =>
         typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= (index === 0 ? 35 : 180));
@@ -747,6 +787,8 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     await ready();
     const current = await http('status');
     if (current.deviceBusy || (current.turntableBusy && request.action !== 'stop') || current.receiver?.running || ['starting', 'acquiring', 'stopping'].includes(current.state)) throw failure('设备正在使用，请先停止并保存', 409);
+    if (request.directPositionOnly === true && !current.pointCycleExecutionModes?.includes('manual_segments'))
+      throw failure('当前采集服务不支持分段直接定位，请更新桌面客户端及采集服务后重启', 409);
     snapshotEpoch += 1;
     try {
       lastStatus = await http('turntable', 'POST', { ...config, ...recall, ...profile, ...homing, ...preloaded, action: request.action, port: request.port, axis: request.axis,

@@ -1,6 +1,7 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { FieldRecording, FieldSyncItem } from "./field-types";
-import { Download, LoaderCircle } from "lucide-react";
+import { ChevronDown, Download, LoaderCircle } from "lucide-react";
+import { CustomSelect } from "./custom-select";
 import { groupRecordingTasks, recordingExportIds } from "./field-recording-tasks";
 import { bladeStationLabel, bladeRecordingTiming, summarizeBladeRecords, type BladeRecordGroup, type BladeStationState } from "./field-blade-summary-data";
 
@@ -12,6 +13,7 @@ export function bladeDurationText(seconds: number | null): string {
   const hours = Math.floor(millis / 3600000), minutes = Math.floor(millis % 3600000 / 60000), rest = millis % 60000 / 1000;
   return `${hours ? `${hours} 小时 ` : ""}${minutes ? `${minutes} 分 ` : ""}${rest.toLocaleString("zh-CN", { maximumFractionDigits: 3 })} 秒`;
 }
+const groupRecords = (group: BladeRecordGroup) => group.stations.flatMap(station => station.records);
 function RecordingTiming({ records }: { records: readonly FieldRecording[] }) {
   const timing = bladeRecordingTiming(records);
   return <div className="field-blade-timing">
@@ -27,6 +29,7 @@ function groupLabel(group: BladeRecordGroup) {
   if (group.gapCount || group.incompleteCount || group.pendingCount) return "观测不完整";
   return "计划点位已记录";
 }
+const groupTone = (group: BladeRecordGroup) => group.failedCount || group.planConflict ? "red" : group.gapCount || group.incompleteCount || group.pendingCount || group.plannedCount === null ? "amber" : "green";
 function uploadLabel(group: BladeRecordGroup) {
   if (!group.recordCount) return "尚无记录";
   const parts = [];
@@ -36,88 +39,110 @@ function uploadLabel(group: BladeRecordGroup) {
   if (group.unknownUploadCount) parts.push(`${group.unknownUploadCount} 同步状态未知`);
   return parts.join(" · ");
 }
-
-export function FieldBladeSummary({ recordings, syncItems = [], onOpenRecording, onExportTask, busy = false, exporting = false }: {
-  recordings: readonly FieldRecording[];
-  syncItems?: readonly FieldSyncItem[];
+const groupMode = (group: BladeRecordGroup) => group.executionMode === "manual_segments" ? `分段累计 · ${group.sessionIds.length} 次采集` : `自动跟随 · 第 ${group.lapIndex} 轮`;
+type Props = {
+  recordings: readonly FieldRecording[]; syncItems?: readonly FieldSyncItem[];
   onOpenRecording?: (id: string) => void;
   onExportTask?: (recordingIds: string[], level?: "task" | "blade" | "point") => void;
   busy?: boolean; exporting?: boolean;
+};
+function ExportButton({ label, ariaLabel, ids, level, busy, exporting, onExportTask }: Pick<Props, "busy" | "exporting" | "onExportTask"> & {
+  label: string; ariaLabel: string; ids: string[]; level: "task" | "blade" | "point";
 }) {
+  return onExportTask ? <button type="button" className="btn outline" disabled={busy || exporting || !ids.length} aria-label={ariaLabel}
+    title={`导出全部 ${ids.length} 条已保存记录，包含历史重采`} onClick={() => onExportTask(ids, level)}>
+    {exporting ? <LoaderCircle size={14} className="spin" /> : <Download size={14} />}{exporting ? "正在导出…" : label}
+  </button> : null;
+}
+function StationRecords({ group, onOpenRecording }: { group: BladeRecordGroup } & Pick<Props, "onOpenRecording">) {
+  const [history, setHistory] = useState<string[]>([]);
+  const tableId = useId();
+  return <div className="field-table-scroll" role="region" tabIndex={0} aria-label={`${group.radialPointName} 圆周点位记录，可横向滚动`}><table aria-label={`叶片 ${group.bladeId} ${group.radialPointName} ${group.executionMode === "manual_segments" ? "分段累计" : `第 ${group.lapIndex} 轮`}点位`}>
+    <thead><tr><th>圆周点位</th><th>观测结果</th><th>最近采集时间</th><th>采集时长</th><th>记录</th></tr></thead>
+    <tbody>{group.stations.map(station => {
+      const latest = station.records[0], timing = bladeRecordingTiming(latest ? [latest] : []), expanded = history.includes(station.id);
+      const detailId = `${tableId}-${station.index}`;
+      return <React.Fragment key={station.id}><tr>
+        <td><strong>{station.azimuthDeg === null ? "角度未记录" : `${station.azimuthDeg.toLocaleString("zh-CN", { maximumFractionDigits: 2 })}°`}</strong><small>点位 {station.index}{!station.planned && " · 计划未确认"}</small></td>
+        <td><span className={`field-badge ${stationTone(station.state)}`}>{bladeStationLabel(station.state)}</span></td>
+        <td className="field-blade-date" title={latest ? `结束 ${timeText(timing.endedAt)}` : undefined}>{latest ? timeText(timing.startedAt) : "—"}</td>
+        <td className="mono">{latest ? bladeDurationText(timing.durationSeconds) : "—"}</td>
+        <td><div className="field-blade-record-links">{latest ? onOpenRecording ? <button type="button" className="btn ghost" onClick={() => onOpenRecording(latest.id)} title={latest.name}>查看波形</button> : <span>{latest.name}</span> : <span className="muted">未收到记录</span>}
+          {station.records.length > 1 && <button type="button" className="btn ghost" aria-expanded={expanded} aria-controls={detailId} aria-label={`查看 ${station.azimuthDeg ?? station.index}° 历史记录`} onClick={() => setHistory(previous => expanded ? previous.filter(id => id !== station.id) : [...previous, station.id])}>历史 {station.records.length}<ChevronDown size={12} /></button>}
+        </div></td>
+      </tr>{expanded && <tr className="field-blade-history" id={detailId}><td colSpan={5}><div className="field-blade-history-heading">全部记录 · 最新在前</div><div className="field-blade-history-list">{station.records.map(record => {
+        const at = bladeRecordingTiming([record]);
+        return <div key={record.id}><span><strong>{timeText(at.startedAt)}</strong><small>结束 {timeText(at.endedAt)}</small></span><span>{bladeDurationText(at.durationSeconds)}<small>{number(record.samples)} 样本</small></span><span title={record.error}>{record.status === "complete" ? "保存完成" : record.status === "error" ? "保存异常" : "未完成"}</span>{onOpenRecording ? <button type="button" className="btn ghost" onClick={() => onOpenRecording(record.id)} title={record.name}>查看波形</button> : <span>{record.name}</span>}</div>;
+      })}</div></td></tr>}</React.Fragment>;
+    })}</tbody>
+  </table></div>;
+}
+function PointSummary({ groups, exportIds, busy, exporting, onExportTask, onOpenRecording }: {
+  groups: BladeRecordGroup[]; exportIds: string[];
+} & Pick<Props, "busy" | "exporting" | "onExportTask" | "onOpenRecording">) {
+  const [selected, setSelected] = useState("");
+  const group = groups.find(item => item.key === selected) || groups[0];
+  const records = groupRecords(group), timing = bladeRecordingTiming(records), tone = groupTone(group);
+  return <details className="field-blade-point" aria-label={`叶片 ${group.bladeId} · ${group.radialPointName}`}>
+    <summary>
+      <div className="field-blade-point-name"><strong>{group.radialPointName}</strong><span>{group.radiusM === null ? "距中心未记录" : `距中心 ${(group.radiusM * 100).toLocaleString("zh-CN", { maximumFractionDigits: 1 })} cm`}</span></div>
+      <div className="field-blade-coverage"><div><strong>{group.observedCount} / {group.plannedCount ?? "—"}</strong><span className={`field-badge ${tone}`}>{groupLabel(group)}</span></div><span>{selected ? "当前观测组" : "最新观测组"} · {groupMode(group)}{groups.length > 1 && ` · 共 ${groups.length} 组`}</span></div>
+      <div className="field-blade-point-time"><span>采集时间</span><strong>{timeText(timing.startedAt)}</strong></div>
+      <div className="field-blade-point-duration"><span>采集时长</span><strong>{bladeDurationText(timing.durationSeconds)}{timing.partialDuration && "（部分）"}</strong></div>
+      <ChevronDown size={16} className="field-blade-point-chevron" aria-hidden="true" />
+    </summary>
+    <div className="field-blade-detail">
+      <div className="field-blade-detail-toolbar">
+        {groups.length > 1 ? <label>观测组<CustomSelect aria-label={`${group.radialPointName} 观测组`} value={group.key} onChange={event => setSelected(event.target.value)}>{groups.map((item, index) => <option key={item.key} value={item.key}>{index === 0 ? "最新 · " : ""}{groupMode(item)} · {timeText(bladeRecordingTiming(groupRecords(item)).startedAt)} · #{index + 1}</option>)}</CustomSelect></label> : <strong>{groupMode(group)}</strong>}
+        <ExportButton label="导出测点 ZIP" ariaLabel={`导出叶片 ${group.bladeId} 测点 ${group.radialPointId}全部数据`} ids={exportIds} level="point" busy={busy} exporting={exporting} onExportTask={onExportTask} />
+      </div>
+      <div className="field-blade-group-meta"><span>{group.recordCount} 条记录 · {number(group.samples)} 样本</span><span>{uploadLabel(group)}</span></div>
+      {group.executionMode === "manual_segments" && <p className="field-blade-note">同计划的分段累计覆盖；不代表同一物理圈的连续波形。</p>}
+      {group.hasSimulation && <p className="field-blade-notice">本组含模拟数据，未计为实测回波观测。</p>}
+      {group.planConflict && <p className="field-blade-notice">记录的点位计划或位置不一致，请核对原始记录；汇总不视为完整。</p>}
+      <StationRecords key={group.key} group={group} onOpenRecording={onOpenRecording} />
+    </div>
+  </details>;
+}
+
+export function FieldBladeSummary({ recordings, syncItems = [], onOpenRecording, onExportTask, busy = false, exporting = false }: Props) {
   const summary = useMemo(() => summarizeBladeRecords(recordings, syncItems), [recordings, syncItems]);
   const exportTasks = useMemo(() => new Map(groupRecordingTasks(recordings).map(task => [task.key, task.records.map(record => record.id)])), [recordings]);
-  const [visible, setVisible] = useState(12);
-  const totals = summary.groups.reduce((sum, group) => ({ observed: sum.observed + group.observedCount,
-    gaps: sum.gaps + group.gapCount, pending: sum.pending + group.pendingCount,
-    failures: sum.failures + group.failedCount + group.incompleteCount }), { observed: 0, gaps: 0, pending: 0, failures: 0 });
-  function scopedExport(taskKey: string, bladeId: string, pointId?: string) {
-    const ids = recordingExportIds(recordings, taskKey, bladeId, pointId);
-    const label = pointId === undefined ? "叶片" : "测点";
-    return onExportTask && <button type="button" className="btn outline" disabled={busy || !ids.length}
-      title={`导出该${label}所有已保存轮次和点位记录`} aria-label={`导出叶片 ${bladeId}${pointId === undefined ? "" : ` 测点 ${pointId}`}全部数据`}
-      onClick={() => onExportTask(ids, pointId === undefined ? "blade" : "point")}>
-      {exporting ? <LoaderCircle size={14} className="spin" /> : <Download size={14} />}{exporting ? "正在导出…" : `导出${label} ZIP`}
-    </button>;
+  const [taskKey, setTaskKey] = useState("");
+  const [bladeKey, setBladeKey] = useState("");
+  const task = summary.tasks.find(item => item.key === taskKey) || summary.tasks[0];
+  const blade = task?.blades.find(item => item.key === bladeKey) || task?.blades[0];
+  useEffect(() => {
+    if (task && task.key !== taskKey) setTaskKey(task.key);
+    if (blade && blade.key !== bladeKey) setBladeKey(blade.key);
+  }, [task, blade, taskKey, bladeKey]);
+  const points = useMemo(() => {
+    const map = new Map<string, BladeRecordGroup[]>();
+    for (const group of blade?.groups || []) { const items = map.get(group.radialPointId) || []; items.push(group); map.set(group.radialPointId, items); }
+    return [...map.values()].map(items => items.sort((a, b) => b.latestAt - a.latestAt || a.key.localeCompare(b.key)))
+      .sort((a, b) => a[0].radialPointName.localeCompare(b[0].radialPointName, "zh-CN", { numeric: true }));
+  }, [blade]);
+  const tabId = useId(), tabs = useRef<(HTMLButtonElement | null)[]>([]);
+  function tabKey(event: React.KeyboardEvent, index: number) {
+    if (!task || !["ArrowRight", "ArrowLeft", "Home", "End"].includes(event.key)) return;
+    event.preventDefault(); const length = task.blades.length;
+    const next = event.key === "Home" ? 0 : event.key === "End" ? length - 1 : (index + (event.key === "ArrowRight" ? 1 : -1) + length) % length;
+    setBladeKey(task.blades[next].key); tabs.current[next]?.focus();
   }
   return <section className="field-card field-servo-ui field-blade-summary" aria-label="叶片采集汇总">
-    <div className="field-section-heading"><div><h2>叶片采集汇总</h2><p>按风机任务、叶片和测点归档，每次采集保留独立记录。</p></div>
-      <span className="field-badge">{number(summary.taskCount)} 个任务 · {number(summary.collections.length)} 个叶片</span></div>
-    {!summary.groups.length ? <div className="field-blade-empty">暂无可汇总的自动跟随记录。采集并保存点位数据后会显示在这里。</div> : <>
-      <dl className="field-blade-totals">
-        <div><dt>已观测点位</dt><dd>{number(totals.observed)}</dd></div>
-        <div><dt>回波缺口</dt><dd>{number(totals.gaps)}</dd></div>
-        <div><dt>失败或未完成</dt><dd>{number(totals.failures)}</dd></div>
-        <div><dt>未收到记录</dt><dd>{number(totals.pending)}</dd></div>
-      </dl>
-      <div className="field-blade-tasks">{summary.tasks.slice(0, visible).map(task => <section className="field-blade-task" key={task.key} aria-label={task.taskName}>
-        <div className="field-blade-task-heading"><div><h3>{task.taskName}</h3><p>{task.windFarm && `风场 ${task.windFarm} · `}{task.turbine && `${task.turbine} · `}{task.blades.length} 个叶片 · {task.pointCount} 个测点 · {task.sessionCount} 次采集{task.collectionId ? ` · 任务 ${task.collectionId.slice(0, 8)}` : " · 历史采集批次"}</p>
-          <RecordingTiming records={task.blades.flatMap(blade => blade.groups.flatMap(group => group.stations.flatMap(station => station.records)))} /></div>
-          {onExportTask && <button type="button" className="btn outline" disabled={busy || !exportTasks.has(task.key)} onClick={() => {
-            const ids = exportTasks.get(task.key); if (ids) onExportTask(ids);
-          }} aria-label={`导出任务 ${task.taskName}`} title="导出本任务各叶片、各测点的全部已保存数据">
-            {exporting ? <LoaderCircle size={14} className="spin" /> : <Download size={14} />}{exporting ? "正在导出…" : "导出任务 ZIP"}
-          </button>}</div>
-        {task.blades.map(collection => <section className="field-blade-collection" key={collection.key} aria-label={`${collection.taskName} · 叶片 ${collection.bladeId}`}>
-        <div className="field-blade-collection-heading"><h4>叶片 {collection.bladeId}</h4><span>{collection.pointCount} 个测点 · {collection.sessionCount} 次采集</span>
-          {scopedExport(task.key, collection.bladeId)}</div>
-        <div className="field-blade-groups">{collection.groups.map(group => <details className="field-blade-group" key={group.key}>
-        <summary>
-          <div className="field-blade-identity"><strong>叶片 {group.bladeId} · {group.radialPointName}</strong><span>{group.radiusM === null ? "半径未记录" : `半径 ${(group.radiusM * 100).toLocaleString("zh-CN", { maximumFractionDigits: 1 })} cm`} · 第 {group.lapIndex} 轮 · 批次 {group.sessionId.slice(0, 8)}</span></div>
-          <div className="field-blade-count"><strong>{group.observedCount}<span> / {group.plannedCount ?? "—"}</span></strong><span>观测 / 计划点位</span></div>
-          <div className="field-blade-record-count"><strong>{number(group.samples)}</strong><span>样本 · {group.recordCount} 条记录</span></div>
-          <div className="field-blade-state"><span className={`field-badge ${group.failedCount || group.planConflict ? "red" : group.gapCount || group.incompleteCount || group.pendingCount || group.plannedCount === null ? "amber" : "green"}`}>{groupLabel(group)}</span><span>{uploadLabel(group)}</span></div>
-        </summary>
-        <div className="field-blade-detail">
-          <div className="field-blade-point-export"><span>打包此测点的全部轮次和各点位记录</span>{scopedExport(task.key, group.bladeId, group.radialPointId)}</div>
-          <RecordingTiming records={group.stations.flatMap(station => station.records)} />
-          {group.hasSimulation && <p className="field-blade-notice">本组含模拟数据，未计为实测回波观测。</p>}
-          {group.planConflict && <p className="field-blade-notice">同批次记录的点位计划或位置不一致，请核对原始记录；汇总不视为完整。</p>}
-          <div className="field-table-scroll"><table aria-label={`叶片 ${group.bladeId} ${group.radialPointName} 第 ${group.lapIndex} 轮点位`}>
-            <thead><tr><th>点位</th><th>方位角</th><th>观测结果</th><th>记录样本</th><th>采集时间</th><th>采集时长</th><th>原始记录</th></tr></thead>
-            <tbody>{group.stations.map(station => <tr key={station.id}>
-              <td>点位 {station.index}{!station.planned && <small>计划未确认</small>}</td>
-              <td className="mono">{station.azimuthDeg === null ? "—" : `${station.azimuthDeg.toLocaleString("zh-CN", { maximumFractionDigits: 2 })}°`}</td>
-              <td><span className={`field-badge ${stationTone(station.state)}`}>{bladeStationLabel(station.state)}</span></td>
-              <td className="mono">{station.records.length ? number(station.samples) : "—"}</td>
-              <td>{station.records.length ? <div className="field-blade-record-times">{station.records.map((record, index) => {
-                const timing = bladeRecordingTiming([record]);
-                return <div key={record.id}>{station.records.length > 1 && <strong>记录 {index + 1} · </strong>}开始 {timeText(timing.startedAt)}<small>结束 {timeText(timing.endedAt)}</small></div>;
-              })}</div> : "—"}</td>
-              <td className="mono">{station.records.length ? <div className="field-blade-record-times">{station.records.map((record, index) => <div key={record.id}>{station.records.length > 1 && `记录 ${index + 1} · `}{bladeDurationText(bladeRecordingTiming([record]).durationSeconds)}</div>)}</div> : "—"}</td>
-              <td>{station.records.length ? <div className="field-blade-record-links">{station.records.map((record, index) => onOpenRecording
-                ? <button type="button" className="btn ghost" key={record.id} onClick={() => onOpenRecording(record.id)} title={record.name}>{station.records.length > 1 ? `记录 ${index + 1}` : "查看记录"}</button>
-                : <span key={record.id}>{record.name}</span>)}</div> : <span className="muted">未收到记录</span>}</td>
-            </tr>)}</tbody>
-          </table></div>
-          {group.stations.some(station => station.records.length > 1) && <p className="field-blade-note">同一点位保留全部记录；观测结果按最近一条记录显示，样本数为记录合计。</p>}
-          {group.pendingCount > 0 && <p className="field-blade-note">未收到记录的点位可能尚未采集、采集中断或尚未同步，不能仅据此判断设备故障。</p>}
-        </div>
-      </details>)}</div></section>)}
-      </section>)}</div>
-      {visible < summary.tasks.length && <button type="button" className="btn outline field-blade-more" onClick={() => setVisible(value => value + 12)}>显示更多（剩余 {summary.tasks.length - visible} 个任务）</button>}
-      <p className="field-blade-note">采集时长按已保存样本数 ÷ 采样率计算，记录之间的换点间隔不计入；采集时间显示本机记录的开始与结束时间。</p>
-      <p className="field-blade-note">RSSI 用于识别回波进入和离开，叶片编号由人工指定。点位记录不代表连续整圈测量，也不等于已核实叶片身份。</p>
-    </>}
+    <div className="field-section-heading"><h2>叶片采集汇总</h2><span className="field-badge">{number(summary.taskCount)} 个任务 · {number(summary.collections.length)} 个叶片</span></div>
+    {!task || !blade ? <div className="field-blade-empty">暂无可汇总的自动跟随或分段采集记录。</div> : <section className="field-blade-task" aria-label={task.taskName}>
+      <div className="field-blade-task-picker"><label>采集任务<CustomSelect aria-label="选择汇总任务" value={task.key} onChange={event => { setTaskKey(event.target.value); setBladeKey(""); }}>{summary.tasks.map(item => <option key={item.key} value={item.key}>{item.taskName} · {[item.windFarm, item.turbine].filter(Boolean).join(" / ") || "未填写风机"} · {timeText(item.latestAt || null)}</option>)}</CustomSelect></label>
+        <ExportButton label="导出任务 ZIP" ariaLabel={`导出任务 ${task.taskName}`} ids={exportTasks.get(task.key) || []} level="task" busy={busy} exporting={exporting} onExportTask={onExportTask} />
+      </div>
+      <div className="field-blade-task-meta"><span>{[task.windFarm && `风场 ${task.windFarm}`, task.turbine && `风机 ${task.turbine}`, `${task.blades.length} 个叶片`, `${task.pointCount} 个测点`, `${task.sessionCount} 次采集`].filter(Boolean).join(" · ")}</span><RecordingTiming records={task.blades.flatMap(item => item.groups.flatMap(groupRecords))} /></div>
+      <div className="field-blade-tabs" role="tablist" aria-label="选择汇总叶片">{task.blades.map((item, index) => <button key={item.key} ref={element => { tabs.current[index] = element; }} type="button" role="tab" id={`${tabId}-tab-${index}`} aria-selected={blade.key === item.key} aria-controls={`${tabId}-panel`} tabIndex={blade.key === item.key ? 0 : -1} onKeyDown={event => tabKey(event, index)} onClick={() => setBladeKey(item.key)}>叶片 {item.bladeId}<span>{item.pointCount} 个测点</span></button>)}</div>
+      <div role="tabpanel" id={`${tabId}-panel`} aria-labelledby={`${tabId}-tab-${task.blades.indexOf(blade)}`} className="field-blade-collection" key={blade.key}>
+        <div className="field-blade-collection-heading"><span>{blade.pointCount} 个测点 · {blade.sessionCount} 次采集</span><ExportButton label="导出叶片 ZIP" ariaLabel={`导出叶片 ${blade.bladeId}全部数据`} ids={recordingExportIds(recordings, task.key, blade.bladeId)} level="blade" busy={busy} exporting={exporting} onExportTask={onExportTask} /></div>
+        <div className="field-blade-points">{points.map(groups => <PointSummary key={groups[0].radialPointId} groups={groups} exportIds={recordingExportIds(recordings, task.key, blade.bladeId, groups[0].radialPointId)} busy={busy} exporting={exporting} onExportTask={onExportTask} onOpenRecording={onOpenRecording} />)}</div>
+      </div>
+      <details className="field-blade-explanation"><summary>统计说明</summary><p>观测 / 计划点位按当前所选观测组统计，重采记录可展开“历史”查看。分段采集仅累计相同坐标计划，其他批次和轮次分别展示。</p><p>采集时长按已保存样本数 ÷ 采样率计算，不含换点间隔。叶片编号由人工指定；点位记录不代表连续整圈测量，也不等于已核实叶片身份。</p></details>
+    </section>}
     {summary.ungroupedCount > 0 && <p className="field-blade-note">{summary.ungroupedCount} 条点位记录缺少有效的批次或测点信息，仍可在原始记录列表查看。</p>}
   </section>;
 }

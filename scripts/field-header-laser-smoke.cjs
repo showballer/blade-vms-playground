@@ -76,7 +76,7 @@ require.cache[require.resolve(serviceFile)] = { id: serviceFile, filename: servi
           fields: { laser: { supported: true, value: fixture.actual[request.deviceIp] === 'on' ? 1 : 0 } } };
       }
       if (request.action === 'read') return { deviceIp: request.deviceIp, readAt: now(), source: 'TEST-ONLY-DEVICE',
-        fields: { laser: { supported: true, value: fixture.actual[request.deviceIp] === 'on' ? 1 : 0 } } };
+        fields: { laser: { supported: true, value: fixture.actual[request.deviceIp] === 'on' ? 1 : 0 }, autofocus: { supported: true, value: 0 } } };
       fixture.forbidden.push(request.action); throw Error('TEST ONLY 禁止设备操作：' + request.action);
     },
     begin: async () => { fixture.forbidden.push('begin'); throw Error('TEST ONLY 禁止启动采集'); },
@@ -145,14 +145,11 @@ app.on('browser-window-created', (_event, window) => {
         assert.equal(await js('!!document.querySelector(".field-header-laser-error")'), false);
         fixture.subMillisecondRead = false;
       });
-      await check('开启先确认且取消不写；确认只发一条开启指令，等待实际回读后更新', async () => {
-        await headerClick('开启激光'); await wait('!!document.querySelector(".field-header-laser-confirm")', 'laser consent');
-        assert.equal(await js('document.querySelectorAll(".field-header-laser-confirm input[type=checkbox]").length'), 0);
-        await click('取消', '.field-header-laser-confirm'); assert.equal(fixture.writes.length, 0);
+      await check('单击开启立即发一条指令且无确认弹窗，等待实际回读后更新', async () => {
         fixture.holdNextWrite = true; fixture.writeRelease = null;
         await headerClick('开启激光');
-        await js('(()=>{const e=' + button('确认开启激光', '.field-header-laser-confirm') + ';e.click();e.click();})()');
         await wait(() => typeof fixture.writeRelease === 'function', 'pending laser command');
+        assert.equal(await js('!!document.querySelector(".field-header-laser-confirm,[role=dialog]")'), false);
         assert.equal(fixture.writes.length, 1); assert.equal(await headerDisabled(), true);
         assert.notEqual(await headerState(), 'on', 'A queued command is not an On readback');
         fixture.writeRelease(); fixture.writeRelease = null;
@@ -165,6 +162,19 @@ app.on('browser-window-created', (_event, window) => {
         }
         await headerClick('关闭激光'); await fresh('off');
         assert.equal(fixture.writes.length, 2); assert.equal(fixture.writes[1].action, 'laser_off');
+        expectedWrites = fixture.writes.length;
+      });
+      await check('快速双击开启不会重复发送，关闭仍然直接生效', async () => {
+        fixture.holdNextWrite = true; fixture.writeRelease = null;
+        await js('(()=>{const e=document.querySelector(\'.field-header-laser button[aria-label="开启激光"]\');if(!e||e.disabled)throw Error("Laser action unavailable");e.click();e.click();})()');
+        await wait(() => typeof fixture.writeRelease === 'function', 'double-click command pending');
+        assert.equal(fixture.writes.length, expectedWrites + 1);
+        assert.equal(fixture.writes.at(-1).action, 'laser_on');
+        assert.equal(await js('!!document.querySelector(".field-header-laser-confirm,[role=dialog]")'), false);
+        assert.equal(await headerDisabled(), true);
+        fixture.writeRelease(); fixture.writeRelease = null;
+        await fresh('on'); await headerClick('关闭激光'); await fresh('off');
+        assert.equal(fixture.writes.length, expectedWrites + 2);
         expectedWrites = fixture.writes.length;
       });
       await check('设备外部On/Off变化由周期回读同步，页面不发送控制命令', async () => {
@@ -181,9 +191,8 @@ app.on('browser-window-created', (_event, window) => {
         await wait(() => fixture.writes.length === expectedWrites + 1, 'new On readback requires an actual Off command');
         expectedWrites++; await fresh('off'); assert.equal(fixture.writes.at(-1).action, 'laser_off');
         fixture.statusLaserOverride = null;
-        await headerClick('开启激光');
         fixture.statusLaserOverride = () => ({ deviceIp: mainIp, state: 'off', readAt: now(), source: 'device-readback', busy: true });
-        await click('确认开启激光', '.field-header-laser-confirm');
+        await headerClick('开启激光');
         await wait('document.querySelector(".field-header-laser-message")?.textContent.includes("设备正在操作")', 'newer busy cache blocks the write');
         await fresh('off'); assert.equal(fixture.writes.length, expectedWrites);
         fixture.statusLaserOverride = null;
@@ -226,20 +235,22 @@ app.on('browser-window-created', (_event, window) => {
         fixture.actual[secondIp] = 'on'; fixture.holdNextRead = true; fixture.readRelease = null;
         await wait(() => typeof fixture.readRelease === 'function', 'held old-generation read');
         fixture.generation++; fixture.actual[secondIp] = 'off'; fixture.cached = null;
-        await pause(250); fixture.readRelease(); fixture.readRelease = null;
+        await fresh('unknown'); fixture.readRelease(); fixture.readRelease = null;
         await fresh('off'); await pause(150); assert.notEqual(await headerState(), 'on');
         assert.equal(fixture.writes.length, expectedWrites);
       });
-      await check('开启确认期间外部状态改变后不会执行已过时的开启请求', async () => {
-        await headerClick('开启激光'); await wait('!!document.querySelector(".field-header-laser-confirm")', 'pending confirmation');
-        fixture.actual[secondIp] = 'on'; await fresh('on');
-        await wait('!document.querySelector(".field-header-laser-confirm")', 'stale confirmation discarded');
+      await check('开启前检查取得更新的On回读时不重复写入', async () => {
+        fixture.actual[secondIp] = 'on';
+        fixture.statusLaserOverride = () => ({ deviceIp: secondIp, state: 'on', readAt: now(), source: 'device-readback', busy: false });
+        await headerClick('开启激光'); await fresh('on');
+        assert.equal(await js('!!document.querySelector(".field-header-laser-confirm,[role=dialog]")'), false);
         assert.equal(fixture.writes.length, expectedWrites);
+        fixture.statusLaserOverride = null;
         fixture.actual[secondIp] = 'off'; await fresh('off');
       });
       await check('写命令失败保持明确错误，后续读回Off不冒充写入成功', async () => {
         const before = fixture.writes.length; fixture.rejectedWrite = true;
-        await headerClick('开启激光'); await click('确认开启激光', '.field-header-laser-confirm');
+        await headerClick('开启激光');
         await wait(() => fixture.writes.length === before + 1, 'failed command dispatched');
         await fresh('off');
         await wait('document.querySelector(".field-header-laser-message")?.textContent.includes("激光命令未确认")', 'write failure retained');
@@ -247,6 +258,26 @@ app.on('browser-window-created', (_event, window) => {
         assert.equal(await headerState(), 'off');
         assert.match(await js('document.querySelector(".field-header-laser-message").textContent'), /激光命令未确认/);
         fixture.rejectedWrite = false;
+      });
+      await check('设备配置单击开启观察激光无弹窗，顶栏同步回读；自动聚焦仍单独确认', async () => {
+        await click('设备与服务', '.field-sidebar');
+        await click('读取实际配置', '.field-device-panel');
+        const before = fixture.writes.length;
+        fixture.holdNextWrite = true; fixture.writeRelease = null;
+        await click('开启观察激光', '.field-device-panel');
+        await wait(() => typeof fixture.writeRelease === 'function', 'observation laser command pending');
+        assert.equal(fixture.writes.length, before + 1);
+        assert.equal(fixture.writes.at(-1).action, 'laser_on');
+        assert.equal(await js('!!document.querySelector("[role=dialog]")'), false);
+        fixture.writeRelease(); fixture.writeRelease = null;
+        await fresh('on'); await click('关闭激光', '.field-device-panel'); await fresh('off');
+        assert.equal(fixture.writes.length, before + 2);
+        await click('读取实际配置', '.field-device-panel');
+        await click('安全自动聚焦…', '.field-device-panel');
+        await wait('!!document.querySelector(".field-confirm")', 'autofocus confirmation retained');
+        assert.equal(fixture.writes.length, before + 2);
+        await click('取消', '.field-confirm');
+        await click('数据采集', '.field-sidebar');
       });
       await check('1366、1024、480及360窗口顶栏无横向溢出且激光状态与操作均可见', async () => {
         for (const [width, height] of [[1366, 768], [1024, 768], [480, 800], [360, 740]]) {

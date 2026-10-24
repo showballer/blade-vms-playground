@@ -31,7 +31,7 @@ const table = renderToStaticMarkup(<FieldTaskRecords recordings={records} busy={
 assert.ok(table.includes("筛选采集任务")); assert.ok(table.includes("全部任务（2）"));
 assert.ok(/<button[^>]*disabled[^>]*>[\s\S]*?导出任务 ZIP<\/button>/.test(table), "All-tasks filter requires explicit task selection");
 const summary = renderToStaticMarkup(<FieldBladeSummary recordings={records} onExportTask={() => {}} />);
-for (const label of ["导出任务 ZIP", "导出叶片 ZIP", "导出测点 ZIP", "打包此测点的全部轮次"]) assert.ok(summary.includes(label), label);
+for (const label of ["导出任务 ZIP", "导出叶片 ZIP", "导出测点 ZIP", "条已保存记录，包含历史重采"]) assert.ok(summary.includes(label), label);
 const busy = renderToStaticMarkup(<FieldBladeSummary recordings={records} onExportTask={() => {}} busy exporting />);
 assert.ok(busy.includes("正在导出…"));
 for (const match of busy.matchAll(/<button([^>]*aria-label="导出[^>]*)>/g)) assert.ok(match[1].includes("disabled"));

@@ -27,7 +27,4 @@
 }
 .field-header-laser-error { display: inline-flex; flex: none; color: var(--field-ui-warning); }
 .field-header-laser-message { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
-.field-header-laser-confirm { padding: 0 var(--field-ui-space-6) var(--field-ui-space-6); }
-.field-header-laser-confirm p { margin: 0 0 var(--field-ui-space-6); line-height: 1.7; font-size: var(--field-ui-body); }
-.field-header-laser-confirm-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--field-ui-space-2); }
 @media (max-width: 480px) { .field-app .field-header-laser { gap: var(--field-ui-space-1); } }

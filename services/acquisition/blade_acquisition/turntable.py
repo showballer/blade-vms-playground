@@ -73,6 +73,7 @@ class TurntableRequest(TurntableConfig):
     maxMoveAccelerationDegS2: float = Field(default=3, ge=0.1, le=120, allow_inf_nan=False)
     followErrorLimitDeg: float = Field(default=0.75, ge=0.5, le=10, allow_inf_nan=False)
     diagnosticDrivePosition: StrictBool = False
+    directPositionOnly: StrictBool = False
     expectedTrajectorySession: StrictInt | None = Field(default=None, ge=1, le=65535)
     # Supplied only by explicit capture prepositioning; all angles are absolute.
     preloadPoints: list[tuple[float, float]] | None = Field(default=None, min_length=1, max_length=200)
@@ -93,6 +94,8 @@ class TurntableRequest(TurntableConfig):
 
     @model_validator(mode="after")
     def recall_targets(self):
+        if self.directPositionOnly and (self.action != "recall" or self.preloadPoints is not None or self.preloadReturnPoint is not None):
+            raise ValueError("直接点位定位只支持回位且不能预存路径")
         if (self.preloadPoints is not None or self.preloadReturnPoint is not None) and self.action != "recall":
             raise ValueError("点位预存只用于采集预定位")
         if self.preloadReturnPoint is not None and self.preloadPoints is None:
@@ -235,6 +238,13 @@ class PointCycleConfig(BaseModel):
     port: TurntableEndpoint
     points: list[PointCyclePoint] = Field(min_length=1, max_length=200)
     mode: Literal["legacy", "automatic_stations"] = "legacy"
+    executionMode: Literal["continuous", "manual_segments"] = "continuous"
+    # A manually started segment owns only its one or two capture stations.
+    # The full ring remains metadata; it is never uploaded to the controller.
+    segmentStations: list[PointCyclePoint] | None = Field(default=None, min_length=1, max_length=16)
+    nextWaitPoint: PointCyclePoint | None = None
+    segmentStepDeg: float | None = Field(default=None, gt=0, le=360, allow_inf_nan=False)
+    totalStationCount: StrictInt | None = Field(default=None, ge=1, le=16)
     diagnosticDrivePosition: StrictBool = False
     # Explicit calibrated-point contract: verify the first pose, never move to it.
     # The default preserves initial positioning for computed/legacy routes.
@@ -282,7 +292,7 @@ class PointCycleConfig(BaseModel):
     @field_validator("dwellSeconds", "speedRpm", "rssiLeaveThresholdPercent", "rssiMinimumSeconds",
                      "rssiBaselineRatio", "rssiSmoothingMs", "rssiConfirmMs", "rssiMotionMarginMs",
                      "rssiEnterSpread", "rssiExitSpread", "rssiEnterConfirmMs", "nominalPeriodSeconds", "diagnosticAngleWindowDeg",
-                     "maxMoveRpm", "maxMoveAccelerationDegS2", "followErrorLimitDeg", mode="before")
+                     "maxMoveRpm", "maxMoveAccelerationDegS2", "followErrorLimitDeg", "segmentStepDeg", mode="before")
     @classmethod
     def cycle_numeric(cls, value):
         if value is None:
@@ -293,6 +303,21 @@ class PointCycleConfig(BaseModel):
 
     @model_validator(mode="after")
     def bounded_total(self):
+        if self.executionMode == "manual_segments":
+            if self.mode != "automatic_stations" or self.cycles != 1 or not 1 <= len(self.points) <= 2:
+                raise ValueError("分段采集每次只支持一个或两个自动点位，圈数必须为1")
+            if len(self.points) == 2 and self.segmentStepDeg != 90:
+                raise ValueError("两点采集的圆周移动间隔固定为90°，请更新分段配置")
+            if self.returnToOrigin is not None or self.motionLaserPolicy != "continuous":
+                raise ValueError("分段采集保持激光开启并前往下一等待点，不能自动回作业原点")
+            if self.segmentStations is None or self.nextWaitPoint is None or self.segmentStepDeg is None or self.totalStationCount is None:
+                raise ValueError("分段采集需要完整圆周点位、移动间隔和下一等待点")
+            if len(self.segmentStations) != self.totalStationCount or not math.isclose(self.segmentStepDeg * self.totalStationCount, 360, abs_tol=1e-7):
+                raise ValueError("分段点位数量和移动间隔必须恰好覆盖一周")
+            if len(self.points) > len(self.segmentStations):
+                raise ValueError("本段采集点数不能超过圆周点位数量")
+        elif any(value is not None for value in (self.segmentStations, self.nextWaitPoint, self.segmentStepDeg, self.totalStationCount)):
+            raise ValueError("分段点位配置仅适用于分段采集")
         if self.diagnosticDetectBeforeSettled and (self.mode != "automatic_stations" or not self.rssiTriggerEnabled or self.motionLaserPolicy != "continuous"):
             raise ValueError("未停稳判定测试仅支持自动跟随、回波触发和激光常亮")
         if 0 < self.nominalPeriodSeconds < .5:
@@ -323,7 +348,10 @@ class PointCycleConfig(BaseModel):
             if not math.isclose(self.speedRpm / .02, round(self.speedRpm / .02), abs_tol=1e-8):
                 raise ValueError("自动换点转速必须为 0.02 rpm 的整数倍，不能由硬件向上取整")
             groups, used, previous_group, finished_groups = {}, set(), None, set()
-            for point in self.points:
+            configured_points = self.segmentStations if self.executionMode == "manual_segments" else self.points
+            for point in configured_points:
+                if point.port != self.port:
+                    raise ValueError("圆周点位串口与当前循环串口不同")
                 if not point.pointId or not all((point.bladeId, point.radialPointId, point.radialPointName)) or point.radiusM is None or point.azimuthDeg is None:
                     raise ValueError("自动点位必须包含叶片、径向测点、半径、方位及唯一点位编号")
                 if point.pointId in used:
@@ -345,6 +373,20 @@ class PointCycleConfig(BaseModel):
                 expected = self.geometry.angles(point.radiusM, point.azimuthDeg)
                 if abs(point.axis1AngleDeg - expected[0]) > 0.002 or abs(point.axis2AngleDeg - expected[1]) > 0.002:
                     raise ValueError("自动点位角度与六点方向几何标定不一致")
+            if self.executionMode == "manual_segments":
+                if len(groups) != 1:
+                    raise ValueError("一段仅采集同一叶片的同一径向测点")
+                for point, following in zip(configured_points, configured_points[1:] + configured_points[:1]):
+                    gap = (following.azimuthDeg - point.azimuthDeg) % 360 or 360
+                    if not math.isclose(gap, self.segmentStepDeg, abs_tol=1e-7):
+                        raise ValueError("圆周点位必须按配置的移动间隔依次排列")
+                start = next((i for i, point in enumerate(configured_points) if point.pointId == self.points[0].pointId), None)
+                if start is None:
+                    raise ValueError("分段起点不在完整圆周点位中")
+                for offset, point in enumerate([*self.points, self.nextWaitPoint]):
+                    expected = configured_points[(start + offset) % len(configured_points)]
+                    if point.model_dump() != expected.model_dump():
+                        raise ValueError("本段点位及下一等待点必须与圆周计划一致并连续排列")
         return self
 
 

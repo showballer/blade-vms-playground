@@ -450,3 +450,17 @@
 .field-cloud-sync-inline { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; padding: 9px 13px; border: 1px solid #e0e8f3; border-radius: 8px; background: #f8fafd; color: #647b96; font-size: 12px; margin-bottom: 14px; }
 .field-cloud-sync-inline strong { font-weight: 500; color: #3a659a; }
 .field-upload-sampling { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 14px; }
+
+/* Compact collection workspace: shared actions stay in place across states. */
+.field-page-title-line { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.field-acquisition-heading { align-items: flex-start; }
+.field-acquisition-title { min-width: 0; }
+.field-acquisition-state { min-width: 116px; justify-content: center; }
+.field-capture-metrics { display: flex; flex-wrap: wrap; gap: 8px; }
+.field-capture-metrics .field-badge { min-width: 96px; justify-content: center; font-variant-numeric: tabular-nums; font-size: 11px; }
+.field-capture-metrics .field-badge:nth-child(2) { width: 126px; }
+.field-sync-chip { display: inline-flex; align-items: center; gap: 7px; padding: 8px 10px; border: 1px solid #dce6f1; border-radius: 7px; background: #f6f9fd; color: #52739a; font: inherit; font-size: 12px; white-space: nowrap; cursor: pointer; }
+.field-sync-chip.is-error { color: #bf4b4b; border-color: #efcaca; }
+.field-sync-chip:focus-visible { outline: 2px solid #2d6cc0; outline-offset: 2px; }
+.field-acquisition-grid.field-capture-grid { grid-template-columns: minmax(0,1fr); }
+.field-plain-capture-toolbar { margin-top: 16px; }

@@ -253,6 +253,7 @@ class AcquisitionController:
         self.laser_observation = None
         self.device_warning = None
         self.device_warning_ip = None
+        self.device_warning_kind = None
         self.source = "polytec_ivs500"
         self.simulation = None
         self.realtime_lock = threading.Lock()
@@ -293,6 +294,7 @@ class AcquisitionController:
     def status(self) -> dict:
         with self.lock:
             return {"state": self.state, "error": self.error,
+                    "pointCycleExecutionModes": ["continuous", "manual_segments"],
                     "receiver": {"source": self.source, "simulation": copy.deepcopy(self.simulation),
                                  "unit": "m/s", "running": bool((self.thread and self.thread.is_alive()) or
                                                                 (self.capture_thread and self.capture_thread.is_alive()) or
@@ -392,13 +394,15 @@ class AcquisitionController:
             if not self.operation_lock.acquire(blocking=False):
                 return self._laser_status(request.deviceIp, busy=True)
             if (self.device_busy or self.turntable_busy or self.status()["receiver"]["running"] or
+                    (self.cycle_prepare_thread and self.cycle_prepare_thread.is_alive()) or
                     self.state in {"starting", "acquiring", "stopping"}):
                 self.operation_lock.release()
                 return self._laser_status(request.deviceIp, busy=True)
             self.laser_poll_busy = True
         try:
             try:
-                self._device_command(ReceiverConfig(request.deviceIp, "", self.settings.dll_path), "laser_read")
+                result = self._device_command(ReceiverConfig(request.deviceIp, "", self.settings.dll_path), "laser_read")
+                self._recover_laser_state_warning(result)
             except (OSError, RuntimeError, ValueError):
                 pass  # Unknown is a valid poll result; never substitute an OFF value.
         finally:
@@ -406,6 +410,29 @@ class AcquisitionController:
                 self.laser_poll_busy = False
                 self.operation_lock.release()
         return self._laser_status(request.deviceIp)
+
+    def _recover_laser_state_warning(self, result):
+        """A fresh idle read can resolve an unknown laser state without toggling it.
+
+        Do not clear an unfinished write/focus warning or release SDK ownership.
+        This is called only after an explicit successful device read, never from
+        a cached observation or a receiver callback.
+        """
+        laser = result.get("fields", {}).get("laser", {})
+        read_at = result.get("readAt")
+        with self.lock:
+            if (self.device_warning_kind != "laser_state" or
+                    result.get("deviceIp") != self.device_warning_ip or
+                    result.get("source") != "device-readback" or
+                    laser.get("supported") is not True or type(laser.get("value")) is not int or
+                    laser["value"] not in (0, 1) or type(read_at) not in (int, float) or
+                    not math.isfinite(read_at) or not 0 <= time.time() - read_at < 3 or
+                    (self.cycle_prepare_thread and self.cycle_prepare_thread.is_alive()) or
+                    self.status()["receiver"]["running"] or self.turntable_busy or
+                    self.state in {"starting", "acquiring", "stopping"}):
+                return
+            self.observation_laser_ip = result["deviceIp"] if laser["value"] else None
+            self.device_warning = self.device_warning_ip = self.device_warning_kind = None
 
     def motion_trial_operation(self, request: MotionTrialRequest):
         # This is not a hardware capability probe. The shipped adapter has no
@@ -1365,6 +1392,10 @@ class AcquisitionController:
         try:
             motor = self.motor_factory(request.port, timeout=2.0, gear_ratio=50.0)
             motor.connect()
+            if request.directPositionOnly:
+                # This operation must not inherit an indexed bank from a reused
+                # adapter. Clearing this host binding sends no controller write.
+                motor._blade_preloaded_route = None
             # Validate both drives and both targets before moving either axis.
             references = None
             initial_snapshots = (joint_snapshots(motor)
@@ -1381,6 +1412,8 @@ class AcquisitionController:
                 elif reference_key(feedback) != references:
                     raise RuntimeError("两轴参考位或反馈单位已变化，请重新核查点位")
             capability = self._motion_capability(motor)
+            if request.directPositionOnly and capability.get("pointMode") != "drive_internal":
+                raise RuntimeError("当前控制器不支持直接双轴点位定位，未上传路径或启动运动")
             if request.preloadPoints is not None:
                 self._prepare_preloaded_points(motor, port=request.port, points=request.preloadPoints,
                     origin=request.preloadReturnPoint, speed=request.speedRpm, feedback=initial_snapshots[0],
@@ -1557,6 +1590,9 @@ class AcquisitionController:
                 if result.get("deviceIp") == self.device_warning_ip and laser.get("supported") and laser.get("value") == 0:
                     self.device_warning = None
                     self.device_warning_ip = None
+                    self.device_warning_kind = None
+                elif request.action == "read":
+                    self._recover_laser_state_warning(result)
             return result
         except (OSError, RuntimeError, ValueError) as exc:
             if request.action == "laser_on":
@@ -1564,6 +1600,7 @@ class AcquisitionController:
             if request.action != "read":
                 with self.lock:
                     self.device_warning_ip = request.deviceIp
+                    self.device_warning_kind = "device_operation"
                     self.device_warning = f"设备 {request.deviceIp} 上次修改/聚焦未确认完成。请现场确认激光关闭，然后重新读取该设备配置；确认前禁止开始采集。"
             raise HTTPException(503, f"设备配置操作未确认完成：{exc}。请重新读取配置；异常时须现场确认激光已关闭。") from exc
         finally:
@@ -1755,6 +1792,11 @@ class AcquisitionController:
         self.point_cycle = {"diagnosticDetectBeforeSettled": cycle.diagnosticDetectBeforeSettled, "diagnosticAngleWindowDeg": cycle.diagnosticAngleWindowDeg, "state": "checking", "port": cycle.port, "cycles": cycle.cycles,
                             **({"collectionId": cycle.collectionId} if cycle.collectionId else {}),
                             "sessionId": uuid.uuid4().hex, "mode": cycle.mode,
+                            "executionMode": cycle.executionMode,
+                            "segmentStepDeg": cycle.segmentStepDeg,
+                            "totalStationCount": cycle.totalStationCount,
+                            "nextWaitPoint": cycle.nextWaitPoint.model_dump() if cycle.nextWaitPoint else None,
+                            "waitingPoint": None,
                             "laserPolicy": "off_during_motion" if cycle.motionLaserPolicy == "off_during_motion" else "continuous_during_session",
                             "returnToOrigin": cycle.returnToOrigin.model_dump() if cycle.returnToOrigin else None,
                             "geometry": cycle.geometry.model_dump() if cycle.geometry else None,
@@ -1762,7 +1804,7 @@ class AcquisitionController:
                             "sessionState": "running",
                             "plannedStations": self._cycle_station_plan(cycle),
                             "identitySource": "operator_assigned", "identityVerified": False,
-                            "coverageKind": "sparse_station_passes",
+                            "coverageKind": "manual_segment_passes" if cycle.executionMode == "manual_segments" else "sparse_station_passes",
                             "nominalPeriodSeconds": cycle.nominalPeriodSeconds,
                             "dwellSeconds": cycle.dwellSeconds, "speedRpm": cycle.speedRpm,
                             "rssiTriggerEnabled": cycle.rssiTriggerEnabled,
@@ -2029,11 +2071,12 @@ class AcquisitionController:
     @staticmethod
     def _cycle_station_plan(cycle):
         groups, indices = {}, {}
-        for point in cycle.points:
+        stations = cycle.segmentStations if cycle.executionMode == "manual_segments" else cycle.points
+        for point in stations:
             group = (point.bladeId, point.radialPointId)
             groups[group] = groups.get(group, 0) + 1
         plan = []
-        for ordinal, point in enumerate(cycle.points, 1):
+        for ordinal, point in enumerate(stations, 1):
             group = (point.bladeId, point.radialPointId)
             indices[group] = indices.get(group, 0) + 1
             plan.append({"pointId": point.pointId or f"station-{ordinal}",
@@ -2048,7 +2091,7 @@ class AcquisitionController:
                          "stationIndex": indices[group], "stationCount": groups[group]})
         return plan
 
-    def _await_cycle_receiver(self):
+    def _await_cycle_receiver(self, *, allow_failed_preparation=False):
         thread = self.cycle_prepare_thread
         if thread is not None:
             deadline = time.monotonic() + 30
@@ -2060,7 +2103,7 @@ class AcquisitionController:
                     raise RuntimeError("测振连接准备超时，未启动转盘；等待设备连接释放")
                 thread.join(.05)
             self.cycle_prepare_thread = None
-        if self.cycle_prepare_error:
+        if self.cycle_prepare_error and not allow_failed_preparation:
             raise RuntimeError(self.cycle_prepare_error)
 
     def _prepare_cycle_receiver(self, receiver):
@@ -2107,12 +2150,16 @@ class AcquisitionController:
                 self.stop_event.set()
                 self.observation_laser_ip = request.deviceIp
                 self.device_warning_ip = request.deviceIp
+                self.device_warning_kind = "laser_state"
                 self.device_warning = "采集接收线程尚未关闭，激光状态未知；请现场核查。"
             suffix = "未启动转盘" if enabled else "关闭状态未知，请现场核查"
             raise RuntimeError(f"采集接收线程尚未关闭，不能确认激光状态；{suffix}")
         self._cycle_process(action)
         try:
-            self._await_cycle_receiver()
+            # Cleanup may open a fresh control connection after failed DAQ
+            # preparation has released its handle. Never replay that old error
+            # as if a new laser-off command had actually been attempted.
+            self._await_cycle_receiver(allow_failed_preparation=not enabled)
             owner = self.cycle_receiver
             if active_continuous:
                 result = owner.set_active_laser(enabled) if active_write else owner.confirm_active_laser()
@@ -2129,13 +2176,14 @@ class AcquisitionController:
             with self.lock:
                 self.observation_laser_ip = request.deviceIp
                 self.device_warning_ip = request.deviceIp
+                self.device_warning_kind = "laser_state"
                 self.device_warning = f"设备 {request.deviceIp} 激光{label}未确认，请现场核查后重新读取。"
             suffix = "未启动转盘" if enabled else "请现场核查"
             raise RuntimeError(f"激光{label}未确认，{suffix}：{exc}") from exc
         with self.lock:
             self.observation_laser_ip = request.deviceIp if enabled else None
             if not enabled and self.device_warning_ip == request.deviceIp:
-                self.device_warning = self.device_warning_ip = None
+                self.device_warning = self.device_warning_ip = self.device_warning_kind = None
         evidence = {"deviceIp": request.deviceIp, "state": "on" if enabled else "off", "readAt": result.get("readAt"),
                     "confirmedAt": time.time(), "source": "device-readback"}
         self._cycle_process(f"{action}_confirmed", **evidence)
@@ -2443,6 +2491,10 @@ class AcquisitionController:
             for config, checked in zip(configs, initial_snapshots):
                 require_position_ready(checked, config)
             capability = self._motion_capability(motor)
+            if cycle.executionMode == "manual_segments":
+                motor._blade_preloaded_route = None
+                if capability.get("pointMode") != "drive_internal":
+                    raise RuntimeError("分段采集需要直接双轴点位定位，未上传路径或启动运动")
             start_angles = tuple(feedback["axes"][str(axis)]["output_angle_deg"] for axis in (1, 2))
             point_mode = capability.get("pointMode") or capability["mode"]
             speed, timing = station_timing_plan(cycle, start_angles, point, point_mode, source_point)
@@ -2598,7 +2650,8 @@ class AcquisitionController:
         metadata = request.model_dump(exclude={"confirmLaser", "confirmMotion", "simulation", "turntable", "pointCycle"})
         metadata.update(kind="continuous_raw_session", sessionId=self.point_cycle["sessionId"],
                         phases=[], plannedStations=copy.deepcopy(self.point_cycle["plannedStations"]),
-                        includesTransit=True, validMeasurement=False)
+                        includesTransit=True, validMeasurement=False,
+                        executionMode=request.pointCycle.executionMode)
         # A separate store avoids presenting transit samples as an additional
         # blade measurement. Each normal station record links to this archive.
         raw = AsyncRecordingWriter(RecordingStore(self.settings.data_dir / "continuous-sessions").create(metadata),
@@ -2784,6 +2837,10 @@ class AcquisitionController:
             **{key: station[key] for key in ("bladeId", "radialPointId", "radialPointName", "radiusM",
                                              "azimuthDeg", "stationIndex", "stationCount")},
             sessionId=self.point_cycle["sessionId"], mode=cycle.mode, lapIndex=cycle_index,
+            executionMode=cycle.executionMode, segmentStepDeg=cycle.segmentStepDeg,
+            totalStationCount=cycle.totalStationCount,
+            segmentStationIds=[item.pointId for item in cycle.points] if cycle.executionMode == "manual_segments" else None,
+            nextWaitPoint=cycle.nextWaitPoint.model_dump() if cycle.nextWaitPoint else None,
             laserPolicy="off_during_motion" if cycle.motionLaserPolicy == "off_during_motion" else "continuous_during_session",
             **({"firstStationMode": "hold_current_pose"} if cycle.startAtCurrentPose else {}),
             stationId=station["pointId"], plannedStations=plan,
@@ -2791,7 +2848,7 @@ class AcquisitionController:
             motionMode=self.point_cycle.get("motionMode", "sequential"),
             arrivalMove=copy.deepcopy(self.point_cycle.get("lastMove")),
             identitySource="operator_assigned", identityVerified=False,
-            coverageKind="sparse_station_passes",
+            coverageKind="manual_segment_passes" if cycle.executionMode == "manual_segments" else "sparse_station_passes",
             outcome="incomplete",
             startupEvents=[copy.deepcopy(event) for event in self.point_cycle.get("processEvents", [])
                            if event["phase"] in ("start_requested", "preparing_receiver", "receiver_prepared")],
@@ -3135,15 +3192,19 @@ class AcquisitionController:
             self._cycle_process("checking")
             motor = self.motor_factory(cycle.port, timeout=2.0, gear_ratio=50.0)
             motor.connect()
+            if cycle.executionMode == "manual_segments":
+                motor._blade_preloaded_route = None
             native = bool(getattr(motor, "drive_internal_position", False))
             startup_snapshots = joint_snapshots(motor) if native else None
             feedback = startup_snapshots[0] if startup_snapshots else motor_snapshot(motor, 1)
             for checked in startup_snapshots or (feedback,):
                 require_ready(checked)
             capability = self._motion_capability(motor)
+            if cycle.executionMode == "manual_segments" and capability.get("pointMode") != "drive_internal":
+                raise RuntimeError("分段采集需要直接双轴点位定位，未上传路径或启动运动")
             self._cycle_update("checking", motionCapability=capability, motionMode=capability["mode"])
             references = reference_key(feedback)
-            for point in [*cycle.points, *([cycle.returnToOrigin] if cycle.returnToOrigin else [])]:
+            for point in [*(cycle.segmentStations or cycle.points), *([cycle.returnToOrigin] if cycle.returnToOrigin else [])]:
                 expected = self._cycle_point_reference(point)
                 if expected is not None:
                     actual = [[references[str(axis)][key] for key in ("origin_counts", "display_mode", "command_counts_per_rev", "encoder_bits")]
@@ -3155,7 +3216,7 @@ class AcquisitionController:
                                                                       protocol="position", targetAngleDeg=angle,
                                                                       speedRpm=cycle.speedRpm))
             anchor = cycle.points[0]
-            if cycle.mode == 'automatic_stations':
+            if cycle.mode == 'automatic_stations' and cycle.executionMode != "manual_segments":
                 summary = self._prepare_preloaded_points(motor, port=cycle.port,
                     points=[(p.axis1AngleDeg, p.axis2AngleDeg) for p in cycle.points],
                     origin=(cycle.returnToOrigin.axis1AngleDeg, cycle.returnToOrigin.axis2AngleDeg)
@@ -3280,6 +3341,31 @@ class AcquisitionController:
                 self._cycle_update("ready", cycle=cycle_index,
                                    point=len(planned_points), currentPoint=anchor.name,
                                    plannedOrder=planned_names)
+            if cycle.executionMode == "manual_segments":
+                # Ending a segment really stops DAQ before the next positioning
+                # move. The next manual start creates a fresh detector/session;
+                # no samples at this waiting point can advance another station.
+                self._cycle_process("segment_capture_finished")
+                if self.continuous_capture is not None:
+                    self._finish_continuous_cycle()
+                if self.capture_thread and self.capture_thread.is_alive():
+                    raise RuntimeError("分段采集接收线程未退出，未移动到下一等待点")
+                self._cycle_process("segment_daq_stopped")
+                waiting = cycle.nextWaitPoint
+                self._cycle_update("positioning", waitingPoint=None, movingToWaitPoint=True)
+                self._cycle_process("positioning_next_segment", point=waiting.name)
+                # There is deliberately no detector/DAQ during this move, even
+                # when early-arrival diagnostics were enabled for capture.
+                waiting_cycle = cycle.model_copy(update={"diagnosticDetectBeforeSettled": False})
+                reached, _, feedback = self._cycle_position_laser_on(
+                    request, motor, waiting_cycle, waiting,
+                    on_command=lambda: self._cycle_process("moving_next_segment", point=waiting.name))
+                if not reached:
+                    raise RuntimeError("本段采集已保存，但尚未确认到达下一等待点")
+                waiting_evidence = {**waiting.model_dump(), "confirmedAt": time.time(),
+                    "actualAngles": {str(axis): feedback["axes"][str(axis)]["output_angle_deg"] for axis in (1, 2)}}
+                self._cycle_update("ready", waitingPoint=waiting_evidence, movingToWaitPoint=False)
+                self._cycle_process("waiting_manual_start", point=waiting.name)
             if cycle.returnToOrigin is not None:
                 origin = cycle.returnToOrigin
                 self._cycle_update("positioning", returningToOrigin=True)
