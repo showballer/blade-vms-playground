@@ -2753,6 +2753,8 @@ class AcquisitionController:
                            boundary='continuous raw diagnostic window bookmarked before motion command')
             pc = metadata['pointCycle']
             pc.update(completion='diagnostic_pass', outcome='diagnostic', handoff=trigger,
+                      passCompleteness=trigger.get('passCompleteness'),
+                      completenessReason=trigger.get('completenessReason'),
                       diagnosticDetection=evidence, recordPreparation='deferred_from_continuous_raw',
                       continuousSession={'id': session.raw_writer.id,
                           'directory': f'continuous-sessions/{session.raw_writer.id}',

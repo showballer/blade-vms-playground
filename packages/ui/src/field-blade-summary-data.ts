@@ -293,7 +293,7 @@ export type AutoCaptureTarget = {
 
 /** Saved-data status only; the active worker's point-cycle status belongs to the caller. */
 export function getAutoCaptureTargetState(recordings: readonly FieldRecording[], target: AutoCaptureTarget,
-  summary: BladeRecordSummary = summarizeBladeRecords(recordings)): "complete" | "diagnostic_complete" | "partial" | "empty" {
+  summary: BladeRecordSummary = summarizeBladeRecords(recordings)): "complete" | "diagnostic_complete" | "configuration_changed" | "partial" | "empty" {
   if (!collectionId(target.collectionId)) return "empty";
   if (target.radiusM !== undefined && (!finite(target.radiusM) || target.radiusM < .001 || target.radiusM > 1000)) return "empty";
   const candidates = summary.groups.filter(group => group.collectionId === target.collectionId &&
@@ -310,16 +310,22 @@ export function getAutoCaptureTargetState(recordings: readonly FieldRecording[],
   if (new Set(ordered.filter(group => group.latestAt === ordered[0].latestAt).map(group => group.sessionId)).size > 1) return "partial";
   const latestSession = ordered[0].sessionId;
   const latest = candidates.filter(group => group.sessionId === latestSession);
-  if (latest.length !== target.cycles) return "partial";
-  for (let lap = 1; lap <= target.cycles; lap++) {
+  // Judge the saved session against its own plan first. Editing the next run's
+  // configuration must not turn a completed historical run into a missing pass.
+  let configurationChanged = latest.length !== target.cycles;
+  for (let lap = 1; lap <= latest.length; lap++) {
     const group = latest.find(item => item.lapIndex === lap);
-    if (!group || group.planConflict || group.plannedCount !== target.stationCount || group.observedCount + group.diagnosticCount !== target.stationCount ||
-      group.stations.length !== target.stationCount || group.pendingCount || group.gapCount || group.failedCount || group.incompleteCount) return "partial";
+    if (!group || group.planConflict || !integer(group.plannedCount, 200) || group.observedCount + group.diagnosticCount !== group.plannedCount ||
+      group.stations.length !== group.plannedCount || group.pendingCount || group.gapCount || group.failedCount || group.incompleteCount) return "partial";
     // Check the latest session rather than reviving an older session whose
     // radius matches an edited-back value. A reused ID does not prove that
     // observations belong to the newly configured physical location.
-    if (target.radiusM !== undefined && (group.radiusM === null || !finite(group.radiusM) || Math.abs(group.radiusM - target.radiusM) > 1e-9)) return "partial";
+    if (target.radiusM !== undefined && (group.radiusM === null || !finite(group.radiusM))) return "partial";
+    configurationChanged ||= group.plannedCount !== target.stationCount ||
+      target.radiusM !== undefined && Math.abs(group.radiusM! - target.radiusM) > 1e-9;
   }
+  // Preserve segmented capture's existing cross-start coverage semantics.
+  if (configurationChanged) return latest.every(group => group.executionMode === "continuous") ? "configuration_changed" : "partial";
   return latest.some(group => group.diagnosticCount > 0) ? "diagnostic_complete" : "complete";
 }
 

@@ -16,6 +16,41 @@ from blade_acquisition.task_export import build_task_archive, prepare_task_expor
 
 
 class TaskExportTests(unittest.TestCase):
+    def test_legacy_early_pass_is_consistent_in_list_detail_export_and_upload_without_raw_writes(self):
+        for segmented in (False, True):
+            with self.subTest(segmented=segmented):
+                record = self.segmented_record(1) if segmented else self.record()
+                record.update(diagnosticOnly=True, validMeasurement=False)
+                record["pointCycle"]["collectionId"] = ("c" if segmented else "d") * 32
+                evidence = {"passCompleteness": "confirmed", "completenessReason": "background_and_entry_exit",
+                            "sampleClock": "continuous_session_raw"}
+                record["pointCycle"].update(completion="diagnostic_pass", recordPreparation="deferred_from_continuous_raw",
+                    handoff=copy.deepcopy(evidence), diagnosticDetection={"enabled": True, "trigger": copy.deepcopy(evidence)})
+                path = self.store.directory(record["id"]) / "manifest.json"
+                atomic_json(path, record)
+                self.store.update_index(record)
+                before = path.read_bytes()
+                listed = next(item for item in self.store.list() if item["id"] == record["id"])
+                for normalized in (listed, self.store.get(record["id"])["recording"], recording_summary(record)):
+                    self.assertEqual(normalized["pointCycle"]["passCompleteness"], "confirmed")
+                    self.assertEqual(normalized["pointCycle"]["completion"], "diagnostic_pass")
+                with build_task_archive(self.store, [record["id"]]) as output, zipfile.ZipFile(output) as archive:
+                    index = json.loads(archive.read("task.json"))
+                    exported = json.loads(archive.read(index["records"][0]["manifest"]))
+                    self.assertEqual(exported["pointCycle"]["passCompleteness"], "confirmed")
+                    self.assertTrue(exported["diagnosticOnly"])
+                    self.assertFalse(exported["validMeasurement"])
+                    if segmented:
+                        group, = index["segmentedCoverage"]
+                        self.assertEqual(group["diagnosticCount"], 1)
+                        self.assertFalse(group["coverageComplete"])
+                        self.assertFalse(group["complete"])
+                from blade_acquisition.upload_sampling import prepare_upload
+                uploaded = prepare_upload(self.store, record["id"], 0, Path(self.temp.name) / "upload-cache")
+                self.assertEqual(uploaded["recording"]["pointCycle"]["passCompleteness"], "confirmed")
+                self.assertFalse(uploaded["recording"]["validMeasurement"])
+                self.assertEqual(path.read_bytes(), before)
+
     def test_legacy_diagnostic_names_are_clean_for_reads_and_export_without_rewriting_raw(self):
         record = self.record()
         original = record['name']

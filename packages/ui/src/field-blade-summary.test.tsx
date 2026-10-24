@@ -244,8 +244,8 @@ check("点位状态仅取最新独立批次，回波缺口和重采失败不能�
   const complete = [1, 2, 3, 4].map(index => pointRecord("P1", "a".repeat(32), index));
   assert.equal(getAutoCaptureTargetState(complete, target), "complete");
   assert.equal(getAutoCaptureTargetState(complete, { ...target, radialPointId: "P2" }), "empty");
-  assert.equal(getAutoCaptureTargetState(complete, { ...target, cycles: 2 }), "partial");
-  assert.equal(getAutoCaptureTargetState(complete, { ...target, stationCount: 5 }), "partial");
+  assert.equal(getAutoCaptureTargetState(complete, { ...target, cycles: 2 }), "configuration_changed");
+  assert.equal(getAutoCaptureTargetState(complete, { ...target, stationCount: 5 }), "configuration_changed");
   const tiedRetry = pointRecord("P1", "b".repeat(32), 4); tiedRetry.pointCycle!.completion = "missing_exit";
   assert.equal(getAutoCaptureTargetState([...complete, tiedRetry], target), "partial");
   for (const completion of ["missing_entry", "missing_exit", "signal_gap", "cancelled", "device_error"] as const) {
@@ -265,7 +265,7 @@ check("手改半径不能复用同ID旧位置的完成状态，浮点噪声与�
   assert.equal(getAutoCaptureTargetState(complete, target), "complete", "Old callers can omit radius");
   assert.equal(getAutoCaptureTargetState(complete, { ...target, radiusM }), "complete");
   assert.equal(getAutoCaptureTargetState(complete, { ...target, radiusM: radiusM + 5e-10 }), "complete");
-  assert.equal(getAutoCaptureTargetState(complete, { ...target, radiusM: radiusM + 1e-6 }), "partial");
+  assert.equal(getAutoCaptureTargetState(complete, { ...target, radiusM: radiusM + 1e-6 }), "configuration_changed");
   for (const radiusM of [NaN, Infinity, 0, -.3, 1001]) {
     assert.equal(getAutoCaptureTargetState(complete, { ...target, radiusM }), "empty");
   }
@@ -274,10 +274,33 @@ check("手改半径不能复用同ID旧位置的完成状态，浮点噪声与�
   const moved = [1, 2, 3, 4].map(index => recording(index, { id: "moved-" + index, endedAt: 3000 + index },
     { collectionId: task, sessionId: "b".repeat(32), radiusM: .4, plannedStations: movedPlan }));
   assert.equal(getAutoCaptureTargetState([...complete, ...moved], { ...target, radiusM: .4 }), "complete");
-  assert.equal(getAutoCaptureTargetState([...complete, ...moved], { ...target, radiusM }), "partial");
+  assert.equal(getAutoCaptureTargetState([...complete, ...moved], { ...target, radiusM }), "configuration_changed");
   const missingRadius = complete.map(item => ({ ...item, pointCycle: { ...item.pointCycle!, radiusM: undefined, plannedStations: undefined } }));
   assert.notEqual(getAutoCaptureTargetState(missingRadius, { ...target, radiusM }), "complete");
   assert.equal(JSON.stringify(complete), originals, "Historical manifests remain unchanged");
+});
+
+check("自动跟随六点已完成改为四点时标记配置变化，真实缺采仍待补采", () => {
+  const sixPointPlan = Array.from({ length: 6 }, (_, i) => ({ ...plan[0], pointId: `six-${i}`,
+    stationIndex: i + 1, stationCount: 6, azimuthDeg: i * 60 }));
+  const records = sixPointPlan.map(station => recording(station.stationIndex, {}, { collectionId: task,
+    pointId: station.pointId, azimuthDeg: station.azimuthDeg, stationCount: 6, plannedStations: sixPointPlan,
+    completion: "diagnostic_pass", passCompleteness: "confirmed" }));
+  const target = { collectionId: task, bladeId: "2", radialPointId: "P1", cycles: 1, stationCount: 4 };
+  const before = JSON.stringify(records), summary = summarizeBladeRecords(records);
+  assert.equal(getAutoCaptureTargetState(records, target, summary), "configuration_changed");
+  assert.equal(getAutoCaptureTargetState(records, { ...target, stationCount: 6 }, summary), "diagnostic_complete");
+  assert.equal(summary.groups[0].diagnosticCount, 6);
+  assert.equal(summary.groups[0].pendingCount, 0);
+  assert.equal(getAutoCaptureTargetState(records.slice(0, 5), target), "partial");
+  const failed = records.map((record, index) => index === 5 ? { ...record, status: "error" as const, error: "保存失败" } : record);
+  assert.equal(getAutoCaptureTargetState(failed, target), "partial");
+  const twoLaps = [1, 2].flatMap(lap => records.map(record => ({ ...record, id: `${record.id}-${lap}`,
+    pointCycle: { ...record.pointCycle!, lapIndex: lap, cycles: 2 } })));
+  assert.equal(getAutoCaptureTargetState(twoLaps, { ...target, stationCount: 6 }), "configuration_changed");
+  assert.equal(getAutoCaptureTargetState(twoLaps, { ...target, stationCount: 6, cycles: 2 }), "diagnostic_complete");
+  assert.equal(getAutoCaptureTargetState(twoLaps.slice(0, 6), { ...target, stationCount: 6 }), "partial");
+  assert.equal(JSON.stringify(records), before);
 });
 
 check("点位完成状态逐圈检查并隔离风机、叶片、测点与任务", () => {
@@ -346,6 +369,10 @@ check("分段单点跨四次启动累计整圈，保留原批次身份与采集�
   assert.equal(group.recordCount, 4); assert.equal(group.sessionIds.length, 4);
   assert.equal(summary.tasks[0].sessionCount, 4); assert.equal(summary.collections[0].sessionCount, 4);
   assert.equal(getAutoCaptureTargetState(records, { collectionId: segmentTask, bladeId: "2", radialPointId: "P1", cycles: 1, stationCount: 4 }), "complete");
+  for (const changed of [{ cycles: 2 }, { stationCount: 6 }, { radiusM: .5 }]) {
+    assert.equal(getAutoCaptureTargetState(records, { collectionId: segmentTask, bladeId: "2", radialPointId: "P1", cycles: 1, stationCount: 4, ...changed }), "partial",
+      "Segmented coverage still requires the same full-circle plan");
+  }
   const html = renderToStaticMarkup(<FieldBladeSummary recordings={records} />);
   assert.ok(html.includes("分段累计 · 4 次采集")); assert.ok(html.includes("计划点位已记录"));
   assert.ok(!html.includes("观测不完整")); assert.ok(html.includes("不代表同一物理圈的连续波形"));

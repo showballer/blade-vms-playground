@@ -271,6 +271,8 @@ class ContinuousCycleTests(unittest.TestCase):
                 self.assertFalse(second['validMeasurement'])
                 pc = second['pointCycle']
                 self.assertEqual(pc['completion'], 'diagnostic_pass')
+                self.assertEqual(pc['passCompleteness'], 'confirmed')
+                self.assertEqual(pc['completenessReason'], pc['handoff']['completenessReason'])
                 self.assertNotIn('entrySampleIndex', pc)
                 self.assertTrue(pc['diagnosticDetection']['trigger']['detectedBeforeStoppedArrival'])
                 self.assertLess(pc['handoff']['detectedAt'], pc['diagnosticDetection']['stopConfirmedAt'])

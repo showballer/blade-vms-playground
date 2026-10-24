@@ -10,7 +10,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from blade_acquisition.service import Settings, create_app
-from blade_acquisition.storage import recording_list_page, recording_summary
+from blade_acquisition.storage import recording_list_page, recording_summary, normalize_recording_metadata
 
 
 def recording(index=0):
@@ -41,6 +41,44 @@ def recording(index=0):
 
 
 class RecordingListSummaryTests(unittest.TestCase):
+    def test_legacy_early_summary_recovers_only_confirmed_existing_evidence(self):
+        full = recording()
+        full.update(diagnosticOnly=True, validMeasurement=False)
+        evidence = {"passCompleteness": "confirmed", "completenessReason": "background_and_entry_exit",
+                    "sampleClock": "continuous_session_raw"}
+        full["pointCycle"].update(completion="diagnostic_pass", recordPreparation="deferred_from_continuous_raw",
+                                  handoff=copy.deepcopy(evidence),
+                                  diagnosticDetection={"enabled": True, "trigger": copy.deepcopy(evidence)})
+        original = copy.deepcopy(full)
+        clean = normalize_recording_metadata(full)
+        self.assertEqual(clean["pointCycle"]["passCompleteness"], "confirmed")
+        self.assertEqual(recording_summary(full)["pointCycle"]["passCompleteness"], "confirmed")
+        self.assertEqual(recording_summary(full)["pointCycle"]["completenessReason"], evidence["completenessReason"])
+        self.assertEqual(clean["pointCycle"]["completion"], "diagnostic_pass")
+        self.assertTrue(clean["diagnosticOnly"])
+        self.assertFalse(clean["validMeasurement"])
+        self.assertEqual(normalize_recording_metadata(clean), clean)
+        self.assertEqual(full, original)
+        mutations = [
+            lambda m: m["pointCycle"].update(passCompleteness="unconfirmed"),
+            lambda m: m["pointCycle"].update(passCompleteness=None),
+            lambda m: m["pointCycle"].update(completion="unconfirmed_pass"),
+            lambda m: m["pointCycle"].pop("recordPreparation"),
+            lambda m: m["pointCycle"].pop("handoff"),
+            lambda m: m["pointCycle"]["diagnosticDetection"].pop("trigger"),
+            lambda m: m["pointCycle"]["diagnosticDetection"].update(enabled=False),
+            lambda m: m["pointCycle"]["diagnosticDetection"]["trigger"].update(passCompleteness="unconfirmed"),
+            lambda m: m["pointCycle"]["handoff"].update(completenessReason="different_evidence"),
+            lambda m: m["pointCycle"]["handoff"].update(sampleClock="station"),
+            lambda m: m.update(validMeasurement=True),
+            lambda m: m.pop("diagnosticOnly"),
+        ]
+        for mutate in mutations:
+            changed = copy.deepcopy(full)
+            mutate(changed)
+            with self.subTest(mutation=mutations.index(mutate)):
+                self.assertEqual(normalize_recording_metadata(changed), changed)
+
     def test_summary_preserves_grouping_and_observation_without_mutating_evidence(self):
         full = recording()
         original = copy.deepcopy(full)

@@ -28,6 +28,27 @@ const props = { targets, selectedTargetKey: targets[0].key, config, status: read
 const render = (patch: Partial<React.ComponentProps<typeof FieldAutoCaptureList>> = {}) => renderToStaticMarkup(<FieldAutoCaptureList {...props} {...patch} />);
 const startButton = (html: string, blade: string, point: string) => html.match(new RegExp(`<button[^>]*aria-label="开始采集叶片 ${blade} · ${point}"[^>]*>`))?.[0] || "";
 
+check("自动跟随已采六点后改四点显示配置已变更，仍可开始新一轮", () => {
+  const collectionId = "c".repeat(32), base = targets[0].route.cycle!.points[0];
+  const plannedStations = Array.from({ length: 6 }, (_, i) => ({ ...base, pointId: `six-${i}`,
+    bladeId: "1", radialPointId: "P1", radialPointName: "P1", radiusM: .31,
+    azimuthDeg: i * 60, stationIndex: i + 1, stationCount: 6 }));
+  const records: FieldRecording[] = plannedStations.map((point, index) => ({ id: `saved-auto-${index}`, name: config.name,
+    object: config.object, turbine: config.turbine, source: "polytec_ivs500", status: "complete", samples: 100, sampleRate: 1000,
+    startedAt: 1000 + index, endedAt: 1001 + index, pointCycle: { ...point, pointName: point.name,
+      pointIndex: index + 1, cycle: 1, dwellSeconds: 60, targetAxis1AngleDeg: point.axis1AngleDeg, targetAxis2AngleDeg: point.axis2AngleDeg,
+      mode: "automatic_stations", executionMode: "continuous", collectionId, sessionId: "b".repeat(32), lapIndex: 1, cycles: 1,
+      plannedStations, completion: "diagnostic_pass", passCompleteness: "confirmed" } }));
+  const current = { ...targets[0], cycles: 1 };
+  const html = render({ targets: [current], collectionId, recordings: records });
+  assert.match(html, />配置已变更</);
+  assert.match(html, /上一轮记录已完整保存/);
+  assert.doesNotMatch(html, />待补采</);
+  assert.doesNotMatch(startButton(html, "1", "P1"), /disabled/);
+  assert.match(render({ targets: [{ ...current, stations: 6 }], collectionId, recordings: records }), />测试采集完成</);
+  assert.match(render({ targets: [current], collectionId, recordings: records.slice(0, 5) }), />待补采</);
+});
+
 check("分段采集显示本段角度和下一等待点，完成后仍可再次人工开始", () => {
   const plan = planSegmentedFollow({ ...autoFollowDefaults, bladeId: "1" }, { pointsPerStart: 2, stepDeg: 90, startAzimuthDeg: 0 }, null, "drive_internal", "COM6");
   assert.equal(plan.errors.length, 0);
@@ -191,7 +212,7 @@ check("完成状态要求最新批次所有圈所有站有效，重采缺口不�
   const relocatedTargets = targets.map(target => target.key === targets[0].key ? { ...target, radiusM: .4 } : target);
   const relocated = render({ recordings: records, collectionId, targets: relocatedTargets });
   assert.ok(!relocated.includes(">已完成</span>"), "同ID旧半径记录不能当作新测量位置的已完成数据");
-  assert.ok(relocated.includes("40 cm")); assert.ok(relocated.includes("待补采"));
+  assert.ok(relocated.includes("40 cm")); assert.ok(relocated.includes("配置已变更"));
   const roundedTargets = targets.map(target => target.key === targets[0].key ? { ...target, radiusM: .31 + 1e-12 } : target);
   assert.ok(render({ recordings: records, collectionId, targets: roundedTargets }).includes(">已完成</span>"), "二进制浮点噪声不改变位置归属");
   const partial = render({ recordings: records.slice(0, -1), collectionId });

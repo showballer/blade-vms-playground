@@ -20,6 +20,30 @@ from blade_acquisition.blade_passes import _range
 
 
 class UploadSamplingTests(unittest.TestCase):
+    def test_cached_legacy_early_pass_preserves_diagnostic_summary_without_raw_writes(self):
+        manifest = self.source(n=25000)
+        manifest.update(diagnosticOnly=True, validMeasurement=False)
+        evidence = {"passCompleteness": "confirmed", "completenessReason": "background_and_entry_exit",
+                    "sampleClock": "continuous_session_raw"}
+        manifest["pointCycle"].update(completion="diagnostic_pass", recordPreparation="deferred_from_continuous_raw",
+            handoff=dict(evidence), diagnosticDetection={"enabled": True, "trigger": dict(evidence)})
+        source = self.store.directory(self.id) / "manifest.json"
+        atomic_json(source, manifest)
+        before = source.read_bytes()
+        result = prepare_upload(self.store, self.id, 50000, self.cache)
+        self.assertEqual(result["recording"]["pointCycle"]["passCompleteness"], "confirmed")
+        cache_manifest = Path(result["directory"]) / "manifest.json"
+        cached = json.loads(cache_manifest.read_text())
+        for field in ("passCompleteness", "completenessReason"):
+            cached["pointCycle"].pop(field, None)
+        atomic_json(cache_manifest, cached)
+        again = prepare_upload(self.store, self.id, 50000, self.cache)
+        self.assertEqual(again["directory"], result["directory"])
+        self.assertEqual(again["recording"]["pointCycle"]["passCompleteness"], "confirmed")
+        self.assertEqual(again["recording"]["pointCycle"]["completion"], "diagnostic_pass")
+        self.assertFalse(again["recording"]["validMeasurement"])
+        self.assertEqual(source.read_bytes(), before)
+
     def test_continuous_session_global_clock_is_preserved_when_station_is_downsampled(self):
         manifest = self.source(n=250000)
         cycle = manifest["pointCycle"]

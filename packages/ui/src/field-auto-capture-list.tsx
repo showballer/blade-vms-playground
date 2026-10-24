@@ -96,12 +96,13 @@ export const FieldAutoCaptureList = memo(function FieldAutoCaptureList({ segment
         <tbody>{group.targets.map(target => {
           const running = activeKey === target.key, isSelected = selected?.key === target.key;
           const configured = !!target.route.cycle, targetBlockers = captureRouteRequestBlockers(target.route, status), archived = saved.get(target.key);
-          const label = running ? status?.state === "stopping" ? "正在停止" : "正在采集" : !configured ? "待配置" : targetBlockers.length ? "未就绪" : archived === "complete" ? "已完成" : archived === "diagnostic_complete" ? "测试采集完成" : archived === "partial" ? "待补采" : "待采集";
+          const label = running ? status?.state === "stopping" ? "正在停止" : "正在采集" : !configured ? "待配置" : targetBlockers.length ? "未就绪" : archived === "complete" ? "已完成" : archived === "diagnostic_complete" ? "测试采集完成" : archived === "configuration_changed" ? "配置已变更" : archived === "partial" ? "待补采" : "待采集";
+          const savedNotice = archived === "configuration_changed" ? "上一轮记录已完整保存；圆周点位数量、采集轮数或测点半径已调整，当前配置尚未采集。" : undefined;
           return <tr key={target.key} aria-current={running ? "true" : undefined} data-selected={isSelected || undefined}
             data-selectable={!disabled && !!onSelect || undefined} onClick={() => { if (!disabled) onSelect?.(target.key); }}>
             <th scope="row"><button type="button" className="field-auto-capture-point" aria-label={`选择叶片 ${target.bladeId} 测点 ${target.pointName}`} aria-pressed={isSelected} disabled={disabled || !onSelect} onClick={event => { event.stopPropagation(); if (!disabled) onSelect?.(target.key); }}><span className="field-auto-capture-radio" aria-hidden="true" />{target.pointName || "未命名测点"}</button></th>
             <td className="mono">{radius(target.radiusM)}</td><td>{segmented ? target.route.cycle?.points.map(point => `${point.azimuthDeg}°`).join(" → ") || "待配置" : `${target.stations} 个`}</td><td>{segmented ? `${target.route.cycle?.nextWaitPoint?.azimuthDeg ?? "—"}°` : `${target.cycles} 轮`}</td>
-            <td><span title={targetBlockers[0]} className={`field-badge ${running || archived === "complete" ? "green" : archived === "partial" || archived === "diagnostic_complete" ? "amber" : ""}`}>{label}</span></td>
+            <td><span title={targetBlockers[0] || savedNotice} className={`field-badge ${running || archived === "complete" ? "green" : archived === "partial" || archived === "diagnostic_complete" || archived === "configuration_changed" ? "amber" : ""}`}>{label}</span></td>
           </tr>;
         })}</tbody>
       </table></div>

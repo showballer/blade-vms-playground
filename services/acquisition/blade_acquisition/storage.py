@@ -80,9 +80,39 @@ def normalize_recording_name(manifest: dict) -> dict:
     return manifest
 
 
-def recording_summary(manifest: dict) -> dict:
-    """List-only metadata; detail/export/upload retain the original full manifest."""
+def normalize_recording_metadata(manifest: dict) -> dict:
+    """Expose legacy early-pass evidence consistently, without rewriting raw files.
+
+    Deferred early captures once omitted the summary fields but retained them in
+    both handoff and diagnostic evidence. Recover only that known omission; an
+    explicit unconfirmed result or missing/conflicting evidence stays unchanged.
+    Diagnostic data never becomes a validated measurement here.
+    """
     manifest = normalize_recording_name(manifest)
+    cycle = manifest.get("pointCycle")
+    if (not isinstance(cycle, dict) or cycle.get("completion") != "diagnostic_pass" or
+            "passCompleteness" in cycle or
+            cycle.get("recordPreparation") != "deferred_from_continuous_raw" or
+            manifest.get("diagnosticOnly") is not True or manifest.get("validMeasurement") is not False):
+        return manifest
+    diagnostic = cycle.get("diagnosticDetection")
+    handoff = cycle.get("handoff")
+    trigger = diagnostic.get("trigger") if isinstance(diagnostic, dict) else None
+    if (not isinstance(handoff, dict) or not isinstance(trigger, dict) or
+            diagnostic.get("enabled") is not True or
+            any(value.get("passCompleteness") != "confirmed" or
+                value.get("sampleClock") != "continuous_session_raw" for value in (handoff, trigger)) or
+            handoff.get("completenessReason") != trigger.get("completenessReason")):
+        return manifest
+    restored = {**cycle, "passCompleteness": "confirmed"}
+    if "completenessReason" not in restored and isinstance(handoff.get("completenessReason"), str):
+        restored["completenessReason"] = handoff["completenessReason"]
+    return {**manifest, "pointCycle": restored}
+
+
+def recording_summary(manifest: dict) -> dict:
+    """List-only metadata; detail/export/upload retain full diagnostic evidence."""
+    manifest = normalize_recording_metadata(manifest)
     result = {key: copy.deepcopy(manifest[key]) for key in RECORDING_LIST_FIELDS if key in manifest}
     for source, target in ((manifest, result), (manifest.get("sourceMetadata"), {})):
         if not isinstance(source, dict) or "pointCycle" not in source:
@@ -190,14 +220,14 @@ class RecordingStore:
             raise KeyError("无效采集记录目录。")
         return path
 
-    def _read_manifest(self, directory: Path, *, normalize_name: bool = True) -> dict:
+    def _read_manifest(self, directory: Path, *, normalize_metadata: bool = True) -> dict:
         path = directory / "manifest.json"
         if path.is_symlink() or path.stat().st_size > 1024 * 1024:
             raise ValueError("无效采集元数据文件。")
         manifest = json.loads(path.read_text(encoding="utf-8"))
         if manifest.get("id") != directory.name:
             raise ValueError("采集元数据 ID 不一致。")
-        return normalize_recording_name(manifest) if normalize_name else manifest
+        return normalize_recording_metadata(manifest) if normalize_metadata else manifest
 
     def chunks(self, directory: Path) -> list[Path]:
         return sorted(path for path in directory.iterdir()
@@ -208,7 +238,7 @@ class RecordingStore:
             if not ID_PATTERN.fullmatch(directory.name) or not directory.is_dir() or directory.is_symlink():
                 continue
             try:
-                manifest = self._read_manifest(directory, normalize_name=False)
+                manifest = self._read_manifest(directory, normalize_metadata=False)
                 if manifest.get("status") == "incomplete":
                     count, tail_bytes, valid_chunks, previous_end = 0, 0, 0, 0
                     for path in self.chunks(directory):
@@ -237,7 +267,7 @@ class RecordingStore:
         try:
             with closing(sqlite3.connect(self.index_path)) as database, database:
                 rows = database.execute("SELECT manifest FROM recordings ORDER BY started_at DESC LIMIT 1000").fetchall()
-            return [normalize_recording_name(json.loads(row[0])) for row in rows]
+            return [normalize_recording_metadata(json.loads(row[0])) for row in rows]
         except (sqlite3.Error, ValueError):
             records = []
             for path in self.root.iterdir():
