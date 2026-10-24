@@ -90,7 +90,8 @@ export function readAutoFollowSurvey(raw: string | null): AutoFollowSurvey {
     const values = [2, 3].includes(saved.version) ? saved.settings : saved.draft;
     if (values && typeof values === "object") for (const key of Object.keys(result.settings) as (keyof AutoFollowSettings)[]) {
       if (!(key in values)) continue;
-      if (typeof result.settings[key] === "number") Object.assign(result.settings, { [key]: typeof values[key] === "number" ? values[key] : NaN });
+      if (typeof result.settings[key] === "boolean") Object.assign(result.settings, { [key]: values[key] === true });
+      else if (typeof result.settings[key] === "number") Object.assign(result.settings, { [key]: typeof values[key] === "number" ? values[key] : NaN });
       else Object.assign(result.settings, { [key]: typeof values[key] === "string" ? values[key] : "" });
     }
     if ([2, 3].includes(saved.version) && Array.isArray(saved.blades)) {

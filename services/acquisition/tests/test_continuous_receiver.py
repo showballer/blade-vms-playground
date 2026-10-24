@@ -102,6 +102,22 @@ class ContinuousSdk(VfxSdk):
 
 
 class ContinuousReceiverTests(unittest.TestCase):
+    def test_explicit_laser_switches_use_daq_owner_and_keep_stream_on_both_platforms(self):
+        for extension in ('.dll', '.dylib'):
+            with self.subTest(extension=extension):
+                sdk = ContinuousSdk()
+                receiver, stop, owner, _, errors = self.start_receiver(sdk, extension)
+                off = receiver.set_active_laser(False)
+                self.assertEqual(off['fields']['laser']['value'], 0)
+                self.assertTrue(sdk.active)
+                on = receiver.set_active_laser(True)
+                self.assertEqual(on['fields']['laser']['value'], 1)
+                receiver.fence_active_samples()
+                self.assertEqual(sdk.events.count('start'), 1)
+                stop.set(); owner.join(2)
+                self.assertFalse(errors)
+                self.assertEqual({t for _, t in sdk.native_threads}, {owner.ident})
+
     def start_receiver(self, sdk, extension='.dylib', *, capacity=10000):
         receiver = PolytecReceiver(ReceiverConfig('192.0.2.90', '192.0.2.10', 'fixture' + extension,
                                                   buffer_capacity=capacity, read_batch=50 * sdk.stride,

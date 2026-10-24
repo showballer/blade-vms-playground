@@ -150,6 +150,20 @@ function pointCycleConfig(value) {
   }
   if ((echo.rssiEnterSpread ?? 8) <= (echo.rssiExitSpread ?? 3))
     throw failure('离开波动阈值必须小于进入波动阈值', 400);
+  if (value.diagnosticAngleWindowDeg !== undefined) {
+    const angle = value.diagnosticAngleWindowDeg;
+    if (typeof angle !== "number" || !Number.isFinite(angle) || angle < 0 || angle > 10)
+      throw failure("未停稳判定角度范围应为0～10°，0表示不限制", 400);
+    echo.diagnosticAngleWindowDeg = angle;
+  }
+  if (value.diagnosticDetectBeforeSettled !== undefined) {
+    if (typeof value.diagnosticDetectBeforeSettled !== "boolean") throw failure("未停稳判定测试开关必须为布尔值", 400);
+    echo.diagnosticDetectBeforeSettled = value.diagnosticDetectBeforeSettled;
+  }
+  if (value.motionLaserPolicy !== undefined) {
+    if (!['continuous', 'off_during_motion'].includes(value.motionLaserPolicy)) throw failure('无效的移动激光策略', 400);
+    echo.motionLaserPolicy = value.motionLaserPolicy;
+  }
   if (value.keepLaserOnBetweenPoints !== undefined) {
     if (typeof value.keepLaserOnBetweenPoints !== 'boolean') throw failure('激光持续状态必须为布尔值', 400);
     echo.keepLaserOnBetweenPoints = value.keepLaserOnBetweenPoints;

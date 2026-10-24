@@ -61,7 +61,7 @@ export function manualCaptureRoute(points: FieldBladePoint[], port: string, sett
       cycles: settings.cycles, speedRpm: settings.speedRpm, dwellSeconds: settings.waitSeconds,
       rssiTriggerEnabled: true, rssiEnterSpread: settings.rssiEnterSpread, rssiExitSpread: settings.rssiExitSpread,
       rssiEnterConfirmMs: settings.rssiEnterConfirmMs, rssiConfirmMs: settings.rssiConfirmMs,
-      rssiSmoothingMs: 10, rssiMinimumSeconds: 0, keepLaserOnBetweenPoints: true } };
+      rssiSmoothingMs: 10, rssiMinimumSeconds: 0, motionLaserPolicy: "continuous" } };
 }
 export function captureRouteRequestBlockers(route: FieldCaptureRoute | null, status: FieldStatus | null, motionOnly = false): string[] {
   return captureRouteBlockers(route, status, motionOnly, true);

@@ -5,6 +5,7 @@ import type { FieldWorkOrigin } from "./field-turntable-origin";
 
 export type AutoFollowDraft = {
   // Zero means the operator rotates the real blade; no nominal phase is inferred.
+  diagnosticDetectBeforeSettled?: boolean; diagnosticAngleWindowDeg?: number;
   bladeId: string; periodSeconds: number; stepDeg: number;
   points: { id: string; name: string; radiusM: number }[]; activePointId: string;
   distanceM: number; hubHeightDeltaM: number;
@@ -17,6 +18,7 @@ export type AutoFollowAnchor = {
   axis1AngleDeg: number; axis2AngleDeg: number;
 };
 export const autoFollowDefaults: AutoFollowDraft = {
+  diagnosticDetectBeforeSettled: false, diagnosticAngleWindowDeg: 0,
   bladeId: "2", periodSeconds: 30, stepDeg: 90,
   points: [{ id: "p1", name: "P1", radiusM: 0.31 }], activePointId: "p1",
   distanceM: 2.86, hubHeightDeltaM: 1.46, direction: "clockwise", axis1Sign: 1, axis2Sign: 1,
@@ -60,6 +62,7 @@ export function planAutoFollow(draft: AutoFollowDraft, anchor: AutoFollowAnchor 
   if (![1, -1].includes(draft.axis1Sign) || ![1, -1].includes(draft.axis2Sign) || !["clockwise", "counterclockwise"].includes(draft.direction)) errors.push("请确认旋向和转盘轴方向");
   if (!finite(draft.maxMoveRpm, 0.02, 10)) errors.push("换点速度上限应为0.02～10 rpm");
   if (!finite(draft.maxMoveAccelerationDegS2, 0.1, 120)) errors.push("换点加速度上限应为0.1～120 °/s²");
+  if (!finite(draft.diagnosticAngleWindowDeg ?? 0, 0, 10)) errors.push("未停稳判定角度范围应为0～10°，0表示不限制");
   if (!finite(draft.followErrorLimitDeg, .5, 10)) errors.push("运动中跟随误差上限应为0.5～10°，不能设为0关闭；到位容差为0.5°");
   if (!Number.isInteger(draft.cycles) || !finite(draft.cycles, 1, 100)) errors.push("重复采样圈数应为1～100");
   if (!manualRotation && (!finite(draft.waitRevolutions, 1, 10) || draft.waitRevolutions * draft.periodSeconds > 3600)) errors.push("单站等待时间应为1～10个周期且不超过3600秒");
@@ -147,7 +150,9 @@ export function planAutoFollow(draft: AutoFollowDraft, anchor: AutoFollowAnchor 
     rssiTriggerEnabled: true, rssiSmoothingMs: 10, rssiMinimumSeconds: 0,
     rssiEnterSpread: draft.rssiEnterSpread, rssiExitSpread: draft.rssiExitSpread,
     rssiEnterConfirmMs: draft.rssiEnterConfirmMs, rssiConfirmMs: draft.rssiConfirmMs,
-    keepLaserOnBetweenPoints: true,
+    motionLaserPolicy: "continuous",
+    diagnosticDetectBeforeSettled: draft.diagnosticDetectBeforeSettled === true,
+    diagnosticAngleWindowDeg: draft.diagnosticAngleWindowDeg ?? 0,
   };
   return result;
 }

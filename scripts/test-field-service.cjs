@@ -1169,3 +1169,49 @@ test('click time survives desktop IPC for readiness diagnostics and rejects inva
   await f.service.begin({ ...config, clientRequestedAt: 1792501200.25 });
   assert.equal(JSON.parse(f.requests.find(row => row.route === 'start').options.body).clientRequestedAt, 1792501200.25);
 });
+
+
+test('Mac and Windows bridge forwards dark-motion policy without silently falling back to continuous light', async t => {
+  for (const platform of ['darwin', 'win32']) {
+    const f = fixture(t, { options: { platform, servicesRoot: pythonServiceFixture() } });
+    const port = 'tcp://192.168.10.50:5000';
+    const config = { deviceIp: '192.168.106.90', hostIp: '192.168.106.10', name: '移动关灯', object: '', turbine: '', point: '', confirmLaser: true, confirmMotion: true,
+      pointCycle: { port, cycles: 1, dwellSeconds: 60, speedRpm: 5, rssiTriggerEnabled: true,
+        points: [{ port, referenceSignature: '[[0,3,10000,17],[0,3,10000,17]]', name: 'P3', axis1AngleDeg: 6, axis2AngleDeg: 0 }] } };
+    for (const policy of [null, true, 'off', 1, {}]) {
+      const before = f.requests.length;
+      await assert.rejects(f.service.begin({ ...config, pointCycle: { ...config.pointCycle, motionLaserPolicy: policy } }), { status: 400 });
+      assert.equal(f.requests.length, before);
+    }
+    for (const policy of ['off_during_motion', 'continuous', undefined]) {
+      const cycle = { ...config.pointCycle, ...(policy === undefined ? {} : { motionLaserPolicy: policy }) };
+      await f.service.begin({ ...config, pointCycle: cycle });
+      const sent = JSON.parse(f.requests.filter(r => r.route === 'start').at(-1).options.body);
+      assert.deepEqual(sent.pointCycle, cycle);
+    }
+  }
+});
+
+test('Mac and Windows forward diagnostic early detection only as an explicit boolean', async t => {
+  for (const platform of ['darwin', 'win32']) {
+    const f = fixture(t, { options: { platform, servicesRoot: pythonServiceFixture() } });
+    const port = 'tcp://192.168.10.50:5000';
+    const config = { deviceIp: '192.168.106.90', hostIp: '192.168.106.10', name: 'early diagnostic fixture', object: '', turbine: '', point: '', confirmLaser: true, confirmMotion: true,
+      pointCycle: { port, cycles: 1, dwellSeconds: 60, speedRpm: 5, rssiTriggerEnabled: true,
+        points: [{ port, referenceSignature: '[[0,3,10000,17],[0,3,10000,17]]', name: 'P3', axis1AngleDeg: 6, axis2AngleDeg: 0 }] } };
+    for (const value of [null, 'true', 1, {}]) await assert.rejects(f.service.begin({ ...config, pointCycle: { ...config.pointCycle, diagnosticDetectBeforeSettled: value } }), { status: 400 });
+    for (const angle of [null, '1', true, -1, 11, Infinity, NaN]) {
+      const before=f.requests.length;
+      await assert.rejects(f.service.begin({...config,pointCycle:{...config.pointCycle,diagnosticAngleWindowDeg:angle}}),{status:400});
+      assert.equal(f.requests.length,before);
+    }
+    for (const angle of [0,.5,1,2,3,5,10]) {
+      await f.service.begin({...config,pointCycle:{...config.pointCycle,diagnosticAngleWindowDeg:angle}});
+      assert.equal(JSON.parse(f.requests.filter(r=>r.route==='start').at(-1).options.body).pointCycle.diagnosticAngleWindowDeg,angle);
+    }
+    for (const value of [true, false]) {
+      await f.service.begin({ ...config, pointCycle: { ...config.pointCycle, diagnosticDetectBeforeSettled: value } });
+      assert.equal(JSON.parse(f.requests.filter(r => r.route === 'start').at(-1).options.body).pointCycle.diagnosticDetectBeforeSettled, value);
+    }
+  }
+});

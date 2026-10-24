@@ -61,7 +61,7 @@ class ContinuousCycleTests(unittest.TestCase):
         self.fail('fixture condition did not complete before deadline')
 
     def run_cycle(self, filename, *, fail_move=False, fail_next_fence=False,
-                  cancel_at_second=False, late_disk_error=False):
+                  cancel_at_second=False, late_disk_error=False, dark_motion=False, early_detection=False, live_fences=False):
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         root = Path(folder.name)
@@ -84,10 +84,35 @@ class ContinuousCycleTests(unittest.TestCase):
         self.addCleanup(disk_release.set)
         actual_gate = ContinuousCaptureSession.gate
 
+        actual_fence = receiver.fence_active_samples
+        fence_checks = []
+        def live_fence():
+            # Emulate a receiver already handling a live batch. It needs the
+            # same lock as ContinuousCaptureSession._receive before it can
+            # acknowledge any queued fence request.
+            acquired = threading.Event()
+            def receiver_lock_probe():
+                with controller.lock:
+                    acquired.set()
+            worker = threading.Thread(target=receiver_lock_probe, daemon=True)
+            worker.start()
+            available = acquired.wait(.5)
+            self.assertTrue(available, 'fence caller holds the receiver/controller lock')
+            worker.join(1)
+            sdk.feed([260] * 50)
+            boundary = actual_fence()
+            self.assertGreaterEqual(controller.continuous_capture.global_samples, sdk.submitted)
+            fence_checks.append(boundary['sampleIndex'])
+            return boundary
+        if live_fences:
+            receiver.fence_active_samples = live_fence
+
         def gate(session, callback, sample_index):
             # Synchronize the test producer after the real admission operation;
             # this changes neither the gate nor detector behavior.
             result = actual_gate(session, callback, sample_index)
+            if dark_motion:
+                self.assertEqual(controller.laser_observation['state'], 'on')
             with condition:
                 gates.append(sample_index)
                 condition.notify_all()
@@ -107,6 +132,10 @@ class ContinuousCycleTests(unittest.TestCase):
                 if fail_move or fail_next_fence:
                     return
                 if not wait_gate(2):
+                    return
+                if early_detection:
+                    # No second blade: only a quiet batch to open the stationary record.
+                    sdk.feed([260] * 50)
                     return
                 # A transit pass and already queued data must not complete P2.
                 time.sleep(.03)
@@ -133,15 +162,34 @@ class ContinuousCycleTests(unittest.TestCase):
 
         def move(device, **kwargs):
             self.assertTrue(sdk.active, 'point handoff must not stop DAQ')
+            if dark_motion:
+                self.assertEqual(controller.laser_observation['state'], 'off')
+                self.assertFalse(controller.continuous_capture.gate_is_open)
             self.assertEqual(sdk.events.count('start'), 1)
             moves.append(kwargs['targets'])
             kwargs['observe']({'phase': 'command_sending', 'axis': 1})
+            if early_detection:
+                # Both axes far from their targets: the diagnostic mode must
+                # now admit a transit pass, but never overlap motor commands.
+                kwargs['observe']({'phase': 'position_sample', 'feedbackReadings': [
+                    {'output_angle_deg': angle - 10, 'motor_rpm': 30, 'fault': 0}
+                    for angle in kwargs['targets']]})
             start = sdk.submitted
             sdk.feed(full_pass())  # An entire distracting blade during motion.
             movement_ranges.append((start, sdk.submitted))
             session = controller.continuous_capture
             self.wait_for(lambda: session.global_samples >= sdk.submitted)
             self.assertEqual(len(gates), 1, 'movement data unexpectedly opened another point')
+            if early_detection:
+                probe = controller.early_detection
+                kwargs['observe']({'phase': 'position_sample', 'feedbackReadings': [
+                    {'output_angle_deg': angle, 'motor_rpm': 30, 'fault': 0}
+                    for angle in kwargs['targets']]})
+                self.assertTrue(probe.active)
+                self.assertIsNotNone(probe.detector.trigger, 'diagnostic mode must admit the far transit pass')
+                self.assertTrue(probe.detector.trigger['detectedBeforeStoppedArrival'])
+                self.assertEqual(len(moves), 1, 'observer must not command overlapping movement')
+                self.assertEqual(len(gates), 1)
             if fail_move:
                 raise RuntimeError('fixture native movement rejected')
             if fail_next_fence:
@@ -170,16 +218,66 @@ class ContinuousCycleTests(unittest.TestCase):
              patch('blade_acquisition.drive_position.execute_drive_position', side_effect=move):
             feeder.start()
             controller.start(StartRequest(**START, confirmMotion=True, pointCycle=automatic_config(
-                azimuths=(0, 90), routeOrder='configured', dwellSeconds=2, rssiExitSpread=4)))
+                azimuths=(0, 90), routeOrder='configured', dwellSeconds=2, rssiExitSpread=4,
+                motionLaserPolicy='off_during_motion' if dark_motion else 'continuous',
+                diagnosticDetectBeforeSettled=early_detection)))
             controller.thread.join(8)
             self.assertFalse(controller.thread.is_alive(), controller.status())
             feeder.join(5)
             self.assertFalse(feeder.is_alive())
         self.assertEqual(feeder_errors, [])
+        if live_fences:
+            self.assertGreaterEqual(len(fence_checks), 4, 'must exercise startup and moving-point fences')
         records = sorted((root / 'recordings').glob('*/manifest.json'),
                          key=lambda p: json.loads(p.read_text())['pointCycle']['pointIndex'])
         raw = list((root / 'continuous-sessions').glob('*/manifest.json'))
         return controller, sdk, records, raw, gates, moves, movement_ranges
+
+    def test_early_detection_remembers_unsettled_pass_on_mac_and_windows(self):
+        for filename in ('fixture.dll', 'fixture.dylib'):
+            with self.subTest(filename=filename):
+                controller, sdk, paths, raw, gates, moves, transit = self.run_cycle(filename, early_detection=True)
+                self.assertEqual(controller.status()['pointCycle']['state'], 'complete')
+                self.assertEqual(len(moves), 1)
+                self.assertEqual(sdk.events.count('start'), 1)
+                self.assertEqual(len(paths), 2)
+                second = json.loads(paths[1].read_text())
+                self.assertTrue(second['diagnosticOnly'])
+                self.assertFalse(second['validMeasurement'])
+                pc = second['pointCycle']
+                self.assertEqual(pc['completion'], 'diagnostic_pass')
+                self.assertNotIn('entrySampleIndex', pc)
+                self.assertTrue(pc['diagnosticDetection']['trigger']['detectedBeforeStoppedArrival'])
+                self.assertLess(pc['handoff']['detectedAt'], pc['diagnosticDetection']['stopConfirmedAt'])
+                self.assertEqual(pc['handoff']['sampleClock'], 'continuous_session_raw')
+
+    def test_live_receiver_can_acknowledge_early_detection_fences_on_both_platforms(self):
+        for filename in ('fixture.dll', 'fixture.dylib'):
+            with self.subTest(filename=filename):
+                controller, sdk, records, raw, _, moves, _ = self.run_cycle(
+                    filename, early_detection=True, live_fences=True)
+                self.assertEqual(controller.status()['pointCycle']['state'], 'complete')
+                self.assertEqual(len(moves), 1)
+                self.assertEqual(len(records), 2)
+                manifest = json.loads(raw[0].read_text())
+                self.assertEqual(manifest['status'], 'complete')
+                self.assertEqual(manifest['samples'], sdk.submitted)
+
+    def test_dark_motion_switches_only_outside_gate_without_daq_restart(self):
+        for filename in ('fixture.dll', 'fixture.dylib'):
+            with self.subTest(filename=filename):
+                controller, sdk, paths, raw, gates, moves, transit = self.run_cycle(filename, dark_motion=True)
+                self.assertEqual(controller.status()['pointCycle']['state'], 'complete')
+                self.assertEqual(sdk.events.count('start'), 1)
+                self.assertEqual(len(moves), 1)
+                for path in paths:
+                    pc = json.loads(path.read_text())['pointCycle']
+                    self.assertEqual(pc['laserPolicy'], 'off_during_motion')
+                    self.assertFalse(any(a <= row[1] < b for row in stored_rows(path) for a,b in transit))
+                move = json.loads(paths[0].read_text())['pointCycle']['handoff']['completedMove']
+                self.assertEqual(move['laserOffBeforeMotion']['state'], 'off')
+                self.assertEqual(move['laserOnAfterArrival']['state'], 'on')
+                self.assertGreaterEqual(move['laserOnAfterArrival']['confirmedAt'], move['motionArrivedAt'])
 
     def test_one_daq_across_two_points_preserves_transit_without_retrigger_on_mac_and_windows(self):
         for filename in ('libDeviceCommunication.dylib', 'DeviceCommunication.dll'):
@@ -206,7 +304,13 @@ class ContinuousCycleTests(unittest.TestCase):
                     self.assertEqual(record['status'], 'complete')
                     self.assertEqual(pc['completion'], 'confirmed_pass')
                     self.assertEqual(pc['acquisitionSessionMode'], 'continuous_daq')
-                    self.assertTrue(pc['rssiDetector']['requireBackground'])
+                    self.assertFalse(pc['rssiDetector']['requireBackground'])
+                    self.assertTrue(pc['rssiDetector']['requireStableEntryMean'])
+                    self.assertEqual(pc['rssiDetector']['entryEvidenceMode'], 'arrival_guard')
+                    self.assertTrue(pc['rssiDetector']['entryEvidenceAffectsMotion'])
+                    self.assertEqual(pc['handoff']['entryEvidenceMode'], 'arrival_guard')
+                    self.assertIsNotNone(pc['handoff']['entryEvidence'])
+                    self.assertEqual(pc['handoff']['detectorVersion'], 8)
                     span = pc['continuousSession']
                     self.assertEqual(span['id'], raw_manifest['id'])
                     self.assertEqual(span['sampleEndExclusive'] - span['sampleStart'], record['samples'])

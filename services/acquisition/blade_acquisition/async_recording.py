@@ -12,7 +12,7 @@ import copy
 import math
 import queue
 import threading
-from contextlib import nullcontext
+import time
 from typing import Callable
 
 from .receiver import Batch
@@ -29,15 +29,23 @@ _ACCOUNTING = frozenset({
     "id", "samples", "chunks", "status", "error", "endedAt", "overrangeSamples",
     "missingRssiSamples", "unpairedRssiSamples", "rssiNotSampledVelocitySamples",
     "rssiMissingExpectedSamples",
+    "writerDiagnostics", "storageDiagnostics",
 })
 
 
 class AsyncRecordingWriter:
-    def __init__(self, writer: RecordingWriter, *, max_batches: int = 32,
+    def __init__(self, writer: RecordingWriter, *, max_batches: int = 512, max_pending_samples: int = 500_000,
                  on_error: Callable[[Exception], None] | None = None,
                  publication_lock=None):
         if isinstance(max_batches, bool) or not isinstance(max_batches, int) or max_batches < 1:
             raise ValueError("落盘队列容量必须是正整数。")
+        if isinstance(max_pending_samples, bool) or not isinstance(max_pending_samples, int) or max_pending_samples < 1:
+            raise ValueError("落盘样本缓冲上限必须是正整数。")
+        # Bound both command count and retained sample arrays. At 250 kHz the
+        # sample budget covers two seconds of transient disk/OS jitter, not an
+        # indefinitely slow disk. Include the batch currently being written.
+        self._sample_capacity = max_pending_samples
+        self._pending_samples = 0
         self.id, self.directory = writer.id, writer.directory
         self.manifest = copy.deepcopy(writer.manifest)
         self._writer = writer
@@ -56,6 +64,10 @@ class AsyncRecordingWriter:
         self._rate = writer.manifest.get("sampleRate")
         self._origin = writer.manifest.get("sampleOrigin")
         self._stride = writer.manifest.get("rssiSampleStride")
+        self._diagnostics = {"queueCapacity": max_batches, "maxQueueDepth": 0,
+                             "sampleCapacity": max_pending_samples, "maxPendingSamples": 0,
+                             "publicationDeferrals": 0, "maxWriteMs": 0.0,
+                             "maxPersistMs": 0.0}
         self._done = threading.Event()
         self._thread = threading.Thread(target=self._run, name=f"recording-{self.id[:8]}", daemon=True)
         self._thread.start()
@@ -96,6 +108,7 @@ class AsyncRecordingWriter:
             raise AsyncRecordingError("采集记录已开始收尾，不能继续写入。")
         try:
             self._queue.put_nowait(command)
+            self._diagnostics["maxQueueDepth"] = max(self._diagnostics["maxQueueDepth"], self._queue.qsize())
         except queue.Full as exc:
             raise AsyncRecordingError("原始数据落盘队列已满；已停止采集，不会忽略数据继续运行。") from exc
 
@@ -134,12 +147,16 @@ class AsyncRecordingWriter:
             with self._lock:
                 self.check()
                 self._validate(batch)
+                if self._pending_samples + len(batch.values) > self._sample_capacity:
+                    raise AsyncRecordingError("原始数据落盘队列已满（样本缓冲达到上限）；已停止采集，不会忽略数据继续运行。")
                 # Batch is frozen but its arrays are mutable. Own the data while
                 # receiver buffers are recycled on subsequent SDK reads.
                 owned = Batch(batch.sample_start, batch.sample_rate, batch.started_at,
                               list(batch.velocity_raw), list(batch.values), list(batch.rssi_raw),
                               list(batch.rssi), list(batch.overrange), batch.rssi_sample_stride)
                 self._enqueue(("write", owned))
+                self._pending_samples += len(batch.values)
+                self._diagnostics["maxPendingSamples"] = max(self._diagnostics["maxPendingSamples"], self._pending_samples)
                 self._accepted_samples += len(batch.values)
                 if batch.values:
                     self._stride = batch.rssi_sample_stride
@@ -185,14 +202,26 @@ class AsyncRecordingWriter:
     def close(self) -> dict:
         return self.finish("采集记录已中止")
 
-    def _publish(self) -> None:
-        with self._publication_lock if self._publication_lock is not None else nullcontext():
+    def _publish(self, *, final=False) -> None:
+        # Progress publication must not serialize disk throughput with receiver
+        # detection/status copying under the controller lock. Skip only the
+        # mirror update; every accepted batch still reaches the disk worker.
+        # Final publication remains mandatory before wait() can report success.
+        lock = self._publication_lock
+        if lock is not None and not lock.acquire(blocking=final):
+            with self._lock:
+                self._diagnostics["publicationDeferrals"] += 1
+            return
+        try:
             with self._lock:
                 self.manifest.update({key: copy.deepcopy(value) for key, value in self._writer.manifest.items()
                                       if key in _ACCOUNTING})
                 for key in ("rssiSampleStride", "rssiSampleRate"):
                     if key in self._writer.manifest:
                         self.manifest[key] = self._writer.manifest[key]
+        finally:
+            if lock is not None:
+                lock.release()
 
     def _run(self) -> None:
         try:
@@ -207,6 +236,7 @@ class AsyncRecordingWriter:
                     continue
                 try:
                     kind = command[0]
+                    started = time.monotonic()
                     if kind == "ready":
                         self._writer.manifest.update(command[3])
                         self._writer.ready(command[1], command[2])
@@ -215,8 +245,14 @@ class AsyncRecordingWriter:
                     else:
                         self._writer.manifest.update(command[1])
                         self._writer.persist()
+                    with self._lock:
+                        key = "maxWriteMs" if kind == "write" else "maxPersistMs"
+                        self._diagnostics[key] = max(self._diagnostics[key], (time.monotonic() - started) * 1000)
                     self._publish()
                 finally:
+                    if command[0] == "write":
+                        with self._lock:
+                            self._pending_samples -= len(command[1].values)
                     self._queue.task_done()
         except Exception as exc:
             self._fail(exc)
@@ -225,8 +261,12 @@ class AsyncRecordingWriter:
                 with self._lock:
                     metadata = self._final_metadata
                     error = str(self._error) if self._error is not None else self._finish_error
+                    diagnostics = copy.deepcopy(self._diagnostics)
+                    diagnostics.update(acceptedSamples=self._accepted_samples,
+                                       writtenSamples=self._writer.manifest["samples"])
                 if metadata is not None:
                     self._writer.manifest.update(metadata)
+                self._writer.manifest["writerDiagnostics"] = diagnostics
                 self._writer.finish(error)
             except Exception as exc:
                 self._fail(exc)
@@ -244,5 +284,5 @@ class AsyncRecordingWriter:
                         self._queue.task_done()
                     except queue.Empty:
                         break
-                self._publish()
+                self._publish(final=True)
                 self._done.set()

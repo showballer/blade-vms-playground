@@ -82,11 +82,12 @@ class PolytecReceiver:
         self._active_accepting = False
 
     def _request_active(self, operation: str, timeout: float):
-        """Submit read-only work to the DAQ owner, never call the SDK concurrently."""
+        """Submit work to the DAQ owner, never call the SDK concurrently."""
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("连续采集请求超时必须是正数")
         request = {"operation": operation, "done": threading.Event(),
-                   "deadline": time.monotonic() + timeout, "cancelled": False}
+                   "deadline": time.monotonic() + timeout, "cancelled": False,
+                   "queuedMonotonicNs": time.monotonic_ns()}
         with self._active_lock:
             if not self._active_accepting:
                 raise RuntimeError("连续采集尚未启动或已经停止")
@@ -104,6 +105,12 @@ class PolytecReceiver:
         """Fresh ON readback on the owner thread; never enables an OFF laser."""
         return self._request_active("laser", timeout)
 
+    def set_active_laser(self, enabled: bool, *, timeout: float = 3.0):
+        """Diagnostic stationary/motion policy; caller must close the blade gate."""
+        if type(enabled) is not bool:
+            raise ValueError("Laser target must be boolean")
+        return self._request_active("laser_on" if enabled else "laser_off", timeout)
+
     def require_continuous_support(self):
         """Check the loaded library before allowing the first positioning move."""
         if not all(callable(getattr(self.api, name, None)) for name in
@@ -116,7 +123,7 @@ class PolytecReceiver:
         Drained samples still go through ``receive`` for full raw preservation.
         The caller must keep its detector disabled until the returned sampleIndex.
         This drains the SDK ring, not data still in the device/network; a fresh
-        stationary background is therefore still required before blade detection.
+        arrival transient rejection is still needed before a new entry edge.
         """
         return self._request_active("fence", timeout)
 
@@ -599,9 +606,13 @@ class PolytecReceiver:
                     except queue.Empty:
                         return
                     try:
+                        request_started_ns = time.monotonic_ns()
                         if request["cancelled"] or time.monotonic() >= request["deadline"]:
                             raise TimeoutError("连续采集请求已过期；未确认新的采集边界")
-                        if request["operation"] == "laser":
+                        if request["operation"] in ("laser_on", "laser_off"):
+                            self._set_laser(request["operation"] == "laser_on")
+                            result = self.laser_status
+                        elif request["operation"] == "laser":
                             if self._laser_monitor_failed:
                                 raise RuntimeError("本次采集激光读取连接已失败，不能确认激光开启")
                             try:
@@ -619,6 +630,7 @@ class PolytecReceiver:
                             # check here, on the same SDK owner, before draining
                             # and admitting samples for the next point.
                             self._verify_session_format()
+                            format_checked_ns = time.monotonic_ns()
                             before = sample_index
                             # A bounded drain catches up with queued samples;
                             # it cannot silently drop samples or wait forever
@@ -647,7 +659,11 @@ class PolytecReceiver:
                             result = {"sampleIndex": sample_index, "sampleRate": sample_rate,
                                       "rssiSampleStride": rssi_stride,
                                       "drainedSampleCount": sample_index - before,
-                                      "completedAt": time.time(), "source": "sdk-buffer-drained"}
+                                      "completedAt": time.time(), "source": "sdk-buffer-drained",
+                                      "requestQueueMs": (request_started_ns-request["queuedMonotonicNs"])/1e6,
+                                      "formatCheckMs": (format_checked_ns-request_started_ns)/1e6,
+                                      "drainMs": (time.monotonic_ns()-format_checked_ns)/1e6,
+                                      "deviceNetworkFreshness": "unverified"}
                         if cancelled() or request["cancelled"] or time.monotonic() >= request["deadline"]:
                             raise TimeoutError("连续采集确认已取消或超时")
                         request["result"] = result

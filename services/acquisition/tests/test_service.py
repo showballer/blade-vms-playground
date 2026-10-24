@@ -419,7 +419,7 @@ class ApiTests(unittest.TestCase):
             meta = record["pointCycle"]
             self.assertEqual(meta["completion"], "confirmed_pass")
             self.assertEqual(meta["handoff"]["reason"], "blade_left")
-            self.assertTrue(meta["rssiDetector"]["requireBackground"])
+            self.assertFalse(meta["rssiDetector"]["requireBackground"])
             self.assertEqual(meta["handoff"]["baselineRssi"], 80)
             self.assertLess(meta["entrySampleIndex"], meta["exitSampleIndex"])
             self.assertEqual(meta["referenceSignature"], POINT_REFERENCE["referenceSignature"])

@@ -271,6 +271,7 @@ class AcquisitionController:
         self.test_thread = None
         self.test_stop = threading.Event()
         self.point_cycle = None
+        self.early_detection = None
         self.rssi_handoff = None
         self.cycle_receiver = None
         self.cycle_prepare_thread = None
@@ -1750,10 +1751,10 @@ class AcquisitionController:
         self.rows.clear()
         self.stop_event.clear()
         self.state, self.error = "starting", None
-        self.point_cycle = {"state": "checking", "port": cycle.port, "cycles": cycle.cycles,
+        self.point_cycle = {"diagnosticDetectBeforeSettled": cycle.diagnosticDetectBeforeSettled, "diagnosticAngleWindowDeg": cycle.diagnosticAngleWindowDeg, "state": "checking", "port": cycle.port, "cycles": cycle.cycles,
                             **({"collectionId": cycle.collectionId} if cycle.collectionId else {}),
                             "sessionId": uuid.uuid4().hex, "mode": cycle.mode,
-                            "laserPolicy": "continuous_during_session",
+                            "laserPolicy": "off_during_motion" if cycle.motionLaserPolicy == "off_during_motion" else "continuous_during_session",
                             "returnToOrigin": cycle.returnToOrigin.model_dump() if cycle.returnToOrigin else None,
                             "geometry": cycle.geometry.model_dump() if cycle.geometry else None,
                             **({"firstStationMode": "hold_current_pose"} if cycle.startAtCurrentPose else {}),
@@ -1810,12 +1811,14 @@ class AcquisitionController:
                               batch.overrange[index]) for index in range(offset, len(batch.values)))
             cycle = self.point_cycle
             if cycle and self.rssi_handoff is not None:
-                cycle.update(self.rssi_handoff.feed(batch))
+                early = self.early_detection
+                cycle.update(self.rssi_handoff.status if early is not None and self.rssi_handoff is early.detector
+                             else self.rssi_handoff.feed(batch))
                 for transition in self.rssi_handoff.drain_events():
                     self._cycle_process(**transition)
                 if self.rssi_handoff.trigger is not None:
                     if not self.rssi_event.is_set():
-                        self.rssi_handoff.trigger["detectedAt"] = time.time()
+                        self.rssi_handoff.trigger.setdefault("detectedAt", time.time())
                     self.rssi_event.set()
             elif cycle and cycle.get("state") in ("capturing", "holding"):
                 valid_rssi = [float(value) for value in batch.rssi
@@ -2089,12 +2092,14 @@ class AcquisitionController:
         self.cycle_prepare_thread = threading.Thread(target=prepare, name="blade-cycle-prepare", daemon=True)
         self.cycle_prepare_thread.start()
 
-    def _confirm_session_laser(self, request, enabled):
+    def _confirm_session_laser(self, request, enabled, *, active_write=False):
         action, label = ("laser_on", "开启") if enabled else ("laser_off", "关闭")
         target = int(enabled)
-        active_continuous = (enabled and self.continuous_capture is not None and
+        active_continuous = ((enabled or active_write) and self.continuous_capture is not None and
                              self.capture_thread is self.continuous_capture.thread and
                              self.capture_thread.is_alive())
+        if active_write and self.continuous_capture is not None and self.continuous_capture.gate_is_open:
+            raise RuntimeError("点位判定尚未关闭，禁止在有效采集期间切换激光")
         if self.capture_thread and self.capture_thread.is_alive() and not active_continuous:
             self._unknown_laser(request.deviceIp, "采集接收线程尚未关闭，禁止并发操作激光")
             with self.lock:
@@ -2109,7 +2114,7 @@ class AcquisitionController:
             self._await_cycle_receiver()
             owner = self.cycle_receiver
             if active_continuous:
-                result = owner.confirm_active_laser()
+                result = owner.set_active_laser(enabled) if active_write else owner.confirm_active_laser()
             elif owner is not None:
                 result = owner.confirm_session_laser(enabled)
             else:
@@ -2146,13 +2151,39 @@ class AcquisitionController:
             raise RuntimeError("循环采集已停止")
         self._cycle_update("positioning", targetPointId=point.pointId, currentPoint=point.name,
                            targetAxis1AngleDeg=point.axis1AngleDeg, targetAxis2AngleDeg=point.axis2AngleDeg)
-        laser_on = self._confirm_motion_laser_on(request)
+        dark_motion = cycle.motionLaserPolicy == "off_during_motion"
+        laser_before = (self._confirm_session_laser(request, False, active_write=True)
+                        if dark_motion else self._confirm_motion_laser_on(request))
         if self.stop_event.is_set():
             raise RuntimeError("循环采集已停止")
+        if cycle.diagnosticDetectBeforeSettled:
+            if self.continuous_capture is None:
+                raise RuntimeError("未停稳判定测试需要连续采集服务，未发送运动指令")
+            if not (cycle.diagnosticDrivePosition or getattr(motor, "drive_internal_position", False)):
+                raise RuntimeError("未停稳判定测试需要双轴内部定位反馈，未发送运动指令")
+            from .early_detection import EarlyPointDetection
+            with self.lock:
+                self.early_detection = None
+                self.continuous_capture.diagnostic_observer = None
+                if any(p.pointId == point.pointId and p.name == point.name for p in cycle.points):
+                    self.early_detection = EarlyPointDetection(cycle, point, self.continuous_capture.receiver.fence_active_samples, lock=self.lock)
+                    self.continuous_capture.diagnostic_observer = self.early_detection.feed
         result = self._cycle_move_point(motor, cycle, point, **kwargs)
+        if self.early_detection is not None and self.early_detection.point == point and result[0]:
+            self.early_detection.observe(result[2], stopped=True)
+        motion_arrived_at = time.time()
+        laser_after = None
+        if dark_motion and result[0]:
+            if self.stop_event.is_set():
+                raise RuntimeError("循环采集已停止，未重新开启激光")
+            self._cycle_process("motion_stopped_before_laser_on", point=point.name)
+            laser_after = self._confirm_session_laser(request, True, active_write=True)
         with self.lock:
             evidence = copy.deepcopy(self.point_cycle.get("lastMove") or {})
-            evidence["laserOnBeforeMotion"] = laser_on
+            evidence["laserOffBeforeMotion" if dark_motion else "laserOnBeforeMotion"] = laser_before
+            if dark_motion:
+                evidence["motionArrivedAt"] = motion_arrived_at
+                evidence["laserOnAfterArrival"] = laser_after
             self._cycle_update(self.point_cycle.get("state", "holding"), lastMove=evidence)
         return result
 
@@ -2347,7 +2378,11 @@ class AcquisitionController:
         sending motion; no snapshot survives a station, owner or task change.
         """
         interrupted = lambda: self.stop_event.is_set() or self.rssi_event.is_set()
-        observations = joint_snapshots(motor, interrupted=interrupted)
+        from .preloaded_points import stopped_bank_snapshots
+        observations = stopped_bank_snapshots(motor, getattr(motor, '_blade_stopped_snapshots', None),
+                                             interrupted=interrupted)
+        if observations is None and not interrupted():
+            observations = joint_snapshots(motor, interrupted=interrupted)
         if observations is None or interrupted():
             return None
         for value in observations:
@@ -2364,6 +2399,7 @@ class AcquisitionController:
             require_position_ready(observations[axis - 1], config)
             if not position_reached(observations[axis - 1], config):
                 raise RuntimeError("采集点位角度已变化或尚未到位，未开启下一个点位采集")
+        motor._blade_stopped_snapshots = observations
         self._cycle_update("holding", feedback=feedback, currentPoint=point.name)
         return observations
 
@@ -2383,7 +2419,16 @@ class AcquisitionController:
                                 0 <= time.time() - value.get("queryStartedAt", 0) <= .5
                                 for axis, value in enumerate(initial_snapshots, 1)))
             if not reuse_checks:
-                initial_snapshots = joint_snapshots(motor)
+                # Indexed handoffs already bind references/guards to an owned
+                # sealed bank. Refresh live bank identity + stopped drive pose,
+                # instead of rereading eight separate status/reference fields.
+                from .preloaded_points import stopped_bank_snapshots
+                fast = (stopped_bank_snapshots(motor, getattr(motor, '_blade_stopped_snapshots', None),
+                                              interrupted=self.stop_event.is_set)
+                        if native_position and source_point is not None else None)
+                if self.stop_event.is_set():
+                    raise RuntimeError("循环采集已停止，未发送运动")
+                initial_snapshots = fast if fast is not None else joint_snapshots(motor)
             feedback = initial_snapshots[0]
             require_ready(feedback)
             references = reference_key(feedback)
@@ -2439,6 +2484,9 @@ class AcquisitionController:
                     if "lastMove" in extra:
                         extra["lastMove"] = {**extra["lastMove"], "startupSnapshotReused": reuse_checks,
                                              **({"stationTiming": timing} if timing is not None else {})}
+                    early = self.early_detection
+                    if (early is not None and early.point == point and extra.get("lastMove", {}).get("phase") == "position_sample"):
+                        early.observe(extra.get("feedback") or {})
                     self._cycle_update(state, currentPoint=point.name, **extra)
                 return self._execute_drive_position(
                     motor, configs, feedback, self.stop_event, diagnostic_update, on_command,
@@ -2598,6 +2646,7 @@ class AcquisitionController:
                 errors.append(str(exc))
         if not any(writer.pending for writer in writers):
             self.continuous_capture = None
+            self.early_detection = None
             if session is not None and self.capture_thread is session.thread:
                 self.capture_thread = self.capture_stop = None
         if self.point_cycle is not None:
@@ -2612,6 +2661,20 @@ class AcquisitionController:
                              keep_laser_on: bool = True, before_capture=None, feedback_poll=None,
                              initial_snapshots=None):
         session = self.continuous_capture
+        early = None
+        if cycle.diagnosticDetectBeforeSettled:
+            if session is None:
+                raise RuntimeError("未停稳判定测试需要连续采集服务")
+            from .early_detection import EarlyPointDetection
+            with self.lock:
+                early = self.early_detection
+                if early is None or early.point != point:
+                    early = EarlyPointDetection(cycle, point, session.receiver.fence_active_samples, lock=self.lock)
+                    self.early_detection = early
+                    session.diagnostic_observer = early.feed
+            if not early.active:
+                early.observe({"axes": {str(axis): {"output_angle_deg": (actual_angles or {}).get(str(axis))}
+                                           for axis in (1, 2)}}, stopped=True)
         metadata = request.model_dump(exclude={"confirmLaser", "confirmMotion", "simulation", "turntable", "pointCycle"})
         metadata["point"] = point.name
         metadata["pointCycle"] = {"cycle": cycle_index, "pointIndex": point_index,
@@ -2630,7 +2693,7 @@ class AcquisitionController:
             **{key: station[key] for key in ("bladeId", "radialPointId", "radialPointName", "radiusM",
                                              "azimuthDeg", "stationIndex", "stationCount")},
             sessionId=self.point_cycle["sessionId"], mode=cycle.mode, lapIndex=cycle_index,
-            laserPolicy="continuous_during_session",
+            laserPolicy="off_during_motion" if cycle.motionLaserPolicy == "off_during_motion" else "continuous_during_session",
             **({"firstStationMode": "hold_current_pose"} if cycle.startAtCurrentPose else {}),
             stationId=station["pointId"], plannedStations=plan,
             nominalPeriodSeconds=cycle.nominalPeriodSeconds,
@@ -2651,6 +2714,9 @@ class AcquisitionController:
                                   "cycle": cycle_index, "pointIndex": point_index,
                                   **({"pointId": point.pointId} if point.pointId is not None else {}),
                                   **({"actualAngles": actual_angles} if actual_angles is not None else {})}
+        if early is not None:
+            metadata.update(diagnosticOnly=True, validMeasurement=False, name=str(metadata.get("name", "")) + " [未停稳判定测试]")
+            metadata["pointCycle"]["diagnosticDetection"] = early.evidence()
         writer = self.store.create(metadata)
         if session is not None:
             writer = AsyncRecordingWriter(writer, on_error=self._cycle_io_failed, publication_lock=self.lock)
@@ -2681,26 +2747,47 @@ class AcquisitionController:
             self.rows.clear()
             self.state = "starting"
             self.rssi_event.clear()
-            # Ordered saved-point handoffs need the same complete-pass guard as
-            # computed automatic stations, including when no geometric origin
-            # is available. A blade already covering the beam on arrival must
-            # not be mistaken for a newly observed full pass.
-            complete_pass = cycle.mode == "automatic_stations" or cycle.routeOrder == "configured"
-            self.rssi_handoff = RssiHandoff(cycle, travel, require_background=complete_pass) if cycle.rssiTriggerEnabled else None
+            # Arrival/stop gating is unchanged; background qualifies recorded
+            # boundaries but never delays exit/handoff. Initial entry qualification
+            # rejects inter-window mean drift within the existing clear interval.
+            advisory = cycle.mode == "automatic_stations" or cycle.routeOrder == "configured"
+            evidence_mode = cycle.rssiEntryEvidenceMode if advisory and early is None else "off"
+            advisory = advisory and early is None
+            self.rssi_handoff = RssiHandoff(cycle, travel, background_advisory=advisory, require_fresh_entry=advisory, require_stable_entry_mean=advisory, entry_evidence_mode=evidence_mode, revalidate_entry_clear=advisory) if cycle.rssiTriggerEnabled else None
+            if early is not None:
+                self.rssi_handoff = early.detector
             writer.manifest["pointCycle"]["rssiDetector"] = {
-                "version": 2 if complete_pass else 1,
-                "requireBackground": complete_pass,
+                "version": 8 if evidence_mode == "arrival_guard" else 7 if advisory else 1,
+                "entryClearRevalidation": advisory,
+                "entryEvidenceMode": evidence_mode,
+                "entryEvidenceAffectsMotion": evidence_mode in {"required", "arrival_guard"},
+                "arrivalEvidenceScope": "disturbed_clear_then_next_window" if evidence_mode == "arrival_guard" else None,
+                "diagnosticDetectBeforeSettled": early is not None,
+                "requireFreshEntry": advisory,
+                "requireStableEntryMean": advisory,
+                "entryMeanRangeLimitPp": cycle.rssiExitSpread if advisory else None,
+                "entryClearRequiredMs": cycle.rssiConfirmMs if advisory else 0,
+                "backgroundPolicy": "advisory" if advisory else "disabled",
+                "requireBackground": False,
                 "backgroundRequiredMs": max(50, cycle.rssiConfirmMs),
-                "exitRequiresBaselineReturn": complete_pass,
+                "exitRequiresBaselineReturn": False,
             }
             self.point_cycle.update(latestRssi=None, rssiSamples=0, rssiBelowSamples=0,
                                     rssiTrigger=None, rssiBaseline=None, rssiThreshold=None,
                                     rssiSpread=None, rssiEntryMs=0, rssiBelowMs=0,
                                     signalGapCount=0, lastSignalGapReason=None,
-                                    rssiBackgroundReady=not complete_pass, rssiBackgroundMs=0,
+                                    rssiBackgroundReady=not advisory, rssiBackgroundMs=0,
+                                    rssiBackgroundPolicy="advisory" if advisory else "disabled",
+                                    rssiFreshEntryRequired=advisory, rssiEntryEdgeReady=not advisory, rssiEntryClearMs=0,
+                                    rssiEntryMeanGuard=advisory, rssiEntryMeanRange=None,
+                                    rssiEntryClearRevalidation=advisory, rssiEntryClearRevocations=0,
+                                    rssiEntryEvidenceMode=evidence_mode,
+                                    rssiEntryEvidence=None, rssiUnsupportedEntries=0,
+                                    rssiArrivalEvidenceRejections=0,
+                                    rssiEntryMeanLimit=cycle.rssiExitSpread, rssiEntryDriftResets=0,
                                     rssiBackgroundRequiredMs=max(50, cycle.rssiConfirmMs),
                                     rssiBackgroundMean=None, rssiPartialPassesIgnored=0,
-                                    rssiPhase=("waiting_background" if complete_pass else "waiting_blade") if cycle.rssiTriggerEnabled else None,
+                                    rssiPhase="waiting_blade" if cycle.rssiTriggerEnabled else None,
                                     nextPoint=next_point.name if next_point is not None else None)
             self._cycle_process("starting_capture", point=point.name)
         capture_stop, capture_done, ready = threading.Event(), threading.Event(), threading.Event()
@@ -2740,7 +2827,7 @@ class AcquisitionController:
                     writer.manifest["pointCycle"].update(completion="signal_gap", outcome="incomplete")
                     raise RuntimeError("当前点采样序号或采样率不连续，已停止采集")
                 if not ready.is_set():
-                    self._cycle_process(("waiting_background" if complete_pass else "waiting_blade") if cycle.rssiTriggerEnabled else "capturing", point=point.name)
+                    self._cycle_process(("waiting_entry_clear" if advisory else "waiting_blade") if cycle.rssiTriggerEnabled else "capturing", point=point.name)
                     writer.manifest["pointCycle"]["firstSampleAt"] = time.time()
                     ready.set()
                 self._receive(batch)
@@ -2838,10 +2925,19 @@ class AcquisitionController:
                                        boundary="raw capture frozen before motion command")
                         writer.manifest["pointCycle"]["handoff"] = trigger
                         writer.manifest["pointCycle"].update(
-                            completion="confirmed_pass", outcome="observed",
+                            completion="unconfirmed_pass" if trigger.get("passCompleteness") == "unconfirmed" else "confirmed_pass",
+                            outcome="incomplete" if trigger.get("passCompleteness") == "unconfirmed" else "observed",
+                            passCompleteness=trigger.get("passCompleteness"),
+                            completenessReason=trigger.get("completenessReason"),
                             observedSamples=trigger["observedSamples"],
                             entrySampleIndex=trigger["entrySampleIndex"],
                             exitSampleIndex=trigger["exitConfirmedSampleIndex"])
+                        if early is not None:
+                            writer.manifest["pointCycle"].update(completion="diagnostic_pass", outcome="diagnostic",
+                                diagnosticDetection=early.evidence())
+                            # Global raw indices must never masquerade as local stationary samples.
+                            writer.manifest["pointCycle"].pop("entrySampleIndex", None)
+                            writer.manifest["pointCycle"].pop("exitSampleIndex", None)
                     break
                 if remaining <= 0:
                     if cycle.rssiTriggerEnabled:
@@ -2864,6 +2960,11 @@ class AcquisitionController:
                     raise RuntimeError("该点测振线程未退出，不能确认数据完整保存")
             else:
                 session.ungate()
+                if early is not None:
+                    with self.lock:
+                        session.diagnostic_observer = None
+                        writer.manifest["pointCycle"]["diagnosticDetection"] = early.evidence()
+                        self.early_detection = None
                 self._continuous_phase("transit", fromRecordingId=writer.id,
                                        fromPoint=point.name, toPoint=next_point.name if next_point else None)
             if capture_errors:

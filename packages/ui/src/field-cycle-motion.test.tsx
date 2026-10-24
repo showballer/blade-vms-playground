@@ -29,14 +29,14 @@ check("活动任务使用下发计划而非编辑草稿，并跟随显式下一�
   const moving = cycleMotionModel({ ...status, pointCycle: { ...status.pointCycle!, targetPointId: "p-s2", processPhase: "moving" } }, route, now);
   assert.equal(moving.target?.pointId, "p-s2"); assert.equal(moving.moving, true); assert.equal(moving.arrived, false);
 });
-check("到位后显示基线准备与半段回波说明，不冒充已确认进入", () => {
+check("到位后显示辅助背景说明，不冒充已确认进入", () => {
   const preparing: FieldStatus = { ...status, pointCycle: { ...status.pointCycle!, rssiTriggerEnabled: true,
-    processPhase: "waiting_background", rssiPhase: "waiting_background", rssiBackgroundMs: 20,
+    processPhase: "waiting_background", rssiPhase: "waiting_background", rssiBackgroundPolicy: "advisory", rssiBackgroundMs: 20,
     rssiBackgroundRequiredMs: 50, rssiBackgroundReady: false, rssiPartialPassesIgnored: 1 } };
   const markup = renderToStaticMarkup(<FieldCycleProgress status={preparing} />);
   assert.ok(markup.includes("等待稳定回波基线"));
-  assert.ok(markup.includes("确认中 20/50 ms"));
-  assert.ok(markup.includes("已忽略 1 段未见起始背景的回波"));
+  assert.ok(markup.includes("背景仅作辅助，不阻塞换点"));
+  assert.ok(markup.includes("背景尚未确认"));
   assert.ok(!markup.includes("已确认进入 · 叶片经过中"));
   assert.equal(cycleMotionModel(preparing, route, now).arrived, true);
 });
@@ -139,3 +139,15 @@ check("反馈定位标明新协议，旧记录保留原执行方式", () => {
   assert.ok(showing(null).includes("驱动器内部定位"));
 });
 console.log(`PASS ${count} feedback-driven motion checks; no hardware used`);
+
+check("移动关灯策略按实际任务显示，开灯前不显示叶片判定", () => {
+  const dark: FieldStatus = { ...status, pointCycle: { ...status.pointCycle!, laserPolicy: "off_during_motion", rssiTriggerEnabled: true, processPhase: "motion_stopped_before_laser_on" } };
+  const config = { name: "任务", deviceIp: "192.0.2.90", hostIp: "192.0.2.10", object: "", turbine: "", point: "" };
+  const markup = renderToStaticMarkup(<FieldCycleMotion status={dark} route={route} config={config} />);
+  assert.ok(markup.includes("移动前关闭激光，到位停稳后开启"));
+  assert.ok(!markup.includes("移动期间激光保持开启"));
+  assert.ok(markup.includes("激光状态未知"));
+  const progress = renderToStaticMarkup(<FieldCycleProgress status={dark} />);
+  assert.ok(progress.includes("两轴已停稳，准备开激光"));
+  assert.ok(!progress.includes("最近采集 RSSI"));
+});

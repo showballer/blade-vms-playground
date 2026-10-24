@@ -261,7 +261,7 @@ def imported_record_metadata(metadata: dict, samples: int, sample_rate: float, f
         if cycle.get("identityVerified", False) is not False:
             raise ValueError("导入记录不能声明未经验证的叶片身份。")
     completion = cycle.get("completion")
-    if completion is not None and completion not in ("confirmed_pass", "missing_entry", "missing_exit", "signal_gap", "cancelled", "device_error"):
+    if completion is not None and completion not in ("confirmed_pass", "unconfirmed_pass", "missing_entry", "missing_exit", "signal_gap", "cancelled", "device_error"):
         raise ValueError("点位完成状态无效。")
     for key in ("entrySampleIndex", "exitSampleIndex"):
         if key in cycle:

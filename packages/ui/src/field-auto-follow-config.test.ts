@@ -326,3 +326,15 @@ check("缺失或非法离地高度不能复活旧高差，空值反复读写仍�
 });
 
 console.log(`PASS ${checks} auto-follow configuration checks; no hardware used`);
+
+check('diagnostic early detection requires an explicit boolean and preserves the default', () => {
+  assert.equal(read(v3()).settings.diagnosticDetectBeforeSettled, false);
+  assert.equal(read({ ...v3(), settings: { ...v3().settings, diagnosticDetectBeforeSettled: true } }).settings.diagnosticDetectBeforeSettled, true);
+  for (const value of ['true', 1, null]) assert.equal(read({ ...v3(), settings: { ...v3().settings, diagnosticDetectBeforeSettled: value } }).settings.diagnosticDetectBeforeSettled, false);
+});
+for (const diagnosticAngleWindowDeg of [0,.5,1,2,3,5,10]) {
+  const settings=readAutoFollowSurvey(JSON.stringify({version:3,settings:{diagnosticDetectBeforeSettled:true,diagnosticAngleWindowDeg}})).settings;
+  assert.equal(settings.diagnosticAngleWindowDeg,diagnosticAngleWindowDeg);
+  assert.equal(settings.diagnosticDetectBeforeSettled,true);
+}
+assert.equal(readAutoFollowSurvey(JSON.stringify({version:3,settings:{diagnosticDetectBeforeSettled:true}})).settings.diagnosticAngleWindowDeg,0);

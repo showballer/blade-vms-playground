@@ -47,7 +47,10 @@ check("默认30秒模型只生成输入，没有参考位与隐式开机请求",
   assert.ok(!html.includes("开始自动采集")); assert.ok(html.includes("前往数据采集"));
   assert.ok(!html.includes('class="field-card field-auto-anchor"')); assert.ok(html.includes("未校准时按安装尺寸计算瞄准位置"));
   assert.ok(html.includes("开始后先自动定位，再等待叶片")); assert.ok(html.includes("公共归零不能替代测点校准"));
-  assert.ok(!html.includes('type="checkbox"')); assert.ok(!html.includes("6→9"));
+  assert.equal((html.match(/type="checkbox"/g) || []).length, 1);
+  assert.match(html, /aria-label="测试：未停稳时判定叶片"/);
+  assert.doesNotMatch(html, /aria-label="测试：未停稳时判定叶片"[^>]*checked/);
+  assert.ok(!html.includes("6→9"));
   assert.ok(html.includes("顺时针")); assert.ok(html.includes("逆时针"));
   assert.match(html, /aria-label="叶轮每圈时间 · s"[^>]*min="0"/);
   assert.ok(html.includes("填 0 表示人手转动叶片"));

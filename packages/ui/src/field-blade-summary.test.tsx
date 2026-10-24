@@ -46,6 +46,15 @@ check("存盘完成与RSSI通过分开，回波缺口、失败、取消和未完
   assert.equal(summarizeBladeRecords([recording(1, { status: "error", error: "用户取消" }, { completion: "cancelled" })]).groups[0].stations[0].state, "cancelled");
 });
 
+check("背景辅助片段照常归档但不计作完整经过", () => {
+  const value = recording(1, {}, { completion: "unconfirmed_pass", passCompleteness: "unconfirmed", completenessReason: "missing_initial_background" });
+  const group = summarizeBladeRecords([value]).groups[0];
+  assert.equal(group.recordCount, 1); assert.equal(group.observedCount, 0); assert.equal(group.incompleteCount, 1);
+  assert.equal(group.stations[0].state, "unconfirmed_pass");
+  const html = renderToStaticMarkup(<FieldBladeSummary recordings={[value]} />);
+  assert.ok(html.includes("完整性待确认"));
+});
+
 check("重复快照不重复计数，重试保留记录且结果按最新记录", () => {
   const original = recording(1, { endedAt: 1001 }, { completion: "missing_exit" });
   const retried = recording(1, { id: "retry-record", startedAt: 2000, endedAt: 2001, samples: 50 });

@@ -129,6 +129,7 @@ export function bladePassWaveSeries(source: BladePassSource) {
 export const bladePassNumber = (value: number | null | undefined, digits = 4) => value == null || !Number.isFinite(value) ? "—" : Number(value.toPrecision(digits)).toLocaleString("zh-CN", { maximumFractionDigits: 9 });
 
 const reasonLabels: Record<string, string> = {
+  unconfirmed_pass: "经过完整性待确认", missing_initial_background: "缺少进入前背景", exit_baseline_mismatch: "离开回波与背景不一致",
   recording_not_complete: "记录未完整保存", missing_entry: "缺少叶片进入", missing_exit: "缺少叶片离开", signal_gap: "回波中断",
   missing_pass_boundaries: "缺少有效经过边界", invalid_pass_boundaries: "经过边界无效", no_usable_segment: "没有可用连续段",
   outside_confirmed_pass: "处于已确认经过范围之外", nonfinite_velocity: "速度值无效", overrange: "速度超量程",

@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from blade_acquisition.drive_position import execute_drive_position, DrivePositionError
-from blade_acquisition.preloaded_points import PreloadedPointsCache
+from blade_acquisition.preloaded_points import PreloadedPointsCache, stopped_bank_snapshots
 from blade_acquisition.turntable import TurntableRequest
 from blade_acquisition.turntable_driver.motor_controller import MotorController, MotorStatus, CommunicationError, CommandRejected
 from blade_acquisition.turntable_driver.trajectory import TrajectoryStatus
@@ -126,6 +126,63 @@ class PreloadedPointsTests(unittest.TestCase):
                     cancel=self.cancel, timeout_s=2., initial_snapshots=self.motor.snapshots())
         args.update(overrides)
         return execute_drive_position(self.motor, **args)
+
+    def test_stationary_bank_refresh_has_two_reads_and_preserves_reference_age(self):
+        self.prepare(); initial = self.motor.snapshots()
+        for value in initial:
+            value['queryStartedAt'] = 1
+            for axis in value['axes'].values(): axis['observedAt'] = 1
+        self.motor.wire.clear(); before = self.motor.position_reads
+        refreshed = stopped_bank_snapshots(self.motor, initial)
+        self.assertEqual([f[4] for f in self.motor.wire], [0x44])
+        self.assertEqual(self.motor.position_reads-before, 1)
+        self.assertGreater(refreshed[0]['queryStartedAt'], 1)
+        self.assertEqual(refreshed[0]['axes']['1']['referenceObservedAt'], 1)
+        self.assertEqual(refreshed[0]['preflightProtocol'], '0x44+0x37')
+        self.assertEqual(initial[0]['queryStartedAt'], 1)
+        self.assertFalse(self.motor.targets)
+
+    def test_stationary_refresh_rejects_invalid_or_replaced_bank_before_pose_read(self):
+        for change in ({'ready':0}, {'token':42}, {'speed':400}, {'count':1,'loaded':1}):
+            with self.subTest(change=change):
+                self.prepare(); initial=self.motor.snapshots(); before=self.motor.position_reads
+                self.motor.banks[1].update(change)
+                with self.assertRaisesRegex(Exception, '失效或被替换'):
+                    stopped_bank_snapshots(self.motor, initial)
+                self.assertEqual(self.motor.position_reads,before)
+                self.assertFalse(self.motor.targets)
+
+    def test_stationary_refresh_rejects_cached_moving_faulted_or_stale_feedback(self):
+        self.prepare(); initial=self.motor.snapshots()
+        positions=self.motor.get_axis_positions()
+        for changed in (dict(source=1), dict(motor_rpm=1), dict(alarm_code=2), dict(guard_fault=3),
+                        dict(sample_age_ms=1001), dict(flags=0x23), dict(flags=0x13),dict(angle_deg=None)):
+            with self.subTest(changed=changed), patch.object(self.motor,'get_axis_positions',
+                    return_value=(replace(positions[0],**changed),positions[1])):
+                with self.assertRaisesRegex(Exception, '新鲜停稳反馈'):
+                    stopped_bank_snapshots(self.motor,initial)
+        self.assertFalse(self.motor.targets)
+
+    def test_delayed_healthy_feedback_requires_new_read_without_claiming_drive_fault(self):
+        self.prepare(); initial=self.motor.snapshots(); positions=self.motor.get_axis_positions()
+        with patch.object(self.motor,'get_axis_positions',return_value=(replace(positions[0],sample_age_ms=201),positions[1])):
+            self.assertIsNone(stopped_bank_snapshots(self.motor,initial))
+        self.assertFalse(self.motor.targets)
+
+    def test_stationary_refresh_does_not_transfer_reference_ownership(self):
+        self.prepare(); initial=self.motor.snapshots(); initial[0]['axes']['1']['origin_counts']+=1
+        self.motor.wire.clear()
+        with self.assertRaisesRegex(Exception,'参考或保护信息不匹配'):
+            stopped_bank_snapshots(self.motor,initial)
+        self.assertEqual(self.motor.wire,[])
+
+    def test_stationary_refresh_cancel_and_legacy_do_not_read_or_move(self):
+        initial=self.motor.snapshots()
+        self.assertIsNone(stopped_bank_snapshots(self.motor,initial))
+        self.prepare(); self.motor.wire.clear()
+        self.assertIsNone(stopped_bank_snapshots(self.motor,initial,interrupted=lambda:True))
+        self.assertEqual(self.motor.wire,[])
+        self.assertFalse(self.motor.targets)
 
     def test_six_banks_are_independent_and_reselected_without_reupload(self):
         for number in range(1, 7):

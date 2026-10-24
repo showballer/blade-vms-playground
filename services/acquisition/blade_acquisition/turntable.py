@@ -270,10 +270,18 @@ class PointCycleConfig(BaseModel):
     # Accepted for older clients only; never used as a microsecond debounce.
     rssiConfirmSamples: StrictInt = Field(default=3, ge=1, le=1000)
     rssiMinimumSeconds: float = Field(default=0, ge=0, le=3600, allow_inf_nan=False)
+    # Joint evidence only for candidates immediately after disturbed arrival.
+    # Explicit observe/required modes remain available for diagnostic comparison.
+    rssiEntryEvidenceMode: Literal["observe", "required", "arrival_guard"] = "arrival_guard"
+    # Explicit motion policy; desktop requests use continuous illumination.
+    # Omitted by older clients: preserve their continuous illumination.
+    diagnosticDetectBeforeSettled: StrictBool = False
+    diagnosticAngleWindowDeg: float = Field(default=0, ge=0, le=10, allow_inf_nan=False)
+    motionLaserPolicy: Literal["continuous", "off_during_motion"] = "continuous"
 
     @field_validator("dwellSeconds", "speedRpm", "rssiLeaveThresholdPercent", "rssiMinimumSeconds",
                      "rssiBaselineRatio", "rssiSmoothingMs", "rssiConfirmMs", "rssiMotionMarginMs",
-                     "rssiEnterSpread", "rssiExitSpread", "rssiEnterConfirmMs", "nominalPeriodSeconds",
+                     "rssiEnterSpread", "rssiExitSpread", "rssiEnterConfirmMs", "nominalPeriodSeconds", "diagnosticAngleWindowDeg",
                      "maxMoveRpm", "maxMoveAccelerationDegS2", "followErrorLimitDeg", mode="before")
     @classmethod
     def cycle_numeric(cls, value):
@@ -285,6 +293,8 @@ class PointCycleConfig(BaseModel):
 
     @model_validator(mode="after")
     def bounded_total(self):
+        if self.diagnosticDetectBeforeSettled and (self.mode != "automatic_stations" or not self.rssiTriggerEnabled or self.motionLaserPolicy != "continuous"):
+            raise ValueError("未停稳判定测试仅支持自动跟随、回波触发和激光常亮")
         if 0 < self.nominalPeriodSeconds < .5:
             raise ValueError("叶轮周期须为0（手动转叶片）或不少于0.5秒")
         if self.startAtCurrentPose and self.mode != "automatic_stations":

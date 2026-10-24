@@ -14,7 +14,7 @@ const route = manualCaptureRoute(points, "COM6", manualRouteDefaults, 1);
 assert.deepEqual(captureRouteBlockers(route, status), []);
 assert.deepEqual(route.cycle!.points.map(p => p.axis1AngleDeg), [0, 20, 1]);
 assert.equal(route.cycle!.routeOrder, "configured"); assert.equal(route.cycle!.rssiTriggerEnabled, true);
-assert.equal(route.cycle!.keepLaserOnBetweenPoints, true);
+assert.equal(route.cycle!.motionLaserPolicy, "continuous");
 const workZero = { port: "COM6", generation: 1, referenceSignature: turntableReferenceSignature(axes)!, axis1AngleDeg: 2, axis2AngleDeg: -16 };
 const zeroRoute = manualCaptureRoute(points, "COM6", manualRouteDefaults, 1, workZero);
 assert.deepEqual(captureRouteBlockers(zeroRoute, status), []);
@@ -78,7 +78,7 @@ assert.deepEqual(captureRouteBlockers(manualBladeRoute, noCachedMotor), []);
 const manualBladePrepared = prepareCaptureRoute(manualBladeRoute, status);
 assert.equal(manualBladePrepared.cycle!.nominalPeriodSeconds, 0);
 assert.equal(manualBladePrepared.cycle!.speedRpm, .6);
-assert.equal(manualBladePrepared.cycle!.keepLaserOnBetweenPoints, true);
+assert.equal(manualBladePrepared.cycle!.motionLaserPolicy, "continuous");
 assert.deepEqual(captureRouteBlockers(manualBladePrepared, status), []);
 assert.throws(() => prepareCaptureRoute(manualBladePrepared, changed), /参考位.*变化/, "Manual blade operation never replaces an already bound reference");
 const calibratedPlan = planAutoFollow(autoFollowDefaults, { port: "COM6", referenceSignature: turntableReferenceSignature(axes)!,

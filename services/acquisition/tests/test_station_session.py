@@ -90,7 +90,7 @@ def receiver_for(sdk, platform_path='fixture.dylib'):
 
 
 class StationSessionTests(unittest.TestCase):
-    def test_ordered_saved_points_ignore_partial_arrival_on_mac_and_windows(self):
+    def test_ordered_saved_points_ignore_arrival_partial_then_accept_new_pass_on_mac_and_windows(self):
         # Arrive during a blade, then observe background and one full pass.
         pulse = [100, 420] * 30 + [260] * 80 + [100, 420] * 30 + [260] * 50
         for filename in ('DeviceCommunication.dll', 'libDeviceCommunication.dylib'):
@@ -109,11 +109,67 @@ class StationSessionTests(unittest.TestCase):
                 self.assertEqual(controller.status()['pointCycle']['state'], 'complete', controller.status().get('error'))
                 record = json.loads(next((Path(folder)/'recordings').glob('*/manifest.json')).read_text())
                 pc = record['pointCycle']
-                self.assertTrue(pc['rssiDetector']['requireBackground'])
-                self.assertTrue(pc['rssiDetector']['exitRequiresBaselineReturn'])
+                self.assertFalse(pc['rssiDetector']['requireBackground'])
+                self.assertFalse(pc['rssiDetector']['exitRequiresBaselineReturn'])
+                self.assertTrue(pc['rssiDetector']['requireFreshEntry'])
+                self.assertTrue(pc['rssiDetector']['requireStableEntryMean'])
+                self.assertTrue(pc['rssiDetector']['entryClearRevalidation'])
+                self.assertEqual(pc['rssiDetector']['version'], 8)
+                self.assertEqual(pc['handoff']['detectorVersion'], 8)
                 self.assertEqual(pc['handoff']['entrySampleIndex'], 140)
                 self.assertEqual(pc['handoff']['sampleIndex'], 229)
-                self.assertGreaterEqual(pc['handoff']['partialPassesIgnored'], 1)
+                self.assertEqual(pc['completion'], 'confirmed_pass')
+                self.assertIsNone(pc['completenessReason'])
+
+    def test_arrival_mean_drift_is_rejected_on_mac_and_windows(self):
+        # Narrow windows with rapidly changing means are not a quiet arrival.
+        # The first high pulse is arrival residue; the later pass is accepted.
+        pulse = [50]*10 + [150]*10 + [250]*10 + [100, 420]*10 + [260]*80 + [100, 420]*30 + [260]*50
+        for filename in ('DeviceCommunication.dll', 'libDeviceCommunication.dylib'):
+            with self.subTest(filename=filename), tempfile.TemporaryDirectory() as folder:
+                sdk = PacketSdk([[(i, raw, 0) for i, raw in enumerate(pulse)]])
+                receiver = receiver_for(sdk, filename)
+                motor = BufferedMotor()
+                motor.drive_internal_position = True
+                controller = create_app(Settings(TOKEN, 8765, Path(folder)), lambda _: receiver,
+                                        lambda *a, **kw: motor).state.controller
+                config = automatic_config(azimuths=(0,), mode='legacy', geometry=None,
+                                          routeOrder='configured', rssiExitSpread=4)
+                controller.start(StartRequest(**START, confirmMotion=True, pointCycle=config))
+                controller.thread.join(5)
+                self.assertFalse(controller.thread.is_alive())
+                self.assertEqual(controller.status()['pointCycle']['state'], 'complete', controller.status().get('error'))
+                record = json.loads(next((Path(folder)/'recordings').glob('*/manifest.json')).read_text())
+                handoff = record['pointCycle']['handoff']
+                self.assertEqual(handoff['entrySampleIndex'], 130)
+                self.assertEqual(handoff['exitConfirmedSampleIndex'], 219)
+                self.assertEqual(handoff['entryDriftResets'], 2)
+                self.assertEqual(handoff['detectorVersion'], 8)
+
+    def test_default_joint_guard_rejects_arrival_jump_then_saves_real_pass_on_both_platforms(self):
+        pulse = [100, 420] * 10 + [260] * 30 + [100, 420] * 10 + [260] * 30 + [100, 420] * 10 + [260] * 30
+        for filename in ('DeviceCommunication.dll', 'libDeviceCommunication.dylib'):
+            with self.subTest(filename=filename), tempfile.TemporaryDirectory() as folder:
+                sdk = PacketSdk([[(500000 if 100 <= i < 120 else 1, raw, 0) for i, raw in enumerate(pulse)]])
+                receiver = receiver_for(sdk, filename)
+                motor = BufferedMotor()
+                motor.drive_internal_position = True
+                controller = create_app(Settings(TOKEN, 8765, Path(folder)), lambda _: receiver,
+                                        lambda *a, **kw: motor).state.controller
+                config = automatic_config(azimuths=(0,), mode='legacy', geometry=None,
+                                          routeOrder='configured', rssiExitSpread=4)
+                controller.start(StartRequest(**START, confirmMotion=True, pointCycle=config))
+                controller.thread.join(5)
+                self.assertFalse(controller.thread.is_alive())
+                self.assertEqual(controller.status()['pointCycle']['state'], 'complete', controller.status().get('error'))
+                record = json.loads(next((Path(folder)/'recordings').glob('*/manifest.json')).read_text())
+                pc = record['pointCycle']
+                self.assertEqual(pc['rssiDetector']['entryEvidenceMode'], 'arrival_guard')
+                self.assertTrue(pc['rssiDetector']['entryEvidenceAffectsMotion'])
+                self.assertEqual(pc['handoff']['arrivalEvidenceRejections'], 1)
+                self.assertEqual(pc['handoff']['entrySampleIndex'], 100)
+                self.assertEqual(pc['handoff']['exitConfirmedSampleIndex'], 149)
+                self.assertTrue(pc['handoff']['entryEvidence']['velocitySupported'])
 
     def test_unordered_legacy_route_keeps_its_existing_detector_contract(self):
         pulse = [100, 420] * 30 + [260] * 50

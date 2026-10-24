@@ -103,7 +103,7 @@ export function WebBladePasses({ canAnalyze, refreshKey, preferredIds, onError, 
         })}</fieldset>
         <details className="blade-pass-records"><summary>批次与点位记录 · 已选 {chosen.length} / {task.records.length}</summary><div className="field-table-scroll"><table className="field-table"><thead><tr><th>选择</th><th>测点 / 批次</th><th>点位 / 轮次</th><th>原始样本</th><th>经过状态</th></tr></thead><tbody>{task.records.map(record => {
           const metadata = bladePassMetadata(record)!; const checked = selected.includes(record.id);
-          const labels: Record<string, string> = { confirmed_pass: "已记录进入与离开", missing_entry: "缺少进入", missing_exit: "缺少离开", signal_gap: "回波中断", cancelled: "已取消", device_error: "设备异常" };
+          const labels: Record<string, string> = { confirmed_pass: "已记录进入与离开", unconfirmed_pass: "完整性待确认", missing_entry: "缺少进入", missing_exit: "缺少离开", signal_gap: "回波中断", cancelled: "已取消", device_error: "设备异常" };
           return <tr key={record.id}><td><input type="checkbox" aria-label={`选择记录 ${record.id}`} checked={checked} disabled={!checked && chosen.length >= BLADE_PASS_RECORD_LIMIT} onChange={event => selectRecords([record.id], event.target.checked)} /></td><td><strong>{metadata.radialPointName || metadata.radialPointId}</strong><small>{metadata.sessionId?.slice(0, 8) || "批次未知"} · {record.id.slice(0, 8)}</small></td><td>{station(metadata.azimuthDeg)} · 第 {metadata.lapIndex ?? "—"} 轮</td><td>{record.samples.toLocaleString()}<small>{number(record.sampleRate)} Hz</small></td><td>{labels[metadata.completion || ""] || "边界待校验"}</td></tr>;
         })}</tbody></table></div></details>
         {task.records.length > BLADE_PASS_RECORD_LIMIT && <p className="blade-pass-note">一次最多分析 64 条记录；可在批次与点位中调整选择。</p>}

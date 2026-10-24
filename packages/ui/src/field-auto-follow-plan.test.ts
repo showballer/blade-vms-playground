@@ -31,7 +31,7 @@ assert.ok(model.points[3].axis2AngleDeg > 0);
 assert.equal(model.pointCycle?.mode, "automatic_stations");
 assert.equal(model.pointCycle?.startAtCurrentPose, true);
 assert.equal(model.pointCycle?.rssiTriggerEnabled, true);
-assert.equal(model.pointCycle?.keepLaserOnBetweenPoints, true);
+assert.equal(model.pointCycle?.motionLaserPolicy, "continuous");
 assert.equal(model.pointCycle?.dwellSeconds, 60);
 assert.equal(model.pointCycle?.speedRpm, model.speedRpm);
 assert.equal(model.pointCycle?.followErrorLimitDeg, .75);
@@ -117,7 +117,7 @@ for (const mode of ["unknown", "sequential", "dual_axis_timed"] as const) {
   assert.equal(manual.pointCycle!.dwellSeconds, manualBladeRotationWaitSeconds);
   assert.equal(manual.pointCycle!.cycles, 2); assert.equal(manual.totalRecords, 8);
   assert.equal(manual.pointCycle!.speedRpm, .6); assert.equal(manual.pointCycle!.maxMoveRpm, .6);
-  assert.equal(manual.pointCycle!.rssiTriggerEnabled, true); assert.equal(manual.pointCycle!.keepLaserOnBetweenPoints, true);
+  assert.equal(manual.pointCycle!.rssiTriggerEnabled, true); assert.equal(manual.pointCycle!.motionLaserPolicy, "continuous");
   assert.deepEqual(manual.points, model.points, "Manual blade movement does not alter pointing geometry or reference signatures");
   for (const [configured, expected] of [[10, 10], [1, 1], [.6, .6], [.51, .5], [.231, .22], [.02, .02]]) {
     const capped = planAutoFollow({ ...draft(), periodSeconds: 0, maxMoveRpm: configured }, anchor, mode);
@@ -283,3 +283,14 @@ assert.equal(nativePlan.speedRpm, 5, "Native stopped point hops use the configur
 assert.equal(nativePlan.plannedMoveSeconds, nativePlan.maxTravelLowerBoundSeconds);
 assert.equal(nativePlan.pointCycle!.speedRpm, 5);
 assert.deepEqual(nativePlan.points, withZero.points);
+
+assert.equal(planAutoFollow(draft(), anchor).pointCycle!.diagnosticDetectBeforeSettled, false);
+assert.equal(planAutoFollow({ ...draft(), diagnosticDetectBeforeSettled: true }, anchor).pointCycle!.diagnosticDetectBeforeSettled, true);
+for (const diagnosticAngleWindowDeg of [0,.5,1,2,3,5,10]) {
+  const plan=planAutoFollow({...draft(),diagnosticDetectBeforeSettled:true,diagnosticAngleWindowDeg},anchor);
+  assert.deepEqual(plan.errors,[]);
+  assert.equal(plan.pointCycle!.diagnosticAngleWindowDeg,diagnosticAngleWindowDeg);
+}
+for (const diagnosticAngleWindowDeg of [-1,11,NaN,Infinity]) {
+  assert.ok(planAutoFollow({...draft(),diagnosticAngleWindowDeg},anchor).errors.some(v=>v.includes('判定角度范围')));
+}

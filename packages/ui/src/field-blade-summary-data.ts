@@ -1,6 +1,6 @@
 import { fieldDate, type FieldAutomaticRecord, type FieldPlannedStation, type FieldRecording, type FieldSyncItem } from "./field-types";
 
-export type BladeStationState = "observed" | "missing_entry" | "missing_exit" | "signal_gap" | "cancelled" | "failed" | "incomplete" | "unrecorded";
+export type BladeStationState = "observed" | "unconfirmed_pass" | "missing_entry" | "missing_exit" | "signal_gap" | "cancelled" | "failed" | "incomplete" | "unrecorded";
 export type BladeStationSummary = {
   id: string; index: number; azimuthDeg: number | null; planned: boolean;
   state: BladeStationState; records: FieldRecording[]; samples: number;
@@ -102,6 +102,7 @@ function state(record: FieldRecording): BladeStationState {
   if (record.status === "error" || record.error || completion === "device_error") return "failed";
   if (record.status !== "complete") return "incomplete";
   // A saved file or an RSSI value alone does not prove a confirmed passage.
+  if (completion === "unconfirmed_pass") return "unconfirmed_pass";
   if (completion === "confirmed_pass" && sampleCount(record.samples) > 0 && realRecord(record)) return "observed";
   return "incomplete";
 }
@@ -200,7 +201,7 @@ export function summarizeBladeRecords(recordings: readonly FieldRecording[], syn
       if (station.state === "observed") group.observedCount++;
       if (["missing_entry", "missing_exit", "signal_gap"].includes(station.state)) group.gapCount++;
       if (station.state === "failed") group.failedCount++;
-      if (["incomplete", "cancelled"].includes(station.state)) group.incompleteCount++;
+      if (["incomplete", "cancelled", "unconfirmed_pass"].includes(station.state)) group.incompleteCount++;
       if (station.state === "unrecorded") group.pendingCount++;
       for (const record of station.records) {
         const item = sync.get(record.id);
@@ -281,4 +282,4 @@ export function getAutoCaptureTargetState(recordings: readonly FieldRecording[],
   return "complete";
 }
 
-export const bladeStationLabel = (value: BladeStationState) => ({ observed: "已观测回波通过", missing_entry: "未确认进入", missing_exit: "未确认离开", signal_gap: "信号中断", cancelled: "已取消", failed: "采集失败", incomplete: "记录未完成", unrecorded: "未收到记录" })[value];
+export const bladeStationLabel = (value: BladeStationState) => ({ unconfirmed_pass: "完整性待确认", observed: "已观测回波通过", missing_entry: "未确认进入", missing_exit: "未确认离开", signal_gap: "信号中断", cancelled: "已取消", failed: "采集失败", incomplete: "记录未完成", unrecorded: "未收到记录" })[value];

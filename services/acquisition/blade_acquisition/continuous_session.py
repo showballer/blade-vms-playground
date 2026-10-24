@@ -2,8 +2,10 @@
 
 All original batches reach the full-session archive. A controller admits a new
 station only after motion/arrival validation and an SDK cache fence. Closing the
-gate and dispatching motion share the controller lock, so transit data cannot
-trigger another move even if it is delivered late.
+gate and dispatching motion share the controller lock. Data received while the
+gate is closed, or indexed before the SDK fence, cannot trigger another move.
+The SDK exposes no acquisition timestamp for packets still in transit on the
+network; a receive-side fence alone cannot prove those late samples are fresh.
 """
 from __future__ import annotations
 
@@ -34,10 +36,16 @@ class ContinuousCaptureSession:
         self._started = False
         self._next_global = 0
         self._stride: int | None = None
+        self.diagnostic_observer = None
         self._callback: Callable[[Batch, int], None] | None = None
         self._fence = 0
         self._station_first: int | None = None
         self._station_next = 0
+
+    @property
+    def gate_is_open(self) -> bool:
+        with self.lock:
+            return self._callback is not None
 
     @property
     def global_samples(self) -> int:
@@ -137,6 +145,8 @@ class ContinuousCaptureSession:
             self._next_global += count
             if count:
                 self._stride = stride
+            if self.diagnostic_observer is not None and not self.stop.is_set() and not self.abort.is_set():
+                self.diagnostic_observer(batch)
             callback = self._callback
             if (callback is None or not count or self.stop.is_set() or self.abort.is_set()):
                 return
@@ -179,6 +189,7 @@ class ContinuousCaptureSession:
         """Stop admission before SDK shutdown; retain ownership on timeout."""
         with self.lock:
             self.ungate()
+            self.diagnostic_observer = None
             self.stop.set()
             started = self._started
         if not started:

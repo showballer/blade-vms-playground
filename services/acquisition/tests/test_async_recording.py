@@ -193,13 +193,65 @@ class AsyncRecordingTests(unittest.TestCase):
             with controller_lock:
                 wrapped.ready(1000.0, 1234.5)
                 self.assertTrue(initialized.wait(1))
-                # Worker is waiting to publish under controller_lock. Submit
-                # must still be able to acquire its internal lock here.
+                # Progress publication is deferred under controller_lock.
+                # Submission must still acquire its internal lock here.
                 wrapped.write(batch())
                 self.assertEqual(wrapped.accepted_samples, 4)
                 self.assertEqual(wrapped.manifest["samples"], 0)
             result = wrapped.finish(timeout=2)
         self.assertEqual(result["samples"], 4)
+        self.assertEqual(result["status"], "complete")
+
+    def test_controller_lock_does_not_stall_disk_drain(self):
+        controller_lock = threading.RLock()
+        wrapped, raw = self.writer(publication_lock=controller_lock, max_batches=2)
+        written = threading.Event()
+        original_write = raw.write
+
+        def write(value):
+            original_write(value)
+            written.set()
+
+        with patch.object(raw, "write", side_effect=write):
+            with controller_lock:
+                wrapped.ready(1000.0, 1234.5)
+                # More than the bounded queue capacity must reach disk even
+                # when the controller cannot accept progress publication.
+                for start in range(0, 160, 4):
+                    written.clear()
+                    wrapped.write(batch(start))
+                    self.assertTrue(written.wait(1), "disk drain blocked by status publication")
+                self.assertEqual(wrapped.manifest["samples"], 0)
+                wrapped.finish(wait=False)
+            result = wrapped.wait(2)
+        self.assertEqual(result["samples"], 160)
+        self.assertEqual(result["status"], "complete")
+        stored = json.loads((raw.directory / "manifest.json").read_text())
+        self.assertEqual(stored["samples"], 160)
+        self.assertGreater(stored["writerDiagnostics"]["publicationDeferrals"], 0)
+
+    def test_final_publication_is_not_skipped_when_controller_is_busy(self):
+        controller_lock = threading.RLock()
+        wrapped, raw = self.writer(publication_lock=controller_lock)
+        saved = threading.Event()
+        original_finish = raw.finish
+
+        def finish(error):
+            original_finish(error)
+            saved.set()
+
+        with patch.object(raw, "finish", side_effect=finish):
+            with controller_lock:
+                wrapped.ready(1000.0, 1234.5)
+                wrapped.write(batch())
+                wrapped.finish(wait=False)
+                self.assertTrue(saved.wait(1))
+                self.assertTrue(wrapped.pending)
+                self.assertEqual(wrapped.manifest["status"], "incomplete")
+            result = wrapped.wait(2)
+        self.assertFalse(wrapped.pending)
+        self.assertEqual(result["samples"], 4)
+        self.assertEqual(result["writerDiagnostics"]["writtenSamples"], 4)
         self.assertEqual(result["status"], "complete")
 
     def test_error_callback_does_not_hold_writer_lock_while_waiting_for_controller(self):

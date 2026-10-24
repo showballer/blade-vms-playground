@@ -137,6 +137,22 @@ class WebRotationTest(unittest.TestCase):
                 self.assertEqual(second["sourceSampleOrigin"], original["sampleOrigin"])
                 self.assertEqual(second["sourceStartedAt"], original["startedAt"])
 
+    def test_advisory_quality_survives_csv_import_without_becoming_complete(self):
+        from blade_acquisition.blade_passes import _range
+        _, text = self.station_export()
+        first, rows = text.split("\n", 1)
+        metadata = json.loads(first[len("# BladeVMS "):])
+        metadata["pointCycle"].update(completion="unconfirmed_pass", passCompleteness="unconfirmed",
+                                      completenessReason="missing_initial_background")
+        text = "# BladeVMS " + json.dumps(metadata) + "\n" + rows
+        imported = dispatch(self.root, {"action": "import", "filename": "advisory.csv",
+                           "bytes": base64.b64encode(text.encode()).decode()})["recordings"][0]
+        self.assertEqual(imported["pointCycle"], metadata["pointCycle"])
+        self.assertIsNone(_range(imported["pointCycle"], imported["samples"])[0])
+        store = RecordingStore(self.root / "recordings")
+        again = "".join(stream_csv(*prepare_export(store, imported["id"])))
+        self.assertEqual(json.loads(again.splitlines()[0][len("# BladeVMS "):])["pointCycle"], metadata["pointCycle"])
+
     def test_invalid_or_shifted_station_metadata_never_falls_back_to_continuous_import(self):
         _, text = self.station_export()
         first, body = text.split("\n", 1)

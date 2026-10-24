@@ -8,11 +8,13 @@ import copy
 import json
 import math
 import secrets
+import time
 
 from .turntable import TurntableConfig, require_position_ready
 from .turntable_driver import MotorError
 from .turntable_driver.point_bank import CAPACITY, SLOTS, normalize_points
 from .turntable_driver.protocol import OUTPUT_POSITION_TOLERANCE_DEG as TOLERANCE
+from .turntable_driver.timing import trace_event
 
 
 class PreloadedPointsCache:
@@ -65,6 +67,7 @@ class PreloadedPointsCache:
                                          tolerance_deg=TOLERANCE, token=token, cancel=cancel)
             record = dict(record, key=key, port=port, origin=origin)
         self.records.pop(key, None)
+        record['identity'] = copy.deepcopy(identity)
         self.records[key] = copy.deepcopy(record)
         if cancel.is_set():
             raise MotorError("预存已取消，未执行点位移动")
@@ -116,4 +119,58 @@ def completion_snapshots(initial, positions, queried_at, received_at):
                      outputRpm=selected.motor_rpm / 50, positionRaw=selected.actual_counts,
                      alarmCode=selected.alarm_code, queryStartedAt=queried_at, observedAt=received_at,
                      positionSource="0x37", controllerCompletionConfirmed=True)
+    return result
+
+
+def stopped_bank_snapshots(motor, initial, *, interrupted=None):
+    """Two read requests for a stationary, owned, sealed-bank session.
+
+    0x44 verifies the live bank token/parameters: firmware invalidates its banks
+    on reference, unit, guard or homing changes. 0x37 supplies fresh independent
+    drive positions, speeds and alarms. RUN still performs the MCU's preflight.
+    Old adapters/unknown ownership use the existing full-read path. A rejected
+    bank or bad feedback is an error, never a reason to fall back and move.
+    """
+    record = getattr(motor, '_blade_preloaded_route', None)
+    if (not record or 'identity' not in record or initial is None or len(initial) != 2 or
+            not callable(getattr(motor, 'get_preloaded_route', None)) or
+            not callable(getattr(motor, 'get_axis_positions', None))):
+        return None
+    for value in initial:
+        for axis in (1, 2):
+            baseline = value.get('axes', {}).get(str(axis), {})
+            if any(baseline.get(key) != expected for key, expected in record['identity'][str(axis)].items()):
+                raise MotorError('预存点位参考或保护信息不匹配，未发送运动')
+    if interrupted is not None and interrupted():
+        return None
+    status = motor.get_preloaded_route(record['route_id'])
+    if not status['ready'] or any(status[key] != record[key] for key in
+                                  ('token', 'speed_rpm', 'tolerance_deg', 'count', 'loaded')):
+        raise MotorError('预存点位已失效或被替换，请重新预定位；未发送运动')
+    if interrupted is not None and interrupted():
+        return None
+    queried_at, queried_ns = time.time(), time.monotonic_ns()
+    positions = motor.get_axis_positions(fresh=True)
+    received_at = time.time()
+    elapsed_ms = (time.monotonic_ns() - queried_ns) / 1e6
+    if len(positions) != 2:
+        raise MotorError('两轴实测反馈不完整，未发送运动')
+    for axis, p in enumerate(positions, 1):
+        if (not p.usable or p.source != 0 or p.motor_rpm or p.alarm_code or p.guard_fault or
+                not p.flags & 1 or p.flags & 0x30 or not math.isfinite(p.angle_deg) or p.sample_age_ms < 0):
+            raise MotorError(f'轴{axis}新鲜停稳反馈未确认或存在故障，未发送运动')
+        if p.flags & 7 != initial[0]['axes'][str(axis)]['flags'] & 7:
+            raise MotorError(f'轴{axis}参考或保护状态发生变化，未发送运动')
+    if any(p.sample_age_ms + elapsed_ms > 200 for p in positions):
+        # A scheduler/transport delay is not a drive fault. Do not bless the old
+        # pose: caller falls back to a new full read, with all existing guards.
+        trace_event('bank_feedback_stale', elapsedMs=elapsed_ms,
+                    sampleAgeMs=[p.sample_age_ms for p in positions])
+        return None
+    if interrupted is not None and interrupted():
+        return None
+    result = completion_snapshots(initial, positions, queried_at, received_at)
+    for value in result:
+        value['controllerCompletionConfirmed'] = all(p.flags & 0x40 for p in positions)
+        value['preflightProtocol'] = '0x44+0x37'
     return result

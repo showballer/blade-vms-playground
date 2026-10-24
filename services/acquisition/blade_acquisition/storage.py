@@ -14,11 +14,37 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from .receiver import Batch
 
 MAGIC = b"BLADEV01"
 HEADER = struct.Struct("<8sddQ")  # magic, sample rate, epoch origin, first sample index
 RECORD = struct.Struct("<QidifB")  # index, raw velocity, m/s, raw RSSI, RSSI %, flags
+# Unaligned little-endian layout: byte-compatible with every existing BLADEV01 reader.
+RECORD_DTYPE = np.dtype([("index", "<u8"), ("velocityRaw", "<i4"), ("velocity", "<f8"),
+                         ("rssiRaw", "<i4"), ("rssi", "<f4"), ("flags", "u1")])
+assert RECORD_DTYPE.itemsize == RECORD.size
+
+
+def pack_records(batch: Batch) -> tuple[np.ndarray, int, int]:
+    """Bulk conversion avoids a Python pack_into call for every 250 kHz sample."""
+    count, stride = len(batch.values), batch.rssi_sample_stride
+    data = np.zeros(count, dtype=RECORD_DTYPE)
+    data["index"] = np.arange(batch.sample_start, batch.sample_start + count, dtype=np.uint64)
+    data["velocityRaw"] = batch.velocity_raw
+    data["velocity"] = batch.values
+    data["flags"] = batch.overrange
+    expected = (count + stride - 1) // stride
+    paired = min(expected, len(batch.rssi))
+    if paired:
+        positions = slice(0, paired * stride, stride)
+        data["rssiRaw"][positions] = batch.rssi_raw[:paired]
+        data["rssi"][positions] = batch.rssi[:paired]
+        data["flags"][positions] |= 2
+    return data, count - paired, count - expected
+
+
 ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 CHUNK_PATTERN = re.compile(r"^chunk-[0-9]{8}\.bin(?:\.part)?$")
 DISPLAY_LIMIT = 2048
@@ -31,7 +57,7 @@ RECORDING_LIST_FIELDS = (
 POINT_LIST_FIELDS = (
     "mode", "collectionId", "sessionId", "bladeId", "radialPointId", "radialPointName",
     "radiusM", "azimuthDeg", "stationIndex", "stationCount", "lapIndex", "identitySource",
-    "identityVerified", "coverageKind", "completion", "plannedStations", "nominalPeriodSeconds",
+    "identityVerified", "coverageKind", "completion", "passCompleteness", "completenessReason", "plannedStations", "nominalPeriodSeconds",
     "cycle", "pointIndex", "pointId", "pointName", "cycles", "dwellSeconds",
     "targetAxis1AngleDeg", "targetAxis2AngleDeg", "actualAngles",
 )
@@ -259,14 +285,29 @@ class RecordingWriter:
         self.stream = None
         self.chunk_samples = 0
         self.last_commit = 0.0
+        self._storage_diagnostics = {}
         self.persist()
 
+    def _timing(self, key: str, started: float) -> None:
+        diagnostics = self._storage_diagnostics
+        diagnostics[key] = max(diagnostics.get(key, 0.0), (time.monotonic() - started) * 1000)
+
     def persist(self) -> None:
+        started = time.monotonic()
         if self.stream:
             self.stream.flush()
             os.fsync(self.stream.fileno())
+        self._timing("maxFlushMs", started)
+        started = time.monotonic()
+        # Snapshot timings once for both the authoritative manifest and index.
+        # This commit's own JSON/index timings are included in the next commit;
+        # never mutate a published manifest after saving it.
+        self.manifest["storageDiagnostics"] = dict(self._storage_diagnostics)
         atomic_json(self.directory / "manifest.json", self.manifest)
+        self._timing("maxManifestMs", started)
+        started = time.monotonic()
         self.store.update_index(self.manifest)
+        self._timing("maxIndexMs", started)
         self.last_commit = time.monotonic()
 
     def ready(self, sample_rate: float, origin: float) -> None:
@@ -306,20 +347,14 @@ class RecordingWriter:
             self.stream.write(HEADER.pack(MAGIC, batch.sample_rate, batch.started_at, batch.sample_start))
             self.manifest["chunks"] += 1
             self.chunk_samples = 0
-        data = bytearray(count * RECORD.size)
-        missing = not_sampled = 0
-        for index, value in enumerate(batch.values):
-            rssi_index = index // stride
-            has_rssi = index % stride == 0 and rssi_index < len(batch.rssi)
-            not_sampled += index % stride != 0
-            missing += not has_rssi
-            RECORD.pack_into(data, index * RECORD.size, batch.sample_start + index, batch.velocity_raw[index], value,
-                             batch.rssi_raw[rssi_index] if has_rssi else 0,
-                             batch.rssi[rssi_index] if has_rssi else 0.0,
-                             int(batch.overrange[index]) | (2 if has_rssi else 0))
+        packing_started = time.monotonic()
+        data, missing, not_sampled = pack_records(batch)
+        self._timing("maxPackingMs", packing_started)
         # The raw batch reaches the file before any display buffer is updated.
-        written = self.stream.write(data)
-        if written != len(data):
+        write_started = time.monotonic()
+        written = self.stream.write(memoryview(data).cast("B"))
+        self._timing("maxFileWriteMs", write_started)
+        if written != data.nbytes:
             raise OSError("原始数据写入不完整；采集已停止。")
         paired_rssi = (count + stride - 1) // stride
         if len(batch.rssi_raw) > paired_rssi:
