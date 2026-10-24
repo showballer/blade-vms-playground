@@ -265,23 +265,29 @@ class RecordingStore:
         return RecordingWriter(self, metadata)
 
 
+def recording_manifest(metadata: dict, *, recording_id=None, started_at=None) -> dict:
+    """Initialize record identity/accounting without filesystem I/O."""
+    return {
+        **metadata, "id": recording_id or uuid.uuid4().hex, "samples": 0, "sampleRate": None, "startedAt": time.time() if started_at is None else started_at,
+        "sampleOrigin": None, "endedAt": None, "status": "incomplete", "error": None,
+        "unit": "m/s", "rssiUnit": "%", "channels": ["CH1", "RSSI1"], "chunks": 0,
+        "format": "BLADEV01/<QidifB", "overrangeSamples": 0, "missingRssiSamples": 0, "unpairedRssiSamples": 0,
+        "dataLossAssessment": "not_applicable_simulation" if metadata.get("source") == "simulation" else "unverified",
+        "timestampBasis": ("host epoch at simulation start + continuous sample index / source workbook sample rate"
+                           if metadata.get("source") == "simulation" else "host epoch at DAQ start + velocity sample index / SDK velocity sample rate"),
+    }
+
+
 class RecordingWriter:
     CHUNK_SAMPLES = 262_144
 
-    def __init__(self, store: RecordingStore, metadata: dict):
+    def __init__(self, store: RecordingStore, metadata: dict, *, recording_id=None, started_at=None):
         self.store = store
-        self.id = uuid.uuid4().hex
+        manifest = recording_manifest(metadata, recording_id=recording_id, started_at=started_at)
+        self.id = manifest["id"]
         self.directory = store.directory(self.id)
         self.directory.mkdir()
-        self.manifest: dict[str, Any] = {
-            **metadata, "id": self.id, "samples": 0, "sampleRate": None, "startedAt": time.time(),
-            "sampleOrigin": None, "endedAt": None, "status": "incomplete", "error": None,
-            "unit": "m/s", "rssiUnit": "%", "channels": ["CH1", "RSSI1"], "chunks": 0,
-            "format": "BLADEV01/<QidifB", "overrangeSamples": 0, "missingRssiSamples": 0, "unpairedRssiSamples": 0,
-            "dataLossAssessment": "not_applicable_simulation" if metadata.get("source") == "simulation" else "unverified",
-            "timestampBasis": ("host epoch at simulation start + continuous sample index / source workbook sample rate"
-                               if metadata.get("source") == "simulation" else "host epoch at DAQ start + velocity sample index / SDK velocity sample rate"),
-        }
+        self.manifest = manifest
         self.stream = None
         self.chunk_samples = 0
         self.last_commit = 0.0

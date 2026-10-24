@@ -13,6 +13,7 @@ const labels: Record<string, string> = {
   partial_pass_ignored: "未见起始背景 · 忽略本段回波",
   pass_baseline_mismatch: "回波基线变化 · 舍弃本段并重新等待",
   confirming_exit: "正在确认叶片离开", blade_left: "已确认离开 · 准备换点",
+  early_handoff_ready: "已收到提前经过 · 直接换点", finalizing_records: "整理并保存本轮记录",
   motion_stopped_before_laser_on: "两轴已停稳，准备开激光", laser_on: "开启激光", laser_on_confirmed: "激光已开启", laser_off: "关闭激光", laser_off_confirmed: "激光已关闭", moving: "正在移动到点位", arrived: "已到位", capturing: "定时采集中",
   saving: "保存当前点记录", record_saved: "当前点记录已保存", returning: "返回循环起点", returning_origin: "返回作业原点", origin_arrived: "已回到作业原点",
   complete: "循环完成", cancelled: "已停止", error: "流程异常", signal_reset: "信号中断 · 重新等待叶片",

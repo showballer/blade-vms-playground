@@ -25,6 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, 
 
 from .receiver import Batch, PolytecReceiver, ReceiverConfig
 from .async_recording import AsyncRecordingWriter
+from .deferred_diagnostic import DeferredDiagnosticRecord
 from .continuous_session import ContinuousCaptureSession
 from .rssi_handoff import RssiHandoff
 from .serial_ports import TurntableEndpoint, list_turntable_ports
@@ -2638,6 +2639,8 @@ class AcquisitionController:
             if writer.pending:
                 writer.finish(error or self.cycle_io_error, wait=False)
         writers = self.cycle_writers + ([session.raw_writer] if session is not None else [])
+        if any(isinstance(w, DeferredDiagnosticRecord) and w.pending for w in self.cycle_writers):
+            self._cycle_process('finalizing_records')
         # No controller lock across disk joins, including late error callbacks.
         for writer in writers:
             try:
@@ -2653,6 +2656,94 @@ class AcquisitionController:
             self.point_cycle["completedRecords"] = sum(w.manifest.get("status") == "complete" for w in self.cycle_writers)
         if errors:
             raise RuntimeError("; ".join(dict.fromkeys(errors)))
+
+    def _capture_early_handoff(self, request, point, next_point, early, metadata, *,
+                               before_capture, on_handoff, initial_snapshots):
+        """Consume one remembered pass without preparing a new stationary DAQ window.
+
+        The same motion owner has already completed this point's stop check.
+        Metadata is bookmarked in the continuous archive; point files are copied
+        from that archive during final cleanup, never on the motion critical path.
+        """
+        session = self.continuous_capture
+        session.check()
+        # Reuse fresh stopped observations, or perform the normal fresh check if
+        # they expired. A remembered optical event cannot override motion faults.
+        verified = before_capture() if before_capture is not None else None
+        with self.lock:
+            session.check()
+            if self.stop_event.is_set() or session.done.is_set():
+                raise RuntimeError(self.cycle_io_error or '连续采集已停止，未消费提前触发')
+            if early.stop_confirmed_at is None or early.detector.status['signalGapCount']:
+                raise RuntimeError('提前经过缺少停止确认或存在信号中断，未换点')
+            observed = self.laser_observation or {}
+            if observed.get('deviceIp') == request.deviceIp and (
+                    observed.get('state') == 'off' or observed.get('error')):
+                raise RuntimeError('激光状态未确认，不能将提前经过用于换点')
+            evidence = early.evidence()
+            trigger = copy.deepcopy(evidence['trigger'])
+            if trigger is None:
+                raise RuntimeError('提前经过已失效，未换点')
+            stride = session.raw_writer.manifest.get('rssiSampleStride', 1)
+            start = trigger['entrySampleIndex'] // stride * stride
+            end = trigger['exitConfirmedSampleIndex'] + 1
+            if not 0 <= start < end <= session.global_samples:
+                raise RuntimeError('提前经过原始样本边界无效，未换点')
+            session.ungate()
+            session.diagnostic_observer = None
+            self.early_detection = self.rssi_handoff = None
+            self.rssi_event.clear()
+            trigger.update(observedAt=time.time(), detectorGatedAt=time.time(), stationarySamples=0,
+                           nextPoint=next_point.name if next_point else None,
+                           receiverContinuous=True, receiverSessionReused=True,
+                           recordPreparationDeferred=True,
+                           boundary='continuous raw diagnostic window bookmarked before motion command')
+            pc = metadata['pointCycle']
+            pc.update(completion='diagnostic_pass', outcome='diagnostic', handoff=trigger,
+                      diagnosticDetection=evidence, recordPreparation='deferred_from_continuous_raw',
+                      continuousSession={'id': session.raw_writer.id,
+                          'directory': f'continuous-sessions/{session.raw_writer.id}',
+                          'sampleClock': 'continuous_session_raw', 'sampleRate': session.rate,
+                          'sampleStart': start, 'sampleEndExclusive': end})
+            for key in ('deviceSettings', 'velocityRangeMps', 'acquisition'):
+                if key in session.raw_writer.manifest:
+                    metadata[key] = copy.deepcopy(session.raw_writer.manifest[key])
+            if verified is not None:
+                angles = {str(axis): verified['axes'][str(axis)]['output_angle_deg'] for axis in (1, 2)}
+                pc['actualAngles'] = angles
+                metadata['turntable']['actualAngles'] = angles
+            record = DeferredDiagnosticRecord(self.store, metadata, session.raw_writer, start, end)
+            self.cycle_writers.append(record)
+            self.writer = record
+            self.rows.clear()
+            self.state = 'acquiring'
+            self.point_cycle.update(rssiPhase=None, latestRssi=None, nextPoint=trigger['nextPoint'])
+            self._cycle_process('early_handoff_ready', point=point.name,
+                                detectedAt=trigger.get('detectedAt'), stoppedAt=early.stop_confirmed_at,
+                                recordPreparationDeferred=True)
+            bookmarks = session.raw_writer.manifest.setdefault('diagnosticBookmarks', {})
+            bookmarks[record.id] = copy.deepcopy(record.manifest)
+            self._continuous_phase('diagnostic_bookmark', recordingId=record.id, point=point.name,
+                                   sampleStart=start, sampleEndExclusive=end)
+        failure = None
+        try:
+            if on_handoff is not None:
+                on_handoff(trigger, initial_snapshots=initial_snapshots)
+            return record
+        except Exception as exc:
+            failure = str(exc)
+            raise
+        finally:
+            # Do not clear the next point's observer created by on_handoff.
+            with self.lock:
+                record.manifest['pointCycle']['handoff'].update(trigger)
+                if failure:
+                    record.manifest['error'] = failure
+                bookmarks[record.id] = copy.deepcopy(record.manifest)
+                record.finish(failure, wait=False)
+                # Queue persistence only; no fsync or station file on this path.
+                if not self.cycle_io_error:
+                    session.raw_writer.persist()
 
     def _capture_cycle_point(self, request: StartRequest, cycle: PointCycleConfig,
                              point: PointCyclePoint, cycle_index: int, point_index: int,
@@ -2717,6 +2808,12 @@ class AcquisitionController:
         if early is not None:
             metadata.update(diagnosticOnly=True, validMeasurement=False, name=str(metadata.get("name", "")) + " [未停稳判定测试]")
             metadata["pointCycle"]["diagnosticDetection"] = early.evidence()
+            with self.lock:
+                triggered = early.detector.trigger is not None
+            if triggered:
+                return self._capture_early_handoff(request, point, next_point, early, metadata,
+                    before_capture=before_capture, on_handoff=on_handoff,
+                    initial_snapshots=initial_snapshots)
         writer = self.store.create(metadata)
         if session is not None:
             writer = AsyncRecordingWriter(writer, on_error=self._cycle_io_failed, publication_lock=self.lock)
@@ -3216,7 +3313,7 @@ class AcquisitionController:
                 self.stop_event.set()
             if current_writer and current_writer.manifest.get("status") == "incomplete":
                 try:
-                    if isinstance(current_writer, AsyncRecordingWriter):
+                    if isinstance(current_writer, (AsyncRecordingWriter, DeferredDiagnosticRecord)):
                         current_writer.finish((failures[-1] if failures else "循环采集已停止"), wait=False)
                     else:
                         current_writer.finish((failures[-1] if failures else "循环采集已停止"))

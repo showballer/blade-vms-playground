@@ -61,7 +61,9 @@ class ContinuousCycleTests(unittest.TestCase):
         self.fail('fixture condition did not complete before deadline')
 
     def run_cycle(self, filename, *, fail_move=False, fail_next_fence=False,
-                  cancel_at_second=False, late_disk_error=False, dark_motion=False, early_detection=False, live_fences=False):
+                  cancel_at_second=False, late_disk_error=False, dark_motion=False, early_detection=False,
+                  live_fences=False, azimuths=(0, 90), early_pose_fault=False, cancel_early=False,
+                  fail_early_copy=False):
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         root = Path(folder.name)
@@ -129,13 +131,11 @@ class ContinuousCycleTests(unittest.TestCase):
                 if not wait_gate(1):
                     return
                 sdk.feed(full_pass())
-                if fail_move or fail_next_fence:
+                if fail_move or fail_next_fence or early_detection:
+                    # An early pass is supplied only DURING movement below.
+                    # No new gate/quiet packet is provided to unblock recording.
                     return
                 if not wait_gate(2):
-                    return
-                if early_detection:
-                    # No second blade: only a quiet batch to open the stationary record.
-                    sdk.feed([260] * 50)
                     return
                 # A transit pass and already queued data must not complete P2.
                 time.sleep(.03)
@@ -162,6 +162,10 @@ class ContinuousCycleTests(unittest.TestCase):
 
         def move(device, **kwargs):
             self.assertTrue(sdk.active, 'point handoff must not stop DAQ')
+            if early_detection and moves:
+                self.assertFalse(controller.writer.directory.exists(),
+                                 'deferred station creation must not block the next command')
+                self.assertEqual(len(list((root/'recordings').glob('*/manifest.json'))), 1)
             if dark_motion:
                 self.assertEqual(controller.laser_observation['state'], 'off')
                 self.assertFalse(controller.continuous_capture.gate_is_open)
@@ -188,7 +192,8 @@ class ContinuousCycleTests(unittest.TestCase):
                 self.assertTrue(probe.active)
                 self.assertIsNotNone(probe.detector.trigger, 'diagnostic mode must admit the far transit pass')
                 self.assertTrue(probe.detector.trigger['detectedBeforeStoppedArrival'])
-                self.assertEqual(len(moves), 1, 'observer must not command overlapping movement')
+                self.assertEqual(controller.point_cycle['currentPoint'],
+                                 controller.early_detection.point.name)
                 self.assertEqual(len(gates), 1)
             if fail_move:
                 raise RuntimeError('fixture native movement rejected')
@@ -211,14 +216,32 @@ class ContinuousCycleTests(unittest.TestCase):
                 raise OSError('fixture late station fsync failure')
             return original_finish(writer, error)
 
+        original_pose = controller._cycle_capture_pose
+        def capture_pose(device, cycle, point, **kwargs):
+            if moves and early_detection:
+                self.assertIsNotNone(controller.early_detection.detector.trigger)
+                if early_pose_fault:
+                    raise RuntimeError('fixture stopped reference changed')
+                if cancel_early:
+                    controller.stop_event.set()
+            return original_pose(device, cycle, point, **kwargs)
+
+        from blade_acquisition.deferred_diagnostic import copy_raw_window
+        def copy_window(*args):
+            if fail_early_copy:
+                raise OSError('fixture deferred copy disk failure')
+            return copy_raw_window(*args)
+
         feeder = threading.Thread(target=feed)
         with patch.object(ContinuousCaptureSession, 'gate', gate), \
              patch('blade_acquisition.service.DevicePanel', FakeLaserPanel), \
+             patch.object(controller, '_cycle_capture_pose', side_effect=capture_pose), \
+             patch('blade_acquisition.deferred_diagnostic.copy_raw_window', side_effect=copy_window), \
              patch.object(RecordingWriter, 'finish', finish), \
              patch('blade_acquisition.drive_position.execute_drive_position', side_effect=move):
             feeder.start()
             controller.start(StartRequest(**START, confirmMotion=True, pointCycle=automatic_config(
-                azimuths=(0, 90), routeOrder='configured', dwellSeconds=2, rssiExitSpread=4,
+                azimuths=azimuths, routeOrder='configured', dwellSeconds=2, rssiExitSpread=4,
                 motionLaserPolicy='off_during_motion' if dark_motion else 'continuous',
                 diagnosticDetectBeforeSettled=early_detection)))
             controller.thread.join(8)
@@ -227,7 +250,7 @@ class ContinuousCycleTests(unittest.TestCase):
             self.assertFalse(feeder.is_alive())
         self.assertEqual(feeder_errors, [])
         if live_fences:
-            self.assertGreaterEqual(len(fence_checks), 4, 'must exercise startup and moving-point fences')
+            self.assertGreaterEqual(len(fence_checks), 3, 'must exercise startup and moving-point fences')
         records = sorted((root / 'recordings').glob('*/manifest.json'),
                          key=lambda p: json.loads(p.read_text())['pointCycle']['pointIndex'])
         raw = list((root / 'continuous-sessions').glob('*/manifest.json'))
@@ -250,6 +273,68 @@ class ContinuousCycleTests(unittest.TestCase):
                 self.assertTrue(pc['diagnosticDetection']['trigger']['detectedBeforeStoppedArrival'])
                 self.assertLess(pc['handoff']['detectedAt'], pc['diagnosticDetection']['stopConfirmedAt'])
                 self.assertEqual(pc['handoff']['sampleClock'], 'continuous_session_raw')
+                self.assertTrue(pc['handoff']['recordPreparationDeferred'])
+                self.assertEqual(len(gates), 1, 'no new stationary gate for a remembered early pass')
+                self.assertEqual(second['samples'], pc['continuousSession']['sampleEndExclusive'] -
+                                 pc['continuousSession']['sampleStart'])
+                self.assertGreater(second['samples'], 20)
+
+    def test_three_early_stations_handoff_without_new_packet_or_record_setup_on_both_platforms(self):
+        for filename in ('fixture.dll', 'fixture.dylib'):
+            with self.subTest(filename=filename):
+                controller, sdk, paths, raw, gates, moves, _ = self.run_cycle(
+                    filename, early_detection=True, live_fences=True, azimuths=(0, 120, 240))
+                self.assertEqual(controller.status()['pointCycle']['state'], 'complete')
+                self.assertEqual(len(moves), 2)
+                self.assertEqual(len(gates), 1)
+                raw_manifest = json.loads(raw[0].read_text())
+                self.assertEqual(raw_manifest['samples'], sdk.submitted)
+                self.assertEqual(len(raw_manifest['diagnosticBookmarks']), 2)
+                raw_rows = stored_rows(raw[0])
+                records = [json.loads(p.read_text()) for p in paths]
+                third_command = records[1]['pointCycle']['handoff']['motionCommandAt']
+                for manifest, path in zip(records[1:], paths[1:]):
+                    pc = manifest['pointCycle']
+                    self.assertGreater(pc['recordMaterializedAt'], third_command)
+                    self.assertFalse(manifest['validMeasurement'])
+                    self.assertEqual(manifest['status'], 'complete')
+                    link = pc['continuousSession']
+                    actual = stored_rows(path)
+                    expected = raw_rows[link['sampleStart']:link['sampleEndExclusive']]
+                    self.assertEqual([r[1:] for r in actual], [r[1:] for r in expected])
+                    self.assertEqual([r[0] for r in actual], list(range(len(actual))))
+                first_early = records[1]['pointCycle']
+                self.assertLess(first_early['handoff']['detectedAt'],
+                                first_early['diagnosticDetection']['stopConfirmedAt'])
+                self.assertGreaterEqual(third_command, first_early['diagnosticDetection']['stopConfirmedAt'])
+
+    def test_early_pass_never_bypasses_fault_or_cancellation(self):
+        for filename in ('fixture.dll', 'fixture.dylib'):
+            for failure in ('early_pose_fault', 'cancel_early'):
+                with self.subTest(filename=filename, failure=failure):
+                    controller, sdk, paths, raw, gates, moves, _ = self.run_cycle(
+                        filename, early_detection=True, azimuths=(0, 120, 240), **{failure: True})
+                    self.assertIn(controller.status()['pointCycle']['state'], ('error', 'cancelled'))
+                    self.assertEqual(len(moves), 1, 'must not command third point after fault/cancel')
+                    self.assertEqual(len(gates), 1)
+                    manifest = json.loads(raw[0].read_text())
+                    self.assertEqual(manifest['samples'], sdk.submitted)
+                    self.assertEqual(manifest['status'], 'error')
+
+    def test_deferred_copy_error_is_reported_with_raw_and_bookmarks_retained(self):
+        for filename in ('fixture.dll', 'fixture.dylib'):
+            with self.subTest(filename=filename):
+                controller, sdk, paths, raw, gates, moves, _ = self.run_cycle(
+                    filename, early_detection=True, azimuths=(0, 120, 240), fail_early_copy=True)
+                self.assertEqual(controller.status()['pointCycle']['state'], 'error')
+                self.assertIn('deferred copy disk failure', controller.status()['error'])
+                self.assertEqual(len(moves), 2)
+                manifest = json.loads(raw[0].read_text())
+                self.assertEqual(manifest['samples'], sdk.submitted)
+                self.assertEqual(len(manifest['diagnosticBookmarks']), 2)
+                self.assertEqual(controller.status()['pointCycle']['completedRecords'], 1)
+                self.assertEqual([json.loads(p.read_text())['status'] for p in paths],
+                                 ['complete', 'error', 'error'])
 
     def test_live_receiver_can_acknowledge_early_detection_fences_on_both_platforms(self):
         for filename in ('fixture.dll', 'fixture.dylib'):
