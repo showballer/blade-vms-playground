@@ -188,6 +188,13 @@ def imported_record_metadata(metadata: dict, samples: int, sample_rate: float, f
             if not isinstance(metadata[key], str) or len(metadata[key]) > 180:
                 raise ValueError(f"{key} 无效。")
             result[key] = metadata[key]
+    for key in ("diagnosticOnly", "validMeasurement", "sourceDataPreserved"):
+        if key in metadata:
+            if not isinstance(metadata[key], bool):
+                raise ValueError(f"{key} 必须是布尔值。")
+            result[key] = metadata[key]
+    if "originalTaskName" in metadata:
+        result["originalTaskName"] = text(metadata["originalTaskName"], "原任务名称", 180)
     for key in ("sampleOrigin", "sourceSampleOrigin"):
         if key in metadata:
             number(metadata[key], "原采集时间起点")
@@ -199,8 +206,8 @@ def imported_record_metadata(metadata: dict, samples: int, sample_rate: float, f
     for key in ("recordingId", "sourceRecordingId"):
         if key in metadata and (not isinstance(metadata[key], str) or not re.fullmatch(r"[a-f0-9]{32}", metadata[key])):
             raise ValueError("原采集记录编号无效。")
-    if "recordingId" in metadata:
-        result["sourceRecordingId"] = metadata.get("sourceRecordingId", metadata["recordingId"])
+    if "sourceRecordingId" in metadata or "recordingId" in metadata:
+        result["sourceRecordingId"] = metadata.get("sourceRecordingId", metadata.get("recordingId"))
     for key in ("startedAt", "endedAt"):
         source_key = "source" + key[0].upper() + key[1:]
         if key in metadata:
@@ -208,7 +215,7 @@ def imported_record_metadata(metadata: dict, samples: int, sample_rate: float, f
             result[source_key] = metadata[key]
         if source_key in metadata:
             result[source_key] = number(metadata[source_key], "原采集时间")
-    for key in ("turntable", "deviceSettings", "sampling"):
+    for key in ("turntable", "deviceSettings", "sampling", "importSource", "mergedTask"):
         if key in metadata:
             if not isinstance(metadata[key], dict):
                 raise ValueError(f"{key} 元数据必须是对象。")
@@ -261,7 +268,7 @@ def imported_record_metadata(metadata: dict, samples: int, sample_rate: float, f
         if cycle.get("identityVerified", False) is not False:
             raise ValueError("导入记录不能声明未经验证的叶片身份。")
     completion = cycle.get("completion")
-    if completion is not None and completion not in ("confirmed_pass", "unconfirmed_pass", "missing_entry", "missing_exit", "signal_gap", "cancelled", "device_error"):
+    if completion is not None and completion not in ("confirmed_pass", "diagnostic_pass", "unconfirmed_pass", "missing_entry", "missing_exit", "signal_gap", "cancelled", "device_error"):
         raise ValueError("点位完成状态无效。")
     for key in ("entrySampleIndex", "exitSampleIndex"):
         if key in cycle:
@@ -270,17 +277,28 @@ def imported_record_metadata(metadata: dict, samples: int, sample_rate: float, f
     if handoff is not None:
         if not isinstance(handoff, dict):
             raise ValueError("叶片进入离开边界无效。")
+        clock = handoff.get("sampleClock", "recording_local")
+        boundary_max = samples - 1
+        if clock == "continuous_session_raw":
+            from .sample_clock import continuous_sample_window
+            continuous_sample_window(cycle, metadata, samples)
+            # Preserve global gates even when a saved window lacks its head/tail.
+            # Analysis must exclude incomplete passes; clamping or rebasing here
+            # would erase the evidence needed to detect that missing data.
+            boundary_max = 2**53 - 1
+        elif clock not in ("recording_local", "stationary_raw", "recording_raw"):
+            raise ValueError("不支持的叶片边界样本时钟。")
         keys = ("entrySampleIndex", "entryConfirmedSampleIndex", "exitSampleIndex", "exitConfirmedSampleIndex")
         for key in keys:
             if key in handoff:
-                number(handoff[key], f"叶片边界 {key}", 0, samples - 1, integer=True)
+                number(handoff[key], f"叶片边界 {key}", 0, boundary_max, integer=True)
         if all(key in handoff for key in keys):
             a, b, c, d = (handoff[key] for key in keys)
             if not a <= b < c <= d:
                 raise ValueError("叶片进入离开样本边界顺序无效。")
-        elif completion == "confirmed_pass":
+        elif completion in ("confirmed_pass", "diagnostic_pass"):
             raise ValueError("已确认通过的记录缺少完整进入离开边界。")
-    elif completion == "confirmed_pass":
+    elif completion in ("confirmed_pass", "diagnostic_pass"):
         raise ValueError("已确认通过的记录缺少进入离开边界。")
     result["pointCycle"] = json.loads(json.dumps(cycle, allow_nan=False))
     return result
@@ -413,7 +431,10 @@ def import_csv_stream(store: RecordingStore, input_file: Path, filename: str, op
                 decompressed += len(raw)
                 if len(raw) > 64 * 1024 or decompressed > 512 * 1024 * 1024:
                     raise ValueError("CSV 单行超过 64 KB 或解压后超过 512 MB。")
-                yield raw.decode("utf-8-sig")
+                try:
+                    yield raw.decode("utf-8-sig")
+                except UnicodeDecodeError:
+                    yield raw.decode("gb18030")
 
         line_iterator = iter(lines())
         first = next(line_iterator, "")
@@ -422,8 +443,18 @@ def import_csv_stream(store: RecordingStore, input_file: Path, filename: str, op
             if not isinstance(metadata, dict) or metadata.get("format") != "blade-vms-csv-1":
                 raise ValueError("不支持的 BladeVMS CSV 导出格式。")
             first = next(line_iterator, "")
+        # NR-X100/other vendor header blocks are comments, never executable metadata.
+        # Keep physical units explicit; unknown vendor columns fail with a useful error.
+        header_count=0
+        while first.startswith("#"):
+            header_count+=1
+            if header_count>200: raise ValueError("CSV 注释头块过长")
+            first=next(line_iterator, "")
         reader = csv.reader(itertools.chain([first], line_iterator))
-        headers = [value.strip().lower() for value in next(reader, [])]
+        aliases={"时间(s)":"time_s","时间（s）":"time_s","time(s)":"time_s","time [s]":"time_s","时间[秒]":"time_s",
+                 "速度(m/s)":"velocity_m_s","速度(mm/s)":"velocity_mm_s","velocity(m/s)":"velocity_m_s","velocity(mm/s)":"velocity_mm_s",
+                 "位移(mm)":"displacement_mm","位移(um)":"displacement_um","位移(μm)":"displacement_um"}
+        headers = [aliases.get(value.strip().lower(),value.strip().lower()) for value in next(reader, [])]
         if len(headers) > 64 or len(headers) != len(set(headers)):
             raise ValueError("CSV 列数超过 64 或包含重复列名。")
         time_key = "time_s" if "time_s" in headers else "time" if "time" in headers else None
@@ -652,7 +683,7 @@ def import_file(store: RecordingStore, payload: dict):
 
 def dispatch(root: Path, payload: dict):
     action = payload.get("action")
-    if action not in ("recordings", "import", "rotation", "blade-passes", "capture-validate", "capture-waveform", "capture-import"):
+    if action not in ("recordings", "import", "rotation", "blade-passes", "capture-validate", "capture-waveform", "capture-import", "measurement-analysis", "measurement-waveform", "wind-preview"):
         raise ValueError("不支持的 Web 分析操作。")
     if action.startswith("capture-"):
         from .native_capture import validate_capture, capture_waveform, import_capture
@@ -662,6 +693,17 @@ def dispatch(root: Path, payload: dict):
             return capture_waveform(payload.get("captureDirectory"), payload.get("start", 0), payload.get("end"))
         return import_capture(RecordingStore(root / "recordings"), payload.get("captureDirectory"))
     store = RecordingStore(root / "recordings")
+    if action == "wind-preview":
+        from .wind_import import preview
+        return preview(payload)
+    if action == "measurement-waveform":
+        from .waveform import WaveformReader
+        record_id=payload.get("recordingId")
+        store.directory(record_id) # validate identifier before reading
+        return WaveformReader(store).read(record_id, 0, None)
+    if action == "measurement-analysis":
+        from .measurement_analysis import analyze_measurements
+        return analyze_measurements(store, payload.get("parameters"))
     if action == "recordings":
         return {"recordings": store.list()}
     if action == "import":

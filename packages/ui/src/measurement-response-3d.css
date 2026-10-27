@@ -1,0 +1,79 @@
+.measurement-amplitude-views { margin: 16px 0; align-items: start; }
+.measurement-response-curve { min-width: 0; padding: 14px 0; }
+.measurement-response-curve h3 { font-size: 14px; margin: 0 18px 18px; color: #26364a; }
+.measurement-response-3d {
+  min-width: 0;
+  width: 100%;
+  --response-scene-height: clamp(340px, 38vh, 460px);
+  container: response-3d / inline-size;
+  background: #f7faff;
+  border: 1px solid #e0e8f2;
+  border-radius: 10px;
+  overflow: hidden;
+}
+.measurement-response-3d-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding: 14px 18px;
+  border-bottom: 1px solid #e0e8f2;
+  background: #fff;
+}
+.measurement-response-3d-heading h3 { margin: 0 0 5px; font-size: 14px; color: #26364a; }
+.measurement-response-3d-heading span { font-size: 12px; color: #677b94; }
+.measurement-response-3d-canvas {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: var(--response-scene-height);
+  min-width: 0;
+}
+.measurement-response-3d-projection {
+  position: relative;
+  width: min(100%, calc(var(--response-scene-height) * 1000 / 420));
+  aspect-ratio: 1000 / 420;
+  flex: none;
+}
+.measurement-response-3d-projection svg { position: absolute; inset: 0; display: block; width: 100%; height: 100%; }
+.measurement-response-3d-labels { position: absolute; inset: 0; pointer-events: none; }
+.measurement-response-3d-labels span {
+  position: absolute;
+  transform: translate(-50%, calc(-100% - 9px));
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+  white-space: nowrap;
+  color: #264c75;
+  text-shadow: 0 1px 3px white;
+}
+.measurement-response-3d-labels span.missing { color: #75859c; }
+.measurement-response-3d-axis, .measurement-response-3d-legend {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin: 0 18px 12px;
+  color: #657a95;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.measurement-response-3d-legend { justify-content: flex-start; }
+.measurement-response-3d-legend i { width: 100px; height: 8px; border-radius: 3px; background: linear-gradient(90deg, hsl(220 76% 49%), hsl(115 76% 49%), hsl(10 76% 49%)); }
+.measurement-response-3d-legend small { margin-left: auto; color: #7b8da4; font-size: inherit; }
+.measurement-response-3d-note { margin: 10px 18px 14px; color: #70829a; font-size: 12px; line-height: 1.7; }
+.measurement-response-3d-settings { border-top: 1px solid #e0e8f2; margin: 0; padding: 0 18px; background: #fff; }
+.measurement-response-3d-settings summary { cursor: pointer; padding: 10px 0; font-size: 12px; color: #526c8b; }
+.measurement-response-3d-settings > div { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 18px; padding: 4px 0 14px; }
+.measurement-response-3d-settings label { display: flex; flex-wrap: wrap; justify-content: space-between; min-width: 0; gap: 8px; font-size: 12px; color: #526c8b; }
+.measurement-response-3d-settings input[type="range"] { width: 100%; min-width: 0; accent-color: #306bc4; }
+.measurement-workspace .measurement-response-3d .measurement-response-3d-settings label input[type="range"] { height: 18px; margin: 0; padding: 0; border: 0; border-radius: 0; background: transparent; }
+.measurement-response-3d-settings input[type="range"]:focus-visible { outline: 2px solid #306bc4; outline-offset: 3px; }
+.measurement-response-3d-empty { min-height: var(--response-scene-height); display: grid; place-items: center; padding: 20px; color: #74869d; }
+@container response-3d (max-width: 500px) {
+  .measurement-response-3d-settings > div { grid-template-columns: 1fr; }
+  .measurement-response-3d-axis span:nth-child(2) { display: none; }
+  .measurement-response-3d-legend small { flex-basis: 100%; margin-left: 0; }
+}

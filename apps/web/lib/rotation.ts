@@ -7,6 +7,9 @@ import { HttpError, type User } from "./db";
 
 const globalState = globalThis as typeof globalThis & { bladeRotationWorkers?: { active: number; users: Set<string> } };
 const workers = globalState.bladeRotationWorkers ??= { active: 0, users: new Set<string>() };
+const readState = globalThis as typeof globalThis & { bladeRotationListings?: Map<string, Promise<any>> };
+const listings = readState.bladeRotationListings ??= new Map<string, Promise<any>>();
+const listingKey = (user: Pick<User, "id" | "tenant">) => JSON.stringify([user.tenant, user.id, process.env.BLADE_ANALYSIS_DATA_DIR || ""]);
 export const rotationFileLimit = 128 * 1024 * 1024;
 function projectRoot() {
   // Python and user data are runtime installations, not JavaScript bundle assets.
@@ -81,6 +84,20 @@ function runWorker(service: string, python: string, data: string, payload: Recor
 }
 
 export async function rotationWorker(user: Pick<User, "id" | "tenant">, payload: Record<string, unknown>): Promise<any> {
+  // The overview and historical-record panel may read the same catalog together.
+  // Share only an in-flight read, never mutations, analysis jobs or cached results.
+  if (payload.action === "recordings" && Object.keys(payload).length === 1) {
+    const key = listingKey(user);
+    const current = listings.get(key);
+    if (current) return current;
+    const pending = withWorker(user, (service, python, data) => runWorker(service, python, data, payload));
+    listings.set(key, pending);
+    try { return await pending; }
+    finally { if (listings.get(key) === pending) listings.delete(key); }
+  }
+  // A short metadata read must not reject a user's analysis click as a second job.
+  // This waits for the actual read to finish; no timer and no retry of mutations.
+  await listings.get(listingKey(user));
   return withWorker(user, (service, python, data) => runWorker(service, python, data, payload));
 }
 
@@ -90,6 +107,7 @@ export async function rotationUpload(user: Pick<User, "id" | "tenant">, request:
   if (!/\.(xlsx|csv|csv\.gz)$/i.test(filename)) throw new HttpError(400, "请选择 XLSX、CSV 或 CSV.GZ 数据文件。");
   const limit = /\.xlsx$/i.test(filename) ? 16 * 1024 * 1024 : rotationFileLimit;
   if (Number(request.headers.get("content-length") || 0) > limit) throw new HttpError(413, "文件超过大小上限（XLSX 16 MB，CSV / CSV.GZ 128 MB）。");
+  await listings.get(listingKey(user));
   return withWorker(user, async (service, python, data) => {
     const inputFile = path.join(data, `.upload-${randomUUID()}`);
     const file = await open(inputFile, "wx", 0o600);

@@ -33,7 +33,10 @@ import {
 } from "./api";
 import { Button, Dialog, EditDialog, Tag } from "./common";
 import { Acquisition, Signal } from "./desktop-screens";
-import { Health, ModalAnalysis, Reports } from "./web-screens";
+import { MeasurementHealth as Health } from "./measurement-health";
+import { MeasurementModal as ModalAnalysis } from "./measurement-modal";
+import { MeasurementReports as Reports } from "./measurement-reports";
+import { WindDatasets } from "./wind-datasets";
 import { Administration, Developer } from "./admin-screens";
 import { SyncDialog } from "./sync-dialog";
 import { workspaceTask } from "./workspace-context";
@@ -42,10 +45,11 @@ import { AccountPasswordDialog } from "./account-password-dialog";
 import { ClientDownload } from "./client-download";
 const nav = [
   { id: "acq", name: "数据采集", icon: Activity, platform: "desktop" },
-  { id: "health", name: "健康监测", icon: HeartPulse, platform: "web" },
   { id: "signal", name: "信号处理", icon: AudioLines, platform: "desktop" },
   { id: "blade", name: "旋转测振", icon: Radio, platform: "web" },
   { id: "modal", name: "模态识别", icon: ChartSpline, platform: "web" },
+  { id: "wind", name: "风场数据集", icon: Globe, platform: "web" },
+  { id: "health", name: "健康监测", icon: HeartPulse, platform: "web" },
   { id: "report", name: "报告导出", icon: FileText, platform: "web" },
   { id: "dev", name: "二次开发", icon: Code2, platform: "web" },
   { id: "admin", name: "系统管理", icon: Settings, platform: "web" },
@@ -53,7 +57,7 @@ const nav = [
 export function BladeApp({ platform }: { platform: "web" | "desktop" }) {
   const [data, setData] = useState<Bootstrap | null>(null),
     [loading, setLoading] = useState(true),
-    [screen, setScreen] = useState(platform === "web" ? "health" : "acq"),
+    [screen, setScreen] = useState(platform === "web" ? "blade" : "acq"),
     [username, setUsername] = useState("admin"),
     [password, setPassword] = useState(""),
     [error, setError] = useState(""),
@@ -85,9 +89,9 @@ export function BladeApp({ platform }: { platform: "web" | "desktop" }) {
   }, [clearWorkspace]);
   const refresh = useCallback(async () => {
     const epoch = workspaceEpoch.current;
-    const next = await api<Bootstrap>("bootstrap");
+    const next = await api<Bootstrap>(platform === "web" ? "bootstrap?actual=1" : "bootstrap");
     if (epoch === workspaceEpoch.current) setData(next);
-  }, []);
+  }, [platform]);
   useEffect(() => {
     refresh()
       .catch(() => {})
@@ -268,7 +272,7 @@ export function BladeApp({ platform }: { platform: "web" | "desktop" }) {
             <span>
               独立项目数据库 · 按角色授权
               <br />
-              支持实时采集与离线导入 · 健康监测保留演示样例
+              支持实时采集与离线导入 · 按风机查看测量结果
             </span>
           </div>
         </form>
@@ -293,6 +297,7 @@ export function BladeApp({ platform }: { platform: "web" | "desktop" }) {
     signal: <Signal {...shared} canWrite={canWrite} />,
     health: <Health {...shared} canWrite={canAnalyze} />,
     modal: <ModalAnalysis {...shared} canWrite={canAnalyze} />,
+    wind: <WindDatasets canWrite={canAnalyze} />,
     report: <Reports {...shared} canWrite={canAnalyze} />,
     dev: <Developer {...shared} />,
     admin: <Administration {...shared} canWrite={canAnalyze} onReauthenticate={reauthenticate} />,
@@ -350,7 +355,7 @@ export function BladeApp({ platform }: { platform: "web" | "desktop" }) {
             <Button onClick={() => setSyncOpen(true)}><CloudUpload size={15} />回传本机任务</Button>
           )}
           <Tag tone={screen === "blade" ? "blue" : "amber"}>
-            {screen === "blade" ? "旋转测振" : isOffline() ? "离线演示" : "设备未连接"}
+            {platform === "web" ? "服务端工作区" : isOffline() ? "离线工作区" : "设备未连接"}
           </Tag>
           {platform === "web" && <ClientDownload />}
           <Button variant="ghost" aria-label="应用设置" onClick={configure}>
@@ -391,12 +396,12 @@ export function BladeApp({ platform }: { platform: "web" | "desktop" }) {
       <div className="app-body">
         <nav className="sidebar">
           <div className="nav-caption">
-            {platform === "desktop" ? "采集与分析" : "管理与运维"}
+            {platform === "desktop" ? "采集与分析" : "数据分析"}
           </div>
           {nav
             .filter((n) => n.platform === platform)
             .map((n) => (
-              <button
+              <React.Fragment key={n.id}>{platform === "web" && ["dev","admin"].includes(n.id) && <div className="nav-caption">{n.id === "dev" ? "开发" : "管理与运维"}</div>}<button
                 key={n.id}
                 aria-label={n.name}
                 title={n.name}
@@ -410,7 +415,7 @@ export function BladeApp({ platform }: { platform: "web" | "desktop" }) {
               >
                 <n.icon size={18} />
                 <span>{n.name}</span>
-              </button>
+              </button></React.Fragment>
             ))}
           <div className="sidebar-footer">
             <span>BladeVMS v1.0.0</span>
@@ -419,11 +424,16 @@ export function BladeApp({ platform }: { platform: "web" | "desktop" }) {
         </nav>
         <main key={screen} className="workspace">
           {components[screen] ||
-            components[platform === "web" ? "health" : "acq"]}
+            components[platform === "web" ? "blade" : "acq"]}
         </main>
       </div>
       <footer className="statusbar">
-        {screen === "blade" ? <>
+        {platform === "web" ? <>
+          <span>真实测量工作区 · 数据按账号权限查看</span><span>有效片段与 Welch 频谱 · 工况匹配 · 规则复核</span>
+        </> : screen === "health" ? <>
+          <span>健康监测 · 以当前风机与测量任务为准</span>
+          <span>仅分析真实测量记录</span>
+        </> : screen === "blade" ? <>
           <span>采集按权限查看 · 分析按账号保存</span>
           <span>算法：恒转速阶次分析 · 多点融合 · 弯曲振型</span>
           <span>采样率、来源与质量以所选记录为准</span>

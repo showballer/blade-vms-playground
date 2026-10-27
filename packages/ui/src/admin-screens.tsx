@@ -1,4 +1,5 @@
 "use client";
+import { MeasurementObjects } from "./measurement-objects";
 import { useEffect, useState } from "react";
 import {
   Plus,
@@ -32,6 +33,7 @@ import {
   type Field,
 } from "./common";
 const adminTabs = [
+  { id: "objects", name: "测量对象与批次" },
   { id: "users", name: "用户与权限" },
   { id: "logs", name: "操作日志" },
   { id: "backup", name: "数据备份" },
@@ -151,12 +153,13 @@ export function Administration({
           }}
         />
       </Card>
-      {!admin && tab !== "alerts" ? (
+      {!admin && !["alerts","objects"].includes(tab) ? (
         <Card title="权限提示">
           <p>
             当前角色为{roleNames[data.user.role as keyof typeof roleNames]}
             。用户、审计和备份管理仅管理员可访问。
           </p>
+          {tab === "objects" && <MeasurementObjects canWrite={canWrite}/>}
           {tab === "users" && <RolePermissionMatrix />}
         </Card>
       ) : (
@@ -281,7 +284,7 @@ export function Administration({
                 </Button>
               </div>
               <p className="hint">
-                仅备份本课题组的任务、参数、预警、模型登记、模板和报告记录。不会操作其他数据库、账号或系统日志。真实原始波形未接入。
+                备份本课题组的测量对象、批次、工况、分析、复核、报告及历史业务记录。原始波形文件、上传块、账号与日志不在此快照中，需另行备份数据目录和数据库。
               </p>
               <Table headers={["备份名称", "记录数", "操作"]}>
                 {backups.map((b) => (
@@ -590,6 +593,7 @@ export function Developer({ data, refresh, notify }: ContextProps) {
           </div>
         </div>
       </Card>
+      <Card title="内置测量算法"><Table headers={["算法","版本","调用入口"]}><tr><td>连续有效片段 Welch 特征与展示平滑</td><td>measurement-welch-1.0.0</td><td>/api/v1/measurements/analyze</td></tr><tr><td>同工况频率下降与幅值上升组合判据</td><td>规则快照随分析保存</td><td>/api/v1/measurements/reassess</td></tr><tr><td>同频五点响应幅值分布</td><td>response_distribution</td><td>/api/v1/measurements/modal</td></tr></Table></Card>
       <div className="workspace-grid">
         <Card
           title="算法模型管理"
@@ -617,7 +621,7 @@ export function Developer({ data, refresh, notify }: ContextProps) {
             维护模型名称、类别、版本和服务端点。本阶段只保存配置，不执行外部模型、不测试外部连接。
           </p>
           <Table headers={["算法模型", "类别", "当前版本", "状态", "操作"]}>
-            {data.models.map((m: Item) => (
+            {data.models.filter((m:Item)=>m.status!=="未接入"&&m.source!=="demo").map((m: Item) => (
               <tr key={m.id}>
                 <td>
                   <strong>{m.name}</strong>

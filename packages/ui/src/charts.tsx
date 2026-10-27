@@ -1,5 +1,5 @@
 "use client";
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState, type CSSProperties } from "react";
 import { ChartLoading } from "./chart-loading";
 import * as echarts from "echarts/core";
 import { LineChart, BarChart, HeatmapChart } from "echarts/charts";
@@ -39,7 +39,7 @@ export const Chart = memo(function Chart({
   loading = false,
 }: {
   option: Record<string, any>;
-  height?: number;
+  height?: CSSProperties["height"];
   label?: string;
   renderer?: "canvas" | "svg";
   /** Live charts retain their legend selection and zoom while replacing series data. */
@@ -121,7 +121,7 @@ export const Chart = memo(function Chart({
       role="img"
       aria-label={label}
       ref={ref}
-      style={{ height, width: "100%" }}
+      style={{ height: "100%", width: "100%" }}
     />
     {(loading || rendering) && <div style={{ position: "absolute", inset: 0 }}><ChartLoading height={height} /></div>}
     </div>

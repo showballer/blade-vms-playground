@@ -153,6 +153,100 @@ class WebRotationTest(unittest.TestCase):
         again = "".join(stream_csv(*prepare_export(store, imported["id"])))
         self.assertEqual(json.loads(again.splitlines()[0][len("# BladeVMS "):])["pointCycle"], metadata["pointCycle"])
 
+    def continuous_diagnostic_export(self):
+        _, text = self.station_export()
+        first, rows = text.split("\n", 1)
+        metadata = json.loads(first[len("# BladeVMS "):])
+        metadata.update(diagnosticOnly=True, validMeasurement=False, originalTaskName="叶片2合并任务",
+                        sourceDataPreserved=True,
+                        importSource={"type": "blade-vms-task-zip", "originalName": "原P1任务",
+                                      "originalRecordingId": "d" * 32, "rawCodesAvailable": False,
+                                      "physicalSamplesPreserved": True, "downsampled": False},
+                        mergedTask={"name": "叶片2合并任务", "continuousMeasurement": False,
+                                    "originalCollectionId": "e" * 32})
+        cycle = metadata["pointCycle"]
+        cycle.update(completion="diagnostic_pass", outcome="diagnostic", passCompleteness="confirmed",
+                     continuousSession={"id": "f" * 32, "sampleClock": "continuous_session_raw",
+                                        "sampleStart": 1024, "sampleEndExclusive": 1280, "sampleRate": 1000})
+        cycle["handoff"].update({key: value + 1024 for key, value in cycle["handoff"].items()})
+        cycle["handoff"].update(sampleClock="continuous_session_raw", reason="blade_left", passCompleteness="confirmed")
+        return metadata, rows
+
+    def test_continuous_diagnostic_csv_roundtrip_preserves_clock_provenance_and_opt_in(self):
+        from blade_acquisition.blade_passes import _range
+        metadata, rows = self.continuous_diagnostic_export()
+        content = "# BladeVMS " + json.dumps(metadata) + "\n" + rows
+        for streamed in (False, True):
+            with self.subTest(streamed=streamed):
+                root = self.root / ("continuous-stream" if streamed else "continuous-inline")
+                root.mkdir()
+                payload = {"action": "import", "filename": "P1.csv.gz" if streamed else "P1.csv"}
+                if streamed:
+                    uploaded = root / ".upload-point"
+                    uploaded.write_bytes(gzip.compress(content.encode()))
+                    payload["inputFile"] = str(uploaded)
+                else:
+                    payload["bytes"] = base64.b64encode(content.encode()).decode()
+                imported = dispatch(root, payload)["recordings"][0]
+                for field in ("pointCycle", "diagnosticOnly", "validMeasurement", "originalTaskName",
+                              "importSource", "mergedTask", "sourceDataPreserved"):
+                    self.assertEqual(imported[field], metadata[field], field)
+                self.assertNotIn("captureSessionId", imported)
+                self.assertEqual(_range(imported["pointCycle"], 256, manifest=imported)[1], "diagnostic_requires_opt_in")
+                segment, reason, basis = _range(imported["pointCycle"], 256, manifest=imported, include_diagnostic=True)
+                self.assertEqual(segment, (20, 180))
+                self.assertIsNone(reason)
+                self.assertEqual(basis["sourceOffset"], 1024)
+                store = RecordingStore(root / "recordings")
+                again = "".join(stream_csv(*prepare_export(store, imported["id"])))
+                second = dispatch(root / "roundtrip", {"action": "import", "filename": "P1.csv",
+                                                      "bytes": base64.b64encode(again.encode()).decode()})["recordings"][0]
+                for field in ("pointCycle", "diagnosticOnly", "validMeasurement", "originalTaskName", "importSource", "mergedTask"):
+                    self.assertEqual(second[field], metadata[field], field)
+                self.assertEqual(second["sourceRecordingId"], metadata["recordingId"])
+
+    def test_missing_continuous_pass_head_remains_raw_review_only_after_import(self):
+        from blade_acquisition.blade_passes import _range
+        metadata, rows = self.continuous_diagnostic_export()
+        metadata["pointCycle"]["continuousSession"].update(sampleStart=1050, sampleEndExclusive=1306)
+        content = "# BladeVMS " + json.dumps(metadata) + "\n" + rows
+        imported = dispatch(self.root, {"action": "import", "filename": "missing-head.csv",
+                                       "bytes": base64.b64encode(content.encode()).decode()})["recordings"][0]
+        self.assertEqual(imported["pointCycle"]["handoff"]["entrySampleIndex"], 1044)
+        segment, reason, _ = _range(imported["pointCycle"], 256, manifest=imported, include_diagnostic=True)
+        self.assertIsNone(segment)
+        self.assertEqual(reason, "pass_boundary_outside_recording")
+
+    def test_invalid_continuous_clock_or_diagnostic_metadata_is_rejected(self):
+        baseline, rows = self.continuous_diagnostic_export()
+        mutations = [
+            lambda m: m.update(diagnosticOnly="true"),
+            lambda m: m.update(validMeasurement=0),
+            lambda m: m.update(importSource=[]),
+            lambda m: m["pointCycle"]["handoff"].update(sampleClock="unknown"),
+            lambda m: m["pointCycle"]["handoff"].update(entrySampleIndex=-1),
+            lambda m: m["pointCycle"]["handoff"].pop("exitConfirmedSampleIndex"),
+            lambda m: m["pointCycle"].pop("continuousSession"),
+            lambda m: m["pointCycle"]["continuousSession"].update(sampleClock="recording_local"),
+            lambda m: m["pointCycle"]["continuousSession"].update(sampleStart=True),
+            lambda m: m["pointCycle"]["continuousSession"].update(sampleEndExclusive=1281),
+            lambda m: m["pointCycle"]["continuousSession"].update(sampleRate=999),
+        ]
+        for index, mutate in enumerate(mutations):
+            metadata = copy.deepcopy(baseline)
+            mutate(metadata)
+            content = "# BladeVMS " + json.dumps(metadata) + "\n" + rows
+            for streamed in (False, True):
+                with self.subTest(mutation=index, streamed=streamed), self.assertRaises(ValueError):
+                    payload = {"action": "import", "filename": "P1.csv"}
+                    if streamed:
+                        uploaded = self.root / ".upload-invalid-continuous"
+                        uploaded.write_text(content)
+                        payload["inputFile"] = str(uploaded)
+                    else:
+                        payload["bytes"] = base64.b64encode(content.encode()).decode()
+                    dispatch(self.root, payload)
+
     def test_invalid_or_shifted_station_metadata_never_falls_back_to_continuous_import(self):
         _, text = self.station_export()
         first, body = text.split("\n", 1)

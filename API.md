@@ -305,3 +305,57 @@ PUT 请求为 `{revision,values:{rms,frequency,band,attentionRatio,warningRatio}
 上述写接口只允许管理员/分析员。GET `/records/analyses/:id`、列表、初始化和 `/export/analyses/:id?view=data&dataset=trend|waveform&format=csv|txt|xlsx|mat|json` 继承同一记录范围；操作员仅可读取关联其本人且尚存在任务的记录。其他角色在原任务/基线删除后仍按课题组读取独立归档。通用 POST/PUT/DELETE 及本机回传不能伪造或改写归档，更新仅通过上述标记/撤回接口；管理员整组备份恢复仍遵循其单独的确认流程。
 
 数值导出的元信息含标记历史与源快照，未知子结果拒绝而不回退。“健康趋势与标记”报告章节汇总有效/撤回数量并引用完整数值/记录 JSON，报告 `analysisSnapshots` 固定保存生成时的标记状态，不随后续处置变化。
+
+## 2026-10-27 测量对象、真实频谱与工况工作区
+
+本节接口沿用已登录会话或 Bearer 认证。新增数据按当前课题组隔离；导入原始文件仍按当前用户隔离。分析、规则、复核、工况和报告写入要求管理员或分析员；访客只读。返回错误含明确原因，不能将异常响应当成“无数据”。
+
+| 方法 | `/api/v1/` 后路径 | 说明 |
+|---|---|---|
+| GET / POST | `objects` | 列出或新增/更新对象；类型 farm/turbine/blade/position/campaign。修改须传 id 和读回的 revision。类型、编号和归属不能改写；active=false 归档。 |
+| POST | `objects/default-points` | `{turbineId}`，仅为尚无叶片的风机生成 3×5 空位置。 |
+| POST | `objects/adopt` | 显式将元数据完整的历史来源映射到对象，不改原始文件；返回 linked/skipped。P1～P5 按明确点名匹配。 |
+| POST | `objects/link` | `{reference,context,revision}`，为一条来源绑定完整对象；初次 revision=null。 |
+| GET | `wind-datasets` | 工况数据集摘要与对象列表。 |
+| POST | `wind-datasets/preview` | `{filename,base64}`，CSV/XLSX ≤4 MB，预览解析，不入库。 |
+| POST | `wind-datasets` | `{name,farmId,rows}`；1～50000 行，按同风机同时间拒绝重复，包括并发导入。 |
+| GET | `measurements` | 来源、绑定、对象、分析摘要、规则及 revision。摘要不带大曲线，目录上限 5000。 |
+| POST | `measurements/analyze` | `{reference,parameters,measuredAt?}` 或 `{references:[...],parameters}`；真实 Python Welch 分析并存档。 |
+| POST | `measurements/synthesis` | `{farmId,campaignId,turbineId,bladeId,positionIds?,includeDiagnostic?,minHz?,maxHz?}`；当前账号可见且已关联的同任务叶片记录，最多64条。多角度有效段合并显示，各段独立 Welch 后做同频带多测点幅值比较，不生成未知相位；诊断记录需显式选择。返回原始来源、缺测原因、时间映射及合成结果，不改原始记录。 |
+| GET | `measurements/result/:id` | 一条完整分析、曲线、原始区间、哈希、工况和复核。 |
+| GET / PUT | `measurements/rules` | 读取规则；PUT `{rules,revision}` 防覆盖。 |
+| POST | `measurements/review` | `{resultId,note,status,referenceApproved,range?,revision}`；status 为待复核/已确认/已关闭。 |
+| POST | `measurements/reassess` | `{resultId}`，保留原频谱与曲线，用当前参考和规则产生新结果，不覆盖旧结果。 |
+| GET / POST | `measurements/modal` | 历史列表或 `{campaignId,turbineId,azimuthDeg,frequencyHz}`，保存五点频带响应。 |
+| GET | `measurements/reports?campaignId=&turbineId=&offset=0` | 报告历史，20 条/页。 |
+| POST | `measurements/reports` | `{campaignId,turbineId?}`，生成真实结果快照。 |
+| GET | `measurements/report-download/:id` | Word 下载，记录导出审计。 |
+
+完整归属 `context`：
+
+```json
+{"farmId":"<风场ID>","turbineId":"<风机ID>","bladeId":"<叶片ID>","positionId":"<测点ID>","campaignId":"<批次ID>"}
+```
+
+来源 `reference` 为 `{kind:"capture"|"import"|"task",id:"..."}`。旧 task 摘要不能替代原始样本，须先导入真实波形才能运行新版频谱。分析参数示例：
+
+```json
+{"reference":{"kind":"import","id":"<记录ID>"},"parameters":{"windowSeconds":0.25,"fadeFraction":0.05,"detrend":"constant"}}
+```
+
+- `windowSeconds`：0.001～30；`fadeFraction`：0～0.2，仅展示平滑；`detrend`：none/constant/linear；可选 `rssiThresholdPercent`：0～100。
+- 单条记录缺少实际时钟可显式提供含时区的 `measuredAt`；导入文件时间不被当作测量时间。多条合并要求每条保留实际测量时钟。
+- 合并最多16条，同完整归属和圆周角、相同采样率；≤800万原始样本、≤128连续有效段。重复、跨点位、诊断/失败/模拟输入拒绝。
+- Wind rows 结构：`{time:"2026-10-01T10:00:00+08:00",turbineCode:"WT-01",windSpeed:3.2,rpm:12,windDirection:180,powerKw:300}`；后两项可选，统一 m/s、rpm、deg、kW。时间必须带时区，风机编号需属于选定风场。
+- 复核 `range` 为 `{startSeconds,endSeconds}`，指**压缩有效时间**，须落在 `[0,features.validSeconds]` 且结束大于开始。留空评价整条，不改原始数据。`referenceApproved=true` 另要求状态已确认、匹配工况与有效频率。
+- 结果含完整对象快照、来源列表、真实时间、圆周角、两轴目标角、半径、工况来源、有效样本区间/哈希、算法版本与参数、Welch 分辨率和峰值候选、判据依据/参考 ID、人工复核；未测/缺失字段保持空值。
+- HTTP 400：字段/层级/波形不合法；401：未认证；403：无权；404：来源或结果不存在；409：修订冲突/重复数据；429：真实分析进程繁忙；503/504：Python 环境/计算超时。
+
+算法口径与现场待验项见 [服务端整改实施与验收](docs/服务端整改实施与验收.md)。不跨原始间断执行 Welch 窗，展示平滑不进入定量计算；无共同相位的五点幅值分布不等同固有振型。内置算法通过现有受限 Python worker 执行，不自动调用登记的第三方地址。
+
+### 统一测量页面：原始波形与异常区间
+
+- `POST /api/v1/measurements/source-waveform`：`{reference:{kind,id}}`，返回有界原始波形预览和记录元数据，按来源权限检查，未关联对象的记录也可追溯。
+- `POST /api/v1/measurements/analyze` 增加 `eventWindowMs`（5–200，默认20）、`eventRmsRatio`（2–20，默认4）、`eventSigma`（3–20，默认6）。
+- `features.events` 包含有效时间区间、原始记录/样本/时间映射、RMS 比值与阈值。`confidence:null` 表示没有训练得到的损伤概率；输出为异常响应候选。
+- 波形平滑仅影响展示。局部事件检测与 Welch 计算均使用原始连续有效片段。

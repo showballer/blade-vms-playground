@@ -17,6 +17,8 @@ from blade_acquisition.storage import RecordingStore, HEADER, MAGIC, atomic_json
 from blade_acquisition.upload_sampling import prepare_upload
 from blade_acquisition.waveform import WaveformReader, envelope_rows
 from blade_acquisition.blade_passes import _range
+from blade_acquisition.csv_export import stream_csv
+from blade_acquisition.web_rotation import dispatch
 
 
 class UploadSamplingTests(unittest.TestCase):
@@ -65,6 +67,103 @@ class UploadSamplingTests(unittest.TestCase):
         self.assertEqual(derived["handoff"]["entrySampleIndex"], 20000)
         self.assertEqual(result["recording"]["samples"], 50000)
         self.assertEqual((source / "manifest.json").read_bytes(), source_bytes)
+
+    def continuous_source(self, missing_head=False):
+        manifest = self.source(n=250000)
+        manifest.update(diagnosticOnly=True, validMeasurement=False)
+        cycle = manifest["pointCycle"]
+        offset = 9000003  # Deliberately not aligned to any resampling phase.
+        cycle.update(mode="automatic_stations", collectionId="c" * 32, sessionId="d" * 32,
+                     bladeId="2", radialPointId="p1", radiusM=.16, azimuthDeg=90,
+                     stationIndex=2, stationCount=4, lapIndex=1, identityVerified=False,
+                     completion="diagnostic_pass", outcome="diagnostic", passCompleteness="confirmed",
+                     continuousSession={"sampleClock": "continuous_session_raw", "sampleRate": 250000,
+                                        "sampleStart": offset, "sampleEndExclusive": offset + 250000})
+        handoff = cycle["handoff"]
+        handoff.update({key: value + offset for key, value in handoff.items() if type(value) is int})
+        handoff.update(sampleClock="continuous_session_raw", passCompleteness="confirmed")
+        if missing_head:
+            handoff.update(entrySampleIndex=offset - 20, entryConfirmedSampleIndex=offset - 1)
+        atomic_json(self.store.directory(self.id) / "manifest.json", manifest)
+        return manifest
+
+    def test_continuous_derivative_maps_source_gates_after_offset_without_clamping(self):
+        manifest = self.continuous_source()
+        source_bytes = (self.store.directory(self.id) / "manifest.json").read_bytes()
+        for rate in (10000, 30000, 50000, 100000):
+            with self.subTest(rate=rate):
+                result = prepare_upload(self.store, self.id, rate, self.cache)
+                derived = result["recording"]
+                self.assertEqual(derived["pointCycle"], manifest["pointCycle"])
+                self.assertEqual(derived["sampling"]["sourceHandoff"], manifest["pointCycle"]["handoff"])
+                self.assertTrue(derived["diagnosticOnly"])
+                self.assertFalse(derived["validMeasurement"])
+                self.assertEqual(_range(derived["pointCycle"], derived["samples"], manifest=derived)[1],
+                                 "diagnostic_requires_opt_in")
+                segment, reason, basis = _range(derived["pointCycle"], derived["samples"],
+                                                manifest=derived, include_diagnostic=True)
+                self.assertIsNone(reason)
+                self.assertEqual(segment, (math.ceil(100001 * rate / 250000), math.ceil(200001 * rate / 250000)))
+                self.assertEqual(basis["sourceOffset"], 9000003)
+                self.assertEqual(basis["sourceLocalRange"], {"start": 100001, "end": 200001})
+                self.assertEqual(basis["sourceSampleRate"], 250000)
+                self.assertEqual(basis["sampleRate"], rate)
+                # No global provenance is rewritten to fit this small waveform.
+                self.assertGreater(derived["pointCycle"]["handoff"]["entrySampleIndex"], derived["samples"])
+        self.assertEqual((self.store.directory(self.id) / "manifest.json").read_bytes(), source_bytes)
+
+    def test_continuous_derivative_missing_head_is_still_excluded_after_csv_roundtrip(self):
+        manifest = self.continuous_source(missing_head=True)
+        result = prepare_upload(self.store, self.id, 50000, self.cache)
+        derived = result["recording"]
+        self.assertEqual(derived["pointCycle"]["handoff"], manifest["pointCycle"]["handoff"])
+        self.assertEqual(_range(derived["pointCycle"], derived["samples"], manifest=derived, include_diagnostic=True)[1],
+                         "pass_boundary_outside_recording")
+        directory = Path(result["directory"])
+        chunks = [(p, (p.stat().st_size - HEADER.size) // SAMPLES.itemsize) for p in sorted(directory.glob("chunk-*.bin"))]
+        upload = self.root / ".upload-continuous-derived"
+        upload.write_text("".join(stream_csv(derived, chunks)))
+        imported = dispatch(self.root, {"action": "import", "filename": "derived.csv", "inputFile": str(upload)})["recordings"][0]
+        self.assertEqual(imported["pointCycle"], manifest["pointCycle"])
+        self.assertEqual(imported["sampling"], derived["sampling"])
+        self.assertEqual(_range(imported["pointCycle"], imported["samples"], manifest=imported, include_diagnostic=True)[1],
+                         "pass_boundary_outside_recording")
+
+    def test_continuous_derivative_invalid_mapping_and_old_clamped_copy_are_rejected(self):
+        import copy
+        self.continuous_source()
+        derived = prepare_upload(self.store, self.id, 50000, self.cache)["recording"]
+        mutations = [
+            lambda m: m["sampling"].update(version=1),
+            lambda m: m["sampling"].pop("pointCycleIndexMapping"),
+            lambda m: m["sampling"]["pointCycleIndexMapping"].update(sourceOffset=9000000),
+            lambda m: m["sampling"]["pointCycleIndexMapping"].update(numerator=2),
+            lambda m: m["sampling"]["pointCycleIndexMapping"].update(numerator=True),
+            lambda m: m["sampling"].update(sourceSamples=250001),
+            lambda m: m["sampling"].update(sourceSampleRate=100000),
+            lambda m: m["pointCycle"]["handoff"].update(entrySampleIndex=19999),
+        ]
+        for index, mutate in enumerate(mutations):
+            with self.subTest(mutation=index):
+                bad = copy.deepcopy(derived)
+                mutate(bad)
+                self.assertEqual(_range(bad["pointCycle"], bad["samples"], manifest=bad, include_diagnostic=True)[1],
+                                 "continuous_sample_clock_mismatch")
+
+    def test_continuous_telemetry_keeps_source_archive_sample_indices(self):
+        manifest = self.continuous_source()
+        source = self.store.directory(self.id)
+        event = {"event": "blade_left", "hostTime": 1800000036.5, "sampleIndex": 9201004,
+                 "axis1": {"angle": 13.5}}
+        data = (json.dumps(event) + "\n").encode()
+        (source / "turntable.jsonl").write_bytes(data)
+        manifest["turntable"] = {"telemetry": {"file": "turntable.jsonl", "events": 1,
+                                               "sha256": hashlib.sha256(data).hexdigest()}}
+        atomic_json(source / "manifest.json", manifest)
+        result = prepare_upload(self.store, self.id, 50000, self.cache)
+        payload = (Path(result["directory"]) / "turntable.jsonl").read_bytes()
+        self.assertEqual(json.loads(payload), event)
+        self.assertEqual(result["recording"]["turntable"]["telemetry"]["sha256"], hashlib.sha256(payload).hexdigest())
 
     def test_sparse_rssi_cadence_is_not_misclassified_as_packet_loss(self):
         m = self.source(n=600123)

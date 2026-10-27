@@ -17,8 +17,9 @@ from scipy.signal import resample_poly
 from .csv_export import prepare_export
 from .native_capture import SAMPLES
 from .storage import HEADER, MAGIC, RECORD, atomic_json, normalize_recording_metadata
+from .sample_clock import continuous_sample_window
 
-VERSION = 1
+VERSION = 2
 
 
 def sample_rate(value):
@@ -33,6 +34,9 @@ def remap_indices(value, up, down, total):
         return [remap_indices(item, up, down, total) for item in value]
     if not isinstance(value, dict):
         return value
+    if (value.get("sampleClock") == "continuous_session_raw" or
+            isinstance(value.get("handoff"), dict) and value["handoff"].get("sampleClock") == "continuous_session_raw"):
+        return copy.deepcopy(value)
     result = {}
     for key, item in value.items():
         if key in {"bufferFence", "continuousSession"} and isinstance(item, dict):
@@ -42,7 +46,7 @@ def remap_indices(value, up, down, total):
             result[key] = copy.deepcopy(item)
             result[key].setdefault("sampleClock", "continuous_session_raw")
         elif type(item) is int and item >= 0 and (key.endswith("SampleIndex") or key == "sampleIndex"):
-            result[key] = min(total - 1, item * up // down)
+            result[key] = item * up // down
         elif type(item) is int and item >= 0 and key in ("observedSamples", "receivedSamples"):
             result[key] = (item * up + down - 1) // down
         else:
@@ -179,11 +183,28 @@ def prepare_upload(store, recording_id, target_rate, cache_root):
                                "sourceRssiSampleRate": manifest.get("rssiSampleRate", rate / expected_stride),
                                "sourceQuality": {k: manifest.get(k, 0) for k in ("overrangeSamples", "missingRssiSamples", "unpairedRssiSamples")},
                                "sourceHandoff": manifest.get("pointCycle", {}).get("handoff")}
+        cycle = manifest.get("pointCycle", {})
+        if cycle.get("handoff", {}).get("sampleClock") == "continuous_session_raw":
+            try:
+                source_offset, _, source_up, source_down = continuous_sample_window(cycle, manifest, count)
+            except ValueError:
+                # Retain incomplete legacy evidence; analysis must not guess its
+                # clock or turn its missing capture head into a complete pass.
+                pass
+            else:
+                if (source_up, source_down) != (1, 1):
+                    raise ValueError("连续采集降采样副本不能再次降采样，请从原始记录生成上传副本。")
+                derived["sampling"]["pointCycleIndexMapping"] = {
+                    "version": 1, "sourceClock": "continuous_session_raw", "targetClock": "recording_local",
+                    "sourceOffset": source_offset, "numerator": up, "denominator": down}
         if telemetry.exists():
             telemetry_hash = hashlib.sha256()
             with telemetry.open("r", encoding="utf-8") as src, (temporary / telemetry.name).open("wb") as dst:
                 for line in src:
-                    payload = (json.dumps(remap_indices(json.loads(line), up, down, total), ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
+                    event = json.loads(line)
+                    if cycle.get("handoff", {}).get("sampleClock") != "continuous_session_raw":
+                        event = remap_indices(event, up, down, total)
+                    payload = (json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
                     dst.write(payload); telemetry_hash.update(payload)
             derived["turntable"]["telemetry"]["sha256"] = telemetry_hash.hexdigest()
         if stamps != [(p.name, p.stat().st_size, p.stat().st_mtime_ns) for p in paths]:

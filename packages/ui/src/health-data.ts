@@ -23,7 +23,7 @@ export function thresholdValues(input: Record<string, unknown>): HealthThreshold
   return validateThresholds({ ...input, attentionRatio: input.attentionRatio ?? Number((Number(input.warningRatio) * .75).toFixed(12)) });
 }
 export const healthLevels = ["正常", "注意", "预警", "报警"] as const;
-export function healthGrade(value: number, limit: number, settings: HealthThresholds) {
+export function healthGrade(value: number, limit: number, settings: Pick<HealthThresholds, "attentionRatio" | "warningRatio">) {
   if (!Number.isFinite(value) || !Number.isFinite(limit) || limit <= 0) return null;
   const ratio = Math.abs(value) / limit + Number.EPSILON * 4;
   return ratio >= 1 ? 3 : ratio >= settings.warningRatio ? 2 : ratio >= settings.attentionRatio ? 1 : 0;

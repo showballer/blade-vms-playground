@@ -1,5 +1,32 @@
 {
-  "name": "@blade/ui", "version": "1.0.0", "private": true,
-  "exports": { ".": "./src/index.tsx", "./styles.css": "./src/styles.css", "./data-export": "./src/data-export.ts", "./result-data": "./src/result-data.ts", "./report-data": "./src/report-data.ts", "./task-metadata": "./src/task-metadata.ts", "./sync-data": "./src/sync-data.ts", "./batch": "./src/batch.ts", "./import-data": "./src/import-data.ts", "./health-data": "./src/health-data.ts", "./health-trend-data": "./src/health-trend-data.ts", "./baseline-data": "./src/baseline-data.ts", "./rotation-data": "./src/rotation-data.ts", "./modal-data": "./src/modal-data.ts", "./signal-input": "./src/signal-input.ts", "./report-details": "./src/report-details.ts" },
-  "dependencies": { "react": "19.2.8", "react-dom": "19.2.8", "echarts": "^6.0.0", "lucide-react": "^0.577.0", "exceljs": "^4.4.0" }
+  "name": "@blade/ui",
+  "version": "1.0.0",
+  "private": true,
+  "exports": {
+    ".": "./src/index.tsx",
+    "./styles.css": "./src/styles.css",
+    "./data-export": "./src/data-export.ts",
+    "./result-data": "./src/result-data.ts",
+    "./report-data": "./src/report-data.ts",
+    "./task-metadata": "./src/task-metadata.ts",
+    "./sync-data": "./src/sync-data.ts",
+    "./batch": "./src/batch.ts",
+    "./import-data": "./src/import-data.ts",
+    "./health-data": "./src/health-data.ts",
+    "./health-workspace-data": "./src/health-workspace-data.ts",
+    "./health-trend-data": "./src/health-trend-data.ts",
+    "./baseline-data": "./src/baseline-data.ts",
+    "./rotation-data": "./src/rotation-data.ts",
+    "./modal-data": "./src/modal-data.ts",
+    "./signal-input": "./src/signal-input.ts",
+    "./report-details": "./src/report-details.ts",
+    "./measurement-domain": "./src/measurement-domain.ts"
+  },
+  "dependencies": {
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "echarts": "^6.0.0",
+    "lucide-react": "^0.577.0",
+    "exceljs": "^4.4.0"
+  }
 }

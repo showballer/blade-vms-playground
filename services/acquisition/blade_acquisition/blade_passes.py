@@ -17,6 +17,7 @@ from fractions import Fraction
 
 from .analysis import DTYPE
 from .storage import HEADER, MAGIC, RECORD, recording_rssi_stride
+from .sample_clock import continuous_sample_window
 
 VERSION = "blade-passes-1.3.0"
 MAX_RECORDS = 64
@@ -259,15 +260,14 @@ def _range(meta, samples, *, manifest=None, include_diagnostic=False, pass_windo
     try:
         clock = handoff.get("sampleClock", "recording_local")
         offset, high = 0, samples - 1
+        source_samples, up, down = samples, 1, 1
         if clock == "continuous_session_raw":
             link = meta.get("continuousSession")
             if not isinstance(link, dict) or link.get("sampleClock") != clock:
                 return None, "missing_continuous_sample_origin", basis
-            offset = _integer(link.get("sampleStart"), "连续采集窗口起点", high=2**53 - 1)
-            window_end = _integer(link.get("sampleEndExclusive"), "连续采集窗口终点", high=2**53 - 1)
-            if window_end - offset != samples or link.get("sampleRate") != manifest.get("sampleRate"):
-                # Uploaded derivatives historically rescaled handoff indices but
-                # retained this global archive clock. Never guess that mapping.
+            try:
+                offset, source_samples, up, down = continuous_sample_window(meta, manifest, samples)
+            except ValueError:
                 return None, "continuous_sample_clock_mismatch", basis
             high = 2**53 - 1
         elif clock not in ("recording_local", "stationary_raw", "recording_raw"):
@@ -283,15 +283,23 @@ def _range(meta, samples, *, manifest=None, include_diagnostic=False, pass_windo
             raise ValueError("进入离开边界次序无效。")
         basis["originalRange"] = {"start": entry if pass_window == "detected" else confirmed + 1, "end": end}
         entry, confirmed, end, exit_confirmed = (value - offset for value in (entry, confirmed, end, exit_confirmed))
-        if entry < 0 or exit_confirmed >= samples:
+        if entry < 0 or exit_confirmed >= source_samples:
             # Missing acquisition head/tail is not a complete measured pass.
             # Clamping here would manufacture evidence that is absent on disk.
             return None, "pass_boundary_outside_recording", basis
     except ValueError:
         return None, "invalid_pass_boundaries", basis
-    start = entry if pass_window == "detected" else confirmed + 1
+    start = (entry * up + down - 1) // down if pass_window == "detected" else confirmed * up // down + 1
+    source_end = end
+    end = (end * up + down - 1) // down
+    if (up, down) != (1, 1):
+        basis.update(sourceLocalRange={"start": entry if pass_window == "detected" else confirmed + 1,
+                                       "end": source_end},
+                     sourceSampleRate=meta["continuousSession"]["sampleRate"],
+                     sampleRate=manifest["sampleRate"],
+                     indexMapping=manifest["sampling"]["pointCycleIndexMapping"])
     basis.update(localRange={"start": start, "end": end}, passWindow=pass_window,
-                 entryConfirmationRange={"start": entry, "end": confirmed + 1},
+                 entryConfirmationRange={"start": (entry * up + down - 1) // down, "end": confirmed * up // down + 1},
                  interpretation="detector evidence; not independent physical blade verification")
     return (start, end), None, basis
 

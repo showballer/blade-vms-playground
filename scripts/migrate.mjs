@@ -30,11 +30,10 @@ function hash(p) {
 const [users] = await db.query("SELECT id FROM users LIMIT 1");
 if (!users.length) {
   if (!process.env.BOOTSTRAP_PASSWORD) throw Error("缺少 BOOTSTRAP_PASSWORD");
+  const demo = process.env.BLADE_SEED_DEMO === "1";
   for (const [username, name, role] of [
     ["admin", "系统管理员", "admin"],
-    ["zhang", "张工", "analyst"],
-    ["li", "李工", "operator"],
-    ["guest", "访客", "viewer"],
+    ...(demo ? [["zhang", "张工", "analyst"], ["li", "李工", "operator"], ["guest", "访客", "viewer"]] : []),
   ])
     await db.execute(
       "INSERT INTO users (id,username,name,password_hash,role,tenant) VALUES (?,?,?,?,?,?)",
@@ -47,7 +46,7 @@ if (!users.length) {
         "新能源A组",
       ],
     );
-  for (const [kind, items] of Object.entries(records))
+  if (demo) for (const [kind, items] of Object.entries(records))
     for (const { id, ...body } of items)
       await db.execute(
         "INSERT INTO records (id,kind,tenant,body) VALUES (?,?,?,?)",
@@ -55,10 +54,10 @@ if (!users.length) {
       );
   await db.execute(
     "INSERT INTO audit_logs(id,actor_name,tenant,action,target) VALUES(?,?,?,?,?)",
-    [randomUUID(), "系统", "新能源A组", "初始化", "项目专用库与演示数据"],
+    [randomUUID(), "系统", "新能源A组", "初始化", demo ? "项目专用库与演示数据" : "项目专用库与管理员"],
   );
   console.log(
-    "迁移和初始数据完成。初始账号：admin / zhang / li / guest；密码见本地 BOOTSTRAP_PASSWORD。",
+    demo ? "测试环境演示初始化完成。密码见本地 BOOTSTRAP_PASSWORD。" : "初始化完成，仅创建 admin；密码见本地 BOOTSTRAP_PASSWORD。未创建样例业务数据。",
   );
 } else console.log("表结构已检查；现有用户和业务数据保留。");
 console.log(

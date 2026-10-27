@@ -1,3 +1,7 @@
+import { measurementReportDocx } from "../../../../lib/measurement-report";
+import { measurementKinds } from "../../../../lib/measurement-store";
+import { isHealthDemo } from "@blade/ui/health-workspace-data";
+import { measurementEndpoint } from "../../../../lib/measurement-api";
 import { NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
 import {
@@ -27,7 +31,8 @@ import { reportDocx } from "../../../../lib/report-docx";
 import { importLocalRevision } from "../../../../lib/sync";
 import { batchEndpoint } from "../../../../lib/batches";
 import { importEndpoint } from "../../../../lib/imports";
-import { healthThresholdEndpoint } from "../../../../lib/health";
+import { healthThresholdEndpoint, healthAmplitudeEndpoint } from "../../../../lib/health";
+import { healthObservation } from "../../../../lib/health-observations";
 import { archiveHealthTrend, annotateHealthTrend } from "../../../../lib/health-trends";
 import { baselineEndpoint } from "../../../../lib/baselines";
 import { queryAudit } from "../../../../lib/audit-query";
@@ -373,6 +378,8 @@ async function handle(req: Request, ctx: Context) {
       return res;
     }
     const user = await auth(req);
+    if(resource==="measurements"&&kind==="report-download"&&path.length===3&&method==="GET") {const file=await measurementReportDocx(user,id);return new NextResponse(new Uint8Array(file.buffer),{headers:{"Content-Type":"application/vnd.openxmlformats-officedocument.wordprocessingml.document","Content-Disposition":`attachment; filename="measurement-report.docx"; filename*=UTF-8''${encodeURIComponent(file.filename)}`,"Cache-Control":"no-store"}});}
+    if (["objects","wind-datasets","measurements"].includes(resource)) return json(await measurementEndpoint(user,req,path));
     if (resource === "account") {
       if (path.length !== 2 || kind !== "password" || method !== "POST") throw new HttpError(405, "账号操作路径或方法无效");
       const b = await body(req);
@@ -392,6 +399,8 @@ async function handle(req: Request, ctx: Context) {
       }
     }
     if (resource === "health") {
+      if (kind === "observations" && path.length === 2 && method === "POST") return json(await healthObservation(user, await body(req)), 201);
+      if (kind === "amplitude-thresholds" && path.length === 2) return json(await healthAmplitudeEndpoint(user, method, method === "PUT" ? await body(req) : undefined));
       if (kind === "trends" && method === "POST") {
         if (path.length === 2) { const result = await archiveHealthTrend(user, await body(req)); return json(result.record, result.created ? 201 : 200); }
         if (path.length === 4 && path[3] === "annotations") return json(await annotateHealthTrend(user, id, await body(req)));
@@ -444,7 +453,8 @@ async function handle(req: Request, ctx: Context) {
           if (!(e instanceof HttpError) || e.status !== 403) throw e;
           data[k] = []; continue;
         }
-        data[k] = await list(user, k);
+        const items = await list(user, k);
+        data[k] = new URL(req.url).searchParams.get("actual") === "1" ? items.filter(item => !isHealthDemo(item)) : items;
       }
       return json(data);
     }
@@ -638,7 +648,7 @@ async function handle(req: Request, ctx: Context) {
             (r) =>
               r.tenant !== item.tenant ||
               r.kind === "backups" ||
-              !(kinds as readonly string[]).includes(r.kind),
+              !([...kinds,...measurementKinds] as readonly string[]).includes(r.kind),
           )
         )
           throw new HttpError(400, "备份结构不正确");

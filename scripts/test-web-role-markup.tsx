@@ -3,48 +3,94 @@ import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { Health, Reports } from "../packages/ui/src/web-screens";
-import { ModalAnalysis } from "../packages/ui/src/modal-screen";
-import { Developer, Administration, DeleteUserDialog } from "../packages/ui/src/admin-screens";
+import { MeasurementHealth as Health } from "../packages/ui/src/measurement-health";
+import { MeasurementReports as Reports } from "../packages/ui/src/measurement-reports";
+import { apiExamples } from "../packages/ui/src/developer-api";
+import { MeasurementModal as ModalAnalysis } from "../packages/ui/src/measurement-modal";
+import {
+  Developer,
+  Administration,
+  DeleteUserDialog,
+} from "../packages/ui/src/admin-screens";
 import type { Bootstrap, User } from "../packages/ui/src/api";
 import { records } from "./seed-data.mjs";
 
 const results: { name: string; result: string }[] = [];
-function check(name: string, fn: () => unknown) { fn(); results.push({ name, result: "pass" }); console.log("PASS " + name); }
+function check(name: string, fn: () => unknown) {
+  fn();
+  results.push({ name, result: "pass" });
+  console.log("PASS " + name);
+}
 function buttons(markup: string, label: string) {
-  return [...markup.matchAll(/<button\b([^>]*)>([\s\S]*?)<\/button>/g)].filter(match => match[2].replace(/<[^>]*>/g, "").trim() === label);
+  return [...markup.matchAll(/<button\b([^>]*)>([\s\S]*?)<\/button>/g)].filter(
+    (match) => match[2].replace(/<[^>]*>/g, "").trim() === label,
+  );
 }
 function state(markup: string, label: string, disabled: boolean) {
   const matches = buttons(markup, label);
   assert.equal(matches.length, 1, "Expected one button: " + label);
   assert.equal(/\bdisabled(?:=|\s|$)/.test(matches[0][1]), disabled, label);
 }
-for (const role of ["admin", "analyst", "operator", "viewer"] as User["role"][]) {
-  const user = { id: "qa-static-" + role, username: "static-" + role, name: "静态权限测试", role, tenant: "QA-markup" };
-  const data = { ...structuredClone(records), user, analyses: [], reports: [] } as unknown as Bootstrap;
-  data.tasks = data.tasks.map(task => ({ ...task, recordTenant: user.tenant, samples: [0, 1, 0, -1], channels: [{ no: 1, type: "velocity", unit: "mm/s" }] }));
-  data.baselines = data.baselines.map(baseline => ({ ...baseline, recordTenant: user.tenant }));
-  if (role !== "admin") { data.models = []; data.settings = []; }
+for (const role of [
+  "admin",
+  "analyst",
+  "operator",
+  "viewer",
+] as User["role"][]) {
+  const user = {
+    id: "qa-static-" + role,
+    username: "static-" + role,
+    name: "静态权限测试",
+    role,
+    tenant: "QA-markup",
+  };
+  const data = {
+    ...structuredClone(records),
+    user,
+    analyses: [],
+    reports: [],
+  } as unknown as Bootstrap;
+  data.tasks = data.tasks.map((task) => ({
+    ...task,
+    recordTenant: user.tenant,
+    samples: [0, 1, 0, -1],
+    channels: [{ no: 1, type: "velocity", unit: "mm/s" }],
+  }));
+  data.baselines = data.baselines.map((baseline) => ({
+    ...baseline,
+    recordTenant: user.tenant,
+  }));
+  if (role !== "admin") {
+    data.models = [];
+    data.settings = [];
+  }
   const canAnalyze = role === "admin" || role === "analyst";
   // Matches the screen-specific overrides in AppShell. API tests independently
   // enforce these rules; this does not simulate a logged-in browser session.
-  const props = { data, canWrite: canAnalyze, refresh: async () => {}, notify: () => {}, go: () => {} };
+  const props = {
+    data,
+    canWrite: canAnalyze,
+    refresh: async () => {},
+    notify: () => {},
+    go: () => {},
+  };
   check(role + " 健康页保存/复核与只读入口", () => {
     const html = renderToStaticMarkup(createElement(Health, props));
-    state(html, "重新运行演示检测", !canAnalyze);
-    state(html, "基线管理", false);
-    assert.ok(html.includes("当前组阈值"));
+    state(html, "预警规则", true);
+    assert.equal((html.match(/<h1/g) || []).length, 1);
+    assert.ok(!html.includes("按原始采集记录查看"));
+    assert.ok(html.includes("正在加载测量数据"));
+    assert.equal(buttons(html, "基线管理").length, 0);
+    assert.equal(buttons(html, "重新运行演示检测").length, 0);
   });
   check(role + " 模态页保存/报告与查看入口", () => {
     const html = renderToStaticMarkup(createElement(ModalAnalysis, props));
-    state(html, "保存演示模态结果", !canAnalyze);
-    state(html, "生成模态报告", !canAnalyze);
-    state(html, "基线管理", false);
+    state(html, "计算并保存五点响应", true);
+    assert.equal(buttons(html, "基线管理").length, 0);
   });
   check(role + " 报告页模板/批量入口", () => {
     const html = renderToStaticMarkup(createElement(Reports, props));
-    state(html, "抬头 / Logo / 编号配置", !canAnalyze);
-    state(html, "批量生成", !canAnalyze);
+    state(html, "生成真实工况报告", true);
   });
   check(role + " 二次开发只读与管理员配置入口", () => {
     const html = renderToStaticMarkup(createElement(Developer, props));
@@ -52,28 +98,48 @@ for (const role of ["admin", "analyst", "operator", "viewer"] as User["role"][])
     state(html, "接入算法模型", role !== "admin");
     state(html, "创建 API 令牌", role !== "admin");
     assert.equal((html.match(/aria-pressed="true"/g) || []).length, 1);
-    assert.equal((html.match(/aria-pressed="false"/g) || []).length, 5);
+    assert.equal(
+      (html.match(/aria-pressed="false"/g) || []).length,
+      apiExamples.length - 1,
+    );
   });
   for (const initialTab of ["users", "logs", "backup", "alerts"]) {
     check(role + " 系统管理 " + initialTab + " 初始权限状态", () => {
-      const html = renderToStaticMarkup(createElement(Administration, { ...props, initialTab }));
-      if (initialTab !== "alerts") assert.equal(html.includes("权限提示"), role !== "admin");
-      if (initialTab === "users") assert.equal(buttons(html, "新增用户").length, role === "admin" ? 1 : 0);
+      const html = renderToStaticMarkup(
+        createElement(Administration, { ...props, initialTab }),
+      );
+      if (initialTab !== "alerts")
+        assert.equal(html.includes("权限提示"), role !== "admin");
+      if (initialTab === "users")
+        assert.equal(
+          buttons(html, "新增用户").length,
+          role === "admin" ? 1 : 0,
+        );
       if (initialTab === "users") {
-        assert.ok(html.includes("角色权限矩阵"), "All roles can understand the permission boundary");
+        assert.ok(
+          html.includes("角色权限矩阵"),
+          "All roles can understand the permission boundary",
+        );
         assert.ok(html.includes("本人采集与任务"));
         assert.ok(html.includes("登录账号名不能重复使用"));
       }
       if (initialTab === "alerts") {
         const actions = buttons(html, "处理");
         assert.ok(actions.length > 0);
-        for (const action of actions) assert.equal(/\bdisabled(?:=|\s|$)/.test(action[1]), !canAnalyze);
+        for (const action of actions)
+          assert.equal(/\bdisabled(?:=|\s|$)/.test(action[1]), !canAnalyze);
       }
     });
   }
 }
 check("用户删除明确保留记录并默认禁止未确认提交", () => {
-  const html = renderToStaticMarkup(createElement(DeleteUserDialog, { user: { id: "fixture", name: "临时用户", username: "temporary-account" }, onClose: () => {}, onDelete: async () => {} }));
+  const html = renderToStaticMarkup(
+    createElement(DeleteUserDialog, {
+      user: { id: "fixture", name: "临时用户", username: "temporary-account" },
+      onClose: () => {},
+      onDelete: async () => {},
+    }),
+  );
   state(html, "确认删除账号", true);
   assert.ok(html.includes("temporary-account"));
   assert.ok(html.includes("历史采集、任务、分析及审计记录保留"));
@@ -81,4 +147,16 @@ check("用户删除明确保留记录并默认禁止未确认提交", () => {
   assert.ok(html.includes("下次联网登录时校验账号状态"));
 });
 mkdirSync("artifacts", { recursive: true });
-writeFileSync("artifacts/web-role-markup-results.json", JSON.stringify({ at: new Date().toISOString(), scope: "Static React initial markup; not browser, layout, effects, interaction or complete role coverage", results }, null, 2));
+writeFileSync(
+  "artifacts/web-role-markup-results.json",
+  JSON.stringify(
+    {
+      at: new Date().toISOString(),
+      scope:
+        "Static React initial markup; not browser, layout, effects, interaction or complete role coverage",
+      results,
+    },
+    null,
+    2,
+  ),
+);

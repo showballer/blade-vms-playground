@@ -44,7 +44,8 @@
     "test:report": "tsx scripts/test-report-details.ts",
     "test:import": "node scripts/prepare-desktop.mjs && tsx scripts/test-import-data.ts",
     "test:import-api": "node --env-file=apps/web/.env.local scripts/test-import-api.mjs",
-    "test:health": "tsx scripts/test-health-data.ts",
+    "test:health": "tsx scripts/test-health-data.ts && tsx scripts/test-health-workspace.ts",
+    "test:health-ui": "electron scripts/health-ui-smoke.cjs",
     "test:health-api": "node --env-file=apps/web/.env.local scripts/test-health-api.mjs",
     "test:health-trend": "tsx scripts/test-health-trend-data.ts",
     "test:health-trend-api": "node --env-file=apps/web/.env.local --import tsx scripts/test-health-trend-api.ts",
@@ -72,7 +73,10 @@
     "test:route-position-ui": "electron scripts/field-route-position-ui-smoke.cjs",
     "test:capture-layout-ui": "electron scripts/field-capture-layout-smoke.cjs",
     "package:mac": "node scripts/package-macos.cjs",
-    "test:task-search-ui": "electron scripts/field-task-search-ui-smoke.cjs"
+    "test:task-search-ui": "electron scripts/field-task-search-ui-smoke.cjs",
+    "test:measurement": "tsx scripts/test-measurement-domain.ts && tsx scripts/test-measurement-worker.ts && tsx scripts/test-measurement-live.ts && tsx scripts/test-measurement-report.ts && npm run test:measurement-synthesis",
+    "test:measurement-synthesis": "tsx --tsconfig apps/web/tsconfig.json scripts/test-measurement-synthesis.ts && tsx --tsconfig apps/web/tsconfig.json packages/ui/src/measurement-response-3d.test.tsx",
+    "test:measurement-ui": "electron scripts/measurement-ui-smoke.cjs"
   },
   "devDependencies": {
     "@types/node": "^22.19.0",
