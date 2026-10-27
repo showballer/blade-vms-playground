@@ -356,7 +356,10 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     });
     const content = await response.text();
     if (requestGeneration !== generation || requestChild !== child) throw failure('采集服务已变化，请刷新状态后重试', 409);
-    if (content.length > 2_000_000) throw failure('采集服务响应超过安全大小限制');
+    // A blade result can contain 64 bounded raw/valid previews plus per-point
+    // spectra. Match the analysis worker's 8 MiB budget; ordinary polling stays small.
+    const responseLimit = route === 'blade-passes' ? 8 * 1024 * 1024 : 2_000_000;
+    if (Buffer.byteLength(content, 'utf8') > responseLimit) throw failure('采集服务响应超过安全大小限制');
     let data;
     try { data = JSON.parse(content); } catch { throw failure('采集服务返回了无效响应'); }
     if (!response.ok) throw failure(typeof data.detail === 'string' ? data.detail : data.error || '采集操作失败', response.status);

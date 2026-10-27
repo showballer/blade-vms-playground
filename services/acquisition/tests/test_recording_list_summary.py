@@ -57,6 +57,8 @@ class RecordingListSummaryTests(unittest.TestCase):
         self.assertEqual(clean["pointCycle"]["completion"], "diagnostic_pass")
         self.assertTrue(clean["diagnosticOnly"])
         self.assertFalse(clean["validMeasurement"])
+        self.assertTrue(recording_summary(full)["diagnosticOnly"])
+        self.assertFalse(recording_summary(full)["validMeasurement"])
         self.assertEqual(normalize_recording_metadata(clean), clean)
         self.assertEqual(full, original)
         mutations = [

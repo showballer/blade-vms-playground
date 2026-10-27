@@ -53,7 +53,7 @@ class BladePassAnalysisTests(unittest.TestCase):
         return writer.id
 
     def analyze(self, *ids, **parameters):
-        return analyze_blade_passes(self.store, {"recordingIds": list(ids), **parameters})
+        return analyze_blade_passes(self.store, {"recordingIds": list(ids), "passWindow": "confirmed_inner", **parameters})
 
     def change(self, recording_id, change):
         directory = self.store.directory(recording_id)
@@ -105,6 +105,156 @@ class BladePassAnalysisTests(unittest.TestCase):
         self.assertEqual(source["sampleRate"], 8000)
         self.assertEqual(source["validSamples"], 2800)
         self.assertAlmostEqual(source["validSeconds"], .35)
+
+    def test_50khz_spectrum_window_keeps_original_250khz_indices(self):
+        rid = self.recording(samples=40000, rate=250000, start=2000, end=32000)
+        source = self.analyze(rid, analysisSampleRate=50000)["sources"][0]
+        spectrum = source["segments"][0]["spectrum"]
+        self.assertEqual((spectrum["start"], spectrum["end"]), (2000, 32000))
+        self.assertEqual(spectrum["samples"], 6000)
+        self.assertEqual(spectrum["sampleRate"], 50000)
+        self.assertEqual(spectrum["sourceSampleRate"], 250000)
+        self.assertEqual(spectrum["analysisWindow"], {"start": 0, "end": 6000, "coordinate": "segment_analysis_samples"})
+        with patch("blade_acquisition.blade_passes.MAX_FFT_SAMPLES", 1024):
+            bounded = self.analyze(rid, analysisSampleRate=50000)["sources"][0]["segments"][0]["spectrum"]
+        self.assertEqual((bounded["start"], bounded["end"]), (14440, 19560))
+        self.assertEqual(bounded["analysisWindow"]["start"], 2488)
+        self.assertAlmostEqual((bounded["end"] - bounded["start"]) / 250000, bounded["samples"] / 50000)
+
+    def test_resampled_spectrum_exclusive_end_does_not_exceed_original_segment(self):
+        rid = self.recording(samples=40000, rate=250000, start=2000, end=32003)
+        spectrum = self.analyze(rid, analysisSampleRate=50000)["sources"][0]["segments"][0]["spectrum"]
+        self.assertEqual(spectrum["samples"], 6001)
+        self.assertEqual((spectrum["start"], spectrum["end"]), (2000, 32003))
+
+    def diagnostic_recording(self, *, offset=21000, missing_head=False):
+        rid = self.recording(executionMode="manual_segments")
+        def mark(manifest):
+            manifest.update(diagnosticOnly=True, validMeasurement=False)
+            cycle = manifest["pointCycle"]
+            cycle.update(completion="diagnostic_pass", outcome="diagnostic", passCompleteness="confirmed",
+                         continuousSession={"sampleClock": "continuous_session_raw", "sampleRate": 1000,
+                                            "sampleStart": offset, "sampleEndExclusive": offset + 2000})
+            handoff = cycle["handoff"]
+            for key in ("entrySampleIndex", "entryConfirmedSampleIndex", "exitSampleIndex", "exitConfirmedSampleIndex"):
+                handoff[key] += offset
+            handoff.update(sampleClock="continuous_session_raw", passCompleteness="confirmed")
+            if missing_head:
+                handoff.update(entrySampleIndex=offset - 100, entryConfirmedSampleIndex=offset - 1)
+        self.change(rid, mark)
+        return rid
+
+    def test_diagnostic_opt_in_translates_global_clock_without_promoting_measurement(self):
+        rid = self.diagnostic_recording(offset=20_000_000)
+        paths = list(self.store.directory(rid).iterdir())
+        before = {p.name: p.read_bytes() for p in paths if p.is_file()}
+        excluded = self.analyze(rid)
+        self.assertEqual(excluded["sources"][0]["reason"], "diagnostic_requires_opt_in")
+        result = self.analyze(rid, includeDiagnostic=True)
+        source = result["sources"][0]
+        self.assertEqual(source["candidateRange"], {"start": 200, "end": 1600})
+        self.assertEqual(source["boundaryBasis"]["sourceOffset"], 20_000_000)
+        self.assertEqual(source["boundaryBasis"]["originalRange"], {"start": 20_000_200, "end": 20_001_600})
+        self.assertEqual(source["provenance"]["executionMode"], "manual_segments")
+        self.assertEqual(result["coverage"]["includedDiagnosticRecords"], 1)
+        self.assertTrue(result["diagnosticOnly"])
+        self.assertFalse(result["validMeasurement"])
+        self.assertFalse(source["validMeasurement"])
+        self.assertEqual(before, {p.name: p.read_bytes() for p in paths if p.is_file()})
+        json.dumps(result, allow_nan=False)
+
+    def test_diagnostic_missing_head_is_excluded_instead_of_clamped(self):
+        rid = self.diagnostic_recording(missing_head=True)
+        result = self.analyze(rid, includeDiagnostic=True)
+        source = result["sources"][0]
+        self.assertEqual(source["reason"], "pass_boundary_outside_recording")
+        self.assertIsNone(source["candidateRange"])
+        self.assertEqual(source["validSamples"], 0)
+        self.assertTrue(source["rawTimeDomain"]["values"])
+        self.assertFalse(result["validMeasurement"])
+
+    def test_diagnostic_clock_mismatch_and_unconfirmed_pass_are_not_guessed(self):
+        for field, value in (("sampleRate", 250000), ("sampleEndExclusive", 999999), ("sampleStart", -1)):
+            rid = self.diagnostic_recording()
+            self.change(rid, lambda m: m["pointCycle"]["continuousSession"].update({field: value}))
+            self.assertEqual(self.analyze(rid, includeDiagnostic=True)["coverage"]["includedRecords"], 0)
+        rid = self.diagnostic_recording()
+        self.change(rid, lambda m: m["pointCycle"].update(passCompleteness="unconfirmed"))
+        self.assertEqual(self.analyze(rid, includeDiagnostic=True)["sources"][0]["reason"], "unconfirmed_diagnostic_pass")
+        with self.assertRaises(ValueError):
+            self.analyze(rid, includeDiagnostic="true")
+
+    def test_known_geometry_conflicts_and_object_scope_are_not_merged(self):
+        first, second = self.recording(), self.recording(azimuth=90)
+        for rid in (first, second):
+            self.change(rid, lambda m: m["pointCycle"].update(
+                referenceSignature={"axis1": 25, "axis2": 0}, recordedPort="tcp://192.168.10.50:5000"))
+        self.analyze(first, second)
+        self.change(second, lambda m: m["pointCycle"].update(referenceSignature={"axis1": 35, "axis2": 0}))
+        with self.assertRaisesRegex(ValueError, "角度参考不同"):
+            self.analyze(first, second)
+        self.change(second, lambda m: m["pointCycle"].update(referenceSignature={"axis1": 25, "axis2": 0}))
+        self.change(first, lambda m: m["pointCycle"].update(plannedStations=[{
+            "radialPointId": "p1", "azimuthDeg": 90, "axis1AngleDeg": 12, "axis2AngleDeg": -3}]))
+        self.change(second, lambda m: m["pointCycle"].update(targetAxis1AngleDeg=13, targetAxis2AngleDeg=-3))
+        with self.assertRaisesRegex(ValueError, "目标坐标不同"):
+            self.analyze(first, second)
+        third = self.recording()
+        self.change(third, lambda m: m.update(turbine="another-turbine"))
+        with self.assertRaisesRegex(ValueError, "同一采集任务"):
+            self.analyze(first, third)
+
+    def test_raw_preview_preserves_rssi_peak_and_quality_gap_with_bounded_payload(self):
+        count = 20000
+        flags = [False] * count
+        flags[7777] = True
+        rssi = [20.] * count
+        rssi[12345] = 99.
+        rid = self.recording(samples=count, end=19000, flags=flags, rssi=rssi)
+        preview = self.analyze(rid)["sources"][0]["rawTimeDomain"]
+        self.assertLessEqual(len(preview["sampleIndices"]), 1000)
+        i = preview["sampleIndices"].index(7777)
+        self.assertIsNone(preview["values"][i])
+        self.assertEqual(max(x for x in preview["rssiPercent"] if x is not None), 99.)
+        self.assertEqual(preview["seconds"][i], 7.777)
+
+    def test_default_detected_window_retains_signal_during_entry_confirmation(self):
+        # A short real response can end before the entry debounce has elapsed.
+        # Confirmation validates that event; it must not erase its first 20 ms.
+        values = np.zeros(2000)
+        values[180:200] = .3 * np.sin(np.arange(20))
+        rid = self.recording(start=200, end=210, values=values)
+        detected = analyze_blade_passes(self.store, {"recordingIds": [rid], "detrend": "none"})
+        self.assertEqual(detected["parameters"]["passWindow"], "detected")
+        source = detected["sources"][0]
+        self.assertEqual(source["candidateRange"], {"start": 180, "end": 210})
+        self.assertEqual(source["boundaryBasis"]["entryConfirmationRange"], {"start": 180, "end": 200})
+        # Minimum length remains enforced: range detection and usable spectral
+        # content are separate claims, even if the event was confirmed.
+        self.assertEqual(source["reason"], "no_usable_segment")
+        rid = self.recording(start=300, end=380, values=np.r_[np.zeros(280), np.ones(20), np.zeros(1700)])
+        detected = analyze_blade_passes(self.store, {"recordingIds": [rid], "detrend": "none"})
+        conservative = self.analyze(rid, detrend="none")
+        self.assertGreater(detected["sources"][0]["metrics"]["rmsVelocityMps"], 0)
+        self.assertEqual(conservative["sources"][0]["metrics"]["rmsVelocityMps"], 0)
+
+    def test_analysis_automatically_downsamples_when_selected_raw_samples_exceed_budget(self):
+        first = self.recording(samples=2000, rate=20000, start=200, end=1600, session="a" * 32)
+        second = self.recording(samples=2000, rate=20000, start=200, end=1600, session="b" * 32)
+        with patch("blade_acquisition.blade_passes.MAX_SAMPLES", 3000):
+            result = self.analyze(first, second)
+        self.assertEqual(result["parameters"]["analysisSampleRate"], 15000)
+        self.assertEqual(result["coverage"]["rawSamples"], 4000)
+        self.assertEqual(result["coverage"]["analysisSamples"], 3000)
+        self.assertEqual([source["sampleRate"] for source in result["sources"]], [15000, 15000])
+        self.assertEqual([source["validSamples"] for source in result["sources"]], [1050, 1050])
+        self.assertTrue(any("自动降采样至最高可用的 15,000 Hz" in warning for warning in result["warnings"]))
+
+    def test_analysis_rejects_selection_when_minimum_rate_still_exceeds_budget(self):
+        first = self.recording(samples=2000, rate=1000, start=200, end=1600, session="a" * 32)
+        second = self.recording(samples=2000, rate=1000, start=200, end=1600, session="b" * 32)
+        with patch("blade_acquisition.blade_passes.MAX_SAMPLES", 3000), self.assertRaisesRegex(ValueError, "即使按 10 kHz 降采样仍超出"):
+            self.analyze(first, second)
 
     def test_low_rssi_and_overrange_split_segments_keep_original_time(self):
         rssi = [80.] * 2000
@@ -196,6 +346,49 @@ class BladePassAnalysisTests(unittest.TestCase):
             rid = self.recording(**{field: value})
             with self.subTest(field=field), self.assertRaises(ValueError):
                 self.analyze(rid)
+
+    def test_cross_task_composition_requires_confirmation_exact_membership_and_matching_scope(self):
+        first = self.recording(radial="p1", radius=.31)
+        second = self.recording(radial="p2", radius=.5, collection="d" * 32, bladeId="2")
+        for rid in (first, second):
+            self.change(rid, lambda manifest: manifest.update(windFarm="风场 A", turbine="机组 1", object="叶片"))
+        manifests = [self.store._read_manifest(self.store.directory(rid)) for rid in (first, second)]
+        tasks = [{"collectionId": item["pointCycle"]["collectionId"], "bladeId": item["pointCycle"]["bladeId"],
+                  "windFarm": item["windFarm"], "turbine": item["turbine"], "object": item["object"],
+                  "recordingIds": [rid]} for rid, item in zip((first, second), manifests)]
+        composition = {"confirmedSameBlade": True, "bladeLabel": "叶片实体 A", "tasks": tasks}
+
+        with self.assertRaisesRegex(ValueError, "跨任务组合须显式确认"):
+            self.analyze(first, second)
+        with self.assertRaisesRegex(ValueError, "准确覆盖"):
+            self.analyze(first, second, bladeComposition={**composition, "tasks": [tasks[0]]})
+        with self.assertRaisesRegex(ValueError, "同一根实体叶片"):
+            self.analyze(first, second, bladeComposition={**composition, "confirmedSameBlade": False})
+
+        result = self.analyze(first, second, bladeComposition=composition)
+        self.assertEqual(result["bladeId"], "叶片实体 A")
+        self.assertEqual(result["composition"]["taskCount"], 2)
+        self.assertEqual([source["taskIdentity"]["collectionId"] for source in result["sources"]],
+                         ["c" * 32, "d" * 32])
+        self.assertEqual([task["recordingIds"] for task in result["composition"]["tasks"]], [[first], [second]])
+        json.dumps(result, ensure_ascii=False, allow_nan=False)
+
+        for rid in (first, second):
+            self.change(rid, lambda manifest: manifest.update(windFarm="", turbine="", object=""))
+        incomplete_scope = [{**task, "windFarm": "", "turbine": "", "object": ""} for task in tasks]
+        incomplete_result = self.analyze(first, second, bladeComposition={**composition, "tasks": incomplete_scope})
+        self.assertEqual(incomplete_result["composition"]["taskCount"], 2)
+
+        for rid in (first, second):
+            self.change(rid, lambda manifest: manifest.update(windFarm="风场 A", turbine="机组 1", object="叶片"))
+        self.change(second, lambda manifest: manifest["pointCycle"].update(radiusM=.31))
+        with self.assertRaisesRegex(ValueError, "至少需要两个不同半径"):
+            self.analyze(first, second, bladeComposition=composition)
+        self.change(second, lambda manifest: manifest["pointCycle"].update(radiusM=.5))
+        self.change(second, lambda manifest: manifest.update(turbine="机组 2"))
+        mismatched_scope = {**composition, "tasks": [tasks[0], {**tasks[1], "turbine": "机组 2"}]}
+        with self.assertRaisesRegex(ValueError, "风场、风机和测量对象一致"):
+            self.analyze(first, second, bladeComposition=mismatched_scope)
 
     def test_strict_parameters_and_limits_reject_before_raw_read(self):
         rid = self.recording()
@@ -299,7 +492,7 @@ class BladePassAnalysisTests(unittest.TestCase):
         # previous tuple-per-island implementation peaks above 60 MB here, even
         # though only two usable intervals survive. Allow room for NumPy's
         # compact temporary arrays without depending on exact allocator sizes.
-        with patch("blade_acquisition.blade_passes._raw", return_value=(values, quality, {})):
+        with patch("blade_acquisition.blade_passes._raw", return_value=(values, quality, {"rssiSampleStride": 1}, np.full(count, 80., dtype=np.float32))):
             tracemalloc.start()
             try:
                 result = self.analyze(rid)

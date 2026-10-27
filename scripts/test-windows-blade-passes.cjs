@@ -259,7 +259,10 @@ async function validateWebPaths({ python, temporary, fixtures, exports, captures
   }
   for (const [dataRoot, records] of [[nativeRoot, native], [offlineRoot, offline]]) {
     const ids = records.map(record => record.id);
-    assertAnalysis(await success(dataRoot, { action: 'blade-passes', parameters: { recordingIds: ids, rssiThresholdPercent: 50 } }));
+    assertAnalysis(await success(dataRoot, { action: 'blade-passes', parameters: { recordingIds: ids, rssiThresholdPercent: 50, passWindow: 'confirmed_inner' } }));
+    const completePass = await success(dataRoot, { action: 'blade-passes', parameters: { recordingIds: ids, rssiThresholdPercent: 50 } });
+    assert.equal(completePass.coverage.validSamples, 3660);
+    assert.deepEqual(completePass.sources[0].candidateRange, { start: 180, end: 1600 });
     const rejected = await webWorker(python, dataRoot, captureRoot, { action: 'rotation', parameters: { recordingIds: [ids[0]], rpm: 1200 } });
     assert.equal(rejected.ok, false, 'Legacy continuous rotation analysis must refuse sparse station passes');
     assert.equal(rejected.code, 2);

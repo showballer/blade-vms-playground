@@ -1,7 +1,7 @@
 """Segment-aware experimental reconstruction from non-synchronous LDV passes.
 
-Stitched spectra are experimental: segment boundaries are baseline-aligned, but
-the joining does not recover unmeasured time or phase between blade passes.
+Compressed-time waveforms are display-only and keep explicit segment gaps.
+All quantitative spectra are computed independently within continuous segments.
 Unknown spatial phase and signs stay unknown.
 """
 from __future__ import annotations
@@ -14,7 +14,7 @@ from scipy import signal
 
 from .blade_passes import MAX_FFT_SAMPLES, _number, _plot_curve, _time_curve, analyze_blade_passes
 
-VERSION = "blade-synthesis-1.2.0"
+VERSION = "blade-synthesis-1.3.0"
 
 
 def _linear_windows(values):
@@ -111,68 +111,43 @@ def reconstruct_blade_passes(store, parameters, *, segment_sink=None):
         # Resample to the lowest source rate so every joined sample has one
         # well-defined time step and no higher-rate segment is aliased.
         rate = min(part_rate for _, _, part_rate in parts)
-        joined, previous_end = [], None
         merged_sample_cursor = 0
+        preview_seconds, preview_values = [], []
         for mapping, values, part_rate in parts:
             if part_rate != rate:
-                ratio = Fraction(rate / part_rate).limit_denominator(1000)
+                ratio = Fraction(str(rate)) / Fraction(str(part_rate))
                 values = signal.resample_poly(values, ratio.numerator, ratio.denominator)
             values = np.asarray(values, dtype=np.float64)
             mapping["mergedStart"] = merged_sample_cursor
             mapping["mergedEnd"] = merged_sample_cursor + len(values)
             mapping["analysisSamples"] = len(values)
             mapping["mergedSampleRate"] = rate
+            mapping["compressedStartSeconds"] = merged_sample_cursor / rate
+            mapping["compressedEndSeconds"] = (merged_sample_cursor + len(values)) / rate
+            mapping["stitchOffsetMps"] = 0.
+            if preview_seconds:
+                preview_seconds.append(merged_sample_cursor / rate)
+                preview_values.append(None)
+            curve = _time_curve(values, 0, rate)
+            preview_seconds.extend(merged_sample_cursor / rate + second for second in curve["seconds"])
+            preview_values.extend(curve["values"])
             merged_sample_cursor += len(values)
-            offset = 0. if previous_end is None else previous_end - float(values[0])
-            values = values + offset
-            mapping["stitchOffsetMps"] = offset
-            joined.append(values)
-            previous_end = float(values[-1])
-        joined_signal = np.concatenate(joined)
-        point["samples"] = len(joined_signal)
-        stitched = joined_signal
-        original_samples = len(joined_signal)
-        if original_samples > MAX_FFT_SAMPLES:
-            # Fourier resampling retains the full concatenated duration while
-            # respecting the bounded FFT size and its physical frequency grid.
-            stitched = signal.resample(stitched, MAX_FFT_SAMPLES)
-            fft_rate = rate * MAX_FFT_SAMPLES / original_samples
-        else:
-            fft_rate = rate
-        centered = signal.detrend(stitched, type="linear")
-        frequencies, amplitudes = signal.periodogram(centered, fs=fft_rate, window="hann",
-            detrend=False, scaling="spectrum")
-        amplitudes = np.sqrt(np.maximum(amplitudes, 0.))
-        keep = frequencies <= config["maxHz"]
-        frequency_view, amplitude_view = frequencies[keep], amplitudes[keep]
-        if len(frequency_view) > 8192:
-            # Keep local peaks while bounding the JSON payload and chart cost.
-            stride = math.ceil(len(frequency_view) / 8192)
-            peak_indices = [start + int(np.argmax(amplitude_view[start:start + stride]))
-                            for start in range(0, len(frequency_view), stride)]
-            frequency_view, amplitude_view = frequency_view[peak_indices], amplitude_view[peak_indices]
-        point["stitchedSpectrum"] = {
-            "sampleRate": rate, "fftSampleRate": fft_rate, "samples": original_samples,
-            "frequencySpacingHz": fft_rate / len(stitched),
-            "frequencies": frequency_view.tolist(), "amplitudesMps": amplitude_view.tolist(),
-            "method": "joined-segments-offset-aligned-hann-periodogram",
-        }
+        point["samples"] = merged_sample_cursor
+        point["durationSeconds"] = merged_sample_cursor / rate
+        point["independentSpectrum"] = _independent_spectrum(point, spectra, config)
         point["stitchInfo"] = {
             "segments": len(parts), "sampleRate": rate,
             "resampledSegments": sum(part_rate != rate for _, _, part_rate in parts),
-            "fftSamples": len(stitched), "originalSamples": original_samples,
-            "method": "per-segment-baseline-step-alignment; no phase correction",
+            "originalSamples": merged_sample_cursor,
+            "method": "compressed-time-display-with-gaps; no offset or phase correction",
         }
-        step = max(1, math.ceil(original_samples / 512))
-        preview_indices = np.arange(0, original_samples, step, dtype=np.int64)
-        if preview_indices.size == 0 or preview_indices[-1] != original_samples - 1:
-            preview_indices = np.r_[preview_indices, original_samples - 1]
-        point["stitchedWaveform"] = {
-            "seconds": (preview_indices / rate).tolist(),
-            "valuesMps": joined_signal[preview_indices].tolist(),
-        }
+        point["stitchedWaveform"] = {"seconds": preview_seconds, "valuesMps": preview_values,
+                                      "representation": "compressed-valid-time-with-segment-gaps"}
     synthesis = _candidates(points, spectra, config)
     synthesis.update(algorithmVersion=VERSION, parameters=config, mergedPoints=points,
+        mergePlan={"pointMerge": "same radial point across selected azimuths",
+                   "bladeComposition": "selected radial points ordered by radius",
+                   "sourceSegments": sum(len(point["segments"]) for point in points)},
         coordinate="compressed-valid-time", measuredPhaseAvailable=False,
         assumptions=["暂按同一叶片处理；各径向点及圆周角度为分次采集。",
             "假定所选片段工况与激励可比较，激光视线投影可比较；尚未进行几何投影补偿。",
@@ -181,7 +156,8 @@ def reconstruct_blade_passes(store, parameters, *, segment_sink=None):
             "合成谱的每个窗口独立去线性趋势；展示波形预处理由用户所选 detrend 决定。",
             "候选曲线为共同频带的无符号响应幅值；没有实测空间相位，不确定节点符号。",
             "位移频带 RMS 由各频率速度 PSD 除以 (2πf)² 积分得到；合成周期采用同相假设，仅供预览。"],
-        damageAssessmentAvailable=False)
+        damageAssessmentAvailable=False, diagnosticOnly=result["diagnosticOnly"],
+        hasDiagnostic=result["hasDiagnostic"], validMeasurement=result["validMeasurement"])
     jumps = sum(segment["discontinuityAudit"]["count"] for point in points for segment in point["segments"])
     synthesis["qualityWarnings"] = ([f"确认经过范围内仍检测到 {jumps} 个异常大单步变化（超过段内差分 P99 的 50 倍）；已标记原始位置，未自动删除。应结合回波和实物事件检查后再用于振型解释。"] if jumps else [])
     result["warnings"] = [
@@ -190,6 +166,28 @@ def reconstruct_blade_passes(store, parameters, *, segment_sink=None):
         for warning in result["warnings"]]
     result["synthesis"] = synthesis
     return result
+
+
+def _independent_spectrum(point, spectra, config):
+    """Average independent PSDs; no FFT ever spans a discarded interval.
+
+    Repeated segments are weighted by duration within each angle, followed by
+    equal angle weights. Resolution is limited by the observed source windows.
+    """
+    selected = [item for item in spectra if item["point"] == point["radialPointId"]]
+    angles = {item["angle"] for item in selected}
+    spacing = max(min(item["spacing"] for item in selected if item["angle"] == angle) for angle in angles)
+    high = min(config["maxHz"], min(item["nyquist"] for item in selected))
+    step = max(spacing, high / 8192)
+    grid = np.arange(0., high + step * .01, step)
+    psd, counts = _stack(selected, grid, config)[point["radialPointId"]]
+    available = counts > 0
+    return {"frequencies": grid[available].tolist(), "psdMps2PerHz": psd[available].tolist(),
+            "stationCounts": counts[available].astype(int).tolist(),
+            "frequencySpacingHz": step, "sourceFrequencySpacingsHz": sorted({item["spacing"] for item in selected}),
+            "method": "independent-segment-welch", "segmentCount": len(selected),
+            "unit": "(m/s)^2/Hz", "minCycles": config["minCycles"],
+            "weighting": "duration-within-angle; equal-observed-angles"}
 
 
 def _stack(spectra, grid, config):
@@ -259,8 +257,8 @@ def _band_point(point, spectra, frequency, half_width, config):
 
 def _candidates(points, spectra, config):
     empty = {"status": "insufficient_evidence", "candidates": [], "bandResponses": [], "spectrum": None,
-             "reason": "至少需要三个不同半径的有效测点及可解析的共同频带。"}
-    if len({point["radiusM"] for point in points}) < 3 or not spectra:
+             "reason": "至少需要两个不同半径的有效测点及可解析的共同频带。"}
+    if len({point["radiusM"] for point in points}) < 2 or not spectra:
         return empty
     # A shared grid no finer than the worst point's longest actual FFT window.
     spacing = max(min(item["spacing"] for item in spectra if item["point"] == point["radialPointId"]) for point in points)
@@ -300,6 +298,8 @@ def _candidates(points, spectra, config):
             point["normalizedAmplitude"] = point["displacementRmsM"] / maximum
             point["spatialPhaseDeg"] = None
         warnings = ["这是无符号频带响应候选，不能仅凭此确认为固有模态或判断损伤。"]
+        if len(spatial) == 2:
+            warnings.append("当前仅有两个径向测点，空间曲线约束较弱；建议补充第三个及以上测点。")
         if any(point["stationCount"] < 4 for point in spatial):
             warnings.append("部分测点的短角度片段不足三个周期，未计入此频带；角度覆盖不完整。")
         if any((point["stationAmplitudeRatio"] or 1) > 3 for point in spatial):

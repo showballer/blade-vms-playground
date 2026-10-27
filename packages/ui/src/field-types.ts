@@ -207,6 +207,8 @@ export type FieldDeviceRequest = {
 export type FieldRssiCalibrationRequest = { deviceIp: string; hostIp: string; state: "background" | "blade_on" | "blade_pass"; durationSeconds: number; confirmLaser: true };
 export type FieldRssiCalibrationResult = { state: FieldRssiCalibrationRequest["state"]; label: string; recordedAt: number; startedAt: number; durationSeconds: number; sampleRate: number | null; sampleCount: number; minimum: number; p10: number; median: number; mean: number; p90: number; maximum: number; samples: number[]; states?: Record<string, FieldRssiCalibrationResult> };
 export type FieldRecording = {
+  diagnosticOnly?: boolean;
+  validMeasurement?: boolean;
   sampling?: { kind: "anti_alias_lowpass"; sourceSampleRate: number; sourceSamples: number; targetSampleRate: number; recommendedMaxFrequencyHz: number };
   captureSessionId?: string;
   turntable?: FieldTurntableStatus & { config: FieldTurntableConfig; telemetry?: { events: number; file: string; sha256: string; cloudSync: string } };

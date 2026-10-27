@@ -1,7 +1,10 @@
-import type { FieldAutomaticRecord, FieldRecording } from "./field-types";
+import { fieldDate, type FieldAutomaticRecord, type FieldRecording } from "./field-types";
+import { summarizeBladeRecords } from "./field-blade-summary-data";
 
-export type BladePassRecording = FieldRecording & { sourceMetadata?: { pointCycle?: FieldAutomaticRecord } };
-export type BladePassTask = { key: string; collectionId: string; bladeId: string; name: string; records: BladePassRecording[] };
+export type BladePassRecording = FieldRecording & { sourceMetadata?: { pointCycle?: FieldAutomaticRecord; windFarm?: string; turbine?: string; object?: string }; diagnosticOnly?: boolean; validMeasurement?: boolean };
+export type BladePassTask = { key: string; taskKey: string; collectionId: string; bladeId: string; name: string; windFarm: string; turbine: string; object: string; latestAt: number; records: BladePassRecording[] };
+export type BladePassAngleGroup = { key: string; azimuthDeg: number | null; records: BladePassRecording[] };
+export type BladePassPointGroup = { id: string; name: string; radius: number | undefined; records: BladePassRecording[]; angles: BladePassAngleGroup[] };
 export type BladePassMetrics = { rmsVelocityMps: number; peakVelocityMps: number; peakToPeakVelocityMps: number };
 export type BladePassSegment = {
   start: number; end: number; samples: number; sourceSamples?: number; durationSeconds: number; metrics: BladePassMetrics;
@@ -12,14 +15,17 @@ export type BladePassSegment = {
 };
 export type BladePassSource = {
   recordingId: string; name: string; sessionId: string; radialPointId: string; radialPointName: string;
-  radiusM: number; azimuthDeg: number; sampleRate: number; sampleOrigin: number;
+  radiusM: number; azimuthDeg: number; sampleRate: number; originalSampleRate?: number; sampleOrigin: number;
+  analysisSampling?: { configuredTargetSampleRate: number; sourceSampleRate: number; analysisSampleRate: number; resampled: boolean } | null;
   sampling?: { kind?: string; sourceSampleRate?: number; sourceSamples?: number; targetSampleRate?: number;
     recommendedMaxFrequencyHz?: number; filter?: string } | null;
   status: "included" | "excluded"; reason?: string; candidateRange?: { start: number; end: number } | null;
   validRanges: { start: number; end: number; samples: number }[]; sourceValidSamples?: number;
   exclusions: { reason: string; samples: number }[];
   metrics?: BladePassMetrics | null; segments: BladePassSegment[]; provenance?: unknown;
-  source?: string; simulation?: boolean;
+  source?: string; simulation?: boolean; diagnosticOnly?: boolean; validMeasurement?: boolean;
+  boundaryBasis?: { sampleClock: string; sourceOffset: number; originalRange?: { start: number; end: number }; localRange?: { start: number; end: number } };
+  rawTimeDomain?: { sampleIndices?: number[]; seconds: number[]; values: (number | null)[]; rssiPercent?: (number | null)[] };
 };
 export type BladePassDistribution = {
   azimuthDeg: number; metric: "rmsVelocityMps"; unit: "m/s";
@@ -28,11 +34,11 @@ export type BladePassDistribution = {
 export type BladePassResult = {
   algorithmVersion: string; parameters: Record<string, unknown>; collectionId: string; bladeId: string;
   phaseAvailable: false; modeShapeUnavailableReason: string;
-  coverage: { selectedRecords: number; includedRecords: number; excludedRecords: number; rawSamples: number; validSamples: number; validSeconds: number; segmentCount: number };
+  coverage: { selectedRecords: number; includedRecords: number; excludedRecords: number; rawSamples: number; analysisSamples?: number; diagnosticRecords?: number; includedDiagnosticRecords?: number; validSamples: number; validSeconds: number; segmentCount: number };
   sources: BladePassSource[];
   points: { radialPointId: string; radialPointName: string; radiusM: number; stations: { azimuthDeg: number; recordingIds: string[]; validSamples: number; validSeconds: number; metrics: BladePassMetrics }[] }[];
   amplitudeDistributions: BladePassDistribution[]; warnings: string[];
-  hasSimulation?: boolean;
+  hasSimulation?: boolean; hasDiagnostic?: boolean; diagnosticOnly?: boolean; validMeasurement?: boolean;
   synthesis?: BladeSynthesis;
 };
 
@@ -50,11 +56,12 @@ export type BladeMergedSegment = {
 export type BladeMergedPoint = {
   radialPointId: string; radialPointName: string; radiusM: number;
   samples: number; durationSeconds: number; segments: BladeMergedSegment[];
+  independentSpectrum?: { frequencies: number[]; psdMps2PerHz: number[]; frequencySpacingHz: number; method: "independent-segment-welch"; segmentCount: number };
   stitchedSpectrum?: { sampleRate: number; fftSampleRate: number; samples: number; frequencySpacingHz: number;
     frequencies: number[]; amplitudesMps: number[]; method: string };
   stitchInfo?: { segments: number; sampleRate: number; resampledSegments: number; fftSamples: number;
     originalSamples: number; method: string };
-  stitchedWaveform?: { seconds: number[]; valuesMps: number[] };
+  stitchedWaveform?: { seconds: number[]; valuesMps: (number | null)[] };
 };
 export type BladeShapeCandidate = {
   frequencyHz: number; bandHz: [number, number]; frequencyGridHz: number;
@@ -84,22 +91,72 @@ export function bladePassUnavailableReason(record: BladePassRecording): string |
   return null;
 }
 
-/** Group by explicit identity only. A matching task name never joins two collections. */
+/** Use the same object/task/blade identity and deduplication as the local summary.
+ * Imported sourceMetadata is promoted for grouping only; original records are not changed. */
 export function bladePassTasks(records: readonly BladePassRecording[]): BladePassTask[] {
-  const tasks = new Map<string, BladePassTask>();
-  const seen = new Set<string>();
-  for (const record of records) {
-    const metadata = bladePassMetadata(record);
-    if (seen.has(record.id) || !metadata || bladePassUnavailableReason(record)) continue;
-    seen.add(record.id);
-    const { collectionId, bladeId, radialPointId } = metadata;
-    if (!collectionId || collectionId.length !== 32 || !/^[a-f0-9]{32}$/.test(collectionId) || !bladeId?.trim() || !radialPointId?.trim()) continue;
-    const key = JSON.stringify([collectionId, bladeId]);
-    const existing = tasks.get(key);
-    if (existing) existing.records.push(record);
-    else tasks.set(key, { key, collectionId, bladeId, name: record.name, records: [record] });
+  const normalized = records.filter(record => !bladePassUnavailableReason(record)).map(record => ({ ...record,
+    pointCycle: bladePassMetadata(record) as FieldRecording["pointCycle"], windFarm: record.windFarm ?? record.sourceMetadata?.windFarm,
+    turbine: record.turbine ?? record.sourceMetadata?.turbine, object: record.object ?? record.sourceMetadata?.object }));
+  return summarizeBladeRecords(normalized).tasks.flatMap(task => task.collectionId ? task.blades.flatMap(blade => {
+    const members = new Map<string, BladePassRecording>();
+    for (const group of blade.groups) for (const station of group.stations) for (const record of station.records) members.set(record.id, record);
+    return members.size ? [{ key: blade.key, taskKey: task.key, collectionId: task.collectionId!, bladeId: blade.bladeId,
+      name: task.taskName, windFarm: task.windFarm, turbine: task.turbine, object: task.measurementObject,
+      latestAt: task.latestAt, records: [...members.values()] }] : [];
+  }) : []);
+}
+
+export const bladePassIsDiagnostic = (record: BladePassRecording) => record.diagnosticOnly === true || record.validMeasurement === false || bladePassMetadata(record)?.completion === "diagnostic_pass";
+export const bladePassExecutionLabel = (record: BladePassRecording) => bladePassMetadata(record)?.executionMode === "manual_segments" ? "分段采集" : "自动跟随";
+export const bladePassRecordLabel = (record: BladePassRecording) => bladePassIsDiagnostic(record) ?
+  bladePassMetadata(record)?.passCompleteness === "confirmed" ? "诊断经过 · 待验证" : "诊断边界待确认" :
+  bladePassMetadata(record)?.completion === "confirmed_pass" ? "完整经过" : "经过边界待确认";
+
+/** Every angle uses its latest complete pass, balanced across radial points. */
+export function defaultBladePassSelection(task: BladePassTask | undefined, includeDiagnostic = false): string[] {
+  // A new plan/reference/radius starts a new observation group. Do not fill
+  // missing angles of that group using old angles from another configuration.
+  const groups = summarizeBladeRecords(task?.records ?? []).groups;
+  const queues = bladePassPointGroups(task).map(point => {
+    const candidates = groups.filter(group => group.radialPointId === point.id).sort((a, b) => {
+      const latest = (group: typeof a) => Math.max(0, ...group.stations.flatMap(station => station.records.map(record => fieldDate(record.startedAt)?.getTime() ?? 0)));
+      return latest(b) - latest(a) || b.lapIndex - a.lapIndex;
+    });
+    const current = new Set(candidates[0]?.stations.flatMap(station => station.records.map(record => record.id)) ?? []);
+    return point.angles.flatMap(angle => {
+      const eligible = angle.records.filter(record => {
+        if (!current.has(record.id)) return false;
+        const meta = bladePassMetadata(record)!;
+        return !bladePassIsDiagnostic(record) && meta.completion === "confirmed_pass" ||
+          includeDiagnostic && bladePassIsDiagnostic(record) && meta.completion === "diagnostic_pass" && meta.passCompleteness === "confirmed";
+      }).sort((a, b) => (fieldDate(b.startedAt)?.getTime() ?? 0) - (fieldDate(a.startedAt)?.getTime() ?? 0) || a.id.localeCompare(b.id));
+      return eligible[0] ? [eligible[0].id] : [];
+    });
+  });
+  const selected: string[] = [];
+  for (let index = 0; queues.some(queue => index < queue.length) && selected.length < BLADE_PASS_RECORD_LIMIT; index++)
+    for (const queue of queues) if (queue[index] && selected.length < BLADE_PASS_RECORD_LIMIT) selected.push(queue[index]);
+  return selected;
+}
+
+export function bladePassPointGroups(task: BladePassTask | undefined): BladePassPointGroup[] {
+  const points = new Map<string, BladePassPointGroup>();
+  for (const record of task?.records ?? []) {
+    const meta = bladePassMetadata(record);
+    if (!meta?.radialPointId) continue;
+    const point = points.get(meta.radialPointId) ?? { id: meta.radialPointId, name: meta.radialPointName || meta.radialPointId, radius: meta.radiusM, records: [], angles: [] };
+    point.records.push(record); points.set(point.id, point);
   }
-  return [...tasks.values()];
+  for (const point of points.values()) {
+    const angles = new Map<string, BladePassAngleGroup>();
+    for (const record of point.records) {
+      const angle = bladePassMetadata(record)?.azimuthDeg, key = Number.isFinite(angle) ? String(angle) : "unknown";
+      const group = angles.get(key) ?? { key, azimuthDeg: Number.isFinite(angle) ? angle! : null, records: [] };
+      group.records.push(record); angles.set(key, group);
+    }
+    point.angles = [...angles.values()].sort((a,b) => (a.azimuthDeg ?? Infinity) - (b.azimuthDeg ?? Infinity));
+  }
+  return [...points.values()].sort((a,b) => (a.radius ?? Infinity) - (b.radius ?? Infinity) || a.id.localeCompare(b.id));
 }
 
 export function preferredBladePassTask(tasks: readonly BladePassTask[], preferredIds: readonly string[], currentKey?: string) {
@@ -129,7 +186,7 @@ export function bladePassWaveSeries(source: BladePassSource) {
 export const bladePassNumber = (value: number | null | undefined, digits = 4) => value == null || !Number.isFinite(value) ? "—" : Number(value.toPrecision(digits)).toLocaleString("zh-CN", { maximumFractionDigits: 9 });
 
 const reasonLabels: Record<string, string> = {
-  unconfirmed_pass: "经过完整性待确认", missing_initial_background: "缺少进入前背景", exit_baseline_mismatch: "离开回波与背景不一致",
+  diagnostic_pass: "诊断记录，需开启诊断分析", pass_boundary_outside_recording: "经过边界超出本记录，缺少完整原始数据", diagnostic_requires_opt_in: "未开启诊断数据分析", unconfirmed_pass: "经过完整性待确认", missing_initial_background: "缺少进入前背景", exit_baseline_mismatch: "离开回波与背景不一致",
   recording_not_complete: "记录未完整保存", missing_entry: "缺少叶片进入", missing_exit: "缺少叶片离开", signal_gap: "回波中断",
   missing_pass_boundaries: "缺少有效经过边界", invalid_pass_boundaries: "经过边界无效", no_usable_segment: "没有可用连续段",
   outside_confirmed_pass: "处于已确认经过范围之外", nonfinite_velocity: "速度值无效", overrange: "速度超量程",

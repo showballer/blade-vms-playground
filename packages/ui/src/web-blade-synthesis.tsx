@@ -26,29 +26,28 @@ export function BladeSynthesisResults({ synthesis }: { synthesis: BladeSynthesis
       </div>
       {synthesis.qualityWarnings?.map((warning, index) => <p key={index} className="blade-pass-boundary">{warning}</p>)}
       <div className="field-table-scroll"><table className="field-table"><thead><tr><th>测点</th><th>半径 m</th><th>合并有效秒数</th><th>样本 / 片段</th></tr></thead><tbody>{synthesis.mergedPoints.map(item => <tr key={item.radialPointId}><td>{item.radialPointName}</td><td>{number(item.radiusM)}</td><td>{number(item.durationSeconds)}</td><td>{item.samples.toLocaleString()} / {item.segments.length}</td></tr>)}</tbody></table></div>
-      {point?.stitchedWaveform && <Chart key={`merged-${point.radialPointId}`} height={280} label="单个径向测点多角度片段经边界基线偏置对齐后的拼接波形" option={{ ...axes,
-        xAxis: { type: "value", name: "拼接有效时间 / s", nameLocation: "middle", nameGap: 30 }, yAxis: { type: "value", name: "速度 / mm/s" },
-        series: [{ type: "line", showSymbol: false, data: point.stitchedWaveform.seconds.map((second, i) => [second, point.stitchedWaveform!.valuesMps[i] * 1000]),
-          markLine: { silent: true, symbol: "none", label: { show: false }, lineStyle: { type: "dotted", color: "#888" }, data: point.segments.slice(1).map(segment => ({ xAxis: segment.compressedStartSeconds })) } }],
-        dataZoom: [{ type: "inside", filterMode: "none" }, { type: "slider", height: 16, bottom: 5 }] }} />}
-      {point?.stitchedSpectrum && <>
-        <div className="blade-pass-spectrum-heading"><strong>拼接后 FFT 频谱</strong><p>
-          {point.stitchInfo?.segments ?? point.segments.length} 个有效片段 · Δf {number(point.stitchedSpectrum.frequencySpacingHz)} Hz
-          {point.stitchInfo?.resampledSegments ? ` · ${point.stitchInfo.resampledSegments} 段已重采样至 ${number(point.stitchInfo.sampleRate)} Hz` : ` · ${number(point.stitchInfo?.sampleRate ?? point.stitchedSpectrum.sampleRate)} Hz`}
-        </p></div>
-        <Chart key={`stitched-fft-${point.radialPointId}`} height={280} label="单个径向测点的多角度有效片段经边界偏置校正拼接后的 FFT 速度幅值谱" option={{
-          animation: false, tooltip: { trigger: "axis", confine: true }, grid: { left: 65, right: 30, top: 35, bottom: 65 },
+      {point && point.segments.length > 0 && <Chart key={`merged-${point.radialPointId}`} height={280} label="各角度有效片段按压缩时间并排显示，边界不连线" option={{ ...axes,
+        xAxis: { type: "value", name: "压缩有效时间 / s", nameLocation: "middle", nameGap: 30 }, yAxis: { type: "value", name: "速度 / mm/s" },
+        series: point.segments.map(segment => {
+          const curve = segment.plotTimeDomain ?? segment.timeDomain;
+          return { name: `${segment.azimuthDeg}° · ${segment.recordingId.slice(0, 8)}`, type: "line", showSymbol: false, connectNulls: false,
+            data: curve.seconds.map((second, index) => [segment.compressedStartSeconds + second - segment.originalStartSeconds,
+              curve.values[index] == null ? null : curve.values[index]! * 1000]),
+            markLine: { silent: true, symbol: "none", label: { show: true, formatter: `${segment.azimuthDeg}°` }, lineStyle: { type: "dotted", color: "#94a3b8" }, data: [{ xAxis: segment.compressedStartSeconds }] } };
+        }), dataZoom: [{ type: "inside", filterMode: "none" }, { type: "slider", height: 16, bottom: 5 }] }} />}
+      {point?.independentSpectrum && <>
+        <div className="blade-pass-spectrum-heading"><strong>连续片段独立计算的 Welch 功率谱</strong><p>{point.independentSpectrum.segmentCount} 个有效片段 · 频率网格 {number(point.independentSpectrum.frequencySpacingHz)} Hz</p></div>
+        <Chart key={`independent-spectrum-${point.radialPointId}`} height={260} label="独立连续段 Welch 功率谱，未跨拼接边界计算" option={{ ...axes,
           xAxis: { type: "value", name: "频率 / Hz", nameLocation: "middle", nameGap: 30 },
-          yAxis: { type: "value", name: "速度幅值 / mm/s" },
-          series: [{ type: "line", showSymbol: false, data: point.stitchedSpectrum.frequencies.map((frequency, index) => [frequency, point.stitchedSpectrum!.amplitudesMps[index] * 1000]) }],
-          dataZoom: [{ type: "inside", filterMode: "none" }, { type: "slider", height: 16, bottom: 5 }],
-        }} />
-        <p className="blade-pass-note">为拼接，程序将每段整体平移，使其首样本接到前一段末样本；各段内部波形不改。FFT 使用拼接后全序列、线性去趋势和 Hann 窗。拼接不能恢复各次经过之间未测到的振动相位，段边界和角度差异仍可能形成谱峰；请结合单段频谱判断。</p>
+          yAxis: { type: "value", name: "(mm/s)²/Hz" },
+          series: [{ type: "line", showSymbol: false, data: point.independentSpectrum.frequencies.map((frequency, index) => [frequency, point.independentSpectrum!.psdMps2PerHz[index] * 1e6]) }],
+          dataZoom: [{ type: "inside", filterMode: "none" }, { type: "slider", height: 16, bottom: 5 }] }} />
       </>}
-      <p className="blade-pass-note">上方拼接 FFT 是用于观察的实验结果；空间振型候选仍使用各原始连续段独立计算的谱，避免拼接边界或相位不一致影响候选判断。异常大单步变化的遮罩只用于绘图。</p>
+      <p className="blade-pass-note">压缩时间只用于并排查看，各段不平移基线、不跨边界计算频谱；角度间的空白时间与相位不能靠拼接恢复。</p>
+      {point && <details className="blade-pass-detail"><summary>片段来源与时间映射 · {point.segments.length} 段</summary><div className="field-table-scroll"><table className="field-table"><thead><tr><th>角度</th><th>原始记录</th><th>原始时间 s</th><th>压缩时间 s</th></tr></thead><tbody>{point.segments.map(segment => <tr key={segment.segmentId}><td>{segment.azimuthDeg}°</td><td>{segment.recordingId.slice(0, 8)}</td><td>{number(segment.originalStartSeconds)}～{number(segment.originalEndSeconds)}</td><td>{number(segment.compressedStartSeconds)}～{number(segment.compressedEndSeconds)}</td></tr>)}</tbody></table></div></details>}
     </section>
     <section className="field-card">
-      <div className="field-section-heading"><div><h2>合成振型候选 · 实验</h2><p>共同频带的无符号空间响应幅值，按最大径向幅值归一化。</p></div>
+      <div className="field-section-heading"><div><h2>多测点频带响应 · 实验</h2><p>共同频带的无符号空间响应幅值，按最大径向幅值归一化。</p></div>
         {candidate && <label className="blade-pass-inline">候选频带<CustomSelect aria-label="振型候选频带" value={candidateIndex} onChange={event => setCandidateIndex(Number(event.target.value))}>
           {responses.map((item, index) => <option key={item.frequencyHz} value={index}>{item.kind === "exploratory_band_response" ? "探索频带" : "候选"} · {number(item.bandHz[0])}～{number(item.bandHz[1])} Hz</option>)}
         </CustomSelect></label>}

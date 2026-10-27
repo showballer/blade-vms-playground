@@ -52,3 +52,49 @@
 .blade-pass-source-details pre { max-height: 240px; overflow: auto; background: var(--surface); padding: 10px; border-radius: 4px; font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; }
 @media (max-width: 800px) { .blade-pass-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } .blade-pass-inline { width: 100%; } .blade-pass-inline .custom-select { flex: 1; max-width: none; min-width: 0; } }
 @media (max-width: 480px) { .blade-pass-toolbar > label { flex-basis: 100%; } .blade-pass-selection { padding-top: 0; } .blade-pass-toolbar > .btn.primary { flex: 1; } .blade-pass-points > label { flex: 1 1 100%; } .blade-pass-advanced-fields { grid-template-columns: minmax(0, 1fr); } .blade-pass-metrics { gap: 8px; } .blade-pass-metrics dd { font-size: 18px; } .blade-pass-source-details > details > summary strong { float: none; display: block; margin: 4px 0 0; } }
+
+.blade-task-selection { display: grid; gap: 18px; }
+.blade-task-context { display: grid; grid-template-columns: minmax(280px, 1fr) auto; gap: 24px; align-items: end; }
+.blade-task-context > label { display: grid; gap: 8px; font-size: 13px; font-weight: 500; }
+.blade-task-context .custom-select { width: 100%; }
+.blade-task-context-note { display: grid; gap: 4px; text-align: right; color: var(--muted); font-size: 12px; }
+.blade-task-context-note strong { color: var(--ink); font-size: 14px; }
+.blade-task-blades { display: flex; gap: 8px; flex-wrap: wrap; }
+.blade-task-blades > button { display: flex; gap: 12px; align-items: center; background: var(--surface); border: 1px solid var(--line); padding: 10px 16px; border-radius: 8px; color: var(--ink); cursor: pointer; }
+.blade-task-blades > button span { font-size: 12px; color: var(--muted); }
+.blade-task-blades > button.selected { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.blade-task-diagnostic { padding: 12px 14px; border: 1px solid #f0d6b3; background: #fffaf1; border-radius: 8px; }
+.blade-task-diagnostic > label { display: flex; align-items: center; gap: 9px; font-size: 13px; font-weight: 600; }
+.blade-task-diagnostic p { margin: 6px 0 0 24px; font-size: 12px; line-height: 1.6; color: var(--muted); }
+.blade-pass-step-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.blade-pass-step-heading > div { display: grid; gap: 4px; }
+.blade-pass-step-heading strong { font-size: 14px; }
+.blade-pass-step-heading span { color: var(--muted); font-size: 12px; }
+.blade-pass-point-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
+.blade-pass-point-group { border: 1px solid var(--line); border-radius: 9px; min-width: 0; background: white; overflow: hidden; }
+.blade-pass-point-group.selected { border-color: var(--accent); background: var(--accent-soft); }
+.blade-point-choice { display: flex; align-items: center; gap: 8px; padding: 14px 12px 10px; cursor: pointer; }
+.blade-point-choice > span { flex: 1; min-width: 0; }
+.blade-point-choice strong { display: block; font-size: 17px; font-weight: 650; }
+.blade-point-choice small { display: block; font-size: 11px; color: var(--muted); margin-top: 4px; }
+.blade-point-choice b { font-size: 12px; font-weight: 500; color: var(--muted); }
+.blade-pass-angle-chips { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 12px 12px; }
+.blade-pass-angle-chips > span { border-radius: 4px; font-size: 11px; padding: 4px 6px; color: var(--muted); background: var(--surface); }
+.blade-pass-angle-chips > span.selected { color: var(--accent); background: white; }
+.blade-pass-point-group > details { border-top: 1px solid var(--line); padding: 8px 12px; background: rgba(255,255,255,.65); }
+.blade-pass-angle-list { display: grid; gap: 12px; margin-top: 12px; }
+.blade-pass-angle-group { display: grid; gap: 6px; font-size: 12px; }
+.blade-pass-angle-group > label { display: flex; align-items: start; gap: 7px; line-height: 1.6; }
+.blade-pass-angle-group small { display: block; color: var(--muted); font-size: 10px; }
+.blade-pass-runbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid var(--line); margin-top: 18px; padding-top: 16px; }
+.blade-pass-runbar > span { font-size: 13px; color: var(--muted); }
+.blade-pass-runbar strong { color: var(--ink); }
+.blade-pass-runbar > div { display: flex; gap: 8px; }
+.blade-pass-runbar .btn.primary { min-width: 170px; min-height: 40px; }
+.blade-pass-advanced-fields > label:has(input[type="checkbox"]) { display: flex; align-items: center; gap: 8px; grid-column: 1 / -1; }
+.blade-pass-advanced-fields input[type="checkbox"] { width: 15px; }
+@media (max-width: 1150px) { .blade-pass-point-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 700px) { .blade-pass-point-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .blade-task-context { grid-template-columns: minmax(0, 1fr); gap: 10px; } .blade-task-context-note { text-align: left; } .blade-pass-step-heading { align-items: start; } }
+@media (max-width: 460px) { .blade-pass-point-grid { grid-template-columns: minmax(0, 1fr); } .blade-pass-runbar { flex-direction: column; align-items: stretch; } .blade-pass-runbar > div { justify-content: end; } }
+
+.blade-pass-sampling-note { margin: 5px 0 0; font-size: 11px; line-height: 1.5; color: var(--muted); }

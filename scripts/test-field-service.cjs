@@ -317,6 +317,15 @@ test('laser monitor reads bypass active-capture prechecks and forward only a rea
 });
 const response = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, text: async () => JSON.stringify(data) });
 
+test('multi-point analysis has a bounded 8 MiB response budget while ordinary reads retain 2 MB', async t => {
+  let payload = { preview: 'x'.repeat(2_100_000) };
+  const f = fixture(t, { fetch: ({ route }) => response(route === 'status' ? idle() : payload) });
+  assert.equal((await f.service.bladePasses({ recordingIds: ['a'.repeat(32)] })).preview.length, 2_100_000);
+  await assert.rejects(f.service.recordings('a'.repeat(32)), /响应超过/);
+  payload = { preview: '测'.repeat(2_800_000) };
+  await assert.rejects(f.service.bladePasses({ recordingIds: ['a'.repeat(32)] }), /响应超过/);
+});
+
 test('recording list pages are aggregated while detail reads stay complete', async t => {
   const full = { id: 'a'.repeat(32), pointCycle: { arrivalMove: { referenceChecks: [1, 2, 3] } } };
   const f = fixture(t, { fetch: ({ route, url }) => {

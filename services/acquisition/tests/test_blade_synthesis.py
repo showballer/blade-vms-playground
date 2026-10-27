@@ -24,12 +24,13 @@ class BladeSynthesisTests(unittest.TestCase):
         self.serial = 0
 
     def recording(self, point, amplitude=1., frequency=80., phase=0., rate=4096, length=8192,
-                  angle=0, rssi=None, values=None):
+                  angle=0, rssi=None, values=None, collection="c" * 32, blade="blade",
+                  wind_farm="", turbine="", object_name=""):
         self.serial += 1
         t = np.arange(length) / rate
         x = amplitude * np.sin(2 * np.pi * frequency * t + phase) + .2 + .03 * t if values is None else np.asarray(values)
         start, end = 100, length - 100
-        meta = {"mode": "automatic_stations", "collectionId": "c" * 32, "bladeId": "blade",
+        meta = {"mode": "automatic_stations", "collectionId": collection, "bladeId": blade,
                 "sessionId": f"{self.serial:032x}", "radialPointId": f"p{point}",
                 "radialPointName": f"P{point}", "radiusM": point * .1, "azimuthDeg": angle,
                 "stationId": f"p{point}-{angle}", "stationIndex": 1, "stationCount": 4, "lapIndex": 1,
@@ -37,7 +38,8 @@ class BladeSynthesisTests(unittest.TestCase):
                 "handoff": {"reason": "blade_left", "entrySampleIndex": 50,
                             "entryConfirmedSampleIndex": start - 1, "exitSampleIndex": end,
                             "exitConfirmedSampleIndex": end + 29}}
-        writer = self.store.create({"name": "test", "pointCycle": meta, "source": "polytec_ivs500"})
+        writer = self.store.create({"name": "test", "pointCycle": meta, "source": "polytec_ivs500",
+                                    "windFarm": wind_farm, "turbine": turbine, "object": object_name})
         writer.ready(rate, 1700000000 + self.serial)
         writer.write(Batch(0, rate, 1700000000 + self.serial, [0] * length, x.tolist(),
                            [0] * length, rssi or [80.] * length, [False] * length))
@@ -45,7 +47,7 @@ class BladeSynthesisTests(unittest.TestCase):
         return writer.id
 
     def analyze(self, ids, **extra):
-        return reconstruct_blade_passes(self.store, {"recordingIds": ids, "detrend": "linear",
+        return reconstruct_blade_passes(self.store, {"recordingIds": ids, "detrend": "linear", "passWindow": "confirmed_inner",
                                                      "synthesis": {"minHz": 20, "maxHz": 300}, **extra})
 
     def test_known_shape_recovered_despite_unknown_pass_phase_and_drift(self):
@@ -64,6 +66,23 @@ class BladeSynthesisTests(unittest.TestCase):
         self.assertFalse(synth["damageAssessmentAvailable"])
         json.dumps(result, allow_nan=False)
 
+    def test_confirmed_cross_task_points_compose_one_blade_synthesis(self):
+        first = self.recording(1, amplitude=.3, collection="c" * 32, blade="2",
+                               wind_farm="风场 A", turbine="机组 1", object_name="叶片")
+        second = self.recording(2, amplitude=.7, collection="d" * 32, blade="blade-2",
+                                wind_farm="风场 A", turbine="机组 1", object_name="叶片")
+        composition = {"confirmedSameBlade": True, "bladeLabel": "叶片实体 A", "tasks": [
+            {"collectionId": "c" * 32, "bladeId": "2", "windFarm": "风场 A", "turbine": "机组 1", "object": "叶片", "recordingIds": [first]},
+            {"collectionId": "d" * 32, "bladeId": "blade-2", "windFarm": "风场 A", "turbine": "机组 1", "object": "叶片", "recordingIds": [second]},
+        ]}
+        result = reconstruct_blade_passes(self.store, {"recordingIds": [first, second], "bladeComposition": composition,
+            "synthesis": {"minHz": 20, "maxHz": 300}})
+        self.assertEqual(result["composition"]["bladeLabel"], "叶片实体 A")
+        self.assertEqual(result["composition"]["taskCount"], 2)
+        self.assertEqual([point["radialPointId"] for point in result["synthesis"]["mergedPoints"]], ["p1", "p2"])
+        self.assertEqual({source["taskIdentity"]["collectionId"] for source in result["sources"]}, {"c" * 32, "d" * 32})
+        json.dumps(result, ensure_ascii=False, allow_nan=False)
+
     def test_merge_mapping_and_quality_hole_preserve_raw_and_sample_order(self):
         rssi = [80.] * 8192
         rssi[1000:1100] = [0.] * 100
@@ -74,7 +93,7 @@ class BladeSynthesisTests(unittest.TestCase):
         def sink(source, mapping, raw, processed):
             saved.append((dict(mapping), raw.copy(), processed.copy()))
 
-        result = reconstruct_blade_passes(self.store, {"recordingIds": ids, "rssiThresholdPercent": 50}, segment_sink=sink)
+        result = reconstruct_blade_passes(self.store, {"recordingIds": ids, "rssiThresholdPercent": 50, "passWindow": "confirmed_inner"}, segment_sink=sink)
         point = result["synthesis"]["mergedPoints"][0]
         self.assertEqual(point["samples"], 450 + 3496 + 7992)
         self.assertEqual(len(point["segments"]), 3)
@@ -87,20 +106,23 @@ class BladeSynthesisTests(unittest.TestCase):
         after = {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in self.root.rglob("*") if path.is_file()}
         self.assertEqual(before, after)
 
-    def test_stitched_fft_uses_joined_point_with_boundary_offset_correction(self):
+    def test_display_stitch_does_not_change_offsets_or_manufacture_a_continuous_fft(self):
         first = self.recording(1, frequency=80, phase=0, angle=0, rate=4096)
         second = self.recording(1, frequency=80, phase=1.2, angle=90, rate=2048)
         result = self.analyze([first, second])["synthesis"]["mergedPoints"][0]
-        spectrum = result["stitchedSpectrum"]
-        self.assertEqual(spectrum["method"], "joined-segments-offset-aligned-hann-periodogram")
+        spectrum = result["independentSpectrum"]
+        self.assertNotIn("stitchedSpectrum", result)
+        self.assertEqual(spectrum["method"], "independent-segment-welch")
         self.assertEqual(result["stitchInfo"]["segments"], 2)
         self.assertEqual(result["stitchInfo"]["resampledSegments"], 1)
-        self.assertEqual(spectrum["samples"], result["stitchInfo"]["originalSamples"])
-        self.assertGreaterEqual(len(spectrum["frequencies"]), 2)
-        peak = int(np.argmax(spectrum["amplitudesMps"]))
+        peak = int(np.argmax(spectrum["psdMps2PerHz"]))
         self.assertAlmostEqual(spectrum["frequencies"][peak], 80, delta=spectrum["frequencySpacingHz"] * 2)
-        self.assertTrue(all(math.isfinite(value) for value in spectrum["amplitudesMps"]))
+        self.assertTrue(all(segment["stitchOffsetMps"] == 0 for segment in result["segments"]))
+        self.assertIn(None, result["stitchedWaveform"]["valuesMps"])
         self.assertEqual(len(result["stitchedWaveform"]["seconds"]), len(result["stitchedWaveform"]["valuesMps"]))
+        reverse = self.analyze([second, first])["synthesis"]["mergedPoints"][0]["independentSpectrum"]
+        np.testing.assert_allclose(reverse["psdMps2PerHz"], spectrum["psdMps2PerHz"], rtol=1e-12)
+        np.testing.assert_allclose(reverse["frequencies"], spectrum["frequencies"])
         json.dumps(result, allow_nan=False)
 
     def test_stitched_indices_and_fft_follow_configured_analysis_rate(self):
@@ -112,7 +134,8 @@ class BladeSynthesisTests(unittest.TestCase):
         self.assertEqual(segment["analysisSamples"], segment["mergedEnd"] - segment["mergedStart"])
         self.assertEqual(point["samples"], segment["analysisSamples"])
         self.assertAlmostEqual(point["durationSeconds"], segment["compressedEndSeconds"])
-        self.assertAlmostEqual(point["stitchedSpectrum"]["sampleRate"], 10000)
+        self.assertAlmostEqual(point["stitchInfo"]["sampleRate"], 10000)
+        self.assertEqual(point["independentSpectrum"]["method"], "independent-segment-welch")
 
     def test_station_weight_does_not_count_retries_as_extra_angles(self):
         ids = []

@@ -53,6 +53,7 @@ RECORDING_LIST_FIELDS = (
     "id", "name", "source", "windFarm", "object", "turbine", "point",
     "samples", "sampleRate", "startedAt", "endedAt", "status", "error", "unit",
     "sampleOrigin", "velocityRangeMps", "position", "rpm", "qualityCounts", "simulation", "captureSessionId", "sampling",
+    "diagnosticOnly", "validMeasurement",
 )
 POINT_LIST_FIELDS = (
     "mode", "collectionId", "sessionId", "bladeId", "radialPointId", "radialPointName",

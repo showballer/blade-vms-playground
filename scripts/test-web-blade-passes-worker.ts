@@ -37,7 +37,7 @@ async function main() {
     const a = await upload(1, .31, 0, "a".repeat(32));
     const b = await upload(2, .5, 0, "b".repeat(32));
     const c = await upload(3, .31, 90, "a".repeat(32));
-    const parameters = { recordingIds: [a.id, b.id, c.id], detrend: "constant", rssiThresholdPercent: 50 };
+    const parameters = { recordingIds: [a.id, b.id, c.id], detrend: "constant", rssiThresholdPercent: 50, passWindow: "confirmed_inner" };
     const result = await rotationWorker(user, { action: "blade-passes", parameters });
     assert.equal(result.phaseAvailable, false);
     assert.equal(result.coverage.validSamples, 3600);
@@ -49,6 +49,9 @@ async function main() {
     assert.notEqual(result.sources[0].provenance.storeSampleOrigin, 1700000001);
     assert.equal(result.modalMatch, undefined);
     assert.ok(JSON.stringify(result).length < 8 * 1024 * 1024);
+    const fullPass = await rotationWorker(user, { action: "blade-passes", parameters: { ...parameters, passWindow: "detected" } });
+    assert.equal(fullPass.coverage.validSamples, 3660);
+    assert.deepEqual(fullPass.sources[0].validRanges.map((range: any) => [range.start, range.end]), [[180, 600], [700, 1000], [1100, 1600]]);
     const d = await upload(4, .65, 0, "d".repeat(32));
     const synthesis = await rotationWorker(user, { action: "blade-passes", parameters: {
       ...parameters, recordingIds: [...parameters.recordingIds, d.id], synthesis: { minHz: 20, maxHz: 300 },
