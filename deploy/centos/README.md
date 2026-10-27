@@ -2,6 +2,8 @@
 
 本目录提供 `115.190.201.41` 的部署配置。它不是自动部署脚本；仓库中存在配置文件不代表服务器已安装、已启动或已完成验收。服务器操作由部署负责人执行。
 
+最近一次已完成发布见 [2026-10-27 测量分析与三维幅值发布记录](DEPLOYED-20261027-MEASUREMENT-3D.md)，包含实际运行提交、备份和线上验收结果。
+
 本次方案为**迁移现有 Web 数据**，保留账号、用户 UUID、租户、密码摘要、会话、API 令牌、业务记录、审计及旋转原始数据。不重新初始化账号，不重置现有密码。
 
 ## 运行约定
@@ -21,7 +23,7 @@
 | 桌面采集与上传暂存 | `/var/lib/bladevms/web-captures`，`bladevms:bladevms`，目录权限 `0700` |
 | 旋转原始数据 | `/var/lib/bladevms/web-rotation`，`bladevms:bladevms`，目录权限 `0700` |
 | 数据库 | 复用现有 MySQL 容器；仅 `blade_vms_playground` 库及 `blade_vms_app` 账号 |
-| 本次 Windows 下载目标 | `/var/lib/bladevms/downloads/BladeVMS-Setup-1.5.0-x64.exe`，验收安装包后启用 |
+| Windows 下载 | 按 `/etc/bladevms/web.env` 指向已验收的安装包；2026-10-27 线上为 1.5.5，本轮 Web 发布未重打客户端 |
 
 Next 同时提供 Web 页面和 API。systemd 直接启动一个 Node 进程，不使用 PM2 cluster、多个 Web 副本或另一个 `npm start` 守护进程。旋转分析按请求启动短期 Python 子进程；无需启动采集 HTTP 服务或真实设备连接。
 
