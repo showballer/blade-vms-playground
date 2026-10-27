@@ -8,10 +8,16 @@
 .blade-pass-toolbar .custom-select-trigger, .blade-pass-advanced-fields .custom-select-trigger, .blade-pass-advanced-fields input { min-height: 36px; }
 .blade-pass-selection { align-self: center; padding-top: 20px; color: var(--muted); font-size: 12px; white-space: nowrap; }
 .blade-pass-selection strong { color: var(--ink); font-size: 15px; font-variant-numeric: tabular-nums; }
-.blade-pass-points { display: flex; flex-wrap: wrap; gap: 8px; border: 0; margin: 16px 0 0; padding: 0; }
+.blade-pass-points { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px; border: 0; margin: 16px 0 0; padding: 0; }
 .blade-pass-points legend { margin-bottom: 8px; font-size: 12px; color: var(--muted); }
-.blade-pass-points > label { display: flex; align-items: center; gap: 10px; min-width: 160px; border: 1px solid var(--line); border-radius: 6px; padding: 9px 12px; cursor: pointer; }
-.blade-pass-points > label.selected { background: var(--accent-soft); border-color: var(--accent); }
+.blade-pass-point-group { border: 1px solid var(--line); border-radius: 6px; padding: 9px 12px; min-width: 0; }
+.blade-pass-point-group.selected { background: var(--accent-soft); border-color: var(--accent); }
+.blade-pass-point-group > label { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+.blade-pass-point-group > details { margin: 8px 0 0 25px; border-top: 1px solid color-mix(in srgb, var(--line) 75%, transparent); padding-top: 7px; }
+.blade-pass-point-group > details summary { font-size: 11px; }
+.blade-pass-angle-list { display: grid; gap: 5px; margin-top: 6px; }
+.blade-pass-angle-list label { display: flex; align-items: center; gap: 7px; font-size: 12px; }
+.blade-pass-angle-list small { margin-left: 5px; color: var(--muted); }
 .blade-pass-points strong { font-size: 13px; font-weight: 600; }
 .blade-pass-points small { display: block; color: var(--muted); font-size: 12px; margin-top: 3px; }
 .web-blade-passes input[type="checkbox"] { accent-color: var(--accent); width: 15px; height: 15px; flex: none; }
@@ -26,6 +32,17 @@
 .blade-pass-advanced-fields > label { display: grid; gap: 6px; font-size: 12px; }
 .blade-pass-advanced-fields input { min-width: 0; width: 100%; border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; background: white; color: var(--ink); }
 .blade-pass-note { margin: 10px 0 0; font-size: 12px; line-height: 1.6; color: var(--muted); }
+.blade-pass-step-note { margin: 12px 0 0; padding: 9px 12px; border-left: 2px solid var(--accent); background: var(--surface); color: var(--ink); font-size: 12px; line-height: 1.6; }
+.blade-pass-step-heading { display: flex; align-items: end; justify-content: space-between; gap: 12px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
+.blade-pass-step-heading strong, .blade-pass-step-heading span { display: block; }
+.blade-pass-step-heading strong { font-size: 13px; }
+.blade-pass-step-heading span { margin-top: 4px; color: var(--muted); font-size: 12px; }
+.blade-pass-step-actions { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.blade-pass-step-actions .btn { min-height: 32px; }
+.blade-pass-selected-points { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.blade-pass-selected-points > span { display: inline-flex; align-items: center; gap: 5px; padding: 5px 8px; border: 1px solid var(--accent); border-radius: 5px; background: var(--accent-soft); color: var(--ink); font-size: 12px; }
+.blade-pass-selected-points button { display: inline-flex; align-items: center; border: 0; padding: 0; background: transparent; color: var(--muted); cursor: pointer; }
+.blade-pass-selected-points button:hover { color: var(--red); }
 .blade-pass-empty { margin: 12px 0 0; padding: 18px; border-radius: 6px; background: var(--surface); color: var(--muted); font-size: 13px; line-height: 1.7; }
 .blade-pass-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 0; }
 .blade-pass-metrics > div { padding: 12px; border-radius: 6px; background: var(--surface); }
@@ -50,5 +67,45 @@
 .blade-pass-source-details > details > div { padding: 0 12px 12px; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
 .blade-pass-source-details p { margin: 6px 0; }
 .blade-pass-source-details pre { max-height: 240px; overflow: auto; background: var(--surface); padding: 10px; border-radius: 4px; font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.blade-task-picker { margin: 0; padding: 14px; border: 1px solid var(--line); border-radius: 8px; min-width: 0; }
+.blade-task-picker legend, .blade-pass-points legend { padding: 0 5px; color: var(--muted); font-size: 12px; font-weight: 600; }
+.blade-task-picker > p { margin-top: 2px; }
+.blade-task-search { display: grid; gap: 6px; max-width: 520px; margin: 12px 0; font-size: 12px; }
+.blade-task-search input { min-height: 38px; width: 100%; border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px; color: var(--ink); background: white; }
+.blade-task-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 330px), 1fr)); gap: 8px; max-height: 300px; overflow: auto; padding: 2px; }
+.blade-task-options > label { display: flex; align-items: flex-start; gap: 10px; min-width: 0; padding: 11px 12px; border: 1px solid var(--line); border-radius: 7px; cursor: pointer; background: white; }
+.blade-task-options > label.selected { border-color: var(--accent); background: var(--accent-soft); }
+.blade-task-options > label > input { margin-top: 3px; }
+.blade-task-options > label > span { min-width: 0; overflow-wrap: anywhere; }
+.blade-task-options strong, .blade-task-options small { display: block; }
+.blade-task-options strong { font-size: 13px; }
+.blade-task-options small { margin-top: 4px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.blade-pass-step-heading { align-items: center; }
+.blade-pass-step-heading > div:first-child { min-width: 0; }
+.blade-pass-step-actions { flex-wrap: wrap; justify-content: flex-end; }
+.blade-task-workspace { min-width: 0; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: color-mix(in srgb, var(--surface) 55%, white); }
+.blade-task-workspace > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.blade-task-workspace > header h3 { margin: 0; font-size: 14px; }
+.blade-task-workspace > header p { margin: 5px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.blade-task-workspace > header > strong { flex: none; color: var(--accent); font-size: 12px; text-align: right; }
+.blade-task-workspace .blade-pass-points { margin-top: 12px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); }
+.blade-task-workspace .blade-pass-points legend { grid-column: 1 / -1; }
+.blade-pass-point-group { background: white; }
+.blade-pass-point-group > label { min-height: 38px; }
+.blade-pass-angle-list { max-height: 260px; overflow: auto; }
+.blade-pass-angle-group { display: grid; gap: 5px; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.blade-pass-angle-group > strong { color: var(--muted); font-size: 11px; }
+.blade-pass-angle-group > label { display: flex; align-items: flex-start; gap: 7px; padding: 6px; border-radius: 5px; cursor: pointer; background: var(--surface); }
+.blade-pass-angle-group > label > span { min-width: 0; font-size: 11px; }
+.blade-pass-angle-group > label small { display: block; color: var(--muted); line-height: 1.5; overflow-wrap: anywhere; }
+.blade-pass-composition { display: grid; gap: 8px; padding: 12px 14px; border: 1px solid color-mix(in srgb, var(--accent) 50%, var(--line)); border-radius: 8px; background: var(--accent-soft); }
+.blade-pass-composition h3, .blade-pass-composition p { margin: 0; }
+.blade-pass-composition h3 { font-size: 13px; }
+.blade-pass-composition p { font-size: 12px; line-height: 1.6; }
+.blade-pass-composition > label { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.blade-pass-composition > label:last-child { align-items: flex-start; flex-direction: column; gap: 5px; }
+.blade-pass-composition > label:last-child input { min-height: 36px; width: min(100%, 360px); border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px; background: white; color: var(--ink); }
+.blade-pass-selection-notice { margin: 0; padding: 9px 12px; border-left: 3px solid var(--orange); border-radius: 4px; background: var(--surface); color: var(--ink); font-size: 12px; line-height: 1.5; }
 @media (max-width: 800px) { .blade-pass-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } .blade-pass-inline { width: 100%; } .blade-pass-inline .custom-select { flex: 1; max-width: none; min-width: 0; } }
-@media (max-width: 480px) { .blade-pass-toolbar > label { flex-basis: 100%; } .blade-pass-selection { padding-top: 0; } .blade-pass-toolbar > .btn.primary { flex: 1; } .blade-pass-points > label { flex: 1 1 100%; } .blade-pass-advanced-fields { grid-template-columns: minmax(0, 1fr); } .blade-pass-metrics { gap: 8px; } .blade-pass-metrics dd { font-size: 18px; } .blade-pass-source-details > details > summary strong { float: none; display: block; margin: 4px 0 0; } }
+@media (max-width: 600px) { .blade-pass-step-heading { align-items: start; flex-direction: column; } .blade-pass-step-actions { width: 100%; flex-wrap: wrap; justify-content: flex-start; white-space: normal; } .blade-task-workspace > header { flex-direction: column; } .blade-task-workspace > header > strong { text-align: left; } }
+@media (max-width: 480px) { .blade-pass-toolbar > label { flex-basis: 100%; } .blade-pass-selection { padding-top: 0; } .blade-pass-toolbar > .btn.primary { flex: 1; } .blade-pass-advanced-fields { grid-template-columns: minmax(0, 1fr); } .blade-pass-metrics { gap: 8px; } .blade-pass-metrics dd { font-size: 18px; } .blade-pass-source-details > details > summary strong { float: none; display: block; margin: 4px 0 0; } }

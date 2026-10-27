@@ -173,6 +173,9 @@ def reconstruct_blade_passes(store, parameters, *, segment_sink=None):
         }
     synthesis = _candidates(points, spectra, config)
     synthesis.update(algorithmVersion=VERSION, parameters=config, mergedPoints=points,
+        mergePlan={"pointMerge": "same radial point across selected azimuths",
+                   "bladeComposition": "selected radial points ordered by radius",
+                   "sourceSegments": sum(len(point["segments"]) for point in points)},
         coordinate="compressed-valid-time", measuredPhaseAvailable=False,
         assumptions=["暂按同一叶片处理；各径向点及圆周角度为分次采集。",
             "假定所选片段工况与激励可比较，激光视线投影可比较；尚未进行几何投影补偿。",
@@ -259,8 +262,8 @@ def _band_point(point, spectra, frequency, half_width, config):
 
 def _candidates(points, spectra, config):
     empty = {"status": "insufficient_evidence", "candidates": [], "bandResponses": [], "spectrum": None,
-             "reason": "至少需要三个不同半径的有效测点及可解析的共同频带。"}
-    if len({point["radiusM"] for point in points}) < 3 or not spectra:
+             "reason": "至少需要两个不同半径的有效测点及可解析的共同频带。"}
+    if len({point["radiusM"] for point in points}) < 2 or not spectra:
         return empty
     # A shared grid no finer than the worst point's longest actual FFT window.
     spacing = max(min(item["spacing"] for item in spectra if item["point"] == point["radialPointId"]) for point in points)
@@ -300,6 +303,8 @@ def _candidates(points, spectra, config):
             point["normalizedAmplitude"] = point["displacementRmsM"] / maximum
             point["spatialPhaseDeg"] = None
         warnings = ["这是无符号频带响应候选，不能仅凭此确认为固有模态或判断损伤。"]
+        if len(spatial) == 2:
+            warnings.append("当前仅有两个径向测点，空间曲线约束较弱；建议补充第三个及以上测点。")
         if any(point["stationCount"] < 4 for point in spatial):
             warnings.append("部分测点的短角度片段不足三个周期，未计入此频带；角度覆盖不完整。")
         if any((point["stationAmplitudeRatio"] or 1) > 3 for point in spatial):

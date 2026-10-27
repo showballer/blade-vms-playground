@@ -3,9 +3,10 @@ import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { BladePassResults, WebBladePasses } from "./web-blade-passes";
+import { BladeTaskSelection } from "./web-blade-task-selection";
 import { BladeSynthesisResults } from "./web-blade-synthesis";
-import { bladePassTasks, bladePassUnavailableReason, bladePassWaveSeries, preferredBladePassTask, selectedBladePassRecords,
-  type BladePassRecording, type BladePassResult, type BladePassSource } from "./web-blade-passes-data";
+import { bladePassAnalysisJobs, bladePassCompositionError, bladePassPointGroups, bladePassTasks, bladePassUnavailableReason, bladePassWaveSeries, defaultBladePassSelection, preferredBladePassTask, selectedBladePassRecords,
+  type BladePassRecording, type BladePassResult, type BladePassSource, type BladeSynthesis } from "./web-blade-passes-data";
 
 let checks = 0;
 const check = (name: string, run: () => void) => { run(); checks++; console.log(`PASS ${name}`); };
@@ -14,7 +15,8 @@ function record(id: string, point = "P1", task = collection, blade = "2"): Blade
   return { id, name: "叶片检测", samples: 1000, sampleRate: 1000, startedAt: 1000, status: "complete", source: "polytec_ivs500",
     pointCycle: { mode: "automatic_stations", collectionId: task, sessionId: id.padEnd(32, "0"), bladeId: blade,
       radialPointId: point, radialPointName: point, radiusM: point === "P1" ? .31 : .5, azimuthDeg: 0, stationIndex: 1, stationCount: 4,
-      lapIndex: 1, cycle: 1, cycles: 1, pointIndex: 1, pointName: "点位1", dwellSeconds: 30, targetAxis1AngleDeg: 0, targetAxis2AngleDeg: 0 } };
+      lapIndex: 1, completion: "confirmed_pass", cycle: 1, cycles: 1, pointIndex: 1, pointName: "点位1", dwellSeconds: 30, targetAxis1AngleDeg: 0, targetAxis2AngleDeg: 0 },
+    windFarm: "风场 A", turbine: "机组 1", object: "叶片" };
 }
 const metrics = { rmsVelocityMps: .002, peakVelocityMps: .003, peakToPeakVelocityMps: .006 };
 const source: BladePassSource = { recordingId: "r1", name: "P1原记录", sessionId: "b".repeat(32), radialPointId: "P1", radialPointName: "P1",
@@ -23,7 +25,7 @@ const source: BladePassSource = { recordingId: "r1", name: "P1原记录", sessio
   segments: [{ start: 10, end: 110, samples: 100, durationSeconds: .1, metrics, timeDomain: { sampleIndices: [10, 109], seconds: [.01, .109], values: [.002, -.002] }, spectrum: { frequencies: [0, 10], amplitudes: [0, .002], frequencySpacingHz: 10 } },
     { start: 300, end: 400, samples: 100, durationSeconds: .1, metrics, timeDomain: { sampleIndices: [300, 399], seconds: [.3, .399], values: [.003, -.003] }, spectrum: { frequencies: [0, 10], amplitudes: [0, .003], frequencySpacingHz: 10 } }], provenance: { event: "confirmed_leave", index: 400 } };
 const result: BladePassResult = { algorithmVersion: "test-v1", parameters: { detrend: "constant" }, collectionId: collection, bladeId: "2", phaseAvailable: false,
-  modeShapeUnavailableReason: "各批次没有共同相位基准。", coverage: { selectedRecords: 2, includedRecords: 1, excludedRecords: 1, rawSamples: 1000, validSamples: 200, validSeconds: .2, segmentCount: 2 },
+  modeShapeUnavailableReason: "各批次没有共同相位基准。", coverage: { selectedRecords: 2, includedRecords: 1, excludedRecords: 1, rawSamples: 1000, analysisSamples: 800, validSamples: 200, validSeconds: .2, segmentCount: 2 },
   sources: [source, { ...source, recordingId: "r2", name: "缺失离开记录", status: "excluded", reason: "missing_exit", candidateRange: null, validRanges: [], exclusions: [], metrics: null, segments: [] }], points: [],
   amplitudeDistributions: [{ azimuthDeg: 0, metric: "rmsVelocityMps", unit: "m/s", points: [{ radialPointId: "P1", radialPointName: "P1", radiusM: .31, value: .002, validSamples: 200, recordingIds: ["r1"] }] }], warnings: ["当前数据不代表连续整圈测量。"] };
 
@@ -63,6 +65,55 @@ check("请求记录只取当前任务且限制64，不带入其他任务或过�
   assert.equal(chosen.length, 64); assert.ok(chosen.every(item => task.records.includes(item)));
   assert.equal(selectedBladePassRecords(undefined, ["r1"]).length, 0);
 });
+check("同测点先按角度分组，多个测点保持独立", () => {
+  const p1a = record("p1a", "P1"); p1a.pointCycle!.azimuthDeg = 90;
+  const p1b = record("p1b", "P1"); p1b.pointCycle!.azimuthDeg = 0;
+  const p2 = record("p2", "P2"); p2.pointCycle!.azimuthDeg = 0;
+  const groups = bladePassPointGroups(bladePassTasks([p1a, p1b, p2])[0]);
+  assert.deepEqual(groups.map(item => item.id), ["P1", "P2"]);
+  assert.deepEqual(groups[0].angles.map(item => item.azimuthDeg), [0, 90]);
+  assert.deepEqual(groups[0].angles.map(item => item.records[0].id), ["p1b", "p1a"]);
+});
+check("多个任务的测点工作区分别显示，允许跨任务勾选并保持任务归属", () => {
+  const first = record("task-a-p1", "P1", collection), second = record("task-b-p2", "P2", "d".repeat(32));
+  const tasks = bladePassTasks([first, second]);
+  const markup = renderToStaticMarkup(<BladeTaskSelection tasks={tasks} taskKeys={tasks.map(task => task.key)} selected={[first.id, second.id]} loading={false}
+    onTask={() => {}} onRecords={() => {}} onRestore={() => {}} onClear={() => {}} />);
+  const jobs = bladePassAnalysisJobs(tasks, tasks.map(task => task.key), [first.id, second.id, "stale-id"]);
+  assert.equal((markup.match(/本任务测点（可多选）/g) || []).length, 2);
+  assert.deepEqual(jobs.map(job => job.records.map(item => item.id)), [[first.id], [second.id]]);
+  assert.deepEqual(jobs.map(job => job.identity.recordingIds), [[first.id], [second.id]]);
+  assert.equal(bladePassCompositionError([jobs[0]], false, ""), null, "单任务单测点仍可分析波形和频谱");
+  assert.equal(bladePassCompositionError(jobs, false, "叶片 2"), "跨任务组合前，请确认这些采集任务的数据来自同一根实体叶片。");
+  assert.equal(bladePassCompositionError(jobs, true, "叶片 2"), null);
+});
+check("默认选择仅选每个点位角度最新的确认经过记录，并按点位交错覆盖", () => {
+  const p1old = record("p1-old", "P1"), p1new = record("p1-new", "P1"), p2 = record("p2", "P2");
+  p1old.startedAt = 100; p1new.startedAt = 200;
+  const task = bladePassTasks([p1old, p1new, p2])[0];
+  assert.deepEqual(defaultBladePassSelection(task), ["p1-new", "p2"]);
+});
+check("跨任务组成校验拦截不同风机对象和单一半径", () => {
+  const first = record("scope-a", "P1", collection), second = record("scope-b", "P2", "d".repeat(32));
+  second.turbine = "机组 2";
+  const tasks = bladePassTasks([first, second]), jobs = bladePassAnalysisJobs(tasks, tasks.map(task => task.key), [first.id, second.id]);
+  assert.match(bladePassCompositionError(jobs, true, "叶片 2") || "", /风场、风机或测量对象不一致/);
+  second.turbine = first.turbine;
+  second.pointCycle!.radiusM = first.pointCycle!.radiusM;
+  const sameRadiusTasks = bladePassTasks([first, second]);
+  const sameRadiusJobs = bladePassAnalysisJobs(sameRadiusTasks, sameRadiusTasks.map(task => task.key), [first.id, second.id]);
+  assert.match(bladePassCompositionError(sameRadiusJobs, true, "叶片 2") || "", /至少选择两个不同半径/);
+});
+check("旧任务缺少风机和对象字段时可由操作员确认同一叶片后组合", () => {
+  const first = record("legacy-scope-a", "P1", collection), second = record("legacy-scope-b", "P2", "d".repeat(32));
+  for (const item of [first, second]) { item.windFarm = ""; item.turbine = ""; item.object = ""; }
+  const tasks = bladePassTasks([first, second]), jobs = bladePassAnalysisJobs(tasks, tasks.map(task => task.key), [first.id, second.id]);
+  assert.equal(bladePassCompositionError(jobs, true, "叶片实体 A"), null);
+  second.object = "轮毂";
+  const changedTasks = bladePassTasks([first, second]);
+  const changedJobs = bladePassAnalysisJobs(changedTasks, changedTasks.map(task => task.key), [first.id, second.id]);
+  assert.match(bladePassCompositionError(changedJobs, true, "叶片实体 A") || "", /风场、风机或测量对象不一致/);
+});
 check("有效波形分段保留原时间间隙，展示单位转换不拼接", () => {
   const series = bladePassWaveSeries(source);
   assert.equal(series.length, 2); assert.deepEqual(series[0].data, [[.01, 2], [.109, -2]]);
@@ -89,6 +140,7 @@ check("结果可读展示排除原因与相位边界，只展示单段FFT", () =
   assert.ok(markup.includes("原始边界依据")); assert.ok(!markup.includes("播放动画"));
   assert.ok(markup.includes("速度 RMS mm/s")); assert.ok(markup.includes("短片段不能通过拼接提高频率分辨率"));
   assert.ok(markup.includes("上传目标 1,000 Hz")); assert.ok(markup.includes("Nyquist 上限 500 Hz"));
+  assert.ok(markup.includes("分析时已降采样：1,000 个原始样本 → 800 个分析样本"));
 });
 check("全部排除结果仍展示原因，不出现虚构的波形或幅值", () => {
   const excluded = { ...result, sources: [result.sources[1]], amplitudeDistributions: [] };
@@ -104,8 +156,7 @@ check("任务与来源元信息按文本转义", () => {
   const markup = renderToStaticMarkup(<BladePassResults result={unsafe} />);
   assert.ok(!markup.includes("<script>")); assert.ok(markup.includes("&lt;script&gt;")); assert.ok(!markup.includes("<img onerror"));
 });
-check("实验合成区分探索频带与模态候选，展示压缩时间与未知相位", () => {
-  const markup = renderToStaticMarkup(<BladeSynthesisResults synthesis={{
+const synthesis: BladeSynthesis = {
     algorithmVersion: "test", status: "band_responses_only", reason: "未检出共同窄带峰",
     coordinate: "compressed-valid-time", measuredPhaseAvailable: false, damageAssessmentAvailable: false,
     assumptions: ["同一叶片假设"], candidates: [],
@@ -118,9 +169,29 @@ check("实验合成区分探索频带与模态候选，展示压缩时间与未�
       kind: "exploratory_band_response", phaseAssumption: "in_phase_for_preview_only", warnings: ["不是识别出的模态"],
       points: [{ radialPointId: "P1", radialPointName: "P1", radiusM: .2, velocityRmsMps: .002,
         displacementRmsM: .00001, normalizedAmplitude: 1, spatialPhaseDeg: null, stationCount: 2, stationAmplitudeRatio: 10 }] }],
-  }} />);
+  };
+check("有效信号默认按测点合并，显示全部角度且合并图仅展示一次", () => {
+  const point = synthesis.mergedPoints[0];
+  const mergedPoint = { ...point, segments: [...point.segments, { ...point.segments[0], recordingId: "r3", segmentId: "r3:10:110", azimuthDeg: 0 }],
+    stitchedWaveform: { seconds: [0, .1], valuesMps: [.002, -.002] },
+    stitchedSpectrum: { sampleRate: 1000, fftSampleRate: 1000, samples: 200, frequencySpacingHz: 5, frequencies: [0, 5], amplitudesMps: [0, .002], method: "test" } };
+  const markup = renderToStaticMarkup(<BladePassResults result={{ ...result, synthesis: { ...synthesis,
+    mergedPoints: [mergedPoint, { ...mergedPoint, radialPointId: "P2", radialPointName: "P2", radiusM: .5 }] } }} />);
+  assert.ok(markup.includes("有效信号查看方式")); assert.ok(markup.includes("有效信号合并测点"));
+  assert.ok(markup.includes("P2 ·")); assert.ok(markup.includes("2 条记录")); assert.ok(markup.includes("角度 0°、90°"));
+  assert.equal((markup.match(/aria-label="单个径向测点多角度片段经边界基线偏置对齐后的拼接波形"/g) || []).length, 1);
+  assert.ok(markup.includes("拼接后 FFT 频谱")); assert.ok(!markup.includes("FFT 连续有效段"));
+  assert.ok(markup.includes("不能恢复各次经过之间未测到的振动相位"));
+});
+check("旧合并结果缺少信号数组时回退原记录，提示重新分析", () => {
+  const markup = renderToStaticMarkup(<BladePassResults result={{ ...result, synthesis }} />);
+  assert.ok(markup.includes("FFT 连续有效段")); assert.ok(!markup.includes("有效信号查看方式"));
+  assert.ok(markup.includes("请勾选“合并片段并合成振型候选”后重新分析"));
+});
+check("实验合成区分探索频带与模态候选，展示压缩时间与未知相位", () => {
+  const markup = renderToStaticMarkup(<BladeSynthesisResults synthesis={synthesis} />);
   assert.ok(markup.includes("探索频带")); assert.ok(markup.includes("未检出共同窄带峰"));
-  assert.ok(markup.includes("按所选记录顺序压缩无效时间")); assert.ok(markup.includes("同相假设"));
+  assert.ok(markup.includes("步骤 1 · 同测点多角度合并")); assert.ok(markup.includes("同相假设"));
   assert.ok(markup.includes("不是识别出的模态")); assert.ok(markup.includes("节点正负未知"));
   assert.ok(markup.includes("角度幅值最大/最小")); assert.ok(markup.includes("频带位移 RMS"));
 });

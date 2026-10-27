@@ -106,6 +106,24 @@ class BladePassAnalysisTests(unittest.TestCase):
         self.assertEqual(source["validSamples"], 2800)
         self.assertAlmostEqual(source["validSeconds"], .35)
 
+    def test_analysis_automatically_downsamples_when_selected_raw_samples_exceed_budget(self):
+        first = self.recording(samples=2000, rate=20000, start=200, end=1600, session="a" * 32)
+        second = self.recording(samples=2000, rate=20000, start=200, end=1600, session="b" * 32)
+        with patch("blade_acquisition.blade_passes.MAX_SAMPLES", 3000):
+            result = self.analyze(first, second)
+        self.assertEqual(result["parameters"]["analysisSampleRate"], 15000)
+        self.assertEqual(result["coverage"]["rawSamples"], 4000)
+        self.assertEqual(result["coverage"]["analysisSamples"], 3000)
+        self.assertEqual([source["sampleRate"] for source in result["sources"]], [15000, 15000])
+        self.assertEqual([source["validSamples"] for source in result["sources"]], [1050, 1050])
+        self.assertTrue(any("自动降采样至最高可用的 15,000 Hz" in warning for warning in result["warnings"]))
+
+    def test_analysis_rejects_selection_when_minimum_rate_still_exceeds_budget(self):
+        first = self.recording(samples=2000, rate=1000, start=200, end=1600, session="a" * 32)
+        second = self.recording(samples=2000, rate=1000, start=200, end=1600, session="b" * 32)
+        with patch("blade_acquisition.blade_passes.MAX_SAMPLES", 3000), self.assertRaisesRegex(ValueError, "即使按 10 kHz 降采样仍超出"):
+            self.analyze(first, second)
+
     def test_low_rssi_and_overrange_split_segments_keep_original_time(self):
         rssi = [80.] * 2000
         rssi[600:700] = [10.] * 100
@@ -196,6 +214,49 @@ class BladePassAnalysisTests(unittest.TestCase):
             rid = self.recording(**{field: value})
             with self.subTest(field=field), self.assertRaises(ValueError):
                 self.analyze(rid)
+
+    def test_cross_task_composition_requires_confirmation_exact_membership_and_matching_scope(self):
+        first = self.recording(radial="p1", radius=.31)
+        second = self.recording(radial="p2", radius=.5, collection="d" * 32, bladeId="2")
+        for rid in (first, second):
+            self.change(rid, lambda manifest: manifest.update(windFarm="风场 A", turbine="机组 1", object="叶片"))
+        manifests = [self.store._read_manifest(self.store.directory(rid)) for rid in (first, second)]
+        tasks = [{"collectionId": item["pointCycle"]["collectionId"], "bladeId": item["pointCycle"]["bladeId"],
+                  "windFarm": item["windFarm"], "turbine": item["turbine"], "object": item["object"],
+                  "recordingIds": [rid]} for rid, item in zip((first, second), manifests)]
+        composition = {"confirmedSameBlade": True, "bladeLabel": "叶片实体 A", "tasks": tasks}
+
+        with self.assertRaisesRegex(ValueError, "跨任务组合须显式确认"):
+            self.analyze(first, second)
+        with self.assertRaisesRegex(ValueError, "准确覆盖"):
+            self.analyze(first, second, bladeComposition={**composition, "tasks": [tasks[0]]})
+        with self.assertRaisesRegex(ValueError, "同一根实体叶片"):
+            self.analyze(first, second, bladeComposition={**composition, "confirmedSameBlade": False})
+
+        result = self.analyze(first, second, bladeComposition=composition)
+        self.assertEqual(result["bladeId"], "叶片实体 A")
+        self.assertEqual(result["composition"]["taskCount"], 2)
+        self.assertEqual([source["taskIdentity"]["collectionId"] for source in result["sources"]],
+                         ["c" * 32, "d" * 32])
+        self.assertEqual([task["recordingIds"] for task in result["composition"]["tasks"]], [[first], [second]])
+        json.dumps(result, ensure_ascii=False, allow_nan=False)
+
+        for rid in (first, second):
+            self.change(rid, lambda manifest: manifest.update(windFarm="", turbine="", object=""))
+        incomplete_scope = [{**task, "windFarm": "", "turbine": "", "object": ""} for task in tasks]
+        incomplete_result = self.analyze(first, second, bladeComposition={**composition, "tasks": incomplete_scope})
+        self.assertEqual(incomplete_result["composition"]["taskCount"], 2)
+
+        for rid in (first, second):
+            self.change(rid, lambda manifest: manifest.update(windFarm="风场 A", turbine="机组 1", object="叶片"))
+        self.change(second, lambda manifest: manifest["pointCycle"].update(radiusM=.31))
+        with self.assertRaisesRegex(ValueError, "至少需要两个不同半径"):
+            self.analyze(first, second, bladeComposition=composition)
+        self.change(second, lambda manifest: manifest["pointCycle"].update(radiusM=.5))
+        self.change(second, lambda manifest: manifest.update(turbine="机组 2"))
+        mismatched_scope = {**composition, "tasks": [tasks[0], {**tasks[1], "turbine": "机组 2"}]}
+        with self.assertRaisesRegex(ValueError, "风场、风机和测量对象一致"):
+            self.analyze(first, second, bladeComposition=mismatched_scope)
 
     def test_strict_parameters_and_limits_reject_before_raw_read(self):
         rid = self.recording()
