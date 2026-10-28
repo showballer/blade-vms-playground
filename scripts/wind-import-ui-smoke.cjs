@@ -63,9 +63,9 @@ app.whenReady().then(async () => {
     await until("document.body.innerText.includes('已读取文件。请核对指标单位')");
     assert(await js("[...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='确认单位与时区并导入').disabled"));
     const summary = await js("document.querySelector('.measurement-workspace').innerText");
-    for (const text of ['R018_当前风速.csv', 'R018_轮毂转速.csv', '183,600', '151,200', '10,800', '外界温度']) assert(summary.includes(text), text);
+    for (const text of ['R018_当前风速.csv', 'R018_轮毂转速.csv', '183,600', '151,200', '10,800', '舱外温度']) assert(summary.includes(text), text);
     await screenshot('wind-preview-unit-confirmation');
-    for (const [label, value] of [['风速原始单位', 'm/s'], ['轮毂转速原始单位', 'rpm'], ['有功功率原始单位', 'kW'], ['外界温度原始单位', 'C']]) await setValue(label, value, true);
+    for (const [label, value] of [['风速原始单位', 'm/s'], ['主轴转速原始单位', 'rpm'], ['发电机有功功率原始单位', 'kW'], ['舱外温度原始单位', 'C']]) await setValue(label, value, true);
     await screenshot('wind-preview-ready');
     await click('确认单位与时区并导入');
     await until("document.body.innerText.includes('已保存 186,000 个风机时间点')");

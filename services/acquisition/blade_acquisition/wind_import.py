@@ -18,12 +18,12 @@ MAX_ROWS = 250_000
 FIELDS = ("windSpeed", "rpm", "windDirection", "powerKw", "temperatureC")
 ALIASES = {
     "time": ("time", "时间", "日期时间", "timestamp"),
-    "turbineCode": ("turbinecode", "风机", "风机编号", "机组"),
+    "turbineCode": ("turbinecode", "风机", "风机编号", "机组", "名称"),
     "windSpeed": ("windspeed", "风速", "当前风速"),
-    "rpm": ("rpm", "轮毂转速", "转速"),
+    "rpm": ("rpm", "轮毂转速", "转速", "主轴转速"),
     "windDirection": ("winddirection", "风向"),
-    "powerKw": ("powerkw", "有功功率", "发电机侧有功功率", "功率"),
-    "temperatureC": ("temperaturec", "外界温度", "环境温度"),
+    "powerKw": ("powerkw", "有功功率", "发电机侧有功功率", "功率", "发电机有功功率"),
+    "temperatureC": ("temperaturec", "外界温度", "环境温度", "舱外温度"),
 }
 UNITS = {
     "windSpeed": {"m/s": (1, 0), "km/h": (1 / 3.6, 0)},
@@ -32,7 +32,24 @@ UNITS = {
     "powerKw": {"kW": (1, 0), "W": (.001, 0), "MW": (1000, 0)},
     "temperatureC": {"C": (1, 0), "F": (5 / 9, -32 * 5 / 9)},
 }
-RANGES = {"windSpeed": (0, 150), "rpm": (0, 10000), "windDirection": (0, 360), "powerKw": (-100000, 100000), "temperatureC": (-100, 100)}
+RANGES = {"windSpeed": (0, 150), "rpm": (0, 10000), "windDirection": (-360, 360), "powerKw": (-100000, 100000), "temperatureC": (-100, 100)}
+
+# This agreed export template contains all five metrics in one minute table.
+# Units are suggestions for explicit confirmation, not an implicit conversion.
+MINUTE_HEADERS = {"名称", "时间", "风速", "发电机有功功率", "主轴转速", "舱外温度", "风向"}
+MINUTE_UNITS = {"windSpeed": "m/s", "rpm": "rpm", "powerKw": "kW", "temperatureC": "C", "windDirection": "deg"}
+
+
+def _suggestions(headers):
+    mapping = {key: next((header for header in headers if header.lower() in aliases), "") for key, aliases in ALIASES.items()}
+    result = {"suggestedMapping": mapping, "suggestedUnits": {}}
+    if len(headers) == len(MINUTE_HEADERS) and set(headers) == MINUTE_HEADERS:
+        result.update(sourceFormat="turbine-minute-v1", suggestedUnits=dict(MINUTE_UNITS))
+    if mapping["windDirection"]:
+        # A signed source angle is not necessarily a north-referenced bearing.
+        # Preserve it exactly; no modulo, heading conversion or directional claim.
+        result["windDirectionReference"] = "unspecified"
+    return result
 
 
 def _table(raw, filename):
@@ -93,9 +110,8 @@ def stage_preview(root: Path, payload):
     raw = source.read_bytes()
     headers, rows, encoding = _table(raw, filename)
     token = uuid.uuid4().hex
-    mapping = {key: next((header for header in headers if header.lower() in aliases), "") for key, aliases in ALIASES.items()}
     summary = {"token": token, "filename": filename, "headers": headers, "rows": rows[:5], "rowCount": len(rows),
-               "encoding": encoding, "sha256": hashlib.sha256(raw).hexdigest(), "suggestedMapping": mapping}
+               "encoding": encoding, "sha256": hashlib.sha256(raw).hexdigest(), **_suggestions(headers)}
     shutil.copyfile(source, directory / f"{token}.source")
     (directory / f"{token}.json").write_text(json.dumps(summary, ensure_ascii=False), encoding="utf-8")
     return summary
@@ -182,7 +198,12 @@ def merge_staged(root: Path, payload):
                     raise ValueError("合并后超过 250000 个风机时间点，请按日期拆分")
             except (ValueError, OverflowError) as error:
                 raise ValueError(f"{meta['filename']} 第 {number} 行：{error}") from None
-        sources.append({"filename": meta["filename"], "rowCount": len(rows), "sha256": meta["sha256"], "mapping": mapping})
+        source = {"filename": meta["filename"], "rowCount": len(rows), "sha256": meta["sha256"], "mapping": mapping}
+        if meta.get("sourceFormat") == "turbine-minute-v1":
+            source["sourceFormat"] = meta["sourceFormat"]
+        if mapping.get("windDirection"):
+            source["windDirectionReference"] = "unspecified"
+        sources.append(source)
     rows = sorted(merged.values(), key=lambda row: (row["time"], row["turbineCode"]))
     if not rows:
         raise ValueError("没有可导入的工况数值")
@@ -193,7 +214,8 @@ def merge_staged(root: Path, payload):
     return {"resultToken": result_token, "rowCount": len(rows), "metricCounts": counts, "matchedRowCount": len(complete),
             "matchedStart": complete[0]["time"] if complete else None, "matchedEnd": complete[-1]["time"] if complete else None,
             "start": rows[0]["time"], "end": rows[-1]["time"], "sources": sources, "timezoneOffset": offset,
-            "sourceUnits": {field: units[field] for field in FIELDS if any(source["mapping"].get(field) for source in sources)}}
+            "sourceUnits": {field: units[field] for field in FIELDS if any(source["mapping"].get(field) for source in sources)},
+            **({"windDirectionReference": "unspecified"} if counts["windDirection"] else {})}
 
 
 def preview(payload):
@@ -223,4 +245,4 @@ def preview(payload):
         if len(row)!=len(headers): raise ValueError(f"第 {i} 行列数与表头不一致")
         if any(v=="FORMULA_NOT_SUPPORTED" or len(str(v or ""))>500 for v in row): raise ValueError(f"第 {i} 行含公式或过长内容，请粘贴为数值")
         result.append(["" if v is None else str(v) for v in row])
-    return {"headers":headers,"rows":result,"rowCount":len(result)}
+    return {"headers":headers,"rows":result,"rowCount":len(result), **_suggestions(headers)}

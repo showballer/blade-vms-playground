@@ -1,29 +1,114 @@
 "use client";
 import React, { useEffect, useState } from "react";
 import { api } from "./api";
-import { Button, Card, Select, Table } from "./common";
+import { Button, Card, Dialog, Select, Table } from "./common";
 import { MeasurementStatus, PageControls, timeText } from "./measurement-common";
 import type { MeasurementObject } from "./measurement-domain";
 
 const columns: Record<string, string> = {
-  time: "时间", turbineCode: "风机编号", windSpeed: "风速", rpm: "轮毂转速",
-  windDirection: "风向", powerKw: "有功功率", temperatureC: "外界温度",
+  turbineCode: "名称", time: "时间", windSpeed: "风速", powerKw: "发电机有功功率",
+  rpm: "主轴转速", temperatureC: "舱外温度", windDirection: "风向",
 };
 const unitOptions: Record<string, { value: string; label: string }[]> = {
   windSpeed: [{ value: "m/s", label: "m/s" }, { value: "km/h", label: "km/h" }],
-  rpm: [{ value: "rpm", label: "rpm（转/分）" }, { value: "rps", label: "转/秒" }],
-  windDirection: [{ value: "deg", label: "度（°）" }],
   powerKw: [{ value: "kW", label: "kW" }, { value: "W", label: "W" }, { value: "MW", label: "MW" }],
+  rpm: [{ value: "rpm", label: "rpm（转/分）" }, { value: "rps", label: "转/秒" }],
   temperatureC: [{ value: "C", label: "摄氏度（°C）" }, { value: "F", label: "华氏度（°F）" }],
+  windDirection: [{ value: "deg", label: "度（°）" }],
 };
 type Preview = { token: string; filename: string; encoding: string; headers: string[]; rows: string[][];
-  rowCount: number; suggestedMapping: Record<string, string>; mapping: Record<string, string> };
+  rowCount: number; suggestedMapping: Record<string, string>; mapping: Record<string, string>;
+  sourceFormat?: string; suggestedUnits?: Record<string, string>; windDirectionReference?: string };
+
+type SavedDataset = { id: string; name: string; farmId: string; rowCount: number; start: string; end: string;
+  metricCounts?: Record<string, number>; matchedRowCount?: number; matchedStart?: string; matchedEnd?: string };
+type WindRow = { time: string; turbineCode: string; windSpeed?: number | null; rpm?: number | null;
+  windDirection?: number | null; powerKw?: number | null; temperatureC?: number | null };
+type WindPage = { id: string; name: string; total: number; offset: number; limit: number; rows: WindRow[]; units: Record<string, string> };
+const metricLabels = [
+  ["windSpeed", "风速", "m/s"], ["powerKw", "发电机有功功率", "kW"], ["rpm", "主轴转速", "rpm"],
+  ["temperatureC", "舱外温度", "°C"], ["windDirection", "风向", "°"],
+] as const;
+const beijingTime = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit",
+  day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" });
+
+function DatasetPreview({ dataset, onClose }: { dataset: SavedDataset; onClose: () => void }) {
+  const [position, setPosition] = useState<{ offset: number; at?: string }>({ offset: 0 }), [limit, setLimit] = useState(50), [retry, setRetry] = useState(0),
+    [data, setData] = useState<WindPage | null>(null), [busy, setBusy] = useState(true), [error, setError] = useState("");
+  useEffect(() => {
+    let current = true;
+    setBusy(true); setError(""); setData(null);
+    const cursor = position.at ? `at=${encodeURIComponent(position.at)}` : `offset=${position.offset}`;
+    api<WindPage>(`wind-datasets/${encodeURIComponent(dataset.id)}/rows?${cursor}&limit=${limit}`)
+      .then(value => { if (current) setData(value); })
+      .catch(e => { if (current) setError((e as Error).message); })
+      .finally(() => { if (current) setBusy(false); });
+    return () => { current = false; };
+  }, [dataset.id, position, limit, retry]);
+  const total = data?.total ?? dataset.rowCount, pages = Math.max(1, Math.ceil(total / limit));
+  const offset = data?.offset ?? position.offset, page = Math.min(pages - 1, Math.floor(offset / limit));
+  const fields = metricLabels.filter(([key]) => !dataset.metricCounts || (dataset.metricCounts[key] || 0) > 0);
+  const changePage = (next: number) => { setData(null); setBusy(true); setPosition({ offset: next }); };
+  return <Dialog title="预览数据集" onClose={onClose} wide>
+    <div className="wind-data-preview">
+      <div className="wind-preview-toolbar">
+        <div><strong>{dataset.name}</strong><p className="hint">共 {total.toLocaleString()} 条 · 时间为北京时间（UTC+8） · 缺失值显示 —</p>
+          {dataset.matchedStart && dataset.matchedStart !== dataset.start && <Button className="wind-preview-jump" disabled={busy} onClick={() => {
+            setData(null); setBusy(true); setPosition({ offset: 0, at: dataset.matchedStart });
+          }}>跳到风速与转速齐全时段</Button>}</div>
+        <Select label="每页条数" value={limit} disabled={busy} options={["20", "50", "100"]}
+          onChange={value => { if (Number(value) === limit) return; setData(null); setBusy(true); setPosition({ offset: 0 }); setLimit(Number(value)); }} />
+      </div>
+      <div className="wind-preview-table" aria-busy={busy}>
+        {busy ? <div className="wind-preview-placeholder" role="status">正在加载本页数据…</div>
+          : error ? <div className="error" role="alert">{error} <Button onClick={() => setRetry(n => n + 1)}>重试</Button></div>
+          : data && <Table headers={["序号", "名称", "时间", ...fields.map(([key, label, fallback]) => {
+            const unit = data.units?.[key] || fallback;
+            return `${label} · ${unit === "deg" ? "°" : unit}`;
+          })]}>
+            {data.rows.map((row, i) => <tr key={`${row.turbineCode}-${row.time}-${i}`}>
+              <td>{data.offset + i + 1}</td><td>{row.turbineCode}</td><td>{beijingTime.format(new Date(row.time))}</td>
+              {fields.map(([key]) => <td key={key}>{row[key] != null && Number.isFinite(row[key]) ? String(row[key]) : "—"}</td>)}
+            </tr>)}
+          </Table>}
+        {!busy && !error && data && !data.rows.length && <p className="hint">本页没有数据。</p>}
+      </div>
+      {fields.some(([key]) => key === "windDirection") && <p className="hint">风向保留原始正负角度，方向基准待确认。</p>}
+      <div className="wind-preview-footer">
+        <span className="hint">{data?.rows.length ? `显示第 ${(data.offset + 1).toLocaleString()}–${(data.offset + data.rows.length).toLocaleString()} 条` : "每次最多加载 100 条"}</span>
+        <div className="wind-dataset-actions"><span>第 {page + 1} / {pages.toLocaleString()} 页</span>
+          <Button disabled={busy || offset === 0} onClick={() => changePage(0)}>首页</Button>
+          <Button disabled={busy || offset === 0} onClick={() => changePage(Math.max(0, offset - limit))}>上一页</Button>
+          <Button disabled={busy || !!error || offset + limit >= total} onClick={() => changePage(offset + limit)}>下一页</Button>
+          <Button disabled={busy || !!error || offset + limit >= total} onClick={() => changePage((pages - 1) * limit)}>末页</Button>
+        </div>
+      </div>
+    </div>
+  </Dialog>;
+}
+
+function DeleteDataset({ dataset, onClose, onDeleted }: { dataset: SavedDataset; onClose: () => void; onDeleted: () => void }) {
+  const [busy, setBusy] = useState(false), [error, setError] = useState("");
+  async function remove() {
+    setBusy(true); setError("");
+    try { await api(`wind-datasets/${encodeURIComponent(dataset.id)}`, "DELETE"); onDeleted(); }
+    catch (e) { setError((e as Error).message); setBusy(false); }
+  }
+  return <Dialog title="删除数据集" onClose={() => { if (!busy) onClose(); }}>
+    <p className="dialog-message">删除 <strong>{dataset.name}</strong> 的全部 <strong>{dataset.rowCount.toLocaleString()}</strong> 条工况数据？</p>
+    <p className="hint">删除后，新分析不再使用这些工况数据。已有测量记录和分析结果保留；需要时可重新导入源文件。</p>
+    {error && <p className="error" role="alert">{error}</p>}
+    <div className="dialog-actions"><Button disabled={busy} onClick={onClose}>取消</Button>
+      <Button variant="danger" disabled={busy} onClick={() => void remove()}>{busy ? "正在删除…" : "确认删除"}</Button></div>
+  </Dialog>;
+}
 
 export function WindDatasets({ canWrite }: { canWrite: boolean }) {
-  const [all, setAll] = useState<MeasurementObject[]>([]), [datasets, setDatasets] = useState<any[]>([]),
+  const [all, setAll] = useState<MeasurementObject[]>([]), [datasets, setDatasets] = useState<SavedDataset[]>([]),
     [farm, setFarm] = useState(""), [name, setName] = useState(""), [previews, setPreviews] = useState<Preview[]>([]),
     [units, setUnits] = useState<Record<string, string>>({}), [timezoneOffset, setTimezoneOffset] = useState("+08:00"),
-    [busy, setBusy] = useState(false), [error, setError] = useState(""), [page, setPage] = useState(0), [message, setMessage] = useState("");
+    [busy, setBusy] = useState(false), [error, setError] = useState(""), [page, setPage] = useState(0), [message, setMessage] = useState(""),
+    [previewDataset, setPreviewDataset] = useState<SavedDataset | null>(null), [deleteDataset, setDeleteDataset] = useState<SavedDataset | null>(null);
   async function load() {
     setBusy(true);
     try {
@@ -47,6 +132,7 @@ export function WindDatasets({ canWrite }: { canWrite: boolean }) {
         const value = await response.json();
         if (!response.ok) throw Error(value.error || "工况文件读取失败");
         setPreviews(current => [...current, { ...value, mapping: value.suggestedMapping }]);
+        if (value.sourceFormat === "turbine-minute-v1") setUnits(current => ({ ...value.suggestedUnits, ...current }));
       }
       if (!name) setName(files.length === 1 ? files[0].name : `${files[0].name.replace(/[_-].*$/, "")} · 风场工况`);
       setMessage("已读取文件。请核对指标单位和原始时区，再导入。");
@@ -71,8 +157,9 @@ export function WindDatasets({ canWrite }: { canWrite: boolean }) {
     finally { setBusy(false); }
   }
   const shown = datasets.filter(d => !farm || d.farmId === farm);
+  useEffect(() => { setPage(current => Math.min(current, Math.max(0, Math.ceil(shown.length / 20) - 1))); }, [shown.length]);
   return <div className="stack measurement-workspace">
-    <header><h1>风场数据集</h1><p>按风机与时间关联真实工况，支持各指标分别导出的文件。</p></header>
+    <header><h1>风场数据集</h1><p>按风机名称与时间导入工况数据。</p></header>
     <Card title="导入工况文件">
       <div className="measurement-filters">
         <Select label="风场" value={farm} options={all.filter(o => o.kind === "farm" && o.active).map(o => ({ value: o.id, label: o.name }))}
@@ -80,12 +167,12 @@ export function WindDatasets({ canWrite }: { canWrite: boolean }) {
         <label>CSV / XLSX · 可多选<input aria-label="风场数据文件" type="file" accept=".csv,.xlsx" multiple disabled={!canWrite || busy}
           onChange={e => { const files = Array.from(e.target.files || []); if (files.length) void upload(files); e.target.value = ""; }} /></label>
       </div>
-      <p className="hint">每份最多 16 MB / 25 万行。中文列名、UTF-8 与 GB18030 均可识别；多文件仅按相同风机和相同时间合并，不补齐转速、风速或温度。</p>
+      <p className="hint">CSV 列：名称、时间、风速、发电机有功功率、主轴转速、舱外温度、风向。每份最多 16 MB / 25 万行，兼容原有分指标文件。</p>
       <MeasurementStatus loading={busy} error={error} onReload={() => void load()} />
       {message && <p role="status">{message}</p>}
       {!!previews.length && <div className="stack">
         <Table headers={["已选文件", "数据行", "已识别指标", ""]}>
-          {previews.map(p => <tr key={p.token}><td>{p.filename}<small className="hint"> · {p.encoding}</small></td><td>{p.rowCount.toLocaleString()}</td>
+          {previews.map(p => <tr key={p.token}><td>{p.filename}<small className="hint"> · {p.encoding}{p.sourceFormat === "turbine-minute-v1" ? " · 标准七列格式" : ""}</small></td><td>{p.rowCount.toLocaleString()}</td>
             <td>{metrics.filter(key => p.mapping[key]).map(key => columns[key]).join("、") || "待映射"}</td>
             <td><Button disabled={busy} onClick={() => setPreviews(current => current.filter(item => item.token !== p.token))}>移除</Button></td></tr>)}
         </Table>
@@ -96,7 +183,8 @@ export function WindDatasets({ canWrite }: { canWrite: boolean }) {
           {metrics.map(key => <Select key={key} label={`${columns[key]}原始单位`} value={units[key] || ""} disabled={busy}
             onChange={value => setUnits(current => ({ ...current, [key]: value }))} options={[{ value: "", label: "请选择单位" }, ...unitOptions[key]]} />)}
         </div>
-        <p className="hint">文件未标明单位时，请按设备导出的单位选择。已有时区的时间保留原时区含义；系统统一保存为 UTC。只在风速、转速同时存在的时间范围内进行工况匹配。</p>
+        <p className="hint">标准格式预填 m/s、kW、rpm、℃、°，导入前可调整。时间默认按北京时间解释。</p>
+        {metrics.includes("windDirection") && <p className="hint">风向保留原始正负角度，方向基准待确认。</p>}
         {!mappingsValid && <p className="error">每份文件需要时间、风机编号与至少一个指标，列映射不能重复。</p>}
         <div><Button variant="primary" disabled={!canWrite || busy || !ready} onClick={() => void save()}>确认单位与时区并导入</Button></div>
         <details className="measurement-advanced"><summary>查看文件预览与列映射 · {previews.length} 份</summary>
@@ -111,14 +199,21 @@ export function WindDatasets({ canWrite }: { canWrite: boolean }) {
       </div>}
     </Card>
     <Card title="已保存数据集">
-      <Table headers={["数据集", "风场", "时间范围", "时间点数", "风速与转速同时存在"]}>
+      <Table headers={["数据集", "风场", "时间范围", "时间点数", "风速与转速同时存在", "操作"]}>
         {shown.slice(page * 20, (page + 1) * 20).map(d => <tr key={d.id}><td>{d.name}
-          {d.metricCounts && <small className="hint" style={{ display: "block" }}>{Object.keys(unitOptions).filter(key => d.metricCounts[key] > 0).map(key => `${columns[key]} ${d.metricCounts[key].toLocaleString()}`).join(" · ")}</small>}
+          {d.metricCounts && <small className="hint" style={{ display: "block" }}>{Object.keys(unitOptions).filter(key => (d.metricCounts?.[key] || 0) > 0).map(key => `${columns[key]} ${d.metricCounts?.[key].toLocaleString()}`).join(" · ")}</small>}
         </td><td>{all.find(o => o.id === d.farmId)?.name}</td><td>{timeText(d.start)} ～ {timeText(d.end)}</td><td>{d.rowCount.toLocaleString()}</td><td>{(d.matchedRowCount ?? d.rowCount).toLocaleString()}
-          {d.matchedStart && <small className="hint" style={{ display: "block" }}>{timeText(d.matchedStart)} ～ {timeText(d.matchedEnd)}</small>}</td></tr>)}
+          {d.matchedStart && <small className="hint" style={{ display: "block" }}>{timeText(d.matchedStart)} ～ {timeText(d.matchedEnd)}</small>}</td>
+          <td><div className="wind-dataset-actions"><Button disabled={busy} onClick={() => setPreviewDataset(d)}>预览</Button>
+            {canWrite && <Button variant="danger" disabled={busy} onClick={() => setDeleteDataset(d)}>删除</Button>}</div></td></tr>)}
       </Table>
       {!shown.length && !busy && <p className="hint">尚无工况数据；波形与频谱分析可以继续，工况异常判定暂不出结论。</p>}
       <PageControls page={page} total={shown.length} onChange={setPage} />
     </Card>
+    {previewDataset && <DatasetPreview key={previewDataset.id} dataset={previewDataset} onClose={() => setPreviewDataset(null)} />}
+    {deleteDataset && <DeleteDataset key={deleteDataset.id} dataset={deleteDataset} onClose={() => setDeleteDataset(null)} onDeleted={() => {
+      setDatasets(current => current.filter(d => d.id !== deleteDataset.id));
+      setMessage(`已删除数据集：${deleteDataset.name}`); setDeleteDataset(null);
+    }} />}
   </div>;
 }

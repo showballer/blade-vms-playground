@@ -144,6 +144,76 @@ export async function windDatasetSummaries(user: User) {
   );
   return listed.sort((a, b) => new Date(b.sort_created_at).getTime() - new Date(a.sort_created_at).getTime() || b.id.localeCompare(a.id)).map(unpack);
 }
+
+/** Only the requested indexed JSON elements cross the database connection. */
+export async function windDatasetRows(user: User, id: string, offset = 0, limit = 50, at?: number) {
+  if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 100)
+    throw new HttpError(400, "工况分页参数无效：offset 应为非负整数，limit 应为 1～100 的整数");
+  const selected = await rows<{ id: string; name: string; total: number; units: Record<string, string> | null }>(
+    "SELECT id,JSON_UNQUOTE(JSON_EXTRACT(body,'$.name')) AS name,COALESCE(JSON_LENGTH(JSON_EXTRACT(body,'$.rows')),0) AS total,JSON_EXTRACT(body,'$.units') AS units FROM records WHERE id=? AND kind='wind_datasets' AND tenant=?",
+    [id, user.tenant],
+  );
+  const dataset = selected[0];
+  if (!dataset) throw new HttpError(404, "工况数据集不存在");
+  const total = Number(dataset.total);
+  if (at !== undefined) {
+    if (!Number.isFinite(at)) throw new HttpError(400, "请选择有效的 UTC 时间");
+    // Imported rows are sorted chronologically. Binary search reads one time
+    // field per step, never materializing a 180k-row JSON array in Node.
+    let low = 0, high = total;
+    while (low < high) {
+      const middle = low + Math.floor((high - low) / 2);
+      const found = await rows<{ sample_time: string }>(
+        "SELECT JSON_UNQUOTE(JSON_EXTRACT(body,?)) AS sample_time FROM records WHERE id=? AND kind='wind_datasets' AND tenant=?",
+        [`$.rows[${middle}].time`, id, user.tenant],
+      );
+      if (!found.length) throw new HttpError(404, "工况数据集不存在");
+      const time = Date.parse(found[0].sample_time);
+      if (!Number.isFinite(time)) throw new HttpError(500, "工况时间数据无效，暂时无法跳转");
+      if (time < at) low = middle + 1;
+      else high = middle;
+    }
+    offset = low;
+  }
+  const result = { id: dataset.id, name: dataset.name, total, offset, limit, rows: [] as unknown[], units: dataset.units || {} };
+  // Avoid generating an out-of-range JSON path, including very large offsets.
+  if (offset >= total) return result;
+  const count = Math.min(limit, total - offset);
+  const paths = Array.from({ length: count }, (_, index) => `$.rows[${offset + index}]`);
+  const page = await rows<{ page: unknown }>(
+    `SELECT JSON_EXTRACT(body,${paths.map(() => "?").join(",")}) AS page FROM records WHERE id=? AND kind='wind_datasets' AND tenant=?`,
+    [...paths, id, user.tenant],
+  );
+  if (!page.length) throw new HttpError(404, "工况数据集不存在");
+  // MySQL wraps multiple JSON paths in an array; a single path is the row itself.
+  result.rows = count === 1 ? [page[0].page] : page[0].page as unknown[];
+  return result;
+}
+
+export async function deleteWindDataset(user: User, id: string) {
+  requireAnalyst(user);
+  const connection = await pool().getConnection();
+  try {
+    await connection.beginTransaction();
+    const [found] = await connection.execute(
+      "SELECT id FROM records WHERE id=? AND kind='wind_datasets' AND tenant=? FOR UPDATE",
+      [id, user.tenant],
+    );
+    if (!(found as RecordItem[]).length) throw new HttpError(404, "工况数据集不存在");
+    await connection.execute("DELETE FROM records WHERE id=? AND kind='wind_datasets' AND tenant=?", [id, user.tenant]);
+    await connection.execute(
+      "INSERT INTO audit_logs(id,actor_id,actor_name,tenant,action,target,result) VALUES(?,?,?,?,?,?,?)",
+      [randomUUID(), user.id, user.name, user.tenant, "删除风场工况", id, "成功"],
+    );
+    await connection.commit();
+    return { deleted: true, id };
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+}
 export async function objects(user: User): Promise<MeasurementObject[]> {
   return (await listMeasurementRows(user, "measurement_objects")).map(
     (row) => ({ ...row, revision: digest(JSON.stringify(row)) }),

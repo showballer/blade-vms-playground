@@ -595,3 +595,26 @@
 }
 .measurement-batch-summary { margin: 12px 0; line-height: 1.65; }
 .measurement-batch-summary ul { padding-left: 22px; }
+.wind-dataset-actions { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.wind-data-preview { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.wind-preview-toolbar, .wind-preview-footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.wind-preview-toolbar > div { min-width: 0; flex: 1; }
+.wind-preview-toolbar strong { overflow-wrap: anywhere; }
+.wind-preview-toolbar .inline-field { width: 132px; flex: none; }
+.wind-preview-toolbar .hint { margin: 5px 0 0; }
+.wind-preview-jump { margin-top: 8px; }
+.wind-preview-table { min-height: 220px; max-height: min(54vh, 560px); overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
+.wind-preview-table .table-scroll { overflow: visible; }
+.wind-preview-table table { margin: 0; width: 100%; }
+.wind-preview-table th { position: sticky; top: 0; z-index: 1; background: #edf2f8; }
+.wind-preview-table td, .wind-preview-table th { white-space: nowrap; padding: 9px 12px; }
+.wind-preview-table td { font-variant-numeric: tabular-nums; }
+.wind-preview-placeholder { display: grid; place-items: center; min-height: 220px; color: var(--muted); }
+.wind-preview-table .error, .wind-preview-table > .hint { margin: 16px; }
+.wind-preview-footer { font-size: 12px; }
+.wind-preview-footer .wind-dataset-actions { flex-wrap: wrap; }
+@media (max-width: 700px) {
+  .wind-preview-footer { gap: 8px; }
+  .wind-preview-footer .wind-dataset-actions { gap: 5px; }
+  .wind-preview-table td, .wind-preview-table th { padding: 8px; }
+}

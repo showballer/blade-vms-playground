@@ -1,10 +1,11 @@
+import base64
 import json
 import os
 import tempfile
 import unittest
 from pathlib import Path
 
-from blade_acquisition.wind_import import merge_staged, stage_preview
+from blade_acquisition.wind_import import MINUTE_UNITS, merge_staged, preview, stage_preview
 
 
 class WindImportTests(unittest.TestCase):
@@ -84,6 +85,65 @@ class WindImportTests(unittest.TestCase):
         self.assertEqual(summary["metricCounts"]["rpm"], 0)
         self.assertTrue(all("rpm" not in row for row in rows))
         self.assertTrue(all(row["temperatureC"] == 0 for row in rows))
+
+    def test_standard_minute_export_maps_all_fields_and_keeps_identifier(self):
+        text = ("名称,时间,风速,发电机有功功率,主轴转速,舱外温度,风向\n"
+                "006#,2026-10-18 00:00:00,6.350000,3145.989990,8.740000,0.660000,-91.279999\n"
+                "006#,2026-10-18 00:01:00,0,-41.200001,0.14,-3.09,171.889999\n")
+        item, staged = self.stage(text, "gb18030", "006#_20261018_20261018_minute.csv")
+        self.assertEqual(staged["sourceFormat"], "turbine-minute-v1")
+        self.assertEqual(staged["suggestedUnits"], MINUTE_UNITS)
+        self.assertEqual(staged["suggestedMapping"], {"time": "时间", "turbineCode": "名称", "windSpeed": "风速",
+            "powerKw": "发电机有功功率", "rpm": "主轴转速", "temperatureC": "舱外温度", "windDirection": "风向"})
+        self.assertEqual(staged["windDirectionReference"], "unspecified")
+        summary, rows = self.merge([item], staged["suggestedUnits"])
+        self.assertEqual(summary["matchedRowCount"], 2)
+        self.assertEqual(summary["metricCounts"], {field: 2 for field in MINUTE_UNITS})
+        self.assertEqual(rows[0], {"time": "2026-10-17T16:00:00.000Z", "turbineCode": "006#", "windSpeed": 6.35,
+            "powerKw": 3145.98999, "rpm": 8.74, "temperatureC": 0.66, "windDirection": -91.279999})
+        self.assertEqual(rows[1]["powerKw"], -41.200001)
+        self.assertEqual(rows[1]["temperatureC"], -3.09)
+        self.assertEqual(rows[1]["windDirection"], 171.889999)
+        self.assertEqual(summary["windDirectionReference"], "unspecified")
+        self.assertEqual(summary["sources"][0]["sourceFormat"], "turbine-minute-v1")
+        self.assertEqual(summary["sources"][0]["windDirectionReference"], "unspecified")
+
+    def test_unit_suggestion_does_not_bypass_explicit_confirmation(self):
+        item, staged = self.stage("名称,时间,风速,发电机有功功率,主轴转速,舱外温度,风向\n006#,2026-10-18 00:00:00,6,3000,8,0,-91\n")
+        with self.assertRaisesRegex(ValueError, "原始单位"):
+            merge_staged(self.root, {"files": [item], "timezoneOffset": "+08:00", "units": {}})
+        self.assertEqual(self.merge([item], staged["suggestedUnits"])[0]["rowCount"], 1)
+        _, old = self.stage("风机,时间,当前风速\nR018,2025-12-23 09:00:00,7.6\n")
+        self.assertEqual(old["suggestedUnits"], {})
+        self.assertNotIn("sourceFormat", old)
+
+    def test_signed_direction_bounds_are_retained_without_modulo(self):
+        for value in (-360, -180, -91.279999, 0, 180, 359.9, 360):
+            item, _ = self.stage(f"名称,时间,风向\n006#,2026-10-18 00:00:00,{value}\n")
+            summary, rows = self.merge([item], {"windDirection": "deg"})
+            self.assertEqual(rows[0]["windDirection"], value)
+            self.assertEqual(summary["windDirectionReference"], "unspecified")
+        for value in (-360.01, 360.01, "NaN", "Infinity"):
+            item, _ = self.stage(f"名称,时间,风向\n006#,2026-10-18 00:00:00,{value}\n")
+            with self.assertRaisesRegex(ValueError, "windDirection 超出范围"):
+                self.merge([item], {"windDirection": "deg"})
+
+    def test_new_aliases_keep_missing_distinct_from_zero(self):
+        item, _ = self.stage("名称,时间,主轴转速,舱外温度,风向\n006#,2026-10-18 00:00:00,,0,\n006#,2026-10-18 00:01:00,0,,0\n")
+        summary, rows = self.merge([item], {"rpm": "rpm", "temperatureC": "C", "windDirection": "deg"})
+        self.assertNotIn("rpm", rows[0]); self.assertNotIn("windDirection", rows[0])
+        self.assertEqual(rows[0]["temperatureC"], 0)
+        self.assertEqual(rows[1]["rpm"], 0); self.assertEqual(rows[1]["windDirection"], 0)
+        self.assertNotIn("temperatureC", rows[1])
+        self.assertEqual(summary["matchedRowCount"], 0)
+
+    def test_legacy_preview_identifies_new_format_without_rewriting_cells(self):
+        text = "名称,时间,风速,发电机有功功率,主轴转速,舱外温度,风向\n006#,2026-10-18 00:00:00,6.350000,-41.200001,8.740000,0.660000,-91.279999\n"
+        result = preview({"filename": "006#_minute.csv", "base64": base64.b64encode(text.encode("gb18030")).decode("ascii")})
+        self.assertEqual(result["sourceFormat"], "turbine-minute-v1")
+        self.assertEqual(result["rows"][0][0], "006#")
+        self.assertEqual(result["rows"][0][-1], "-91.279999")
+        self.assertEqual(result["suggestedUnits"], MINUTE_UNITS)
 
 
 if __name__ == "__main__":

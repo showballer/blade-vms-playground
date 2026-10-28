@@ -26,6 +26,8 @@ import {
   saveObject,
   saveWindDataset,
   windDatasetSummaries,
+  windDatasetRows,
+  deleteWindDataset,
   validContext,
   type MeasurementSource,
 } from "./measurement-store";
@@ -188,11 +190,10 @@ async function analyze(user: User, b: any) {
   const refs = b.references || [b.reference];
   if (!Array.isArray(refs) || !refs.length || refs.length > 16)
     throw new HttpError(400, "请选择 1～16 条记录");
-  const [sources, all, history, datasets, ruleState] = await Promise.all([
+  const [sources, all, history, ruleState] = await Promise.all([
     measurementSources(user, { references: refs }),
     objects(user),
     analysisResults(user),
-    listMeasurementRows(user, "wind_datasets"),
     measurementRules(user),
   ]);
   const selected = refs.map((ref: any) =>
@@ -255,6 +256,9 @@ async function analyze(user: User, b: any) {
       throw new HttpError(409, "计算期间记录归属已变化，请重新选择记录");
   }
   const turbine = all.find((o) => o.id === context.turbineId)!;
+  // Read conditions after the potentially long waveform worker. A deleted
+  // dataset must not survive in an earlier request snapshot for a new result.
+  const datasets = await listMeasurementRows(user, "wind_datasets");
   const condition = conditionWindow(
     datasets as any,
     context.farmId,
@@ -451,6 +455,29 @@ export async function measurementEndpoint(
         datasets: await windDatasetSummaries(user),
         objects: await objects(user),
       };
+    if (path.length === 3 && id === "rows" && method === "GET") {
+      const integer = (key: string, fallback: number) => {
+        const values = url.searchParams.getAll(key);
+        if (!values.length) return fallback;
+        if (values.length !== 1 || !/^\d+$/.test(values[0]) || !Number.isSafeInteger(Number(values[0])))
+          throw new HttpError(400, "工况分页参数无效：offset 应为非负整数，limit 应为 1～100 的整数");
+        return Number(values[0]);
+      };
+      let at: number | undefined;
+      if (url.searchParams.has("at")) {
+        const values = url.searchParams.getAll("at");
+        if (values.length !== 1 || url.searchParams.has("offset")) throw new HttpError(400, "at 与 offset 不能同时指定，且时间参数不能重复");
+        const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,3}))?Z$/.exec(values[0]);
+        at = Date.parse(values[0]);
+        if (!match || !Number.isFinite(at) || new Date(at).toISOString() !== `${match[1]}.${(match[2] || "").padEnd(3, "0")}Z`)
+          throw new HttpError(400, "at 应为有效的 UTC ISO 时间，例如 2025-12-23T01:10:00.000Z");
+      }
+      return windDatasetRows(user, string(action, "工况数据集编号"), integer("offset", 0), integer("limit", 50), at);
+    }
+    if (path.length === 2 && method === "DELETE") {
+      requireAnalyst(user);
+      return deleteWindDataset(user, string(action, "工况数据集编号"));
+    }
     if (path.length === 2 && action === "preview-file" && method === "POST") {
       requireAnalyst(user);
       return windUploadPreview(user, req);

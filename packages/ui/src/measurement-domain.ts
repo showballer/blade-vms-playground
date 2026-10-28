@@ -204,7 +204,9 @@ export function validateWindRows(input: any): WindRow[] {
       for (const [key, min, max] of [
         ["windSpeed", 0, 150],
         ["rpm", 0, 10000],
-        ["windDirection", 0, 360],
+        // Some exports carry a signed direction/offset; retain it until the
+        // source reference is confirmed instead of assuming absolute azimuth.
+        ["windDirection", -360, 360],
         ["powerKw", -100000, 100000],
         ["temperatureC", -100, 100],
       ] as const) {
