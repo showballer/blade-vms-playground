@@ -56,3 +56,13 @@ node scripts/package-macos.cjs \
 ```sh
 node --test scripts/test-field-bundled-recordings.cjs
 ```
+
+实际定制包的首启与界面验收（针对上述 P1～P5、20 条记录的任务）可以运行：
+
+```sh
+node scripts/test-custom-mac-package.cjs \
+  --app /absolute/path/to/BladeVMS.app \
+  --instructions /absolute/path/to/安装与登录说明.txt
+```
+
+该验收创建临时用户目录，使用包内独立采集服务读取记录，禁止设备连接和 Web 请求；验证登录、汇总、波形及重启幂等。不会读取开发者本机账号或修改已安装客户端的记录。
