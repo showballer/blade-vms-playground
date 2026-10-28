@@ -56,7 +56,7 @@ check("incremental ECharts data updates retain user zoom and replace the series 
 });
 check("empty real-time panels expose acquisition sources and simulation panels keep provenance", () => {
   const empty = renderToStaticMarkup(<FieldRealtimeAnalysis />);
-  assert.match(empty, /等待时域波形数据/); assert.match(empty, /开始采集，连续窗口达到 64 点后显示/);
+  assert.match(empty, /等待时域波形数据/); assert.doesNotMatch(empty, /连续窗口达到 64 点后显示/);
   assert.equal((empty.match(/role="tab"/g) || []).length, 3);
   const active = renderToStaticMarkup(<FieldRealtimeAnalysis realtime={input} />);
   assert.match(active, /模拟数据/); assert.match(active, /主频/); assert.match(active, />32<small>Hz/);

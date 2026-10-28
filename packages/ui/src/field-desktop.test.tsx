@@ -329,7 +329,7 @@ check("统一账号需要联网时不宣称缓存可用，配置失败也不启�
 check("账号卡片只展示安全元信息，绑定后无换绑入口", () => {
   const extraMetadata = { ...unifiedAccount, token: "TOKEN_MUST_NOT_RENDER", passwordHash: "HASH_MUST_NOT_RENDER", salt: "SALT_MUST_NOT_RENDER" };
   const html = renderToStaticMarkup(<FieldAccountPanel account={extraMetadata} busy={false} active={false} onBind={() => {}} onPassword={() => {}} />);
-  for (const label of ["账号与密码", "Web 服务器", "绑定账号", "上次联网验证", "离线有效期至", "统一账号 · 离线验证", "修改统一密码", "下次联网登录时校验"]) assert.ok(html.includes(label));
+  for (const label of ["账号与密码", "Web 服务器", "绑定账号", "上次联网验证", "离线有效期至", "统一账号 · 离线验证", "修改统一密码"]) assert.ok(html.includes(label));
   assert.ok(!html.includes("绑定 Web 账号"));
   assert.ok(!html.includes("<input"));
   for (const secret of [extraMetadata.token, extraMetadata.passwordHash, extraMetadata.salt]) assert.ok(!html.includes(secret));
@@ -337,7 +337,6 @@ check("账号卡片只展示安全元信息，绑定后无换绑入口", () => {
 check("未绑定账号提供显式绑定且运行采集时禁止账号变更", () => {
   const local = renderToStaticMarkup(<FieldAccountPanel account={{ mode: "local" }} busy={false} active={false} onBind={() => {}} onPassword={() => {}} />);
   assert.ok(local.includes("绑定 Web 账号")); assert.ok(local.includes("修改本机密码"));
-  assert.ok(local.includes("原有采集记录保留在本机")); assert.ok(local.includes("不会因绑定自动上传"));
   for (const account of [{ mode: "local" } as FieldAccountInfo, unifiedAccount]) {
     const running = renderToStaticMarkup(<FieldAccountPanel account={account} busy={false} active onBind={() => {}} onPassword={() => {}} />);
     const buttons = [...running.matchAll(/<button([^>]*)>/g)];
@@ -359,8 +358,9 @@ check("绑定表单验证双方密码且不预填凭据，提交区独立于滚�
 check("换绑与解绑要求当前密码，解绑另设本机密码，运行采集时不可提交", () => {
   const card = renderToStaticMarkup(<FieldAccountPanel account={unifiedAccount} busy={false} active={false} onBind={() => {}} onPassword={() => {}} onRebind={() => {}} onUnbind={() => {}} />);
   assert.ok(card.includes("更换绑定")); assert.ok(card.includes("解除绑定"));
-  assert.ok(card.includes("不会自动转给新账号")); assert.ok(!card.includes("服务器与账号已锁定"));
+  assert.ok(!card.includes("服务器与账号已锁定"));
   const rebind = renderToStaticMarkup(<FieldBindAccountDialog mode="rebind" initialServerUrl="https://example.test" initialUsername="existing-user" busy={false} error="" onClose={() => {}} onBind={async () => {}} />);
+  assert.ok(rebind.includes("不会自动转给新账号"));
   assert.ok(rebind.includes("当前绑定账号密码")); assert.ok(rebind.includes("确认更换绑定"));
   assert.equal((rebind.match(/type="password"[^>]*value=""/g) || []).length, 2);
   const unbind = renderToStaticMarkup(<FieldUnbindAccountDialog busy={false} active error="" onClose={() => {}} onUnbind={async () => {}} />);
@@ -483,7 +483,7 @@ check("包络按实际区间定位，不伪造连续原始采样点", () => {
 check("设备操作进行中禁止启动，旧记录无配置不填默认值", () => {
   assert.equal(fieldCanStart({ ...ready, deviceBusy: true }), false);
   const html = renderToStaticMarkup(<FieldDeviceSnapshot />);
-  assert.ok(html.includes("不能用当前设备设置代替"));
+  assert.ok(html.includes("此记录无设备配置快照"));
   assert.ok(!html.includes("10 kHz"));
 });
 
@@ -493,8 +493,10 @@ check("同步设置明确仅自动上传新采集，未绑定时开关不可用"
   assert.match(local, /role="switch"[^>]*disabled=""/);
   assert.ok(local.includes("请先绑定 Web 账号"));
   const connected = renderToStaticMarkup(<FieldCloudSyncPanel account={unifiedAccount} status={{ enabled: true, connected: true, state: "ready", items: [{ recordingId: "one", name: "new capture", state: "uploading", progress: 45 }] }} busy={false} onAuto={() => {}} onRetry={() => {}} />);
-  assert.ok(connected.includes("历史记录可在本机记录中上传"));
-  assert.ok(connected.includes("已排队记录仍会继续上传"));
+  assert.ok(connected.includes("自动同步新采集"));
+  assert.ok(connected.includes("上传采样率"));
+  assert.ok(!connected.includes("上传副本先低通滤波"));
+  assert.ok(!connected.includes("已排队记录仍会继续上传"));
   assert.ok(connected.includes("45%")); assert.ok(connected.includes("重试同步"));
 });
 console.log(`Field desktop presentation checks: ${checks} passed (static/pure only).`);

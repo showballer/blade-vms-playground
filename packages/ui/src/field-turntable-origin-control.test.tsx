@@ -73,6 +73,9 @@ check("恢复设备坐标后仍能回公共原点，无原点禁用，保存坐�
   const restored = renderToStaticMarkup(<FieldTurntableOriginControl {...props} opticalOrigin={origin} />);
   assert.match(restored, /<button(?![^>]*disabled)[^>]*aria-label="回到原点"/);
   assert.ok(restored.includes("设备坐标 · 光学零点已保留"));
+  assert.ok(restored.includes('aria-label="保存的原点坐标"'));
+  assert.ok(!restored.includes('aria-label="回原点运动参数"'));
+  assert.ok(!restored.includes("未校准测点先按尺寸定位"));
   const missing = renderToStaticMarkup(<FieldTurntableOriginControl {...props} opticalOrigin={null} />);
   assert.match(missing, /<button(?=[^>]*disabled)(?=[^>]*aria-label="回到原点")[^>]*>/);
   const stale = renderToStaticMarkup(<FieldTurntableOriginControl {...props} status={changed(value => { value.service.generation = 3; })} opticalOrigin={origin} />);

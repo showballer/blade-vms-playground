@@ -4,24 +4,31 @@
 .field-drive-profile > summary { cursor: pointer; font-weight: 600; color: var(--field-ui-text); }
 .field-drive-profile > summary .field-subtext { margin-left: var(--field-ui-space-2); font-weight: 400; }
 .field-drive-profile > p { margin-top: var(--field-ui-space-3); }
-.field-drive-profile-axes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--field-ui-space-4); }
-.field-drive-profile-axis { padding: var(--field-ui-space-4); border: 1px solid var(--field-ui-line); border-radius: var(--field-ui-control-radius); min-width: 0; background: var(--field-ui-subtle); }
-.field-drive-profile-axis h3 { margin: 0; font-size: var(--field-ui-body); }
-.field-drive-profile-inputs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--field-ui-space-3); }
-.field-drive-profile-inputs label { display: grid; gap: var(--field-ui-space-2); min-width: 0; font-size: var(--field-ui-body); color: var(--field-ui-secondary); }
-.field-servo-ui .field-drive-profile-inputs input { width: 100%; min-width: 0; max-width: none; box-sizing: border-box; }
+.field-drive-profile-table { margin-top: var(--field-ui-space-3); }
+.field-drive-profile-table, .field-health-table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: var(--field-ui-label); }
+.field-drive-profile-table th, .field-drive-profile-table td, .field-health-table th, .field-health-table td {
+  padding: var(--field-ui-space-2) var(--field-ui-space-3); text-align: left; vertical-align: middle;
+  border-bottom: 1px solid var(--field-ui-line); overflow-wrap: anywhere; white-space: normal;
+}
+.field-drive-profile-table th:first-child, .field-health-table th:first-child { width: 28%; }
+.field-drive-profile-table tbody th, .field-health-table tbody th { color: var(--field-ui-secondary); font-weight: 400; }
+.field-drive-profile-table thead th, .field-health-table thead th { background: var(--field-ui-subtle); color: var(--field-ui-text); font-weight: 600; }
+.field-drive-profile-table tr:last-child > *, .field-health-table tr:last-child > * { border-bottom: 0; }
+.field-drive-profile-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--field-ui-space-2); }
+.field-servo-ui .field-drive-profile-table input { width: 100%; min-width: 0; max-width: none; box-sizing: border-box; }
+.field-drive-profile-apply td { vertical-align: top; }
+.field-drive-profile-apply p { margin: var(--field-ui-space-2) 0 0; }
 .field-drive-profile-footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--field-ui-space-2); margin-top: var(--field-ui-space-3); }
 .field-drive-profile-footer .field-subtext { margin: 0; }
-@media (max-width: 1100px) { .field-drive-profile-axes { grid-template-columns: minmax(0, 1fr); } }
-@media (max-width: 540px) { .field-drive-profile-inputs { grid-template-columns: minmax(0, 1fr); } }
 .field-health-recovery-actions { display: flex; flex-wrap: wrap; gap: var(--field-ui-space-2); margin-top: var(--field-ui-space-4); }
 .field-health-issues > div + div { margin-top: var(--field-ui-space-4); }
 .field-health-alert-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--field-ui-danger); }
 .field-turntable-health {
   display: grid;
+  grid-auto-rows: max-content;
   align-content: start;
-  gap: var(--field-ui-space-4);
-  padding: var(--field-ui-space-6);
+  gap: var(--field-ui-space-3);
+  padding: var(--field-ui-space-4);
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -36,12 +43,23 @@
 .field-servo-ui .field-turntable-connection-fields input { min-width: 0; width: 100%; max-width: none; box-sizing: border-box; }
 .field-turntable-connection-serial { grid-column: span 2; }
 @media (max-width: 780px) { .field-turntable-connection-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); } .field-turntable-connection-serial { grid-column: auto; } }
-.field-health-axes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--field-ui-space-3); }
-.field-health-axis, .field-health-trajectory, .field-health-issues { padding: var(--field-ui-space-4); border: 1px solid var(--field-ui-line); border-radius: var(--field-ui-control-radius); background: var(--field-ui-subtle); min-width: 0; }
+.field-health-axes { border: 1px solid var(--field-ui-line); border-radius: var(--field-ui-control-radius); overflow: hidden; min-width: 0; min-height: max-content; }
+.field-health-table td { color: var(--field-ui-text); font-variant-numeric: tabular-nums; }
+.field-health-actions-row td { vertical-align: top; }
+.field-health-actions-row .field-health-recovery-actions { margin-top: 0; }
+.field-health-unavailable { display: block; color: var(--field-ui-secondary); margin-top: var(--field-ui-space-1); }
+.field-health-trajectory, .field-health-issues { padding: var(--field-ui-space-3); border: 1px solid var(--field-ui-line); border-radius: var(--field-ui-control-radius); background: var(--field-ui-subtle); min-width: 0; }
+.field-health-guidance > summary { cursor: pointer; font-weight: 600; }
+.field-health-guidance > div { margin-top: var(--field-ui-space-3); }
+.field-turntable-health .field-mechanical-home { margin: 0; }
+.field-turntable-health .field-mechanical-home > .field-work-origin-row + .field-work-origin-row { margin-top: var(--field-ui-space-2); }
 .field-turntable-health h3 { margin: 0 0 var(--field-ui-space-3); font-size: var(--field-ui-body); color: var(--field-ui-text); }
 .field-turntable-health dl { margin: 0; display: grid; gap: var(--field-ui-space-2); }
 .field-turntable-health dl > div { display: flex; justify-content: space-between; flex-wrap: wrap; gap: var(--field-ui-space-1) var(--field-ui-space-3); }
 .field-turntable-health dt { color: var(--field-ui-muted); }
 .field-turntable-health dd { margin: 0; color: var(--field-ui-text); text-align: right; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .field-health-issues ul { margin: 0; padding-left: var(--field-ui-space-4); color: var(--field-ui-secondary); display: grid; gap: var(--field-ui-space-2); }
-@media (max-width: 640px) { .field-health-axes { grid-template-columns: minmax(0, 1fr); } .field-turntable-health { padding: var(--field-ui-space-4); } }
+@media (max-width: 540px) {
+  .field-drive-profile-table th, .field-drive-profile-table td, .field-health-table th, .field-health-table td { padding: var(--field-ui-space-2); }
+  .field-drive-profile-table .btn, .field-health-table .btn { white-space: normal; max-width: 100%; }
+}

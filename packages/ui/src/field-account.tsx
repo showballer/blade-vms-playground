@@ -29,19 +29,13 @@ export const FieldAccountPanel = memo(function FieldAccountPanel({ account, busy
 }) {
   const unified = account?.mode === "unified";
   return <section className="field-card field-account-card">
-    <div className="field-section-heading"><div><h2>账号与密码</h2><p>{unified ? "Web 与已绑定桌面共用同一账号密码。" : "可将本机工作区绑定到 Web 账号，统一登录密码。"}</p></div><ShieldCheck size={18} /></div>
+    <div className="field-section-heading"><h2>账号与密码</h2>{unified ? <div className={`field-account-state ${account.offline ? "offline" : ""}`}>{account.offline ? <WifiOff size={15} /> : <Link size={15} />}<strong>{account.offline ? "统一账号 · 离线验证" : "已绑定统一账号"}</strong></div> : <span className="field-badge">本机账号</span>}</div>
     {unified ? <>
-      <div className={`field-account-state ${account.offline ? "offline" : ""}`}>{account.offline ? <WifiOff size={17} /> : <Link size={17} />}<strong>{account.offline ? "统一账号 · 离线验证" : "已绑定统一账号"}</strong></div>
       <dl className="field-details field-account-details"><div><dt>Web 服务器</dt><dd>{account.serverUrl || "—"}</dd></div><div><dt>绑定账号</dt><dd>{account.username || "—"}</dd></div><div><dt>上次联网验证</dt><dd>{fieldAccountTime(account.lastVerifiedAt)}</dd></div><div><dt>离线有效期至</dt><dd>{account.offlineUntil ? fieldAccountTime(account.offlineUntil) : "需先联网验证"}</dd></div></dl>
       {fieldAccountUsesPlainHttp(account.serverUrl) && <p className="field-notice warning">{plainHttpNotice}</p>}
-      <p className="field-subtext">离线验证最多有效 30 天；到期或账号要求重新验证时，需联网登录。当前使用 Web 账号密码登录。</p>
       {account.onlineRequired && <p className="field-notice warning">此账号下次登录需要联网验证，不能使用离线缓存登录。</p>}
       <div className="field-account-actions"><Button disabled={busy || active} onClick={onPassword}><LockKeyhole size={15} />修改统一密码</Button><Button disabled={busy || active || !onRebind} onClick={onRebind}><RefreshCw size={15} />更换绑定</Button><Button disabled={busy || active || !onUnbind} onClick={onUnbind}><Unlink size={15} />解除绑定</Button></div>
-      <p className="field-inline-help">更换或解除绑定需验证当前账号密码。本机记录保留；旧账号的待上传记录不会自动转给新账号。</p>
-      <p className="field-inline-help">修改统一密码需要联网。Web 改密或禁用会在桌面下次联网登录时校验；不会强制中断已经运行的采集。</p>
     </> : <>
-      <p className="field-subtext">当前使用独立本机账号。首次绑定需要验证当前本机密码及 Web 账号密码；成功后由该 Web 账号接管本机工作区登录。</p>
-      <p className="field-notice">原有采集记录保留在本机，不会因绑定自动上传。绑定后使用 Web 的同一密码，可在有效期内离线登录。</p>
       <div className="field-account-actions"><Button variant="primary" disabled={busy || active || !account} onClick={onBind}><Link size={15} />绑定 Web 账号</Button><Button disabled={busy || active || !account} onClick={onPassword}><LockKeyhole size={15} />修改本机密码</Button></div>
     </>}
     {active && <p className="field-subtext">请先停止并保存采集，再绑定账号或修改密码。</p>}
@@ -57,18 +51,15 @@ export function FieldCloudSyncPanel({ account, status, busy, onAuto, onRetry, on
   const labels = { unbound: "待绑定账号", "signed-out": "等待登录", offline: "等待联网登录", ready: "已连接 Web", syncing: "正在同步", error: "同步待重试" };
   const states = { recording: "采集中", queued: "等待上传", uploading: "上传中", synced: "已同步", error: "等待重试" };
   const pending = status?.items.filter(item => item.state !== "synced") || [];
-  return <section className="field-card field-account-card">
-    <div className="field-section-heading"><div><h2>Web 数据同步</h2><p>开启自动同步后可在 Web 查看实时预览；各点记录保存后按所选采样率上传。</p></div><CloudUpload size={18} /></div>
-    <div className="field-account-state"><CloudUpload size={17} /><strong>{status ? labels[status.state] : "读取同步状态中"}</strong></div>
-    <div className="field-account-actions"><span>自动同步新采集</span><button type="button" className="field-debug-toggle" role="switch" aria-label="自动同步新采集" aria-checked={Boolean(status?.enabled)} disabled={busy || !bound || !status} onClick={() => onAuto(!status?.enabled)}><span /></button></div>
+  return <section className="field-card field-account-card field-cloud-sync-card">
+    <div className="field-section-heading"><h2>Web 数据同步</h2><div className="field-account-state"><CloudUpload size={15} /><strong>{status ? labels[status.state] : "读取同步状态中"}</strong></div></div>
+    <div className="field-sync-controls"><div className="field-account-actions"><span>自动同步新采集</span><button type="button" className="field-debug-toggle" role="switch" aria-label="自动同步新采集" aria-checked={Boolean(status?.enabled)} disabled={busy || !bound || !status} onClick={() => onAuto(!status?.enabled)}><span /></button></div>
     <label className="field-upload-sampling">上传采样率<CustomSelect aria-label="上传采样率" value={status?.uploadSampleRate ?? 50000} disabled={busy || !status || !onSampleRate} onChange={event => onSampleRate?.(Number(event.target.value))}>
       <option value={0}>原始采样率 · 全量上传</option>{[10000, 20000, 25000, 30000, 40000, 50000, 60000, 70000, 80000, 90000, 100000].map(rate => <option key={rate} value={rate}>{rate / 1000} kHz{rate === 50000 ? " · 推荐" : ""}</option>)}
-    </CustomSelect></label>
-    <p className="field-subtext">本机始终保存全量原始数据。上传副本先低通滤波再降采样；50 kHz 相比 250 kHz 减少约 80% 波形数据，建议用于 20 kHz 以下的分析。源采样率更低时保持原样。设置对尚未开始处理的上传生效，续传沿用原设置。</p>
-    <p className="field-subtext">{bound ? "关闭自动同步后，新采集不会发送实时预览，已排队记录仍会继续上传。历史记录可在本机记录中上传；断线后联网登录继续同步。包含换点过程的整段原始档案保留在本机，Web 同步各测点记录。" : "请先绑定 Web 账号。本机采集和保存可独立使用。"}</p>
+    </CustomSelect></label></div>
+    {!bound && <p className="field-subtext">请先绑定 Web 账号。</p>}
     {status?.error && <p className="field-notice warning" role="status">{status.error}</p>}
     {pending.length > 0 && <div className="field-table-scroll"><table className="field-table"><thead><tr><th>待同步记录</th><th>状态</th></tr></thead><tbody>{pending.slice(-5).reverse().map(item => <tr key={item.recordingId}><td><strong>{item.name}</strong>{item.error && <small>{item.error}</small>}</td><td>{states[item.state]}{item.state === "uploading" && ` ${item.progress}%`}</td></tr>)}</tbody></table></div>}
-    {bound && <p className="field-inline-help">此处保留最近 200 条已同步记录摘要，完整记录以 Web 为准。</p>}
     {bound && <div className="field-account-actions"><span className="field-subtext">待同步 {pending.length} 条 · 近期已同步 {status?.items.filter(item => item.state === "synced").length || 0} 条</span><Button disabled={busy || !status || !status.connected} onClick={onRetry}><RefreshCw size={14} />重试同步</Button></div>}
   </section>;
 }

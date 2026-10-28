@@ -15,10 +15,18 @@ import React,{useEffect,useRef,useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {FieldTurntableWorkspace} from ${JSON.stringify(path.join(ui, 'field-auto-follow.tsx'))};
 import {autoFollowStorageKey,defaultAutoFollowSurvey} from ${JSON.stringify(path.join(ui, 'field-auto-follow-config.ts'))};
+import {prepareCaptureStartRoute} from ${JSON.stringify(path.join(ui, 'field-capture-route.ts'))};
 import ${JSON.stringify(path.join(ui, 'styles.css'))};
 import ${JSON.stringify(path.join(ui, 'field-styles.css'))};
+import ${JSON.stringify(path.join(ui, 'field-realtime.css'))};
 import ${JSON.stringify(path.join(ui, 'field-turntable.css'))};
+import ${JSON.stringify(path.join(ui, 'field-header-laser.css'))};
+import ${JSON.stringify(path.join(ui, 'field-turntable-health.css'))};
+import ${JSON.stringify(path.join(ui, 'field-cycle-motion.css'))};
+import ${JSON.stringify(path.join(ui, 'field-auto-capture-list.css'))};
 import ${JSON.stringify(path.join(ui, 'field-auto-follow.css'))};
+import ${JSON.stringify(path.join(ui, 'field-blade-summary.css'))};
+import ${JSON.stringify(path.join(ui, 'web-blade-passes.css'))};
 const axis=(angle,limit,origin,soft=true)=>({output_angle_deg:angle,motor_rpm:0,actual_counts:1234,commanded_counts:1234,error_counts:0,display_mode:3,command_counts_per_rev:10000,encoder_bits:17,flags:soft?3:1,fault:0,origin_counts:origin,home_phase:0,observedAt:1792400000,referenceAngleDeg:0,guard:{soft_enabled:soft,hardware_enabled:false,minimum_deg:soft?-limit:0,maximum_deg:soft?limit:0}});
 const initial={service:{state:'ready',dllConfigured:true,generation:1},state:'idle',turntableBusy:false,turntable:{state:'checked',port:'COM3',axis:1,connected:true,motionCapability:{supported:true,mode:'dual_axis_timed',protocol:'0x30-0x36',probe:'confirmed',status:null},feedback:{outputRpm:0,motorRpm:0,alarmCode:0,limitFlags:0,positionRaw:1234,axes:{'1':axis(10,35,101),'2':axis(0,180,202,false)}}}};
 const oldPoint={pointId:'origin-existing-point',name:'既有绝对点',port:'COM3',referenceSignature:'[[101,3,10000,17],[202,3,10000,17]]',axis1AngleDeg:12,axis2AngleDeg:-3,recordedAt:1792400000000,axis1RawCounts:1234,axis2RawCounts:5678};
@@ -44,6 +52,12 @@ function App(){
   window.__originFixture.calls.push(structuredClone(options));
   if(options.action==='turntablePorts')return {ports:[{port:'COM3',description:'隔离端口3'},{port:'COM4',description:'隔离端口4'}]};
   if(options.action==='turntable'){
+   if(options.request.action==='health'){
+    const reply=structuredClone(window.__originFixture.server);
+    reply.turntable.port=options.request.port;
+    reply.turntable.health={readOnly:true,readAt:Date.now()/1000,axes:{'1':{alarmCode:0,limitFlags:0},'2':{alarmCode:0,limitFlags:0}}};
+    return reply;
+   }
    if(options.request.action==='probe'){
     const reply=structuredClone(window.__originFixture.probeStatus||window.__originFixture.server);
     reply.turntable.port=options.request.port;reply.turntable.state='checked';reply.turntable.connected=false;
@@ -70,6 +84,8 @@ function App(){
   if(options.action==='status')return structuredClone(window.__originFixture.server);
   throw Error('隔离验收不允许此设备操作：'+JSON.stringify(options));
  }
+ window.__originFixture.prepareAutoStart=()=>prepareCaptureStartRoute(window.__originFixture.routes.auto,live.current,
+  ()=>request({action:'turntable',request:{action:'probe',port:window.__originFixture.routes.auto.cycle.port,axis:1}}));
  useEffect(()=>{window.__originFixture.ready=true;},[]);
  return <div className="field-app"><header className="field-header"><div className="field-brand">BladeVMS <small>共用作业零点隔离验收</small></div></header><div className="field-workspace"><aside className="field-sidebar"><p>现场作业</p><button>数据采集</button><button className="active">转盘点位</button><button>本机记录</button></aside><main className="field-content"><div className="field-page-heading"><h1>转盘点位</h1></div><FieldTurntableWorkspace key={epoch} config={config} onConfig={setConfig} status={status} disabled={false} request={request} onStatus={accept} onService={()=>{}} onRecords={()=>{}} routeMode={mode} onRouteMode={setMode} autoTargetKey={selected} onAutoTarget={setSelected} onRoute={route=>{window.__originFixture.routes={...window.__originFixture.routes,[route.kind]:route};}} onAcquisition={()=>{}} /></main></div></div>;
 }
@@ -111,21 +127,28 @@ const autoCycle = () => run('window.__originFixture.routes.auto.cycle');
 const autoTargets = () => run('window.__originFixture.routes.auto.targets');
 const hasOrigin = () => run('!!(' + restoreExpression + ')');
 const requiresOpticalZero = () => run('window.__originFixture.routes.auto.targets.every(target=>target.route.cycle===null&&target.route.errors.some(error=>error.includes("公共光学零点需重新设置")))');
+async function motionSettings(values) {
+  await action('打开转盘设置');
+  await waitFor('document.querySelector("dialog[open] [aria-label=重新检查转盘状态]")?.disabled===false', 'turntable settings read completed');
+  for (const [label, value] of values) await input(label, value);
+  await action('关闭弹窗');
+  await waitFor('!document.querySelector("dialog[open]")', 'turntable settings closed');
+}
 function assertOpticalBase(cycle, pitchBase, yawBase) {
   assert.ok(cycle, 'A physical route must exist');
   assert.equal(cycle.startAtCurrentPose, false, 'Common optical zero must not claim a point was aimed');
   assert.equal(cycle.points[0].axis2AngleDeg, yawBase);
   assert.equal(cycle.geometry.anchorAxis2AngleDeg, yawBase);
   const firstOpticalPitch = Math.atan2(cycle.geometry.hubHeightDeltaM - cycle.geometry.anchorRadiusM, cycle.geometry.distanceM) * 180 / Math.PI;
-  assert.ok(Math.abs(cycle.geometry.anchorAxis1AngleDeg - (pitchBase + firstOpticalPitch)) < 1e-8);
+  assert.ok(Math.abs(cycle.geometry.anchorAxis1AngleDeg - (pitchBase + cycle.geometry.axis1Sign * (cycle.geometry.pitchAngleScale ?? 1) * firstOpticalPitch)) < 1e-8);
   for (const point of cycle.points) {
     const phase = point.azimuthDeg * Math.PI / 180;
     const x = (cycle.geometry.rotationDirection === 'clockwise' ? -1 : 1) * point.radiusM * Math.sin(phase);
     const y = cycle.geometry.hubHeightDeltaM - point.radiusM * Math.cos(phase);
     const pitch = Math.atan2(y, Math.hypot(cycle.geometry.distanceM, x)) * 180 / Math.PI;
     const yaw = Math.atan2(x, cycle.geometry.distanceM) * 180 / Math.PI;
-    assert.ok(Math.abs(point.axis1AngleDeg - (pitchBase + cycle.geometry.axis1Sign * pitch)) < 1e-5);
-    assert.ok(Math.abs(point.axis2AngleDeg - (yawBase + cycle.geometry.axis2Sign * yaw)) < 1e-5);
+    assert.ok(Math.abs(point.axis1AngleDeg - (pitchBase + cycle.geometry.axis1Sign * (cycle.geometry.pitchAngleScale ?? 1) * pitch)) < 1e-5);
+    assert.ok(Math.abs(point.axis2AngleDeg - (yawBase + cycle.geometry.axis2Sign * (cycle.geometry.yawAngleScale ?? 1) * yaw)) < 1e-5);
   }
 }
 async function resetStatus() {
@@ -142,6 +165,12 @@ async function restore() {
 }
 async function check(name, fn) { await fn(); report.checks.push({ name, passed: true }); console.log('PASS ' + name); }
 async function screenshot(name) { fs.writeFileSync(path.join(output, name), (await win.webContents.capturePage()).toPNG()); report.screenshots.push(name); }
+async function assertFits(name) {
+  const dimensions = await run('(()=>{const content=document.querySelector(".field-content"),describe=e=>{const style=getComputedStyle(e),rect=e.getBoundingClientRect();return {tag:e.tagName,class:e.className,width:rect.width,right:rect.right,scroll:e.scrollWidth,minWidth:style.minWidth,display:style.display,columns:style.gridTemplateColumns,text:e.textContent.slice(0,80)}};return {width:innerWidth,body:document.body.scrollWidth,content:content.clientWidth,contentScroll:content.scrollWidth,grid:[...document.querySelectorAll(".field-turntable-workspace,.field-auto-follow,.field-auto-follow > *")].filter(e=>e.getClientRects().length).map(describe),overflow:[...content.querySelectorAll("*")].filter(e=>e.getClientRects().length&&e.getBoundingClientRect().right>content.getBoundingClientRect().right+2).slice(0,5).map(describe)};})()');
+  const fits = dimensions.body <= dimensions.width + 2 && dimensions.contentScroll <= dimensions.content + 2;
+  if (!fits) await screenshot(name + '-overflow.png');
+  assert.equal(fits, true, JSON.stringify(dimensions));
+}
 function finish(error) {
   report.passed = !error; if (error) report.error = error.stack;
   fs.writeFileSync(path.join(output, 'result.json'), JSON.stringify(report, null, 2));
@@ -202,20 +231,17 @@ app.whenReady().then(async () => { try {
     assert.deepEqual((await run('window.__originFixture.routes.manual.cycle.points')).map(point => point.axis1AngleDeg), [12, 12]);
   });
   await check('公共归零补偿自动路线的真实角度，恢复设备坐标只恢复显示，不清光学基准', async () => {
-    await click('自动跟随'); await waitFor('!!document.querySelector(".field-auto-route tbody tr")');
+    await click('自动跟随'); await waitFor('!!window.__originFixture.routes.auto.cycle&&!!document.querySelector(".field-auto-point-angle")');
     const compensatedCycle = await autoCycle();
     assertOpticalBase(compensatedCycle, 10, 0);
     assert.notDeepEqual(compensatedCycle, baselineCycle);
     assert.equal((await autoTargets())[0].route.referenceMode, undefined);
     assert.ok(compensatedCycle.points.every(point => point.referenceSignature === original.referenceSignature));
-    await run('document.querySelector(".field-auto-route").open=true');
-    const pitch = await run('document.querySelector(".field-auto-route tbody tr").cells[3].textContent');
-    assert.equal(pitch, (compensatedCycle.points[0].axis1AngleDeg - 10).toFixed(3) + '°');
     const firstStation = await run('document.querySelector(".field-auto-point-angle").textContent');
     assert.ok(firstStation.includes((compensatedCycle.points[0].axis1AngleDeg - 10).toFixed(3)), firstStation);
     const before = (await calls()).length; await restore(); assert.equal((await calls()).length, before);
     assert.deepEqual(await autoCycle(), compensatedCycle);
-    assert.equal(await run('document.querySelector(".field-auto-route tbody tr").cells[3].textContent'), compensatedCycle.points[0].axis1AngleDeg.toFixed(3) + '°');
+    assert.ok((await run('document.querySelector(".field-auto-point-angle").textContent')).includes(compensatedCycle.points[0].axis1AngleDeg.toFixed(3) + '°'));
     await click('手动控制');
     assert.equal(Number(await run('document.querySelector("input[aria-label=记录轴1角度]").value')), 12);
   });
@@ -279,12 +305,20 @@ app.whenReady().then(async () => { try {
       else await run('(()=>{const next=structuredClone(window.__originFixture.initial);'+(kind === 'reference' ? 'next.turntable.feedback.axes["1"].origin_counts++;' : 'next.service.generation=2;')+'window.__originFixture.inject(next);})()');
       await waitFor('!('+restoreExpression+')', 'origin invalidated: ' + kind);
       if (kind === 'reference') {
-        await waitFor('window.__originFixture.routes.auto.targets.every(target=>target.route.cycle===null&&target.route.errors.some(error=>error.includes("公共光学零点需重新设置")))', 'changed reference blocks calculated routes');
-        assert.equal(await autoCycle(), null, 'A changed reference must not produce an executable device-zero fallback');
+        await waitFor('window.__originFixture.routes.auto.verifyReferenceAtStart===true', 'changed reference requires fresh verification');
+        const pending = await autoCycle();
+        assertOpticalBase(pending, 10, 0);
+        assert.ok(pending.points.every(point => point.referenceSignature === original.referenceSignature), 'A new reference cannot replace the saved optical basis');
+        assert.equal((await autoTargets())[0].route.referenceMode, undefined, 'A changed reference must not fall back to device zero');
+        assert.equal((await calls()).length, before);
+        const error = await run('(async()=>{try{await window.__originFixture.prepareAutoStart();return "";}catch(cause){return cause.message;}})()');
+        assert.match(error, /参考/);
+        const added = (await calls()).slice(before);
+        assert.equal(added.length, 1); assert.equal(added[0].request.action, 'probe');
       } else {
         assert.equal((await autoCycle()).port, 'COM3', 'Switching the manual port cannot erase the other port\'s saved optical basis');
+        assert.equal((await calls()).length, before);
       }
-      assert.equal((await calls()).length, before);
     }
     await resetStatus(); await input('手动控制转盘串口', 'COM3');
   });
@@ -355,16 +389,15 @@ app.whenReady().then(async () => { try {
     for (const [width, height] of [[1366, 768], [1024, 768], [480, 800]]) {
       win.setContentSize(width, height); await pause(100);
       await run('document.querySelector(".field-turntable-workspace").scrollIntoView({block:"start"})'); await pause(50);
-      assert.equal(await run('document.body.scrollWidth<=innerWidth+2&&document.querySelector(".field-content").scrollWidth<=document.querySelector(".field-content").clientWidth+2'), true);
+      await assertFits('work-origin-' + width);
       await screenshot('work-origin-' + width + '.png');
     }
-    await click('自动跟随'); await waitFor('!!document.querySelector(".field-auto-route tbody tr")');
-    await run('document.querySelector(".field-auto-route").open=true');
+    await click('自动跟随'); await waitFor('!!window.__originFixture.routes.auto.cycle&&!!document.querySelector(".field-auto-point-angle")');
     assertOpticalBase(await autoCycle(), 10, 0);
     for (const [width, height] of [[1366, 768], [480, 800]]) {
       win.setContentSize(width, height); await pause(100);
-      await run('document.querySelector(".field-auto-route").scrollIntoView({block:"center"})'); await pause(50);
-      assert.equal(await run('document.body.scrollWidth<=innerWidth+2&&document.querySelector(".field-content").scrollWidth<=document.querySelector(".field-content").clientWidth+2'), true);
+      await run('document.querySelector(".field-follow-configuration").scrollIntoView({block:"start"})'); await pause(50);
+      await assertFits('auto-work-origin-' + width);
       await screenshot('auto-work-origin-' + width + '.png');
     }
     assert.equal((await calls()).some(item => item.action === 'turntable' && !['probe', 'manual_move'].includes(item.request.action)), false);
@@ -404,12 +437,11 @@ app.whenReady().then(async () => { try {
   await check('改自动跟随速度后立即回原点使用新值，切手动标签也不回退固定低速', async () => {
     await resetStatus(); await zero(); await click('自动跟随');
     for (const [speed, acceleration, manual] of [[5,30,false],[1,10,true]]) {
-      await input('两轴换点转速上限 · rpm',String(speed)); await input('换点加速度上限 · °/s²',String(acceleration));
+      await motionSettings([['两轴换点转速上限 · rpm',speed],['换点加速度上限 · °/s²',acceleration]]);
       if(manual)await click('手动控制');
       await away();await action('回到原点');await waitFor('!!document.querySelector("button[aria-label=停止回原点]")');
       assert.equal(await run('!!document.querySelector("dialog[open]")'),false);
-      const settings=await run('document.querySelector("[aria-label=回原点运动参数]").textContent');
-      assert.ok(settings.includes('转速上限 '+speed+' rpm'));assert.ok(settings.includes('加速度上限 '+acceleration+' °/s²'));
+      assert.equal(await run('!!document.querySelector("[aria-label=回原点运动参数]")'),false);
       if(!manual)await screenshot('return-motion-direct-1366.png');
       const request=(await calls()).filter(c=>c.action==='turntable'&&c.request.action==='recall').at(-1).request;
       assert.equal(request.speedRpm,speed);assert.equal(request.maxMoveAccelerationDegS2,acceleration);
@@ -417,31 +449,35 @@ app.whenReady().then(async () => { try {
       await run('window.__originFixture.pose(10,0)');await returnFinished();
       if(manual)await click('自动跟随');
     }
-    await input('两轴换点转速上限 · rpm','0.6');await input('换点加速度上限 · °/s²','3');
+    await motionSettings([['两轴换点转速上限 · rpm','0.6'],['换点加速度上限 · °/s²','3']]);
   });
-  await check('无效回位设置禁用动作；控制器精度向下取整并显示实际返回参数', async () => {
-    const before=await recallCount();await input('换点加速度上限 · °/s²','');
+  await check('无效回位设置禁用动作；控制器精度向下取整保留实际返回转速', async () => {
+    const before=await recallCount();await motionSettings([['换点加速度上限 · °/s²','']]);
     assert.equal(await run('document.querySelector("button[aria-label=回到原点]").disabled'),true);
     assert.equal(await recallCount(),before);
-    await input('两轴换点转速上限 · rpm','0.231');await input('换点加速度上限 · °/s²','3.14159');
-    const text=await run('document.querySelector("[aria-label=回原点运动参数]").textContent');
-    assert.ok(text.includes('0.22 rpm'));assert.ok(text.includes('3.141 °/s²'));
-    await input('两轴换点转速上限 · rpm','0.6');await input('换点加速度上限 · °/s²','3');
+    await motionSettings([['两轴换点转速上限 · rpm','0.231'],['换点加速度上限 · °/s²','3.14159']]);
+    const title=await run('document.querySelector("button[aria-label=回到原点]").title');
+    assert.ok(title.includes('0.22 rpm'));
+    await away();await beginReturn();await waitFor('!!document.querySelector("button[aria-label=停止回原点]")');
+    const rounded=(await calls()).filter(c=>c.action==='turntable'&&c.request.action==='recall').at(-1).request;
+    assert.equal(rounded.speedRpm,.22);assert.equal(rounded.maxMoveAccelerationDegS2,3.141);
+    await run('window.__originFixture.pose(10,0)');await returnFinished();
+    await motionSettings([['两轴换点转速上限 · rpm','0.6'],['换点加速度上限 · °/s²','3']]);
   });
   await check('重载后回原点继续使用已保存速度和加速度，无隐式运动', async () => {
-    await input('两轴换点转速上限 · rpm','5');await input('换点加速度上限 · °/s²','30');
+    await motionSettings([['两轴换点转速上限 · rpm','5'],['换点加速度上限 · °/s²','30']]);
     await new Promise(resolve=>{win.webContents.once('did-finish-load',resolve);win.webContents.reload();});
     await waitFor('window.__originFixture?.ready&&window.__originFixture.routes?.auto');await click('自动跟随');
     await run('window.__originFixture.stopReturn=true');
     await waitFor('document.querySelector("input[aria-label=自动跟随转盘串口]").value==="COM3"');
     assert.equal(await recallCount(),0);
-    const text=await run('document.querySelector("[aria-label=回原点运动参数]").textContent');
-    assert.ok(text.includes('5 rpm'));assert.ok(text.includes('30 °/s²'));
+    const title=await run('document.querySelector("button[aria-label=回到原点]").title');
+    assert.ok(title.includes('5 rpm'));
     await away();await beginReturn();await waitFor('!!document.querySelector("button[aria-label=停止回原点]")');
     const request=(await calls()).filter(c=>c.action==='turntable'&&c.request.action==='recall').at(-1).request;
     assert.equal(request.speedRpm,5);assert.equal(request.maxMoveAccelerationDegS2,30);
     await run('window.__originFixture.pose(10,0)');await returnFinished();
-    await input('两轴换点转速上限 · rpm','0.6');await input('换点加速度上限 · °/s²','3');
+    await motionSettings([['两轴换点转速上限 · rpm','0.6'],['换点加速度上限 · °/s²','3']]);
   });
   await check('回位前参考签名、服务代际或目标软范围不匹配均不下发运动', async () => {
     for (const kind of ['reference', 'generation', 'targetRange']) {
@@ -486,12 +522,12 @@ app.whenReady().then(async () => { try {
     assert.equal(await run('document.querySelector("button[aria-label=设置归零]").disabled'), false);
     await resetStatus();
   });
-  await check('服务报告complete但实际距原点超过0.1°时拒绝到位并尝试停止', async () => {
+  await check('服务报告complete但实际距原点超过0.5°时拒绝到位并尝试停止', async () => {
     await resetStatus(); await zero(); await away();
     const before = await stopCount(); await beginReturn();
     await waitFor('!!document.querySelector("button[aria-label=停止回原点]")');
-    await run('window.__originFixture.pose(10.3,0)'); await returnFinished();
-    assert.ok((await returnError()).includes('0.1°'), await returnError());
+    await run('window.__originFixture.pose(10.6,0)'); await returnFinished();
+    assert.ok((await returnError()).includes('0.5°'), await returnError());
     assert.equal((await returnNotice()).includes('已回到公共光学原点'), false);
     assert.equal(await stopCount(), before + 1);
   });

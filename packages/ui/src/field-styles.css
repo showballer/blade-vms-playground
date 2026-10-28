@@ -464,3 +464,62 @@
 .field-sync-chip:focus-visible { outline: 2px solid #2d6cc0; outline-offset: 2px; }
 .field-acquisition-grid.field-capture-grid { grid-template-columns: minmax(0,1fr); }
 .field-plain-capture-toolbar { margin-top: 16px; }
+
+/* Device and account settings flow independently so short cards do not fill a row. */
+.field-settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.field-settings-column { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 16px; }
+.field-settings-column > .field-card { grid-column: auto; padding: 16px; }
+.field-settings-grid .field-section-heading { align-items: center; gap: 8px; margin-bottom: 12px; }
+.field-settings-grid .field-account-state, .field-settings-grid .field-service-state { padding: 5px 8px; margin: 0; font-size: 12px; }
+.field-settings-grid .field-account-state strong { font-weight: 500; }
+.field-settings-grid .field-details { gap: 8px 20px; font-size: 12px; }
+.field-settings-grid .field-account-details { grid-template-columns: minmax(0, 1fr); margin-bottom: 12px; }
+.field-settings-grid .field-account-card > :is(.field-subtext, .field-notice, .field-inline-help) { margin-block: 10px; line-height: 1.65; }
+.field-settings-grid .field-account-actions { gap: 8px; font-size: 12px; }
+.field-settings-grid .field-sync-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 20px; margin-bottom: 12px; }
+.field-settings-grid .field-upload-sampling { margin: 0; gap: 8px; font-size: 12px; }
+.field-settings-grid .field-upload-sampling .custom-select { width: 180px; max-width: 100%; }
+.field-settings-grid .field-cloud-sync-card .field-table { min-width: 0; table-layout: fixed; }
+.field-settings-grid .field-cloud-sync-card :is(th, td) { padding: 8px; }
+.field-settings-grid .field-cloud-sync-card :is(th, td):last-child { width: 100px; }
+.field-settings-grid .field-cloud-sync-card .field-table-scroll { margin-bottom: 10px; }
+.field-settings-grid .field-service-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 12px; }
+.field-settings-grid .field-service-actions .btn { justify-content: center; }
+.field-service-paths { margin-top: 10px; font-size: 12px; color: #71839a; }
+.field-service-paths summary { cursor: pointer; width: fit-content; }
+.field-service-paths .field-path { margin-top: 8px; }
+.field-device-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+.field-device-heading, .field-device-connection { display: flex; min-width: 0; align-items: center; flex-wrap: wrap; gap: 8px; }
+.field-device-heading h2 { font-size: 16px; font-weight: 650; line-height: 1.5; color: #293a52; margin: 0; }
+.field-device-connection label { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 12px; color: #6c7d92; min-width: 0; }
+.field-device-connection input { width: 170px; max-width: 100%; min-height: 36px; font-size: 13px; }
+.field-device-panel > :is(.field-subtext, .field-success, .field-error, .field-notice) { margin-top: 10px; }
+.field-device-panel .field-device-fields { grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr)); gap: 10px; margin: 10px 0; }
+.field-device-panel .field-device-row { display: grid; gap: 8px; padding: 10px; border: 1px solid #e5ebf3; border-radius: 7px; }
+.field-device-panel .field-device-row > div { min-width: 0; }
+.field-device-row-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 8px; }
+.field-device-panel .field-device-row-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+.field-device-panel .field-device-row .custom-select { width: 100%; max-width: none; }
+.field-device-readback { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 145px), 1fr)); gap: 12px; margin: 12px 0; }
+.field-device-readback > div { min-width: 0; }
+.field-device-readback dt { color: #7b899c; font-size: 12px; }
+.field-device-readback dd { color: #364d68; font-size: 13px; margin: 5px 0 0; overflow-wrap: anywhere; }
+.field-device-panel .field-device-actions { justify-content: flex-start; }
+.field-settings-grid .field-device-calibration { padding: 12px; margin: 12px 0 0; box-shadow: none; background: #f8fafd; }
+.field-settings-grid .field-device-calibration .field-section-heading { margin-bottom: 8px; }
+.field-settings-grid .field-device-calibration .field-section-heading > label { display: flex; align-items: center; gap: 8px; }
+.field-settings-grid .field-device-calibration h3 { margin: 0; font-size: 14px; }
+.field-settings-grid .field-device-calibration input[type="number"] { width: 74px; }
+.field-settings-grid .field-calibration-results { grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr)); gap: 8px; }
+.field-settings-grid .field-calibration-results:empty { display: none; }
+.field-settings-grid .field-calibration-results > div { padding: 10px; }
+.field-settings-grid .field-calibration-results strong { font-size: 18px; margin-block: 6px; }
+.field-settings-grid .field-calibration-results p { margin: 0; }
+@media (max-width: 1100px) { .field-settings-grid { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 540px) {
+  .field-settings-column > .field-card { padding: 12px; }
+  .field-settings-grid .field-service-actions { grid-template-columns: minmax(0, 1fr); }
+  .field-device-connection { align-items: flex-end; }
+  .field-device-connection label { display: grid; gap: 5px; }
+  .field-settings-grid .field-upload-sampling { flex-wrap: wrap; }
+}

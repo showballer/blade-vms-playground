@@ -14,9 +14,9 @@ test("mechanical and level reference controls remain separate from the work orig
   const html = markup();
   assert.match(html, /俯仰轴参考/);
   assert.match(html, /机械回零/); assert.match(html, /回水平 0°/);
-  assert.match(html, /清除俯仰轴参考/); assert.match(html, /之后须机械回零/);
+  assert.match(html, /清除俯仰轴参考/); assert.match(html, /title="清除后须机械回零/);
   assert.match(html, /水平轴参考/); assert.match(html, /确认水平轴为 0°/);
-  assert.match(html, /\+35°/); assert.match(html, /设置归零/);
+  assert.match(html, /\+35°/); assert.doesNotMatch(html, /机械回零向上寻找|日常采集无需清除|设备坐标：/);
   assert.match(html, /回零速度 · °\/s/); assert.match(html, /value="0.6"/);
   assert.doesNotMatch(button(html, "机械回零"), /disabled/);
   assert.doesNotMatch(html, /待校准|需要确认|type="checkbox"/);

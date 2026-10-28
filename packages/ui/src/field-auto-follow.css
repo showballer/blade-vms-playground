@@ -1,20 +1,21 @@
 .field-turntable-workspace > .field-view-tabs { margin-bottom: var(--field-ui-space-4); }
 .field-turntable-workspace [hidden] { display: none !important; }
-.field-auto-follow { display: grid; gap: var(--field-ui-space-4); padding-bottom: var(--field-ui-space-6); }
-.field-auto-follow .field-card { margin: 0; padding: var(--field-ui-space-6); }
+.field-auto-follow { display: grid; grid-template-columns: minmax(0,1fr); min-width: 0; gap: var(--field-ui-space-3); padding-bottom: var(--field-ui-space-4); container-type: inline-size; }
+.field-auto-follow > [role=tabpanel] { min-width: 0; }
+.field-auto-follow .field-card { margin: 0; padding: var(--field-ui-space-4); }
 .field-auto-follow .field-section-heading { gap: var(--field-ui-space-4); align-items: start; }
 .field-auto-follow .field-section-heading h2 { font-size: var(--field-ui-heading); }
 .field-auto-follow .field-section-heading p { font-size: var(--field-ui-label); color: var(--field-ui-secondary); margin-top: var(--field-ui-space-2); }
-.field-auto-core, .field-auto-grid { display: grid; gap: var(--field-ui-space-4); grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.field-auto-core, .field-auto-grid { display: grid; gap: var(--field-ui-space-3); grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .field-auto-core { grid-template-columns: 1.5fr .7fr 1fr 1fr; }
-.field-auto-follow label { display: flex; flex-direction: column; min-width: 0; gap: var(--field-ui-space-2); font-size: var(--field-ui-label); color: var(--field-ui-secondary); }
+.field-auto-follow label { display: flex; flex-direction: column; min-width: 0; gap: var(--field-ui-space-1); font-size: var(--field-ui-label); color: var(--field-ui-secondary); }
 .field-app .field-auto-follow input:not([type=checkbox]):not([type=radio]), .field-app .field-auto-follow .custom-select-trigger { width: 100%; min-height: var(--field-ui-control-height); height: auto; border-radius: var(--field-ui-control-radius); border-color: var(--field-ui-input-line); font-size: var(--field-ui-body); color: var(--field-ui-text); margin: 0; background: var(--field-ui-panel); }
 .field-app .field-auto-follow .custom-select-trigger { padding-right: var(--field-ui-space-8); }
 .field-auto-points-heading, .field-auto-anchor-read, .field-auto-actions { display: flex; align-items: center; gap: var(--field-ui-space-3); flex-wrap: wrap; }
-.field-auto-points-heading { justify-content: space-between; margin: var(--field-ui-space-6) 0 var(--field-ui-space-3); }
+.field-auto-points-heading { justify-content: space-between; margin: var(--field-ui-space-4) 0 var(--field-ui-space-2); }
 .field-auto-points-heading h3 { margin: 0; font-size: var(--field-ui-body); }
-.field-auto-points { display: grid; gap: var(--field-ui-space-2); }
-.field-auto-point { display: grid; grid-template-columns: 28px minmax(100px, 1fr) minmax(130px, 1fr) 32px; align-items: center; gap: var(--field-ui-space-3); padding: var(--field-ui-space-3); background: var(--field-ui-subtle); border: 1px solid var(--field-ui-line); border-radius: var(--field-ui-control-radius); }
+.field-auto-points { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--field-ui-space-2); }
+.field-auto-point { display: grid; grid-template-columns: 18px minmax(56px, .7fr) minmax(116px, 1.3fr) 26px; align-items: end; gap: var(--field-ui-space-2); padding: var(--field-ui-space-3); background: var(--field-ui-subtle); border: 1px solid var(--field-ui-line); border-radius: var(--field-ui-control-radius); min-width: 0; cursor: pointer; }
 .field-auto-point-index { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; font-size: var(--field-ui-caption); background: var(--field-ui-primary-soft); color: var(--field-ui-primary); }
 .field-auto-point-stations { font-size: var(--field-ui-label); color: var(--field-ui-muted); }
 .field-auto-setup, .field-auto-route { margin-top: var(--field-ui-space-4); border-top: 1px solid var(--field-ui-line); padding-top: var(--field-ui-space-4); }
@@ -41,36 +42,36 @@
 .field-auto-start-note { flex-basis: 100%; margin: 0; color: var(--field-ui-secondary); font-size: var(--field-ui-label); }
 
 .field-auto-point[data-selected="true"] { border-color: var(--field-ui-primary); background: var(--field-ui-primary-soft); box-shadow: inset 3px 0 0 var(--field-ui-primary); }
-.field-auto-survey-core { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.field-auto-blade-choices { display: flex; flex-wrap: wrap; gap: var(--field-ui-space-2); margin-bottom: var(--field-ui-space-4); }
-.field-auto-blade-choice { display: flex; flex-direction: column; align-items: flex-start; gap: var(--field-ui-space-1); min-width: 112px; padding: var(--field-ui-space-3) var(--field-ui-space-4); border: 1px solid var(--field-ui-line); border-radius: var(--field-ui-control-radius); color: var(--field-ui-secondary); background: var(--field-ui-panel); cursor: pointer; }
+.field-auto-survey-core { grid-template-columns: repeat(3, minmax(0, 320px)); }
+.field-auto-blade-choices { display: flex; flex-wrap: wrap; gap: var(--field-ui-space-2); margin-bottom: var(--field-ui-space-2); }
+.field-auto-blade-choice { display: flex; align-items: center; gap: var(--field-ui-space-2); min-width: 112px; padding: var(--field-ui-space-2) var(--field-ui-space-3); border: 1px solid var(--field-ui-line); border-radius: var(--field-ui-control-radius); color: var(--field-ui-secondary); background: var(--field-ui-panel); cursor: pointer; }
 .field-auto-blade-choice strong { font-size: var(--field-ui-body); }
 .field-auto-blade-choice span { font-size: var(--field-ui-caption); color: var(--field-ui-muted); }
 .field-auto-blade-choice[aria-pressed="true"] { color: var(--field-ui-primary); background: var(--field-ui-primary-soft); border-color: var(--field-ui-primary); }
 .field-auto-blade-choice:focus-visible { outline: 2px solid var(--field-ui-primary); outline-offset: 2px; }
 .field-auto-blade-choice:disabled { cursor: default; opacity: .6; }
 .field-auto-blade-editor { display: flex; align-items: end; flex-wrap: wrap; gap: var(--field-ui-space-3); margin-bottom: var(--field-ui-space-3); }
-.field-auto-blade-editor label { flex: 1; max-width: 260px; }
-.field-auto-point-generator { display: grid; gap: var(--field-ui-space-2); padding: var(--field-ui-space-4); margin-bottom: var(--field-ui-space-3); border: 1px solid var(--field-ui-line); border-radius: var(--field-ui-control-radius); }
-.field-auto-generator-controls { display: flex; align-items: end; flex-wrap: wrap; gap: var(--field-ui-space-3); }
-.field-auto-generator-controls > label { flex: 1; max-width: 260px; min-width: 160px; }
-.field-auto-generator-controls > .btn { flex-shrink: 0; white-space: nowrap; }
+.field-auto-blade-editor label { flex: 0 1 180px; }
+.field-auto-point-generator { display: grid; gap: var(--field-ui-space-2); padding: var(--field-ui-space-3) 0 0; margin-bottom: var(--field-ui-space-3); border-top: 1px solid var(--field-ui-line); }
+.field-auto-generator-controls { display: grid; grid-template-columns: repeat(3, minmax(0, 240px)) auto; max-width: 1000px; align-items: end; gap: var(--field-ui-space-3); }
+.field-auto-generator-controls > label { min-width: 0; }
+.field-auto-generator-controls > .btn { justify-self: start; white-space: nowrap; }
 .field-auto-point-generator .field-subtext, .field-auto-point-generator .field-error { margin: 0; }
-.field-auto-heights { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--field-ui-space-3) var(--field-ui-space-6); margin-top: var(--field-ui-space-3); }
 .field-auto-height-result { display: flex; flex-wrap: wrap; gap: var(--field-ui-space-2); align-items: baseline; color: var(--field-ui-secondary); font-size: var(--field-ui-label); }
 .field-auto-height-result output { color: var(--field-ui-text); font-size: var(--field-ui-body); font-weight: 600; font-variant-numeric: tabular-nums; }
-.field-auto-hub-height { min-width: 0; }
-.field-auto-hub-height > summary { font-size: var(--field-ui-label); }
-.field-auto-hub-height > label { max-width: 260px; margin-top: var(--field-ui-space-3); }
-.field-auto-heights > .field-subtext { flex-basis: 100%; margin: 0; }
 .field-auto-port-control { display: flex; gap: var(--field-ui-space-2); align-items: center; }
 .field-auto-port-control > input { min-width: 0; flex: 1; }
 .field-auto-port-control > .btn { width: var(--field-ui-control-height); min-width: var(--field-ui-control-height); height: var(--field-ui-control-height); flex-shrink: 0; padding: 0; }
-.field-auto-point-tools { grid-column: 2 / -1; display: flex; align-items: center; flex-wrap: wrap; gap: var(--field-ui-space-2) var(--field-ui-space-3); }
+.field-auto-point-tools { grid-column: 1 / -1; display: flex; align-items: center; flex-wrap: wrap; gap: var(--field-ui-space-2) var(--field-ui-space-3); }
 .field-auto-point-angle { font-size: var(--field-ui-caption); color: var(--field-ui-secondary); font-variant-numeric: tabular-nums; }
 .field-auto-point-offset { flex-basis: 100%; }
 .field-auto-point-buttons { display: flex; flex-wrap: wrap; align-items: center; gap: var(--field-ui-space-2); margin-left: auto; }
 .field-auto-point-buttons > .btn { white-space: nowrap; }
+.field-auto-point-tools > .field-auto-point-angle:first-child { flex-basis: 100%; }
+.field-app .field-auto-point > .btn { min-width: 0; width: 26px; padding-inline: 0; margin-bottom: 2px; }
+.field-app .field-auto-point-choice { align-self: end; margin-bottom: 10px !important; }
+.field-auto-point label { font-size: var(--field-ui-caption); }
+.field-auto-point label input { padding-inline: 8px; }
 @media (max-width: 640px) { .field-auto-point-buttons { margin-left: 0; flex-basis: 100%; } }
 @media (max-width: 640px) { .field-auto-survey-core { grid-template-columns: minmax(0, 1fr); } .field-auto-point > .field-badge { grid-column: 2; width: fit-content; } .field-auto-blade-editor label { max-width: none; flex-basis: 100%; } }
 .field-app .field-auto-follow .field-auto-point-choice { width: 18px; height: 18px; min-height: 18px; margin: 0; accent-color: var(--field-ui-primary); cursor: pointer; }
@@ -85,9 +86,33 @@
 .field-segment-point-position > .field-subtext { margin: 0; align-self: center; }
 
 .field-measurement-settings > .field-auto-grid { margin-top: var(--field-ui-space-3); }
-.field-measurement-settings .field-auto-point-generator { margin: var(--field-ui-space-4) 0 0; }
+.field-measurement-settings .field-auto-point-generator { margin: var(--field-ui-space-3) 0 0; }
+.field-measurement-geometry { grid-template-columns: repeat(auto-fit, minmax(220px,1fr)); }
 .field-turntable-configuration { gap: var(--field-ui-space-3); padding-bottom: 0; }
 .field-turntable-configuration .field-auto-setup:first-child { border-top: 0; margin-top: 0; padding-top: 0; }
 .field-turntable-configuration h3 { margin: 0 0 var(--field-ui-space-3); }
-.field-turntable-configuration .field-auto-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
+.field-turntable-configuration .field-auto-grid { grid-template-columns: repeat(3,minmax(0,1fr)); }
 @media(max-width:640px){.field-turntable-configuration .field-auto-grid{grid-template-columns:minmax(0,1fr);}}
+
+@container (max-width: 1040px) {
+  .field-auto-points { grid-template-columns: repeat(2,minmax(0,1fr)); }
+}
+@container (max-width: 780px) {
+  .field-measurement-geometry, .field-auto-generator-controls { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .field-turntable-configuration .field-auto-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
+}
+@container (max-width: 640px) {
+  .field-auto-points { grid-template-columns: minmax(0,1fr); }
+}
+@container (max-width: 450px) {
+  .field-measurement-geometry, .field-auto-generator-controls, .field-auto-grid, .field-auto-survey-core,
+  .field-turntable-configuration .field-auto-grid { grid-template-columns: minmax(0,1fr); }
+}
+
+@container (min-width: 1450px) { .field-auto-points { grid-template-columns: repeat(4,minmax(0,1fr)); } }
+@container (min-width: 1850px) { .field-auto-points { grid-template-columns: repeat(5,minmax(0,1fr)); } }
+
+.field-arrival-settings { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 24px; }
+.field-auto-follow .field-arrival-settings > label:first-child { flex-direction: row; align-items: center; gap: 8px; }
+.field-arrival-settings > label + label { width: 220px; }
+.field-arrival-settings input[type=checkbox] { margin: 0; width: 16px; height: 16px; accent-color: var(--field-ui-primary); }

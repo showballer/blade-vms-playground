@@ -6,6 +6,7 @@ const { createLocalAuth } = require('./local-auth.cjs');
 const { createUnifiedAuth } = require('./unified-auth.cjs');
 const { createFieldService, failure } = require('./field-service.cjs');
 const { initialWindowBounds } = require('./field-window.cjs');
+const { installBundledRecordings } = require('./field-bundled-recordings.cjs');
 const { createFieldCloudSync } = require('./field-cloud-sync.cjs');
 const { createCaptureTracker } = require('./field-capture-tracker.cjs');
 const { sdkExtension, isSdkFile } = require('./field-sdk.cjs');
@@ -243,6 +244,17 @@ else {
         if (!config || typeof config !== 'object' || Array.isArray(config) ||
             ['executable', 'dll'].some(key => config[key] !== undefined && (typeof config[key] !== 'string' || !path.isAbsolute(config[key])))) throw Error('配置格式无效');
       } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      // Custom packages carry records only. Import before the service builds its
+      // local index; never copy credentials, settings, capture journals or queues.
+      if (app.isPackaged) {
+        try {
+          const imported = installBundledRecordings({ bundleDir: path.join(process.resourcesPath, 'bundled-recordings'), dataDir });
+          if (imported.conflicts?.length || imported.interrupted?.length)
+            dialog.showErrorBox('部分预置记录未导入', '检测到已有同编号记录或未完成的导入，已保留本机数据。请查看数据目录中的 bundled-recordings-state.json。');
+        } catch (error) {
+          dialog.showErrorBox('预置任务导入失败', `本机已有记录保留，可继续使用客户端。${error.message}\n请查看数据目录中的 bundled-recordings-error.json。`);
+        }
+      }
       const localAuth = createLocalAuth({ file: path.join(userData, 'blade-local-auth.json'), bootstrap: require('./bootstrap-admin.json') });
       auth = createUnifiedAuth({ file: path.join(userData, 'blade-unified-account.json'), localAuth, retainSessionToken: true });
       service = createFieldService({ getConfig: () => config, dataDir,

@@ -87,9 +87,6 @@ export function FieldCycleMotion({ status, route, config, unavailable = false, o
     (fieldIsActive(status) ? "采集或保存期间不能点击换点" : status.deviceBusy ? "设备操作尚未结束" :
     status.turntableBusy || positioningPointId ? "正在定位，请等待到位或停止定位" : ""));
   const model = cycleMotionModel(status, route, now, unavailable, { preferRoute: interactive, positioningPointId });
-  const earlyAngle = (model.fromRun ? status?.pointCycle?.diagnosticAngleWindowDeg : route?.cycle?.diagnosticAngleWindowDeg) ?? 0;
-  const earlyDetection = model.fromRun ? status?.pointCycle?.diagnosticDetectBeforeSettled : route?.cycle?.diagnosticDetectBeforeSettled;
-  const darkMotion = model.fromRun ? status?.pointCycle?.laserPolicy === "off_during_motion" : route?.cycle?.motionLaserPolicy === "off_during_motion";
   const sampleKey = model.sample ? JSON.stringify([model.sample.at, model.sample.pitch, model.sample.yaw, model.sample.stationary]) : "";
   useEffect(() => {
     if (!model.fresh || !model.sample) { gap.current = true; return; }
@@ -138,13 +135,11 @@ export function FieldCycleMotion({ status, route, config, unavailable = false, o
         {observed && <g className="field-motion-current" data-observed-at={observed.at} data-pitch={observed.pitch} data-yaw={observed.yaw}><circle cx={x(observed.yaw)} cy={y(observed.pitch)} r={10} /><circle cx={x(observed.yaw)} cy={y(observed.pitch)} r={4} /></g>}
         {!observed && <text className="field-motion-empty" x={310} y={123} textAnchor="middle">{model.fromRun ? "等待新的两轴反馈" : "等待转盘位置反馈"}</text>}
       </svg>
-      <div className="field-motion-legend"><span><i className="plan" />计划路线</span><span><i className="actual" />反馈轨迹</span><span><Crosshair size={12} />目标点位</span><span className="field-motion-sample-note">{points.length} 次反馈 · 间断处不连线</span></div>
-      {interactive && <p className="field-motion-note field-motion-interaction" role="status">{disabledReason || "点击图中点位可直接定位；到位后更新采集起点，不自动开始采集。"}</p>}
+      <div className="field-motion-legend"><span><i className="plan" />计划路线</span><span><i className="actual" />反馈轨迹</span><span><Crosshair size={12} />目标点位</span><span className="field-motion-sample-note">{points.length} 次反馈</span></div>
     </div><div className="field-motion-readout">
       <dl className="field-motion-dimensions"><div><dt>距风机转轴中心</dt><dd>{text(model.target?.radiusM)}<small>m</small></dd></div><div><dt>叶片长度</dt><dd>{text(model.target?.bladeLengthM)}<small>m</small></dd></div><div><dt>圆周方位</dt><dd>{text(model.target?.azimuthDeg, 1)}<small>°</small></dd></div></dl>
       {move?.mode === "drive_internal" && <p className="field-motion-note" aria-label="本段运动参数">本段转速上限 {text(move.speedLimitRpm, 2)} rpm · {move.positionProtocol === "0x43" ? `预存点位 ${((move.pointIndex ?? 0) + 1)}` : move.positionProtocol === "0x1A" ? "双轴绝对定位" : move.positionProtocol === "0x19" ? "控制器反馈定位" : "驱动器内部定位"}{finite(move.followErrorLimitDeg) ? ` · 行程保护 ${text(move.followErrorLimitDeg, 2)}°` : ""} · 到位容差0.5°</p>}
       {move?.mode === "dual_axis_timed" && <p className="field-motion-note" aria-label="本段运动参数">本段下发上限 {text(move.speedLimitRpm, 2)} rpm · {text(move.accelerationLimitDegS2, 1)} °/s²{move.adaptiveFollow === true ? " · 两轴共同减速，时间可延长" : ""}{finite(move.followErrorLimitDeg) ? ` · 跟随保护 ${text(move.followErrorLimitDeg, 2)}°` : ""}</p>}
-      <p className="field-motion-note">{model.fresh ? model.arrived ? "两轴已在目标范围内且停稳。" : model.fromRun ? "按实际角度更新，到位并停稳后开始采集。" : "按实际角度更新，仅定位；采集需手动开始。" : "缺少新反馈时不确认到位。"}{earlyDetection ? `测试模式：${earlyAngle > 0 ? `目标±${earlyAngle}°内开始判定` : "不限制目标角度，移动途中即判定"}，不等待停稳；当前运动结束后再执行下一次换点。` : darkMotion ? "移动前关闭激光，到位停稳后开启；开灯后的初段扰动不触发换点。" : "移动期间激光保持开启，暂停叶片进入／离开判定；到位停稳后才启用。"}{finite(model.geometry?.distanceM) ? ` 设备至叶轮 ${text(model.geometry.distanceM, 2)} m。` : ""}</p>
     </div></div>
   </section>;
 }

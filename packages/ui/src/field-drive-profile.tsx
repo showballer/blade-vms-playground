@@ -104,24 +104,30 @@ export function FieldDriveProfile({ port, status, disabled, request, onStatus, o
       <Button type="button" disabled={blocked || !!pending || !axes[1].read || !axes[2].read}
         onClick={fillFastPreset}>填入快速预设</Button>
     </div>}
-    {!isTurntablePort(port) && <p className="field-subtext">请先在下方选择转盘串口。</p>}
-    <div className="field-drive-profile-axes">{([1, 2] as const).map(axis => {
-      const item = axes[axis], name = axis === 1 ? "俯仰轴" : "水平轴";
-      let valid = false; try { checkedDriveProfile(item.draft); valid = true; } catch { /* Blank or incomplete fields cannot be applied. */ }
-      return <section key={axis} aria-label={`${name}驱动参数`} className="field-drive-profile-axis">
-        <div className="field-section-heading"><h3>{name}</h3><Button type="button" disabled={blocked || !!pending} onClick={() => void run(axis, "read")} aria-label={`读取${name}驱动参数`}>
-          {pending?.axis === axis && pending.operation === "read" ? <LoaderCircle size={14} className="spin" /> : <RefreshCw size={14} />}读取</Button></div>
-        <div className="field-drive-profile-inputs">{parameters.map(parameter => <label key={parameter.key}><span>{parameter.label}（ms）</span>
-          <input aria-label={`${name}${parameter.label}`} type="number" min={parameter.min} max={parameter.max} step={1} placeholder="先读取"
-            disabled={blocked || !!pending || !item.read} value={item.draft[parameter.key]}
-            onChange={event => patchAxis(axis, { draft: { ...item.draft, [parameter.key]: event.target.value }, error: "", notice: "" })} />
-        </label>)}</div>
-        <div className="field-drive-profile-footer"><span className="field-subtext">{item.read ? `读回 ${new Date(item.read.readAt * 1000).toLocaleTimeString("zh-CN", { hour12: false })} · ${item.read.values.accel_ms} / ${item.read.values.decel_ms} / ${item.read.values.s_curve_ms} ms` : "尚未读取当前轴"}</span>
-          <Button type="button" disabled={blocked || !!pending || !item.read || !valid} onClick={() => void run(axis, "write")} aria-label={`应用${name}驱动参数`}>
-            {pending?.axis === axis && pending.operation === "write" && <LoaderCircle size={14} className="spin" />}应用到{name}</Button></div>
-        {item.error && <p className="field-error" role="alert">{item.error}</p>}
-        {item.notice && <p className="field-subtext" role="status">{item.notice}</p>}
-      </section>;
-    })}</div>
+    {!isTurntablePort(port) && <p className="field-subtext">请先配置转盘连接。</p>}
+    <table className="field-drive-profile-table" aria-label="两轴驱动参数">
+      <thead><tr><th scope="col">参数 · ms</th>{([1, 2] as const).map(axis => <th scope="col" key={axis}>
+        <div className="field-drive-profile-heading"><span>{axis === 1 ? "俯仰轴" : "水平轴"}</span>
+          <Button type="button" disabled={blocked || !!pending} onClick={() => void run(axis, "read")} aria-label={`读取${axis === 1 ? "俯仰轴" : "水平轴"}驱动参数`}>
+            {pending?.axis === axis && pending.operation === "read" ? <LoaderCircle size={14} className="spin" /> : <RefreshCw size={14} />}读取</Button>
+        </div></th>)}</tr></thead>
+      <tbody>{parameters.map(parameter => <tr key={parameter.key}><th scope="row">{parameter.label}</th>
+        {([1, 2] as const).map(axis => <td key={axis}>
+          <input aria-label={`${axis === 1 ? "俯仰轴" : "水平轴"}${parameter.label}`} type="number" min={parameter.min} max={parameter.max} step={1} placeholder="先读取"
+            disabled={blocked || !!pending || !axes[axis].read} value={axes[axis].draft[parameter.key]}
+            onChange={event => patchAxis(axis, { draft: { ...axes[axis].draft, [parameter.key]: event.target.value }, error: "", notice: "" })} />
+        </td>)}</tr>)}
+        <tr className="field-drive-profile-apply"><th scope="row">应用</th>{([1, 2] as const).map(axis => {
+          const item = axes[axis], name = axis === 1 ? "俯仰轴" : "水平轴";
+          let valid = false; try { checkedDriveProfile(item.draft); valid = true; } catch { /* Blank or incomplete fields cannot be applied. */ }
+          return <td key={axis}>
+            <Button type="button" disabled={blocked || !!pending || !item.read || !valid} onClick={() => void run(axis, "write")} aria-label={`应用${name}驱动参数`}>
+              {pending?.axis === axis && pending.operation === "write" && <LoaderCircle size={14} className="spin" />}应用到{name}</Button>
+            {item.error ? <p className="field-error" role="alert">{item.error}</p> :
+              <p className="field-subtext" role="status">{item.notice || (item.read ? `读回 ${new Date(item.read.readAt * 1000).toLocaleTimeString("zh-CN", { hour12: false })}` : "尚未读取当前轴")}</p>}
+          </td>;
+        })}</tr>
+      </tbody>
+    </table>
   </details>;
 }

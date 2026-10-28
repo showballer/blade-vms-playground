@@ -45,14 +45,14 @@ check("活动任务使用下发计划而非编辑草稿，并跟随显式下一�
   const moving = cycleMotionModel({ ...status, pointCycle: { ...status.pointCycle!, targetPointId: "p-s2", processPhase: "moving" } }, route, now);
   assert.equal(moving.target?.pointId, "p-s2"); assert.equal(moving.moving, true); assert.equal(moving.arrived, false);
 });
-check("到位后显示辅助背景说明，不冒充已确认进入", () => {
+check("到位后只显示实际背景状态，不冒充已确认进入", () => {
   const preparing: FieldStatus = { ...status, pointCycle: { ...status.pointCycle!, rssiTriggerEnabled: true,
     processPhase: "waiting_background", rssiPhase: "waiting_background", rssiBackgroundPolicy: "advisory", rssiBackgroundMs: 20,
     rssiBackgroundRequiredMs: 50, rssiBackgroundReady: false, rssiPartialPassesIgnored: 1 } };
   const markup = renderToStaticMarkup(<FieldCycleProgress status={preparing} />);
   assert.ok(markup.includes("等待稳定回波基线"));
-  assert.ok(markup.includes("背景仅作辅助，不阻塞换点"));
-  assert.ok(markup.includes("背景尚未确认"));
+  assert.ok(markup.includes("回波背景尚未确认"));
+  assert.ok(!markup.includes("背景仅作辅助，不阻塞换点"));
   assert.ok(!markup.includes("已确认进入 · 叶片经过中"));
   assert.equal(cycleMotionModel(preparing, route, now).arrived, true);
 });
@@ -110,22 +110,23 @@ check("静态渲染只输出计划与已有反馈，不发请求、不绘假反�
   assert.ok(html.includes('data-kind="plan"'));
   assert.ok(!html.includes('data-kind="feedback"'));
   assert.ok(!html.includes("测点距叶根"));
-  for (const label of ["距风机转轴中心", "俯仰", "水平", "间断处不连线"]) assert.ok(html.includes(label));
+  for (const label of ["距风机转轴中心", "俯仰", "水平", "次反馈"]) assert.ok(html.includes(label));
+  assert.ok(!html.includes("间断处不连线"));
 });
-check("移动保持激光的策略不冒充实测开关状态，到位前不显示RSSI判定计时", () => {
+check("保留实测激光状态与判定计时，不常驻展示策略教程", () => {
   const config = { name: "风机", deviceIp: "192.0.2.90", hostIp: "192.0.2.10", object: "", turbine: "", point: "" };
   const moving: FieldStatus = { ...status, pointCycle: { ...status.pointCycle!, state: "positioning", processPhase: "moving", rssiTriggerEnabled: true, rssiEntryMs: 20, rssiBelowMs: 30 } };
   const html = renderToStaticMarkup(<FieldCycleMotion config={config} status={moving} route={route} />);
-  assert.ok(html.includes("移动期间激光保持开启，暂停叶片进入／离开判定"));
-  assert.ok(html.includes("到位停稳后才启用"));
+  assert.ok(!html.includes("移动期间激光保持开启，暂停叶片进入／离开判定"));
+  assert.ok(!html.includes("到位停稳后才启用"));
   assert.match(html, /class="field-motion-laser" data-state="unknown"/);
   assert.ok(html.includes("激光状态未知"), "期望常亮不能替代设备回读");
   for (const phase of ["laser_on", "laser_on_confirmed", "moving", "arrived", "starting_capture", "laser_off", "laser_off_confirmed"]) {
     const progress = renderToStaticMarkup(<FieldCycleProgress status={{ ...moving, pointCycle: { ...moving.pointCycle!, processPhase: phase } }} />);
     assert.ok(!progress.includes("最近采集 RSSI"));
     assert.ok(!progress.includes("进入确认 20/"), phase);
-    assert.ok(progress.includes("停止采集并保持激光开启"));
-    assert.ok(progress.includes("手动停止或异常时关闭激光"));
+    assert.ok(!progress.includes("停止采集并保持激光开启"));
+    assert.ok(!progress.includes("手动停止或异常时关闭激光"));
     assert.ok(!progress.includes("关闭激光，准备移动"));
   }
   const waiting = renderToStaticMarkup(<FieldCycleProgress status={{ ...moving, pointCycle: { ...moving.pointCycle!, state: "holding", processPhase: "waiting_blade" } }} />);
@@ -155,11 +156,11 @@ check("反馈定位标明新协议，旧记录保留原执行方式", () => {
   assert.ok(showing(null).includes("驱动器内部定位"));
 });
 
-check("移动关灯策略按实际任务显示，开灯前不显示叶片判定", () => {
+check("开灯前显示实际任务状态，不显示常驻关灯策略说明", () => {
   const dark: FieldStatus = { ...status, pointCycle: { ...status.pointCycle!, laserPolicy: "off_during_motion", rssiTriggerEnabled: true, processPhase: "motion_stopped_before_laser_on" } };
   const config = { name: "任务", deviceIp: "192.0.2.90", hostIp: "192.0.2.10", object: "", turbine: "", point: "" };
   const markup = renderToStaticMarkup(<FieldCycleMotion status={dark} route={route} config={config} />);
-  assert.ok(markup.includes("移动前关闭激光，到位停稳后开启"));
+  assert.ok(!markup.includes("移动前关闭激光，到位停稳后开启"));
   assert.ok(!markup.includes("移动期间激光保持开启"));
   assert.ok(markup.includes("激光状态未知"));
   const progress = renderToStaticMarkup(<FieldCycleProgress status={dark} />);
@@ -205,7 +206,8 @@ check("仅手动点位和分段采集暴露可聚焦点击点，自动跟随始�
     assert.equal((markup.match(/tabindex="0"/g) || []).length, 2);
     assert.ok(markup.includes('aria-disabled="false"'));
     assert.ok(markup.includes("field-motion-hit-area")); assert.ok(markup.includes("2 · 90°"));
-    assert.ok(markup.includes("不自动开始采集"));
+    assert.ok(markup.includes("不开始采集"));
+    assert.ok(!markup.includes("点击图中点位可直接定位"));
   }
   const markup = renderToStaticMarkup(<FieldCycleMotion status={idle} route={route} config={config} onPositionStation={() => assert.fail("readonly")} />);
   assert.ok(!markup.includes('role="button"')); assert.ok(!markup.includes('tabindex="0"'));

@@ -358,9 +358,8 @@ export function FieldTurntableOriginControl({ port, status, disabled, origin, op
         <span>水平 <output aria-label="作业水平角">{angleText(toWorkAngle(axes?.["2"]?.output_angle_deg, 2, current))}</output></span>
       </div>
     </div>
-    <p className="field-subtext">{current || optical ? "公共光学零点已设置。未校准测点先按尺寸定位，已校准测点沿用其首个点位；恢复设备坐标仅切换角度显示。" : returnCandidate ? "已保留原点坐标；回到原点前会重新读取并核验两轴参考位，无需在当前位置重新归零。" : missingOpticalOrigin ? "请重新将激光调至水平并正对叶轮中线，再设置归零；未单独校准的测点暂不能开始。" : "先将激光调至水平并正对叶轮中线，再设置归零。所有测点共用，归零不会校准某个测点，也不会移动转盘。"}</p>
+    {missingOpticalOrigin && !returnCandidate && !current && !optical && <p className="field-notice warning">请将激光调至水平并正对叶轮中线，再设置归零。</p>}
     {returnCandidate && <p className="field-subtext" aria-label="保存的原点坐标">保存的原点（设备坐标）：俯仰 {angleText(returnCandidate.axis1AngleDeg)} · 水平 {angleText(returnCandidate.axis2AngleDeg)}</p>}
-    {returnCandidate && motion && <p className="field-subtext" aria-label="回原点运动参数">回原点沿用自动跟随设置：转速上限 {motion.speedRpm} rpm。{nativePosition ? "起步与减速使用驱动器内部参数。" : <>轨迹加速度上限 {motion.maxMoveAccelerationDegS2} °/s² · 运动中误差上限 {motion.followErrorLimitDeg}°。</>}到位容差为0.5°，修改后下次点击生效。</p>}
     {recoverySession !== null && <div className="field-notice warning" role="status">
       <span>上次轨迹触发跟随误差保护。原点坐标已保留，先清除旧轨迹后再定位。</span>{" "}
       <Button type="button" variant="outline" disabled={disabled || pending || !!returnPhase}

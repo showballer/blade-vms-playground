@@ -77,7 +77,7 @@ check("默认30秒模型只生成输入，没有参考位与隐式开机请求",
   const html = renderToStaticMarkup(<FieldAutoFollow {...props} />);
   assert.ok(html.includes('aria-label="校准测点1"'));
   assert.ok(!html.includes("开始自动采集")); assert.ok(html.includes("前往数据采集"));
-  assert.ok(!html.includes('class="field-card field-auto-anchor"')); assert.ok(html.includes("未校准时按尺寸计算"));
+  assert.ok(!html.includes('class="field-card field-auto-anchor"')); assert.ok(!html.includes("未校准时按尺寸计算"));
   assert.ok(html.includes("将测点放在旋转中心正下方并瞄准"));
   assert.equal((html.match(/type="checkbox"/g) || []).length, 0);
   assert.doesNotMatch(html, /aria-label="测试：未停稳时判定叶片"/);
@@ -90,20 +90,20 @@ check("默认30秒模型只生成输入，没有参考位与隐式开机请求",
   assert.ok(!html.includes("待校准")); assert.ok(!html.includes("设备与服务设置")); assert.ok(!html.includes("连续轨迹"));
   assert.ok(!html.includes("手动瞄准"));
 });
-check("公共归零明确要求水平正对叶轮中线，恢复设备显示不撤销光学基准", () => {
+check("归零卡片保留坐标与光学基准状态，删除常驻教程", () => {
   const checked = structuredClone(ready); checked.turntable!.state = "checked";
   for (const value of Object.values(checked.turntable!.feedback!.axes!)) { value.flags = 3; value.display_mode = 3; }
   const origin = createWorkOrigin(checked, "COM3");
   const control = { port: "COM3", status: checked, disabled: false, request: props.request, onOrigin: () => {}, onStatus: () => {}, onBusy: () => {} };
   const unset = renderToStaticMarkup(<FieldTurntableOriginControl {...control} origin={null} />);
-  assert.ok(unset.includes("先将激光调至水平并正对叶轮中线"));
-  assert.ok(unset.includes("归零不会校准某个测点"));
+  assert.ok(unset.includes("设置归零"));
+  assert.ok(!unset.includes("归零不会校准某个测点"));
   assert.ok(!unset.includes("首个点位：叶片"));
   const relative = renderToStaticMarkup(<FieldTurntableOriginControl {...control} origin={origin} opticalOrigin={origin} />);
-  assert.ok(relative.includes("恢复设备坐标")); assert.ok(relative.includes("未校准测点先按尺寸定位"));
+  assert.ok(relative.includes("恢复设备坐标")); assert.ok(relative.includes("作业零点已设置"));
   const absolute = renderToStaticMarkup(<FieldTurntableOriginControl {...control} origin={null} opticalOrigin={origin} />);
   assert.ok(absolute.includes("设备坐标 · 光学零点已保留"));
-  assert.ok(absolute.includes("恢复设备坐标仅切换角度显示"));
+  assert.ok(!absolute.includes("恢复设备坐标仅切换角度显示"));
   assert.ok(absolute.includes('aria-label="作业俯仰角">10.000°'));
 });
 check("曾设公共零点后参考、服务或串口失效须重设，独立测点校准仍优先", () => {
@@ -127,7 +127,7 @@ check("曾设公共零点后参考、服务或串口失效须重设，独立测�
   assert.ok(!required.includes("按设备坐标计算 · 先定位再等待"));
   const originUi = renderToStaticMarkup(<FieldTurntableOriginControl port="COM3" status={checked} disabled={false} origin={null} opticalOrigin={null} opticalOriginRequired request={props.request} onOrigin={() => {}} onStatus={() => {}} onBusy={() => {}} />);
   assert.ok(originUi.includes("公共光学零点待重设"));
-  assert.ok(originUi.includes("未单独校准的测点暂不能开始"));
+  assert.ok(originUi.includes("请将激光调至水平并正对叶轮中线，再设置归零"));
 });
 check("测点半径以转轴中心为基准，已知长度时不能超过叶尖", () => {
   assert.equal(autoFollowPointLengthError(.31, .78), "");

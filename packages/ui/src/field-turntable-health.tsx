@@ -165,32 +165,32 @@ export function FieldTurntableHealth({ port, status, disabled = false, pollUnava
       <FieldMechanicalHome port={port} status={status} disabled={disabled || pollUnavailable || checking || connectionPending}
         request={request} onStatus={onStatus} onBusy={setHomingPending} />
       {settings}
-      <div className="field-health-axes">{report.axes.map(axis => <section className="field-health-axis" key={axis.axis}><h3>{axis.name}</h3><dl>
-        <div><dt>当前角度</dt><dd>{axis.angle}</dd></div><div><dt>电机转速</dt><dd>{axis.rpm}</dd></div>
-        <div><dt>角度参考</dt><dd>{axis.reference}</dd></div><div><dt>停止反馈</dt><dd>{axis.stop}</dd></div>
-        <div><dt>轴故障</dt><dd>{axis.fault}</dd></div><div><dt>驱动器报警码</dt><dd>{axis.alarm}</dd></div>
-        <div><dt>驱动加速 PA40</dt><dd>{axis.profile.acceleration}</dd></div>
-        <div><dt>驱动减速 PA41</dt><dd>{axis.profile.deceleration}</dd></div>
-        <div><dt>驱动平滑 PA42</dt><dd>{axis.profile.smoothing}</dd></div>
-        {axis.profile.unavailable && <div><dt>驱动参数</dt><dd>{axis.profile.unavailable}</dd></div>}
-      </dl><div className="field-health-recovery-actions">
+      <section className="field-health-axes" aria-label="两轴实时反馈"><table className="field-health-table">
+        <thead><tr><th scope="col">反馈</th>{report.axes.map(axis => <th scope="col" key={axis.axis}>{axis.name}</th>)}</tr></thead>
+        <tbody>{([
+          ["当前角度", "angle"], ["电机转速", "rpm"], ["角度参考", "reference"],
+          ["停止反馈", "stop"], ["轴故障", "fault"], ["驱动器报警码", "alarm"],
+        ] as const).map(([label, key]) => <tr key={key}><th scope="row">{label}</th>{report.axes.map(axis => <td key={axis.axis}>{axis[key]}</td>)}</tr>)}
+        <tr><th scope="row">PA40 / PA41 / PA42</th>{report.axes.map(axis => <td key={axis.axis}>
+          {axis.profile.acceleration} / {axis.profile.deceleration} / {axis.profile.smoothing}
+          {axis.profile.unavailable && <span className="field-health-unavailable">{axis.profile.unavailable}</span>}
+        </td>)}</tr>
+        <tr className="field-health-actions-row"><th scope="row">故障恢复</th>{report.axes.map(axis => <td key={axis.axis}><div className="field-health-recovery-actions">
         {axis.axis === 1 && <Button type="button" disabled={checking || blocked || !recovery.retry && !recovery.axes[0].execution}
           title="对应 app 的执行故障确认，保留角度参考与双限位配置，不启动旧任务" onClick={() => void inspect("clear_guard_fault", 1)}>清除执行故障</Button>}
         {(axis.axis === 2 || !!status?.turntable?.feedback?.axes?.["1"]?.fault && status.turntable.feedback.axes["1"].fault !== 8) &&
           <Button type="button" disabled={checking || blocked || !recovery.retry && !recovery.axes[axis.axis - 1].guard} onClick={() => void inspect("clear_guard_fault", axis.axis)}>清除{axis.name}故障</Button>}
         <Button type="button" disabled={checking || blocked || !recovery.retry && !recovery.axes[axis.axis - 1].alarm} onClick={() => void inspect("reset_alarm", axis.axis)}>复位驱动报警</Button>
-      </div></section>)}</div>
-      <p className="field-subtext">PA40／PA41是驱动器加减速时间常数，PA42是平滑时间，均为实际读值。内部定位使用这组参数；轨迹模式另有换点加速度 °/s² 设置。检查不会修改参数。</p>
+        </div></td>)}</tr></tbody>
+      </table></section>
       <section className="field-health-trajectory"><h3>双轴轨迹</h3><dl><div><dt>轨迹状态</dt><dd>{report.trajectoryState}</dd></div><div><dt>轨迹故障</dt><dd>{report.trajectoryFault}</dd></div>
         <div><dt>轨迹快照误差（俯仰／水平）</dt><dd>{report.errors.join(" / ")}</dd></div></dl>
-        <div className="field-health-recovery-actions"><Button type="button" disabled={checking || blocked || !!error || !recovery.cancelPending} onClick={() => void inspect("cancel_trajectory")}>取消待执行轨迹</Button>
-          <Button type="button" disabled={checking || blocked || !recovery.retry && !recovery.trajectory} onClick={() => void inspect("clear_trajectory_fault")}>清除旧轨迹</Button></div></section>
-      {recovery.retry && <p className="field-subtext">上次操作异常不会锁住恢复入口。点击后重新读取设备状态，符合条件才执行；不会自动恢复采集或运动。</p>}
+        <div className="field-health-recovery-actions"><Button type="button" title="只取消预载轨迹，保留作业原点和参考位" disabled={checking || blocked || !!error || !recovery.cancelPending} onClick={() => void inspect("cancel_trajectory")}>取消待执行轨迹</Button>
+          <Button type="button" title="需配套 v3.4 或更新固件；清除后不会自动恢复运动" disabled={checking || blocked || !recovery.retry && !recovery.trajectory} onClick={() => void inspect("clear_trajectory_fault")}>清除旧轨迹</Button></div></section>
       {notice && <p className="field-notice" role="status">{notice}</p>}
-      {!!status?.turntable?.health?.issues?.length && status.turntable.port === port && <div className="field-health-issues"><h3>处理建议</h3>{status.turntable.health.issues.map((issue, index) =>
-        <div key={`${issue.domain}-${issue.code}-${issue.motor_id}-${index}`}><strong>{issue.motor_id ? `${issue.motor_id === 1 ? "俯仰轴" : "水平轴"} · ` : ""}{issue.title}</strong><ul>{issue.steps.map((step, i) => <li key={i}>{step}</li>)}</ul></div>)}</div>}
       {(report.problems.length > 0 || report.unknown.length > 0) && <div className="field-health-issues"><h3>需要处理或核实</h3><ul>{[...new Set([...report.problems, ...report.unknown])].map(text => <li key={text}>{text}</li>)}</ul></div>}
-      <p className="field-subtext">取消待执行轨迹只撤销预载，不修改作业原点或参考位。重新检查只读状态；排除原因并停稳后，再点击对应恢复按钮。参考失效需先按真实姿态重新建立参考。独立清除轨迹需要配套 v3.4 或更新固件。</p>
+      {!!status?.turntable?.health?.issues?.length && status.turntable.port === port && <details className="field-health-issues field-health-guidance"><summary>查看处理建议</summary>{status.turntable.health.issues.map((issue, index) =>
+        <div key={`${issue.domain}-${issue.code}-${issue.motor_id}-${index}`}><strong>{issue.motor_id ? `${issue.motor_id === 1 ? "俯仰轴" : "水平轴"} · ` : ""}{issue.title}</strong><ul>{issue.steps.map((step, i) => <li key={i}>{step}</li>)}</ul></div>)}</details>}
     </div></Dialog>}
   </div>;
 }

@@ -69,7 +69,7 @@ export function FieldMechanicalHome({ port, status, disabled, request, onStatus,
           <RotateCcw size={15} />机械回零</Button>
         <Button type="button" variant="outline" disabled={blocked} title="使用有效参考，将俯仰轴移到真实水平0°" onClick={() => void run("horizontal_zero")}>
           <CornerDownLeft size={15} />回水平 0°</Button>
-        <Button type="button" variant="outline" disabled={clearReferenceBlocked} title="对应 app 的“清除电机1参考”：先取消待执行轨迹并停稳两轴；清除俯仰坐标和旧轨迹，不移动，不修改水平轴参考" onClick={() => void run("clear_axis1_reference")}>
+        <Button type="button" variant="outline" disabled={clearReferenceBlocked} title="清除后须机械回零；保留水平轴参考，不移动转盘" onClick={() => void run("clear_axis1_reference")}>
           清除俯仰轴参考</Button>
         {running && <Button type="button" variant="danger" disabled={unavailable || pending} onClick={() => void run("stop")}><Square size={14} />停止回零</Button>}
         <label className="field-mechanical-home-speed">回零速度 · °/s <input aria-label="回零速度 · °/s" type="number" min="0.2" max="1.5" step="0.1" value={speed}
@@ -82,11 +82,8 @@ export function FieldMechanicalHome({ port, status, disabled, request, onStatus,
       <strong>水平轴参考</strong>
       <Button type="button" variant="outline" disabled={referenceBlocked} title="将当前左右朝向确认为水平轴设备0°；不移动转盘，也不修改俯仰轴参考" onClick={() => void run("reference")}>
         <Crosshair size={15} />确认水平轴为 0°</Button>
-      <span className="field-subtext">角度 {angle(yaw?.output_angle_deg)} · 只设参考，不转动</span>
+      <span className="field-subtext">{angle(yaw?.output_angle_deg)}</span>
     </div></div>
-    <p className="field-subtext">机械回零向上寻找 +35° 限位；回水平 0° 后对准风机中线，再用“设置归零”建立作业原点。</p>
-    <p className="field-subtext">清除俯仰轴参考用于重新建立设备角度，之后须机械回零；日常采集无需清除。</p>
-    {homing && <p className="field-subtext">设备坐标：俯仰 {angle(turntable?.feedback?.axes?.["1"]?.output_angle_deg)} · 水平 {angle(turntable?.feedback?.axes?.["2"]?.output_angle_deg)}</p>}
     {!isTurntablePort(port) && <p className="field-subtext">请先配置转盘连接。</p>}
     {!speedValid && <p className="field-error" role="alert">回零速度范围为 0.2～1.5 °/s。</p>}
     {(error || homing && turntable?.error) && <p className="field-error" role="alert">{error || turntable?.error}</p>}

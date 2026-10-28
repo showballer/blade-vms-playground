@@ -79,7 +79,8 @@
     "test:measurement-synthesis": "tsx --tsconfig apps/web/tsconfig.json scripts/test-measurement-synthesis.ts && tsx --tsconfig apps/web/tsconfig.json packages/ui/src/measurement-response-3d.test.tsx",
     "test:measurement-ui": "electron scripts/measurement-ui-smoke.cjs",
     "test:measurement-sync": "tsx --tsconfig apps/web/tsconfig.json scripts/test-measurement-sync.ts",
-    "test:measurement-sync-e2e": "node --env-file=apps/web/.env.local scripts/test-measurement-sync-e2e.cjs"
+    "test:measurement-sync-e2e": "node --env-file=apps/web/.env.local scripts/test-measurement-sync-e2e.cjs",
+    "test:bundled-recordings": "node --test scripts/test-field-bundled-recordings.cjs"
   },
   "devDependencies": {
     "@types/node": "^22.19.0",

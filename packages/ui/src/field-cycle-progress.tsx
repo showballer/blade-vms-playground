@@ -40,9 +40,9 @@ export function FieldCycleProgress({ status }: { status: FieldStatus | null }) {
     {cycle.rssiTriggerEnabled && <><ol className="field-cycle-steps" aria-label="跟随步骤">{steps.map((label, index) => <li key={label} aria-current={!terminal && phaseStep[phase] === index ? "step" : undefined}>{label}</li>)}</ol>
       {judging && <><p className="field-subtext">最近采集 RSSI {value(cycle.latestRssi)}% · 窗内波动 {value(cycle.rssiSpread)} 个百分点</p>
       <p className="field-subtext">进入确认 {cycle.rssiEntryMs?.toFixed(0) || 0}/{cycle.rssiEnterConfirmMs ?? 20} ms · 离开确认 {cycle.rssiBelowMs?.toFixed(0) || 0}/{cycle.rssiConfirmMs ?? 30} ms</p></>}
-      {judging && cycle.rssiFreshEntryRequired && <p className="field-subtext">{cycle.rssiEntryEdgeReady ? "已允许识别新的进入；仍需进入20 ms、离开30 ms确认。" : `到位首段波动不触发换点；先连续低波动 ${cycle.rssiEntryClearMs?.toFixed(0) || 0}/${cycle.rssiConfirmMs ?? 30} ms，再等待新的进入。`}</p>}
-      {judging && cycle.mode === "automatic_stations" && <p className="field-subtext">{cycle.rssiBackgroundPolicy === "advisory" ? `背景仅作辅助，不阻塞换点 · ${cycle.rssiBackgroundReady ? "已记录背景" : "背景尚未确认"}。未经背景核验的片段保存为完整性待确认。` : `回波背景${cycle.rssiBackgroundReady ? "已确认" : "确认中"}。`}</p>}
-      <p className="field-subtext">{cycle.diagnosticDetectBeforeSettled ? `测试模式：${(cycle.diagnosticAngleWindowDeg ?? 0) > 0 ? `目标±${cycle.diagnosticAngleWindowDeg}°内开始判定` : "不限制目标角度，移动途中即判定"}，提前经过会保留；当前运动结束后再换点。记录仅用于诊断。` : cycle.laserPolicy === "off_during_motion" ? "移动前关闭激光，到位停稳后开启；开灯后的初段扰动不触发换点。" : "移动期间激光保持开启，暂停叶片进入／离开判定；两轴到位停稳后才启用。"}确认离开后换点，信号中断或超时停止。{segmented ? "本段完成后停止采集、保持激光开启，移到下一段起点等待人工开始；等待期间不判定叶片。" : "正常完成后自动回到作业原点，停止采集并保持激光开启。"}手动停止或异常时关闭激光。</p></>}
+      {judging && cycle.rssiFreshEntryRequired && <p className="field-subtext">{cycle.rssiEntryEdgeReady ? "等待新的进入" : `首段扰动过滤 ${cycle.rssiEntryClearMs?.toFixed(0) || 0}/${cycle.rssiConfirmMs ?? 30} ms`}</p>}
+      {judging && cycle.mode === "automatic_stations" && <p className="field-subtext">回波背景{cycle.rssiBackgroundReady ? "已确认" : "尚未确认"}</p>}
+    </>}
     {cycle.error && <p className="field-error">{cycle.error}</p>}
     <details open><summary>动作日志 · 最近 {log.length} 条</summary><ol className="field-cycle-log" aria-label="跟随动作日志">{log.map(event => <li key={event.sequence}>
       <time>{new Date(event.at * 1000).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false, fractionalSecondDigits: 3 })}</time>

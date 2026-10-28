@@ -1,6 +1,6 @@
 'use strict';
 
-// Standalone Apple Silicon package. Never read the developer's bootstrap or profile.
+// Standalone Apple Silicon package. Only explicitly selected task records may be bundled; never read developer credentials.
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -8,6 +8,7 @@ const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
 const { randomBytes, scryptSync, createHash } = require('node:crypto');
 const asar = require('@electron/asar');
+const { prepareBundledRecordings, installBundledRecordings } = require('../apps/desktop/electron/field-bundled-recordings.cjs');
 
 const root = path.resolve(__dirname, '..');
 const desktop = path.join(root, 'apps/desktop');
@@ -15,10 +16,11 @@ const serviceRoot = path.join(root, 'services/acquisition');
 const options = {};
 for (let i = 2; i < process.argv.length; i += 2) {
   const key = process.argv[i], value = process.argv[i + 1];
-  assert.ok(['--python', '--output', '--sdk-dir'].includes(key) && value && !value.startsWith('--'),
-    'Usage: package-macos.cjs [--python /path/to/python] [--output /directory] [--sdk-dir /vendor]');
-  options[key.slice(2)] = path.resolve(value);
+  assert.ok(['--python', '--output', '--sdk-dir', '--recordings-dir', '--task-name'].includes(key) && value && !value.startsWith('--'),
+    'Usage: package-macos.cjs [--python /path/to/python] [--output /directory] [--sdk-dir /vendor] [--recordings-dir /recordings --task-name task]');
+  options[key.slice(2)] = key === '--task-name' ? value : path.resolve(value);
 }
+assert.equal(Boolean(options['recordings-dir']), Boolean(options['task-name']), 'Provide both --recordings-dir and --task-name.');
 assert.ok(process.platform === 'darwin' && process.arch === 'arm64', 'Build on an Apple Silicon Mac with ARM64 Node.js.');
 const python = options.python || path.join(serviceRoot, '.venv-build/bin/python');
 assert.ok(fs.existsSync(python), 'Create services/acquisition/.venv-build and install requirements-build.txt first (docs/MAC_PACKAGING.md).');
@@ -56,8 +58,13 @@ function assertLocalLinks(directory) {
   }
 }
 
-let bundle;
+let bundle, bundledRecords = null;
 async function main() {
+  if (options['recordings-dir']) {
+    bundledRecords = prepareBundledRecordings({ recordingsDir: options['recordings-dir'], taskName: options['task-name'],
+      outputDir: path.join(stage, 'resources/bundled-recordings') });
+    console.log(`Bundling selected task: ${bundledRecords.taskName} (${bundledRecords.recordCount} records)`);
+  }
   console.log('Checking Mac build prerequisites…');
   run(python, ['-c', "import platform,sys,PyInstaller; assert sys.platform == 'darwin' and platform.machine() == 'arm64'; assert sys.version_info >= (3,12)"]);
   run('/usr/bin/lipo', [path.join(vendor, 'libDeviceCommunication.dylib'), '-verify_arch', 'arm64']);
@@ -84,7 +91,8 @@ async function main() {
   Object.assign(pkg.build, { buildVersion: stamp.slice(0, 8) + '.' + stamp.slice(9, 15),
     directories: { output: path.join(work, 'release') }, electronDist: path.join(root, 'node_modules/electron/dist'),
     electronVersion: require('electron/package.json').version,
-    extraResources: [{ from: 'resources/acquisition', to: 'acquisition', filter: ['**/*'] }],
+    extraResources: [{ from: 'resources/acquisition', to: 'acquisition', filter: ['**/*'] },
+      ...(bundledRecords ? [{ from: 'resources/bundled-recordings', to: 'bundled-recordings', filter: ['**/*'] }] : [])],
     mac: { target: 'dir', category: 'public.app-category.productivity', identity: '-', hardenedRuntime: false } });
   fs.writeFileSync(path.join(stage, 'package.json'), JSON.stringify(pkg, null, 2));
   console.log('Packaging and signing app…');
@@ -105,19 +113,36 @@ async function main() {
   const service = createFieldService({ getConfig: () => ({}), resourcesDir: resources, dataDir,
     servicesRoot: path.join(work, 'no-source'), environment: { PATH: '/usr/bin:/bin', PYTHONHOME: '/missing', PYTHONPATH: '/missing' } });
   try {
+    if (bundledRecords) {
+      const imported = installBundledRecordings({ bundleDir: path.join(resources, 'bundled-recordings'), dataDir });
+      assert.equal(imported.imported.length, bundledRecords.recordCount);
+      assert.equal(imported.conflicts.length, 0);
+      const again = installBundledRecordings({ bundleDir: path.join(resources, 'bundled-recordings'), dataDir });
+      assert.equal(again.imported.length, 0, 'Restart must not duplicate bundled records');
+    }
     const state = await service.start();
     assert.equal(state.service.state, 'ready', state.service.error);
     assert.equal(state.service.launcher, 'macos-bundle');
     assert.equal(state.service.dllConfigured, true);
     assert.equal(state.receiver.running, false);
+    if (bundledRecords) {
+      const { recordings } = await service.recordings();
+      assert.equal(recordings.length, bundledRecords.recordCount);
+      assert.ok(recordings.every(record => record.name === bundledRecords.taskName));
+      for (const recording of recordings) {
+        const result = await service.waveform(recording.id, 0, Math.min(2048, recording.samples));
+        assert.ok(result.waveform.values.length > 0, `Unreadable bundled waveform: ${recording.id}`);
+      }
+    }
   } finally { await service.shutdown({ force: true }); fs.rmSync(dataDir, { recursive: true, force: true }); }
 
   const dmgContent = path.join(work, 'dmg');
   copy(bundle, path.join(dmgContent, 'BladeVMS.app'));
   fs.symlinkSync('/Applications', path.join(dmgContent, 'Applications'));
-  const basename = `BladeVMS-${pkg.version}-mac-arm64-${stamp}`;
+  const customLabel = bundledRecords ? `-custom-${(bundledRecords.taskName.match(/\d+/) || ['task'])[0]}` : '';
+  const basename = `BladeVMS-${pkg.version}${customLabel}-mac-arm64-${stamp}`;
   const notes = `${basename}-安装与登录说明.txt`;
-  fs.writeFileSync(path.join(dmgContent, notes), `BladeVMS ${pkg.version} · Apple Silicon（M 系列），macOS 13 及以上。\n\n将 BladeVMS.app 拖入 Applications。先退出旧客户端，避免同时连接设备。已内置采集服务、Python 环境和激光 SDK，无需安装 Python。\n\n首次使用：账号 admin，初始密码 ${initial}\n首次登录必须修改密码。已有本机账号继续使用自己的密码，不重置账号和记录。\n此包未包含开发者本机账号、绑定、采集数据和现场参数。设备网络、作业原点及校正系数按现场填写。\n\n本地测试包采用 ad-hoc 签名，未进行 Apple 公证。若 macOS 阻止首次打开，请在系统设置→隐私与安全性核对来源后选择仍要打开，无需关闭系统安全功能。\n`, { mode: 0o600 });
+  fs.writeFileSync(path.join(dmgContent, notes), `BladeVMS ${pkg.version} · Apple Silicon（M 系列），macOS 13 及以上。\n\n将 BladeVMS.app 拖入 Applications。先退出旧客户端，避免同时连接设备。已内置采集服务、Python 环境和激光 SDK，无需安装 Python。\n\n首次使用：账号 admin，初始密码 ${initial}\n首次登录必须修改密码。已有本机账号继续使用自己的密码，不重置账号和记录。\n${bundledRecords ? `定制包预置任务：${bundledRecords.taskName}，共 ${bundledRecords.recordCount} 条实测记录。首次启动自动导入；登录后进入“本机记录”→“叶片采集汇总”选择该任务。可查看点位、波形和导出数据，无需连接设备。\n保留记录原有诊断属性、来源说明及质量标记，不将诊断记录改为正式健康结论。原CSV未提供的ADC整数码不会补造。预置记录不自动上传Web；再次启动不重复导入，不覆盖已有同编号记录。\n` : '标准包不预置采集数据。\n'}此包未包含开发者本机账号、Web绑定、上传队列或现场参数。设备网络、作业原点及校正系数按现场填写。\n\n本地测试包采用 ad-hoc 签名，未进行 Apple 公证。若 macOS 阻止首次打开，请在系统设置→隐私与安全性核对来源后选择仍要打开，无需关闭系统安全功能。\n`, { mode: 0o600 });
   console.log('Verifying DMG…');
   const dmg = path.join(work, `${basename}.dmg`);
   run('/usr/bin/hdiutil', ['create', '-volname', `BladeVMS ${pkg.version}`, '-srcfolder', dmgContent, '-format', 'UDZO', dmg]);
@@ -131,7 +156,7 @@ async function main() {
   fs.writeFileSync(path.join(work, 'verification.json'), JSON.stringify({ version: pkg.version, buildVersion: pkg.build.buildVersion,
     platform: 'darwin', arch: 'arm64', sdkSymbols: sdkCheck.sdkSymbols, standaloneServiceReady: true,
     hardwareTouched: false, source: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim(),
-    includesWorkingTree: true, delivered, sha256 }, null, 2));
+    includesWorkingTree: true, bundledRecords, delivered, sha256 }, null, 2));
   console.log(`Created ${delivered}\nInstall/login instructions: ${path.join(output, notes)}\nVerification/logs: ${work}`);
 }
 main().catch(error => { console.error(error.message); process.exitCode = 1; });

@@ -8,7 +8,8 @@ const os = require('node:os');
 const assert = require('node:assert/strict');
 const root = path.resolve(__dirname, '..');
 const ui = path.join(root, 'packages/ui/src');
-const output = path.join(root, 'artifacts/segmented-ui-smoke');
+const compact = process.argv.includes('--compact');
+const output = path.join(root, compact ? 'artifacts/desktop-compact-20261028' : 'artifacts/segmented-ui-smoke');
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'blade-segmented-ui-'));
 app.setPath('userData', profile);
 fs.mkdirSync(output, { recursive: true });
@@ -59,7 +60,8 @@ function App(){
   throw Error('Unexpected request in isolated test');
  };
  useEffect(()=>{window.__segmentedFixture.ready=true;},[]);
- return <div className="field-app"><header className="field-header"><div className="field-brand">BladeVMS <small>分段采集界面验收 · 不连接设备</small></div></header><main className="field-content"><FieldTurntableWorkspace config={config} onConfig={setConfig} status={status} disabled={false} request={request} onStatus={setStatus} onService={()=>{}} onRecords={()=>{}} connectionPort="COM3" routeMode={mode} onRouteMode={setMode} segmentedAutoMove={autoMove} autoTargetKey={key} onAutoTarget={setKey} onRoute={route=>{window.__segmentedFixture.routes={...window.__segmentedFixture.routes,[route.kind]:route};}} positionedStation={positioned} onAcquisition={()=>{}} /></main></div>;
+ const content=<main className="field-content"><FieldTurntableWorkspace config={config} onConfig={setConfig} status={status} disabled={false} request={request} onStatus={setStatus} onService={()=>{}} onRecords={()=>{}} connectionPort="COM3" onConnectionChange={()=>{}} routeMode={mode} onRouteMode={setMode} segmentedAutoMove={autoMove} autoTargetKey={key} onAutoTarget={setKey} onRoute={route=>{window.__segmentedFixture.routes={...window.__segmentedFixture.routes,[route.kind]:route};}} positionedStation={positioned} onAcquisition={()=>{}} /></main>;
+ return <div className="field-app"><header className="field-header"><div className="field-brand">BladeVMS <small>界面隔离验收 · 不连接设备</small></div></header>{${compact} ? <div className="field-workspace"><aside className="field-sidebar"><p>现场作业</p><button>数据采集</button><button className="active">转盘点位</button><button>本机记录</button><button>设备与服务</button></aside>{content}</div> : content}</div>;
 }
 createRoot(document.getElementById('root')).render(<App/>);
 `;
@@ -95,6 +97,99 @@ async function action(label) {
   await pause(50);
 }
 async function screenshot(name) { await pause(220); fs.writeFileSync(path.join(output, name), (await win.webContents.capturePage()).toPNG()); report.screenshots.push(name); }
+async function compactChecks() {
+  await run('window.__segmentedFixture.inject(structuredClone(window.__segmentedFixture.initial))');
+  await tab('分段采集');
+  await check('紧凑布局保留整卡选择、radio、独立编辑、校准及恢复计算', async () => {
+    const before = await run('window.__segmentedFixture.calls.length');
+    await run('document.querySelectorAll(".field-auto-point-angle")[2].click()');
+    await waitFor('document.querySelector("input[aria-label=选择测点3]").checked');
+    await input('测点2名称', 'P2 编辑验收');
+    assert.equal(await run('document.querySelector("input[aria-label=选择测点3]").checked'), true, 'Editing another card must not change the active target');
+    await input('测点2名称', 'P2');
+    await run('document.querySelector("input[aria-label=选择测点2]").click()');
+    await waitFor('document.querySelector("input[aria-label=选择测点2]").checked');
+    await action('校准测点2');
+    await waitFor('!!document.querySelector("button[aria-label=恢复测点2计算角度]")');
+    assert.equal(await run('document.querySelectorAll(".field-auto-point[data-selected=true]").length'), 1);
+    await action('恢复测点2计算角度');
+    await waitFor('!document.querySelector("button[aria-label=恢复测点2计算角度]")');
+    assert.equal(await run('window.__segmentedFixture.calls.slice('+before+').every(c=>c.action==="turntable"&&c.request.action==="probe")'), true, 'Selection/edit/calibration must not send movement commands');
+    await input('风机旋转中心离地高度 · m', '1.6');
+    assert.match(await run('document.querySelector("[aria-label=风机旋转中心与激光高差]").textContent'), /0\.830/);
+    await input('风机旋转中心离地高度 · m', '1.5');
+    assert.match(await run('document.querySelector("[aria-label=风机旋转中心与激光高差]").textContent'), /0\.730/);
+  });
+  report.layouts = [];
+  for (const width of [2880, 1600, 1366, 1024, 640, 540]) {
+    await check(`${width}px 配置页无横溢、设置弹窗可滚动且两轴参数和操作完整`, async () => {
+      win.setContentSize(width, width >= 1024 ? 900 : 820);
+      await pause(90);
+      await run('document.querySelector(".field-content").scrollTop=0');
+      const page = await run(`(()=>{
+        const content=document.querySelector('.field-content'), points=document.querySelector('.field-auto-points'), geometry=document.querySelector('.field-measurement-geometry');
+        const visible=e=>!!(e.offsetWidth||e.offsetHeight||e.getClientRects().length);
+        const overflowing=[...document.querySelectorAll('.field-auto-point input,.field-auto-point button,.field-measurement-settings input,.field-measurement-settings button')].filter(visible).filter(e=>{const r=e.getBoundingClientRect(), c=e.closest('.field-auto-point,.field-measurement-settings').getBoundingClientRect();return r.left<c.left-2||r.right>c.right+2;}).map(e=>e.getAttribute('aria-label')||e.textContent);
+        return {width:innerWidth, contentWidth:content.clientWidth, contentScrollWidth:content.scrollWidth, documentWidth:document.documentElement.scrollWidth,
+          pointColumns:getComputedStyle(points).gridTemplateColumns.split(' ').filter(v=>parseFloat(v)>0).length, geometryColumns:getComputedStyle(geometry).gridTemplateColumns.split(' ').filter(v=>parseFloat(v)>0).length,
+          cardHeight:Math.round(document.querySelector('.field-auto-point').getBoundingClientRect().height), measurementHeight:Math.round(document.querySelector('.field-measurement-settings').getBoundingClientRect().height),
+          radios:document.querySelectorAll('.field-auto-point input[type=radio]').length, calibrationButtons:document.querySelectorAll('.field-auto-point button[aria-label^=校准测点]').length, overflowing};
+      })()`);
+      assert.equal(page.documentWidth <= width + 2, true, JSON.stringify(page));
+      assert.equal(page.contentScrollWidth <= page.contentWidth + 2, true, JSON.stringify(page));
+      assert.deepEqual(page.overflowing, [], 'Fields/buttons must stay inside their cards');
+      assert.equal(page.pointColumns, width >= 2880 ? 5 : width >= 1366 ? 3 : width >= 1024 ? 2 : 1);
+      assert.equal(page.geometryColumns, ({2880:7,1600:5,1366:4,1024:3,640:2,540:2})[width]);
+      assert.equal(page.radios, 5); assert.equal(page.calibrationButtons, 5);
+      if (width >= 1024) {
+        await screenshot(`configuration-${width}.png`);
+        await run('document.querySelector(".field-auto-points-heading").scrollIntoView({block:"start"})');
+        await screenshot(`point-cards-${width}.png`);
+      }
+      await action('打开转盘设置');
+      await waitFor('!!document.querySelector("dialog[open] .field-drive-profile")');
+      const modal = await run(`(()=>{
+        const dialog=document.querySelector('dialog[open]'), body=dialog.querySelector('.field-turntable-health'), r=dialog.getBoundingClientRect();
+        body.scrollTop=0;
+        return {width:Math.round(r.width),left:r.left,right:r.right,top:r.top,bottom:r.bottom,viewportHeight:innerHeight,
+          bodyWidth:body.clientWidth,bodyScrollWidth:body.scrollWidth,bodyHeight:body.clientHeight,bodyScrollHeight:body.scrollHeight,
+          inputs:dialog.querySelectorAll('.field-drive-profile-table input').length,
+          readButtons:dialog.querySelectorAll('button[aria-label^=读取][aria-label$=驱动参数]').length,
+          applyButtons:dialog.querySelectorAll('button[aria-label^=应用][aria-label$=驱动参数]').length,
+          healthColumns:dialog.querySelectorAll('.field-health-table thead th').length};
+      })()`);
+      assert.equal(modal.left >= -1 && modal.right <= width + 1 && modal.top >= -1 && modal.bottom <= modal.viewportHeight + 1, true, JSON.stringify(modal));
+      assert.equal(modal.bodyScrollWidth <= modal.bodyWidth + 2, true, JSON.stringify(modal));
+      assert.equal(modal.bodyScrollHeight > modal.bodyHeight, true, 'Long settings must scroll inside the modal');
+      assert.equal(modal.inputs, 6); assert.equal(modal.readButtons, 2); assert.equal(modal.applyButtons, 2); assert.equal(modal.healthColumns, 3);
+      await screenshot(`settings-top-${width}.png`);
+      await action('读取俯仰轴驱动参数');
+      await action('读取水平轴驱动参数');
+      await run('document.querySelector(".field-drive-profile").scrollIntoView({block:"start"})');
+      await pause(70);
+      const drive = await run(`(()=>{const body=document.querySelector('.field-turntable-health'), bounds=body.getBoundingClientRect(), table=document.querySelector('.field-drive-profile-table');return {scrollTop:body.scrollTop,tableWidth:table.clientWidth,tableScrollWidth:table.scrollWidth,overflow:[...table.querySelectorAll('input,button')].filter(e=>{const r=e.getBoundingClientRect();return r.left<bounds.left-1||r.right>bounds.right+1;}).map(e=>e.getAttribute('aria-label')),disabledInputs:[...table.querySelectorAll('input')].filter(e=>e.disabled).length};})()`);
+      assert.deepEqual(drive.overflow, []); assert.equal(drive.tableScrollWidth <= drive.tableWidth + 2, true); assert.equal(drive.disabledInputs, 0);
+      await screenshot(`settings-drive-${width}.png`);
+      await action('重新检查转盘状态');
+      await run('document.querySelector(".field-health-axes").scrollIntoView({block:"start"})');
+      await pause(50);
+      const feedback = await run(`(()=>{const panel=document.querySelector('.field-health-axes'), table=panel.querySelector('table'), rows=[...table.querySelectorAll('tr')];return {panelHeight:panel.clientHeight,tableHeight:table.clientHeight,rows:rows.length,minRowHeight:Math.min(...rows.map(e=>e.getBoundingClientRect().height)),scrollHeight:panel.scrollHeight,scrollWidth:panel.scrollWidth,width:panel.clientWidth};})()`);
+      assert.equal(feedback.panelHeight >= feedback.tableHeight - 2, true, 'Feedback table must not be clipped to a zero-height grid row: '+JSON.stringify(feedback));
+      assert.equal(feedback.minRowHeight >= 24 && feedback.rows >= 8, true, JSON.stringify(feedback));
+      assert.equal(feedback.scrollWidth <= feedback.width + 2, true, JSON.stringify(feedback));
+      await screenshot(`settings-feedback-${width}.png`);
+      await run('(()=>{const e=document.querySelector(".field-turntable-health");e.scrollTop=e.scrollHeight;})()');
+      await pause(50);
+      const bottom = await run('(()=>{const e=document.querySelector(".field-turntable-health");return {top:e.scrollTop,height:e.clientHeight,total:e.scrollHeight};})()');
+      assert.equal(Math.abs(bottom.top + bottom.height - bottom.total) <= 2, true, JSON.stringify(bottom));
+      await screenshot(`settings-bottom-${width}.png`);
+      await action('关闭弹窗');
+      assert.equal(await run('!!document.querySelector("dialog[open]")'), false);
+      report.layouts.push({width,page,modal,drive,feedback,bottom});
+    });
+  }
+  assert.deepEqual(report.rendererErrors, []);
+}
 function finish(error) {
   clearTimeout(watchdog); report.passed = !error;
   if (error) { report.error = { case: currentCase, message: error.stack }; console.error(error); }
@@ -278,7 +373,7 @@ app.whenReady().then(async () => {
       await run('window.__segmentedFixture.releaseProfile();delete window.__segmentedFixture.releaseProfile');
       await waitFor(`!document.querySelector('button[aria-label="应用水平轴驱动参数"]').disabled`);
       await action('应用水平轴驱动参数');
-      await waitFor(`document.querySelector('[aria-label="水平轴驱动参数"]').textContent.includes("已应用并读回确认")`);
+      await waitFor(`document.querySelector('button[aria-label="应用水平轴驱动参数"]').closest('td').querySelector('[role="status"]').textContent.includes("已应用并读回确认")`);
       const writes = await run('window.__segmentedFixture.calls.filter(c=>c.request?.action==="set_motion_profile").slice(-2).map(c=>c.request)');
       assert.deepEqual(writes.map(write => write.axis), [1, 2]);
       for (const write of writes) {
@@ -295,6 +390,7 @@ app.whenReady().then(async () => {
       assert.equal(await run('!!document.querySelector("dialog[open] .field-auto-turntable-setup")'),true);
       await action('关闭弹窗');
     });
+    if (compact) await compactChecks();
     finish();
   } catch (error) { finish(error); }
 });
