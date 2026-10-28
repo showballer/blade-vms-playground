@@ -38,9 +38,9 @@ export function turntableHealthReport(status: FieldStatus | null, port: string) 
       if (!Number.isInteger(value.fault) || value.fault < 0) unknown.push(`${name}故障码无效。`);
       else if (value.fault !== 0) problems.push(`${name}：${codeText(axisFaults, value.fault)}`);
       if (!reference) problems.push(`${name}角度参考失效，不能据当前位置自动定位。`);
-      if (pending) problems.push(`${name}停机待确认，零转速不能代替停止确认。`);
+      if (pending) { waiting = true; unknown.push(`${name}停机待确认，继续读取反馈；零转速不能代替停止确认。`); }
       if (!finite(value.motor_rpm)) unknown.push(`${name}转速未读取。`);
-      else moving ||= value.motor_rpm !== 0;
+      else moving ||= value.motor_rpm !== 0 || !!(value.flags & 0x20);
       if (!Number.isInteger(value.home_phase) || value.home_phase < 0 || value.home_phase > 8) unknown.push(`${name}回零阶段无效。`);
       else moving ||= ![0, 7, 8].includes(value.home_phase);
       if (axis === 1 && !value.guard?.soft_enabled) problems.push("俯仰轴软范围未启用。");
@@ -52,10 +52,11 @@ export function turntableHealthReport(status: FieldStatus | null, port: string) 
     if (!drive || !Number.isInteger(drive.alarmCode) || drive.alarmCode! < 0) unknown.push(`${name}驱动器报警码未读取。`);
     else if (drive.alarmCode !== 0) problems.push(`${name}驱动器报警：${drive.alarmCode}`);
     if (drive?.limitFlags != null && (!Number.isInteger(drive.limitFlags) || drive.limitFlags < 0)) unknown.push(`${name}限位状态无效。`);
+    else if (drive?.limitFlags === 2) { waiting = true; unknown.push(`${name}驱动停止待确认，继续读取反馈。`); }
     else if (drive?.limitFlags != null && drive.limitFlags !== 0) problems.push(`${name}限位／停止状态异常（${drive.limitFlags}）。`);
     return { axis, name, angle: reference ? `${value!.output_angle_deg!.toFixed(3)}°` : "无有效角度",
       rpm: finite(value?.motor_rpm) ? `${value.motor_rpm} rpm` : "未读取", reference: reference ? "有效" : "无效／未读取",
-      stop: !value || !finite(value.motor_rpm) ? "未读取" : pending ? "停机待确认" : value.motor_rpm !== 0 ? "运动中" : "反馈零速",
+      stop: !value || !finite(value.motor_rpm) ? "未读取" : pending ? "停机待确认" : value.motor_rpm !== 0 || !!(value.flags & 0x20) ? "定位运动中" : "反馈零速",
       fault: codeText(axisFaults, value?.fault), alarm: drive?.alarmCode != null ? String(drive.alarmCode) : "未读取",
       profile: { acceleration: milliseconds(profile?.accel_ms), deceleration: milliseconds(profile?.decel_ms),
         smoothing: milliseconds(profile?.s_curve_ms), unavailable: profile?.unavailable } };
@@ -72,7 +73,7 @@ export function turntableHealthReport(status: FieldStatus | null, port: string) 
     }
   } else if (!(capability?.supported === false && capability.probe === "legacy-command-unsupported")) unknown.push("尚未确认控制器轨迹接口。");
   const tone = problems.length ? "red" : moving ? "blue" : waiting ? "amber" : unknown.length ? "neutral" : "green";
-  const label = problems.length ? "存在异常" : moving ? "任务或运动进行中" : waiting ? "有待执行轨迹" : unknown.length ? "尚不能确认" : "本次检查未发现异常";
+  const label = problems.length ? "存在异常" : moving ? "任务或运动进行中" : waiting ? "等待停止确认或轨迹执行" : unknown.length ? "尚不能确认" : "本次检查未发现异常";
   return { tone, label, axes, problems, unknown, readAt: health?.readAt,
     trajectoryState: capability?.supported === false && capability.probe === "legacy-command-unsupported" ? "旧控制器：逐轴模式" : codeText(trajectoryStates, trajectory?.state),
     trajectoryFault: codeText(trajectoryFaults, trajectory?.fault),
@@ -87,7 +88,7 @@ export function turntableRecoveryOptions(status: FieldStatus | null, port: strin
   const health = controller?.health, state = controller?.motionCapability?.status?.state;
   const positions = [1, 2].map(axis => controller?.feedback?.axes?.[String(axis)]);
   const stopped = health?.readOnly === true && !health.referenceChangedDuringRead && positions.every(p =>
-    p && p.motor_rpm === 0 && [0, 7, 8].includes(p.home_phase));
+    p && p.motor_rpm === 0 && !(p.flags & 0x20) && [0, 7, 8].includes(p.home_phase));
   const supported = controller?.motionCapability?.probe === "confirmed";
   const terminal = supported && typeof state === "number" && [0, 6, 7, 8].includes(state);
   const session = controller?.motionCapability?.status?.session;
@@ -100,7 +101,7 @@ export function turntableRecoveryOptions(status: FieldStatus | null, port: strin
       // Older replies omit the extended drive flags (stored explicitly as null).
       // The axis feedback still has its own stop-pending flag; missing drive
       // data (undefined) is not equivalent to this supported legacy response.
-      const settled = !!stopped && !!value && !(value.flags & 16) &&
+      const settled = !!stopped && !!value && !(value.flags & 0x30) &&
         (drive?.limitFlags === 0 || drive?.limitFlags === null);
       const reference = !!value && !!(value.flags & 1) && finite(value.output_angle_deg);
       const inRange = reference && (!value.guard.soft_enabled ||

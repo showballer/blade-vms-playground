@@ -60,8 +60,33 @@ test("horizontal reference waits for actual stationary feedback and never depend
   assert.match(button(markup(status, "COM7"), "确认水平轴为 0°"), /disabled/);
   yaw.motor_rpm = 0; yaw.flags = 16;
   assert.match(button(markup(status, "COM7"), "确认水平轴为 0°"), /disabled/);
+  assert.match(markup(status, "COM7"), /轴2停止尚未确认/);
+  yaw.fault = 3;
+  assert.doesNotMatch(button(markup(status, "COM7"), "确认水平轴为 0°"), /disabled/);
+  assert.match(markup(status, "COM7"), /人工确认当前左右朝向就是设备0°/);
+  assert.match(markup(status, "COM7"), /轴2故障码 3 · 反馈标志 0x0010/);
+  yaw.flags = 0x30;
+  assert.match(button(markup(status, "COM7"), "确认水平轴为 0°"), /disabled/);
+  assert.match(markup(status, "COM7"), /两轴须停止定位/);
   yaw.flags = 0; yaw.fault = 8;
   assert.match(button(markup(status, "COM7"), "确认水平轴为 0°"), /disabled/);
+  assert.match(markup(status, "COM7"), /轴2故障码 8，请先排除故障/);
+  yaw.fault = 3; yaw.display_mode = 0;
+  assert.match(button(markup(status, "COM7"), "确认水平轴为 0°"), /disabled/);
+  assert.match(markup(status, "COM7"), /轴2反馈计数单位无效/);
+  yaw.display_mode = 3;
+  status.turntable!.port = "tcp://192.168.10.50:5000";
+  status.turntable!.health = { readAt: 1, readOnly: true, referenceChangedDuringRead: false,
+    axes: { "2": { alarmCode: 0, limitFlags: 2, runState: 0, observedAt: 1 } } };
+  yaw.flags = 16;
+  assert.doesNotMatch(button(markup(status, status.turntable!.port), "确认水平轴为 0°"), /disabled/);
+  status.turntable!.health.axes["2"].alarmCode = 59;
+  assert.match(button(markup(status, status.turntable!.port), "确认水平轴为 0°"), /disabled/);
+  assert.match(markup(status, status.turntable!.port), /轴2驱动器报警 59/);
+  status.turntable!.health.axes["2"].alarmCode = 0;
+  status.turntable!.health.axes["2"].limitFlags = 1;
+  assert.match(button(markup(status, status.turntable!.port), "确认水平轴为 0°"), /disabled/);
+  assert.match(markup(status, status.turntable!.port), /轴2限位或保护状态异常/);
 });
 
 test("busy capture and disconnected service block movement, while active homing exposes an enabled stop", () => {

@@ -1218,7 +1218,7 @@ class AcquisitionController:
             if (not position.usable or position.source not in (0, 1) or
                     not math.isfinite(position.angle_deg) or not position.flags & 1 or
                     position.sample_age_ms < 0 or conservative_age_ms > 1000 or
-                    position.alarm_code or position.guard_fault or position.flags & 16):
+                    position.alarm_code or position.guard_fault):
                 raise RuntimeError(f"轴{axis} 0x37位置反馈过期、参考无效、读取失败或存在报警，已停止轨迹")
             old = previous["axes"][str(axis)]
             if bool(position.flags & 2) != bool(old["guard"]["soft_enabled"]):
@@ -2478,6 +2478,9 @@ class AcquisitionController:
                 if self.stop_event.is_set():
                     raise RuntimeError("循环采集已停止，未发送运动")
                 initial_snapshots = fast if fast is not None else joint_snapshots(motor)
+            from .turntable import wait_ready_snapshots
+            initial_snapshots = wait_ready_snapshots(motor, initial=initial_snapshots,
+                                                    cancel=self.stop_event)
             feedback = initial_snapshots[0]
             require_ready(feedback)
             references = reference_key(feedback)

@@ -226,6 +226,10 @@ function windowsServiceEnvironment({ file, dataDir, dll, port, secret, source = 
     const value = inherited.get(key);
     if (value !== undefined) env[key] = value;
   }
+  const timingLog = inherited.get('BLADE_TURNTABLE_TIMING_LOG');
+  if (typeof timingLog === 'string' && path.win32.isAbsolute(timingLog) && !timingLog.includes('\0')) {
+    env.BLADE_TURNTABLE_TIMING_LOG = timingLog;
+  }
   const localDirectory = value => typeof value === 'string' && /^[A-Za-z]:[\\/]/.test(value) && !/[;\0]/.test(value);
   const systemRoot = [inherited.get('SYSTEMROOT'), inherited.get('WINDIR')].find(localDirectory) || 'C:\\Windows';
   env.SystemRoot = path.win32.normalize(systemRoot);

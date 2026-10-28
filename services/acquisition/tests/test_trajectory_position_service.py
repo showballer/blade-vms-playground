@@ -48,7 +48,7 @@ class TrajectoryPositionServiceTests(unittest.TestCase):
         old = snapshot(self.motor, 1)
         for change in ({"angle_deg": None}, {"flags": 2}, {"source": 2}, {"sample_age_ms": 1001},
                        {"sample_age_ms": -1}, {"alarm_code": 1}, {"guard_fault": 2},
-                       {"flags": 19}, {"flags": 1}, {"angle_deg": 36}, {"angle_deg": float("nan")}):
+                       {"flags": 1}, {"angle_deg": 36}, {"angle_deg": float("nan")}):
             with self.subTest(change=change), self.assertRaises(RuntimeError):
                 positions = (replace(self.positions()[0], **change), self.positions()[1])
                 self.controller._trajectory_position_feedback(old, positions, self.configs, 100, 100.1)
@@ -58,6 +58,16 @@ class TrajectoryPositionServiceTests(unittest.TestCase):
                 self.controller._trajectory_position_feedback(old, positions, self.configs, 100, 100 + delay)
         with self.assertRaises(RuntimeError):
             self.controller._trajectory_position_feedback(old, self.positions(), self.configs, 100, 99)
+
+    def test_pending_and_positioning_feedback_is_observed_without_becoming_arrival(self):
+        from blade_acquisition.turntable import position_reached
+        old = snapshot(self.motor, 1)
+        for flags in (0x13, 0x23):
+            positions = (replace(self.positions()[0], flags=flags, angle_deg=5, motor_rpm=0),
+                         self.positions()[1])
+            result = self.controller._trajectory_position_feedback(old, positions, self.configs, 100, 100)
+            self.assertEqual(result['axes']['1']['flags'], flags)
+            self.assertFalse(position_reached(result, self.configs[0]))
 
     def test_axis2_disabled_soft_is_optional_but_enabled_actual_range_and_product_envelope_remain(self):
         old = snapshot(self.motor, 1)

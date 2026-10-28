@@ -1,5 +1,5 @@
 """Bounded diagnostic sequencing and fail-closed cleanup; no device/network I/O."""
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import threading
 import struct
 from types import SimpleNamespace
@@ -127,6 +127,7 @@ class DrivePositionTests(unittest.TestCase):
         self.motor, self.clock, self.cancel = PositionMotor(), Clock(), threading.Event()
         for target, value in (
             ("blade_acquisition.drive_position.joint_snapshots", lambda motor: motor.snapshots()),
+            ("blade_acquisition.turntable.joint_snapshots", lambda motor: motor.snapshots()),
             ("blade_acquisition.drive_position.time.monotonic", self.clock.monotonic),
             ("blade_acquisition.drive_position.time.monotonic_ns", self.clock.monotonic_ns),
             ("blade_acquisition.drive_position.time.sleep", self.clock.sleep),
@@ -262,6 +263,35 @@ class DrivePositionTests(unittest.TestCase):
         self.motor.on_sample = lambda: self.motor.angles.__setitem__(1, -8.499)
         result = self.failed("超时")
         self.assertTrue(result["stopConfirmed"])
+
+    def test_transient_stop_or_position_flags_at_target_delay_completion(self):
+        for flag in (0x10, 0x20):
+            self.motor = PositionMotor()
+            original = self.motor.get_axis_positions
+            def read():
+                positions = original()
+                if self.motor.targets and self.motor.sample <= 3:
+                    return tuple(replace(p, flags=p.flags | flag) for p in positions)
+                return positions
+            self.motor.get_axis_positions = read
+            with self.subTest(flag=flag):
+                result = self.run_move()
+                self.assertEqual(self.motor.sample, 4)
+                self.assertTrue(result['stopConfirmed'])
+                self.assertEqual(self.motor.stops, [])
+
+    def test_real_fault_retains_first_abnormal_reading_and_last_command(self):
+        self.motor.on_sample = lambda: setattr(self.motor, 'feedback_fault', 8)
+        result = self.failed('故障')
+        readings = result['firstAbnormalReadings']
+        self.assertEqual(readings[0]['guardFault'], 8)
+        self.assertEqual(readings[0]['targetAngleDeg'], 14)
+        self.assertIn('flagsHex', readings[0])
+        self.assertIn('alarmCode', readings[0])
+        self.assertIn('source', readings[0])
+        self.assertIn('sampleAgeMs', readings[0])
+        self.assertEqual(result['lastMotionCommand']['axis'], 2)
+        self.assertEqual(self.motor.stops, [1, 2])
 
     def test_gross_reverse_motion_is_stopped(self):
         self.motor.on_sample = lambda: self.motor.angles.__setitem__(0, 4.)
@@ -425,7 +455,8 @@ class DrivePositionTests(unittest.TestCase):
             if calls == 2:
                 motor.rpm[1] = 7
             return motor.snapshots()
-        with patch("blade_acquisition.drive_position.joint_snapshots", side_effect=read):
+        with patch("blade_acquisition.drive_position.joint_snapshots", side_effect=read), \
+             patch("blade_acquisition.turntable.joint_snapshots", side_effect=read):
             result = self.failed("运动|停稳")
         self.assertNotIn("arrived", [event["phase"] for event in result["events"]])
         self.assertEqual(self.motor.stops, [1, 2])

@@ -467,6 +467,14 @@ test("Windows service ignores installed Python, Conda, venv and inherited DLL se
   assert.equal(env.BLADE_DATA_DIR, "D:\\Users\\测试用户\\field-data");
 });
 
+test("Windows diagnostics passes only an absolute timing log path", () => {
+  const build = source => windowsServiceEnvironment({ file: "C:\\App\\BladeAcquisition.exe", dataDir: "C:\\data",
+    dll: "", port: 32100, secret: "secret", source });
+  assert.equal(build({ blade_turntable_timing_log: "C:\\BladeLogs\\turntable.jsonl" }).BLADE_TURNTABLE_TIMING_LOG,
+    "C:\\BladeLogs\\turntable.jsonl");
+  assert.equal(build({ BLADE_TURNTABLE_TIMING_LOG: "relative.jsonl" }).BLADE_TURNTABLE_TIMING_LOG, undefined);
+});
+
 test("Windows environment allowlist handles mixed casing and never emits duplicate names", () => {
   const env = windowsServiceEnvironment({ file: "C:\\App\\BladeAcquisition.exe", dataDir: "C:\\data",
     dll: "C:\\App\\vendor\\DeviceCommunication.dll", port: 32100, secret: "secret",

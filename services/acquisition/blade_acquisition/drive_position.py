@@ -12,7 +12,7 @@ import time
 from types import SimpleNamespace
 
 from .turntable import (
-    joint_snapshots, require_position_ready, require_stop_confirmed,
+    joint_snapshots, require_position_ready, require_stop_confirmed, wait_ready_snapshots,
 )
 from .turntable_driver import MotorError
 from .turntable_driver.protocol import validate_output_angle, OUTPUT_POSITION_TOLERANCE_DEG
@@ -51,9 +51,9 @@ def _check_running_feedback(feedback, original, signature, starts, targets, foll
         baseline = original["axes"][str(axis)]
         if [getattr(item, key) for key in _REFERENCE_FIELDS] != signature[index]:
             raise MotorError(f"轴{axis}参考位或反馈计数单位已变化")
-        if (item.fault or item.flags & 16 or item.home_phase not in (0, 7, 8) or
+        if (item.fault or item.home_phase not in (0, 7, 8) or
                 not item.flags & 1):
-            raise MotorError(f"轴{axis}反馈存在故障、参考失效或停止待确认")
+            raise MotorError(f"轴{axis}反馈存在故障、参考失效或回零状态异常")
         if item.flags & 7 != baseline["flags"] & 7:
             raise MotorError(f"轴{axis}参考或保护开关已变化")
         guard = baseline["guard"]
@@ -81,6 +81,8 @@ def _stop_both(motor, evidence, emit, timeout_s):
     errors = []
     for axis in (1, 2):
         try:
+            evidence["lastStopCommand"] = {"axis": axis, "monotonicNs": time.monotonic_ns()}
+            emit("stop_command_sending", axis=axis, best_effort=True)
             motor.stop(axis, wait=False)
         except Exception as exc:
             errors.append(f"轴{axis}停止请求：{exc}")
@@ -134,6 +136,8 @@ def execute_drive_position(motor, *, targets, speed_rpm, reference_signature,
                  "seconds": (time.monotonic_ns() - started_ns) / 1e9, **details}
         evidence["events"].append(event)
         del evidence["events"][:-128]
+        if phase in ("command_sending", "wire_sending"):
+            evidence["lastMotionCommand"] = dict(event)
         if observe:
             try:
                 observe(dict(event))
@@ -178,6 +182,10 @@ def execute_drive_position(motor, *, targets, speed_rpm, reference_signature,
         if initial is None or len(initial) != 2 or any(
                 not 0 <= time.time() - value.get("queryStartedAt", 0) <= 1.0 for value in initial):
             initial = joint_snapshots(motor)
+        evidence["feedback"] = initial[0]
+        initial = wait_ready_snapshots(motor, initial=initial, cancel=cancel,
+            timeout_s=max(0, min(5.0, deadline - time.monotonic())),
+            observe=lambda **details: emit("waiting_for_stop", **details))
         evidence["feedback"] = initial[0]
         configs = [SimpleNamespace(axis=axis, targetAngleDeg=targets[axis - 1]) for axis in (1, 2)]
         for value, config in zip(initial, configs):
@@ -283,10 +291,21 @@ def execute_drive_position(motor, *, targets, speed_rpm, reference_signature,
             # while moving. Include the host transaction in the age budget so
             # a delayed TCP reply cannot make an old control sample look fresh.
             age_ms = [p.sample_age_ms + (pose_ns - query_ns) / 1e6 for p in positions]
+            readings = [{"axis": axis, "targetAngleDeg": targets[axis - 1],
+                         "actualAngleDeg": p.angle_deg, "motorRpm": p.motor_rpm,
+                         "flags": p.flags, "flagsHex": f"0x{p.flags:04X}",
+                         "guardFault": p.guard_fault, "alarmCode": p.alarm_code,
+                         "source": p.source, "sampleAgeMs": p.sample_age_ms,
+                         "conservativeAgeMs": age_ms[axis - 1]}
+                        for axis, p in enumerate(positions, 1)]
+            evidence["lastPositionReadings"] = readings
+            # Record before validation so STOP cleanup cannot replace the first
+            # abnormal observation with a later, apparently healthy sample.
+            emit("position_observed", axes=readings)
             for axis, p in enumerate(positions, 1):
                 if (not p.usable or p.source not in (0, 1) or
                         not 0 <= p.sample_age_ms <= age_ms[axis - 1] <= 1000 or
-                        not p.flags & 1 or p.flags & 16 or
+                        not p.flags & 1 or
                         not math.isfinite(p.angle_deg) or
                         p.alarm_code or p.guard_fault):
                     raise MotorError(f"轴{axis}实测反馈过期、故障或参考无效")
@@ -325,7 +344,7 @@ def execute_drive_position(motor, *, targets, speed_rpm, reference_signature,
             # A cached zero-speed sample is not an independent stop observation.
             # Once the firmware ends the point task it returns direct source 0;
             # only then may the full independent joint check confirm arrival.
-            settled = all(p.source == 0 and p.motor_rpm == 0 and abs(p.angle_deg - target) <= tolerance + 1e-9
+            settled = all(p.source == 0 and p.motor_rpm == 0 and not p.flags & 0x30 and abs(p.angle_deg - target) <= tolerance + 1e-9
                           for p, target in zip(positions, targets))
             if bank:
                 settled = settled and all(age <= 200 and not p.flags & 0x30
@@ -346,6 +365,9 @@ def execute_drive_position(motor, *, targets, speed_rpm, reference_signature,
                 final = (completion_snapshots(initial, positions, queried_at, received_at) if board_complete else
                          joint_snapshots(motor, stopped_positions=positions, positions_observed_ns=query_ns)
                          if callable(getattr(motor, "get_status_from_position", None)) else joint_snapshots(motor))
+                final = wait_ready_snapshots(motor, initial=final, cancel=cancel,
+                    timeout_s=max(0, min(5.0, deadline - time.monotonic())),
+                    observe=lambda **details: emit("waiting_for_stop", **details))
                 for value, config in zip(final, configs):
                     require_position_ready(value, config)
                 if (_reference(final[0]) != signature or any(
@@ -378,6 +400,7 @@ def execute_drive_position(motor, *, targets, speed_rpm, reference_signature,
             check_cancel_timeout()
             time.sleep(_POLL_SECONDS)
     except Exception as exc:
+        evidence["firstAbnormalReadings"] = evidence.get("lastPositionReadings")
         evidence.update(state="error", error=str(exc), actualSeconds=(time.monotonic_ns() - started_ns) / 1e9)
         if evidence["motionCommanded"]:
             evidence["stopConfirmed"] = False

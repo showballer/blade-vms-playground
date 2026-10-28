@@ -83,6 +83,30 @@ class TurntableReferenceTests(unittest.TestCase):
         self.motor.faults[1] = 0; self.motor.pending.clear()
         self.assertEqual(self.call().status_code, 200)
 
+    def test_yaw_reference_loss_pending_can_be_repaired_without_pitch_change_or_motion(self):
+        self.motor.lost = {2}; self.motor.faults = {1: 0, 2: 3}; self.motor.pending = {2}
+        self.motor.limit_flags = 2
+        pitch = self.motor.get_feedback(1)
+        reply = self.call(axis=2, port='tcp://192.168.10.50:5000')
+        self.assertEqual(reply.status_code, 200, reply.text)
+        yaw = reply.json()['turntable']['feedback']['axes']['2']
+        self.assertEqual(yaw['output_angle_deg'], 0)
+        self.assertEqual(yaw['fault'], 0)
+        self.assertFalse(yaw['flags'] & 0x30)
+        self.assertEqual(self.motor.get_feedback(1), pitch)
+        self.assertEqual(self.motor.references, [2])
+        self.assertEqual(self.motor.start_calls, 0)
+
+    def test_positioning_bit_on_either_axis_blocks_capture_even_at_zero_rpm(self):
+        original = self.motor.get_feedback
+        for selected in (1, 2):
+            def feedback(axis):
+                value = original(axis)
+                return replace(value, flags=value.flags | 0x20) if axis == selected else value
+            with patch.object(self.motor, 'get_feedback', side_effect=feedback):
+                self.assertEqual(self.call().status_code, 503)
+        self.assertEqual(self.motor.references, [])
+
     def test_reference_requires_explicit_operator_action(self):
         self.assertEqual(self.call(confirmMotion=False).status_code, 422)
         self.assertEqual(self.motor.references, [])

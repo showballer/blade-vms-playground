@@ -155,12 +155,21 @@ class PreloadedPointsTests(unittest.TestCase):
     def test_stationary_refresh_rejects_cached_moving_faulted_or_stale_feedback(self):
         self.prepare(); initial=self.motor.snapshots()
         positions=self.motor.get_axis_positions()
-        for changed in (dict(source=1), dict(motor_rpm=1), dict(alarm_code=2), dict(guard_fault=3),
-                        dict(sample_age_ms=1001), dict(flags=0x23), dict(flags=0x13),dict(angle_deg=None)):
+        for changed in (dict(source=1), dict(alarm_code=2), dict(guard_fault=3),
+                        dict(sample_age_ms=1001), dict(angle_deg=None)):
             with self.subTest(changed=changed), patch.object(self.motor,'get_axis_positions',
                     return_value=(replace(positions[0],**changed),positions[1])):
                 with self.assertRaisesRegex(Exception, '新鲜停稳反馈'):
                     stopped_bank_snapshots(self.motor,initial)
+        self.assertFalse(self.motor.targets)
+
+    def test_stationary_refresh_defers_transient_motion_to_full_stop_wait(self):
+        self.prepare(); initial = self.motor.snapshots()
+        positions = self.motor.get_axis_positions()
+        for changed in (dict(motor_rpm=1), dict(flags=0x23), dict(flags=0x13)):
+            with self.subTest(changed=changed), patch.object(self.motor, 'get_axis_positions',
+                    return_value=(replace(positions[0], **changed), positions[1])):
+                self.assertIsNone(stopped_bank_snapshots(self.motor, initial))
         self.assertFalse(self.motor.targets)
 
     def test_delayed_healthy_feedback_requires_new_read_without_claiming_drive_fault(self):

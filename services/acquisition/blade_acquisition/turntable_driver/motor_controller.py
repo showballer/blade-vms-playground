@@ -510,16 +510,60 @@ class MotorController:
         self._request(frame)
         return self.get_guard_config(motor_id)
 
+    def _stop_for_reference_capture(self, motor_id: int, *, timeout: float = 10.0) -> None:
+        """Only reference capture may repair fault 3 with a latched STOP_PENDING.
+
+        This does not confirm an ordinary STOP or permit a motion command.
+        Require two stationary drive/board samples, valid units and no alarm,
+        positioning, homing, active limit or other guard fault before writing.
+        """
+        if self._trajectory_session is not None:
+            raise MotorError("请先取消旧轨迹并重新检查，不能直接建立参考")
+        self.stop(motor_id, wait=False)
+        deadline, zero_samples = time.monotonic() + timeout, 0
+        while time.monotonic() < deadline:
+            feedback = self.get_feedback(motor_id)
+            status = self.get_status(motor_id)
+            if (feedback.fault not in (0, 3) or feedback.flags & 0x20 or
+                    feedback.home_phase not in (0, 7, 8) or status.alarm_code or
+                    status.limit_flags not in (None, 0, 2) or
+                    status.limit_flags == 2 and feedback.fault != 3):
+                raise MotorError("参考捕获前仍在定位、回零、报警或保护状态异常，未写入参考")
+            if (feedback.display_mode != 3 or feedback.command_counts_per_rev <= 0 or
+                    not 1 <= feedback.encoder_bits <= 32):
+                raise MotorError("反馈计数单位无效，未写入参考")
+            settled = (feedback.motor_rpm == 0 and status.motor_rpm == 0 and
+                       (not feedback.flags & 0x10 or feedback.fault == 3))
+            zero_samples = zero_samples + 1 if settled else 0
+            trace_event("reference_stop_feedback", axis=motor_id, motorRpm=feedback.motor_rpm,
+                        flags=feedback.flags, guardFault=feedback.fault,
+                        alarmCode=status.alarm_code, limitFlags=status.limit_flags)
+            if zero_samples >= 2:
+                return
+            time.sleep(0.02)
+        raise MotorError("参考捕获前停稳确认超时，未写入参考")
+
+    def _read_captured_reference(self, motor_id: int, expected: float) -> PositionFeedback:
+        feedback = self.get_feedback(motor_id)
+        status = self.get_status(motor_id)
+        if (feedback.output_angle_deg is None or not math.isfinite(feedback.output_angle_deg) or
+                abs(feedback.output_angle_deg - expected) > 0.001 or
+                not feedback.flags & 1 or feedback.flags & 0x30 or feedback.fault or
+                feedback.motor_rpm or feedback.home_phase not in (0, 7, 8) or
+                feedback.display_mode != 3 or feedback.command_counts_per_rev <= 0 or
+                not 1 <= feedback.encoder_bits <= 32 or status.motor_rpm or
+                status.alarm_code or status.limit_flags not in (None, 0)):
+            raise MotorError("参考未通过实际角度、故障及停止状态读回校验，未继续运动")
+        return feedback
+
     def set_current_zero(self, motor_id: int) -> PositionFeedback:
         """人工捕获参考：电机1须位于+25°传感器姿态，电机2为0°；不清编码器数据。"""
         self._axis(motor_id)
-        self.stop(motor_id)
-        self._request(build_request(motor_id,CMD_SET_ZERO,parameter=0x5A52))
-        self._invalidate_trajectory()
-        feedback=self.get_feedback(motor_id)
-        if feedback.output_angle_deg is None:
-            raise MotorError("零点未建立或反馈单位已变化")
-        return feedback
+        with self._lock:
+            self._stop_for_reference_capture(motor_id)
+            self._request(build_request(motor_id,CMD_SET_ZERO,parameter=0x5A52))
+            self._invalidate_trajectory()
+            return self._read_captured_reference(motor_id, 25 if motor_id == 1 else 0)
 
     def set_current_reference(self, motor_id: int, angle_deg: float | None = None) -> PositionFeedback:
         """省略角度保留旧规则：电机1=+25°、电机2=0°；显式角度使用新参考API。"""
@@ -533,7 +577,7 @@ class MotorController:
         frame=build_set_reference(motor_id,angle_deg)
         expected=struct.unpack(">i",frame[7:11])[0]
         with self._lock:
-            self.stop(motor_id)
+            self._stop_for_reference_capture(motor_id)
             try:
                 packet=self._request(frame)
             except CommandRejected as exc:
@@ -545,10 +589,7 @@ class MotorController:
                 self._faulted=True
                 raise CommunicationError("参考应答与请求不符，未继续运动，请核查坐标")
             self._invalidate_trajectory()
-            feedback=self.get_feedback(motor_id)
-            if feedback.output_angle_deg is None or feedback.motor_rpm or abs(feedback.output_angle_deg-expected/1000)>0.001:
-                raise MotorError("参考未通过实际角度读回校验，未继续运动")
-            return feedback
+            return self._read_captured_reference(motor_id, expected / 1000)
 
     def get_current_angle(self, motor_id: int) -> float:
         """读取基于实际编码器的输出角度，保留多圈累计值；无参考/过期则抛异常。"""
@@ -864,7 +905,7 @@ class MotorController:
         return self.read_alarm(motor_id)
 
     def stop(self, motor_id: int, *, wait: bool = True, timeout: float = 10.0) -> None:
-        """发送通信停止；wait=True 时等待连续两次读到零速，不是硬件急停。"""
+        """STOP ACK is receipt only; require two zero-speed, nonpending samples."""
         self._axis(motor_id)
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("停止确认 timeout 必须为正数")
@@ -877,12 +918,21 @@ class MotorController:
             self._port.write(build_request(motor_id, CMD_STOP))
             raise CommunicationError("已尝试发送停止，但串口结果不确定，无法确认停稳")
         self._request(build_request(motor_id, CMD_STOP))
+        trace_event("axis_stop_command", axis=motor_id, wait=wait)
         if not wait:
             return
         deadline, zero_samples = time.monotonic() + timeout, 0
         while time.monotonic() < deadline:
-            rpm, _ = self._speed(motor_id)
-            zero_samples = zero_samples + 1 if rpm == 0 else 0
+            feedback = self.get_feedback(motor_id)
+            trace_event("axis_stop_feedback", axis=motor_id,
+                        actualAngleDeg=feedback.output_angle_deg, motorRpm=feedback.motor_rpm,
+                        flags=feedback.flags, flagsHex=f"0x{feedback.flags:04X}",
+                        guardFault=feedback.fault, homePhase=feedback.home_phase)
+            # Latched faults remain visible and block subsequent motion, but do
+            # not mean a stopped motor is still moving. Never clear them here.
+            settled = (feedback.motor_rpm == 0 and not feedback.flags & 0x30 and
+                       feedback.home_phase in (0, 7, 8))
+            zero_samples = zero_samples + 1 if settled else 0
             if zero_samples >= 2:
                 return
             time.sleep(0.02)

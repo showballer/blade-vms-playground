@@ -13,6 +13,7 @@ import { FieldTurntableHealth } from "./field-turntable-health";
 import { isTurntablePort, readSavedTurntableConnection, turntableConnectionKey } from "./field-turntable-port";
 import { FieldAnalysis } from "./field-analysis";
 import { WebBladePasses } from "./web-blade-passes";
+import { DesktopBladeTemplateComparison, DesktopBladeTemplateSelector } from "./desktop-blade-modal";
 import type { BladePassRecording, BladePassResult } from "./web-blade-passes-data";
 import { FieldAcquisition, FieldCaptureStatusTags } from "./field-acquisition";
 import { FieldTurntableWorkspace, autoFollowCollection, autoFollowCollectionContext } from "./field-auto-follow";
@@ -537,14 +538,16 @@ export function FieldDesktopApp() {
               : <span className={`field-badge ${status?.state === "acquiring" ? "green" : status?.state === "error" ? "red" : ""}`}><span className="field-status-dot" />{status ? stateLabels[status.state] : "读取状态中"}</span>}</div>
           </div>
           {(error || pollError) && <div className="field-error field-global-message" role="alert"><AlertTriangle size={17} /><span>{error || pollError}</span></div>}
-          {captureError && captureError !== error && captureError !== pollError && <div className="field-error field-global-message" role="alert"><AlertTriangle size={17} /><span>上次采集异常：{captureError}。请检查设备状态与点位配置后重新开始。</span></div>}
+          {captureError && captureError !== error && captureError !== pollError && <div className="field-error field-global-message" role="alert"><AlertTriangle size={17} /><span>上次采集异常：{captureError}。此为上次任务记录；当前设备状态请在“转盘状态”中重新检查，确认后重新开始。</span></div>}
           {busy === "export" && <div className="field-notice field-global-message" role="status"><LoaderCircle size={17} className="spin" />正在导出完整原始波形，大记录需要一些时间，请等待保存完成。</div>}
           {notice && screen !== "acquisition" && <div className="field-success field-global-message" role="status"><Check size={17} /><span>{notice}</span></div>}
           {status?.deviceWarning && <p className="field-notice warning" role="alert">{status.deviceWarning}</p>}
           {busy === "device" && <p className="field-notice warning">设备配置操作进行中，请等待结果。自动聚焦涉及激光，请留意现场状态。</p>}
           {status?.indexWarning && <div className="field-notice warning field-global-message" role="status"><AlertTriangle size={17} /><span>本机索引提示：{status.indexWarning}</span></div>}
           {screen === "analysis" && <FieldAnalysis request={fieldCall} onError={handleError} />}
-          {screen === "blade-passes" && <WebBladePasses canAnalyze refreshKey={0} preferredIds={[]} onError={handleError} localData={localBladeData} />}
+          {screen === "blade-passes" && <WebBladePasses canAnalyze refreshKey={0} preferredIds={[]} onError={handleError} localData={localBladeData}
+            desktopTemplateSelector={<DesktopBladeTemplateSelector value="customer-2026.7" />}
+            renderTemplateComparison={synthesis => <DesktopBladeTemplateComparison synthesis={synthesis} templateId="客户模态重构 · 2026.7" />} />}
           <div hidden={screen !== "turntable"}>{turntableVisited && <FieldTurntableWorkspace connectionPort={turntableConnection || undefined} pollUnavailable={statusPollUnavailable} visible={screen === "turntable"} onPortChange={setTurntablePort} onOperationBusy={setTurntableOperationBusy} config={config} onConfig={setConfig} status={status} disabled={Boolean(busy)} request={fieldCall} onStatus={setStatus} onService={() => setScreen("service")} onRecords={() => { setScreen("recordings"); void operate("recordings", refreshRecordings); }}
             routeMode={routeMode} onRouteMode={setRouteMode} autoTargetKey={autoTargetKey} onAutoTarget={setAutoTargetKey} onRoute={onRoute} positionedStation={positionedStation} onPositionTarget={(key, angle) => requestPresetPosition(key, angle, true)} onAcquisition={() => { setLinkEnabled(true); setScreen("acquisition"); }} />}</div>
           {screen === "acquisition" && <FieldAcquisition source="device" config={config} onConfig={setConfig} status={status} busy={busy} pollError={pollError} stopping={stoppingCapture} positionStopping={presetStopping} onCancelPosition={cancelPresetPosition}

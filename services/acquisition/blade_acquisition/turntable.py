@@ -17,6 +17,7 @@ from .turntable_driver import MotorController, MotorError
 from .turntable_driver.motor_controller import TrajectoryAxisObservation
 from .turntable_driver.protocol import validate_output_angle, OUTPUT_POSITION_TOLERANCE_DEG
 from .turntable_driver.trajectory import TrajectoryPoint
+from .turntable_driver.timing import trace_event
 
 
 class TurntableConfig(BaseModel):
@@ -643,8 +644,61 @@ def require_ready(value):
     for axis in value["axes"].values():
         if axis["motor_rpm"] != 0 or axis["home_phase"] not in (0, 7, 8):
             raise MotorError("两轴必须停稳，且不能正在回零")
-        if axis["fault"] or axis["flags"] & 16:
-            raise MotorError("轴反馈存在故障或停止待确认")
+        if axis["fault"]:
+            raise MotorError(f"轴反馈存在故障（故障码 {axis['fault']}，标志 0x{axis['flags']:04X}）")
+        if axis["flags"] & 0x30:
+            raise MotorError("轴仍在定位运动中或停止待确认")
+
+
+def wait_ready_snapshots(motor, *, initial=None, cancel=None, timeout_s=5.0, observe=None):
+    """Read-only handoff: transient busy flags are not faults or permission to move.
+
+    Keep hard alarms/limits/reference checks in require_ready and the caller's
+    position preflight. Once waiting begins, require two independent clear pairs.
+    Never send STOP, reset, retry a motion or extend the caller's timeout.
+    """
+    deadline = time.monotonic() + timeout_s
+    pair, waiting, clear_samples = initial, False, 0
+    while True:
+        if cancel is not None and cancel.is_set():
+            raise MotorError("等待两轴停稳已取消，未发送后续运动")
+        if pair is None:
+            pair = joint_snapshots(motor)
+        trace_event("axes_preflight_observed", snapshots=pair)
+        pending = False
+        for value in pair:
+            # Only STOP_PENDING in the drive limit namespace is transient.
+            if value["alarmCode"] or value["limitFlags"] not in (None, 0, 2):
+                require_ready(value)
+            for axis, item in value["axes"].items():
+                if item["fault"] or item["home_phase"] not in (0, 7, 8):
+                    raise MotorError(f"轴{axis}反馈存在故障或正在回零（故障码 {item['fault']}，"
+                                     f"标志 0x{item['flags']:04X}）")
+                if (not item["flags"] & 1 or item["output_angle_deg"] is None or
+                        not math.isfinite(item["output_angle_deg"])):
+                    raise MotorError(f"轴{axis}参考失效或实际角度无效，不能等待后继续定位")
+                pending |= bool(item["motor_rpm"] or item["flags"] & 0x30)
+            pending |= value["motorRpm"] != 0 or value["limitFlags"] == 2
+        if not pending:
+            for value in pair:
+                require_ready(value)
+            clear_samples += 1
+            if not waiting or clear_samples >= 2:
+                if cancel is not None and cancel.is_set():
+                    raise MotorError("等待两轴停稳已取消，未发送后续运动")
+                if waiting and time.monotonic() >= deadline:
+                    raise MotorError("两轴停稳等待超时，未发送后续运动")
+                return pair
+        else:
+            waiting, clear_samples = True, 0
+        details = {"feedback": pair[0], "waiting": pending}
+        trace_event("axes_waiting_for_stop", **details)
+        if observe is not None:
+            observe(**details)
+        if time.monotonic() >= deadline:
+            raise MotorError("两轴停稳等待超时（定位运动中或停止待确认），未发送后续运动")
+        time.sleep(.02)
+        pair = None
 
 
 def _require_position_bounds(value, config):
@@ -698,7 +752,7 @@ def require_manual_axis_ready(value, config):
     if value["limitFlags"] not in (None, 0):
         raise MotorError("当前轴限位触发、停止未确认或保护状态异常")
     axis = value["axes"][str(config.axis)]
-    if axis["motor_rpm"] != 0 or axis["fault"] or axis["flags"] & 16 or axis["home_phase"] not in (0, 7, 8):
+    if axis["motor_rpm"] != 0 or axis["fault"] or axis["flags"] & 0x30 or axis["home_phase"] not in (0, 7, 8):
         raise MotorError(f"轴{config.axis}反馈仍在运动、回零或存在故障")
 
 
@@ -718,7 +772,7 @@ def require_reference_capture_ready(value, config):
     if flags not in (None, 0) and not (flags == 2 and selected["fault"] == 3):
         raise MotorError("当前轴限位触发或保护状态异常，不能建立参考")
     for axis in value["axes"].values():
-        if axis["motor_rpm"] != 0 or axis["home_phase"] not in (0, 7, 8):
+        if axis["motor_rpm"] != 0 or axis["flags"] & 0x20 or axis["home_phase"] not in (0, 7, 8):
             raise MotorError("两轴必须停稳且不能正在回零，才能建立参考")
     if selected["fault"] not in (0, 3):
         raise MotorError(f"轴{config.axis}故障码 {selected['fault']}，请先排除原因，不能用参考标定清除")
@@ -755,7 +809,7 @@ def require_stop_confirmed(value, config):
     if value["limitFlags"] is not None and value["limitFlags"] & 2:
         raise MotorError(f"轴{config.axis}仍报告停止待确认（限位标志={value['limitFlags']}）")
     axis = value["axes"][str(config.axis)]
-    if axis["motor_rpm"] != 0 or axis["flags"] & 16 or axis["home_phase"] not in (0, 7, 8):
+    if axis["motor_rpm"] != 0 or axis["flags"] & 0x30 or axis["home_phase"] not in (0, 7, 8):
         raise MotorError(f"轴{config.axis}停止未确认：速度={axis['motor_rpm']} rpm，"
                          f"故障码={axis['fault']}，反馈标志=0x{axis['flags']:04X}，回零阶段={axis['home_phase']}")
     # A latched protection fault/alarm does not mean the motor is still moving.
@@ -765,6 +819,8 @@ def require_stop_confirmed(value, config):
 def position_reached(value, config):
     axis = value["axes"][str(config.axis)]
     return (axis["output_angle_deg"] is not None and axis["motor_rpm"] == 0 and
+            not axis["flags"] & 0x30 and not axis["fault"] and
+            value.get("limitFlags") in (None, 0) and not value.get("alarmCode", 0) and
             abs(axis["output_angle_deg"] - config.targetAngleDeg) <= OUTPUT_POSITION_TOLERANCE_DEG + 1e-9)
 
 
@@ -773,7 +829,8 @@ def check_position_motion(value, config, *, allow_other_axis_motion: bool = Fals
     other = value["axes"][str(3 - config.axis)]
     limit = 35 if config.axis == 1 else 180
     if (axis["output_angle_deg"] is None or abs(axis["output_angle_deg"]) > limit or
-            axis["fault"] or axis["flags"] & 16 or axis["home_phase"] not in (0, 7, 8) or
+            axis["fault"] or axis["home_phase"] not in (0, 7, 8) or
+            value["alarmCode"] or value["limitFlags"] not in (None, 0, 2) or
             (not allow_other_axis_motion and (other["motor_rpm"] != 0 or other["flags"] & 16 or
                                                other["fault"] or other["home_phase"] not in (0, 7, 8)))):
         raise MotorError("定位反馈无效、超界、故障或另一轴意外运动，已结束当前动作")
@@ -848,7 +905,8 @@ class ManualPositionProgress:
 
     def check(self, value, config):
         axis = value["axes"][str(self.axis)]
-        if axis["output_angle_deg"] is None or axis["fault"] or axis["flags"] & 16 or axis["home_phase"] not in (0, 7, 8):
+        if (axis["output_angle_deg"] is None or axis["fault"] or axis["home_phase"] not in (0, 7, 8) or
+                value["alarmCode"] or value["limitFlags"] not in (None, 0, 2)):
             raise MotorError(f"轴{self.axis}定位反馈无效或存在故障")
         _require_position_bounds(value, config)
         if reference_key(value)[str(self.axis)] != self.reference:

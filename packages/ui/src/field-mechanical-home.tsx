@@ -24,8 +24,21 @@ export function FieldMechanicalHome({ port, status, disabled, request, onStatus,
   const speedValid = speed.trim() !== "" && Number.isFinite(Number(speed)) && Number(speed) >= .2 && Number(speed) <= 1.5;
   const blocked = unavailable || pending || !!status?.turntableBusy || !speedValid;
   const yaw = turntable?.feedback?.axes?.["2"];
-  const referenceBlocked = unavailable || pending || !!status?.turntableBusy || !yaw || yaw.motor_rpm !== 0 ||
-    !!(yaw.flags & 16) || ![0, 3].includes(yaw.fault) || ![0, 7, 8].includes(yaw.home_phase);
+  const yawDrive = turntable?.health?.axes?.["2"];
+  const yawAlarm = yawDrive?.alarmCode ?? (turntable?.axis === 2 ? turntable.feedback?.alarmCode : undefined);
+  const yawLimits = yawDrive?.limitFlags ?? (turntable?.axis === 2 ? turntable.feedback?.limitFlags : undefined);
+  const referenceReason = status?.service.state !== "ready" ? "采集服务未就绪" :
+    !isTurntablePort(port) ? "请先配置转盘连接" :
+    disabled || pending || status?.turntableBusy || status?.deviceBusy || fieldIsActive(status) ? "正在执行操作，请结束后重新检查转盘" :
+    !yaw ? "尚未读到轴2反馈，请先检查转盘" :
+    Object.values(turntable?.feedback?.axes ?? {}).some(axis => axis.motor_rpm !== 0 || !!(axis.flags & 0x20) || ![0, 7, 8].includes(axis.home_phase)) ? "两轴须停止定位、回零并停稳，请重新检查转盘" :
+    ![0, 3].includes(yaw.fault) ? `轴2故障码 ${yaw.fault}，请先排除故障` :
+    yaw.flags & 0x10 && yaw.fault !== 3 ? "轴2停止尚未确认，请先停止并重新检查转盘" :
+    yawAlarm ? `轴2驱动器报警 ${yawAlarm}，请先排除报警` :
+    yawLimits != null && yawLimits !== 0 && !(yawLimits === 2 && yaw.fault === 3) ? "轴2限位或保护状态异常，请先排除原因" :
+    yaw.display_mode !== 3 || !(yaw.command_counts_per_rev > 0) || !(yaw.encoder_bits >= 1 && yaw.encoder_bits <= 32) ? "轴2反馈计数单位无效，请核对驱动器配置" :
+    [1, 2, 3, 4, 5].includes(Number(turntable?.motionCapability?.status?.state)) ? "存在待执行或运行中的轨迹，请先取消轨迹并重新检查" : "";
+  const referenceBlocked = !!referenceReason;
   const clearReferenceBlocked = unavailable || pending || !fieldCanRequestTurntableRecovery(status, port);
   async function run(action: FieldTurntableHomingAction | "stop" | "reference" | "clear_axis1_reference") {
     if (inFlight.current || (action === "stop" ? unavailable || !running : action === "reference" ? referenceBlocked : action === "clear_axis1_reference" ? clearReferenceBlocked : blocked)) return;
@@ -47,7 +60,7 @@ export function FieldMechanicalHome({ port, status, disabled, request, onStatus,
       }
       if (action === "reference") {
         const actual = next.turntable?.feedback?.axes?.["2"];
-        if (!actual || !(actual.flags & 1) || actual.flags & 16 || actual.fault || actual.motor_rpm ||
+        if (!actual || !(actual.flags & 1) || actual.flags & 0x30 || actual.fault || actual.motor_rpm ||
             actual.output_angle_deg == null || !Number.isFinite(actual.output_angle_deg) || Math.abs(actual.output_angle_deg) > .05)
           throw new Error("水平轴零点尚未读回确认，请重新检查");
         setNotice("水平轴当前位置已设为设备0°，未执行旋转。原作业零点和点位将按新参考重新核验。");
@@ -80,10 +93,14 @@ export function FieldMechanicalHome({ port, status, disabled, request, onStatus,
     </div>
     <div className="field-work-origin-row"><div className="field-work-origin-actions">
       <strong>水平轴参考</strong>
-      <Button type="button" variant="outline" disabled={referenceBlocked} title="将当前左右朝向确认为水平轴设备0°；不移动转盘，也不修改俯仰轴参考" onClick={() => void run("reference")}>
+      <Button type="button" variant="outline" disabled={referenceBlocked} title={referenceReason || "将当前左右朝向确认为水平轴设备0°；不移动转盘，也不修改俯仰轴参考"} onClick={() => void run("reference")}>
         <Crosshair size={15} />确认水平轴为 0°</Button>
       <span className="field-subtext">角度 {angle(yaw?.output_angle_deg)} · 只设参考，不转动</span>
     </div></div>
+    {referenceReason && <p className="field-subtext">水平轴参考暂不可设置：{referenceReason}。</p>}
+    {yaw && <p className="field-subtext">轴2故障码 {yaw.fault} · 反馈标志 0x{yaw.flags.toString(16).toUpperCase().padStart(4, "0")}</p>}
+    {yaw && (!(yaw.flags & 1) || yaw.output_angle_deg == null || yaw.fault === 3) &&
+      <p className="field-subtext">轴2参考无效。请先检查转盘，人工确认当前左右朝向就是设备0°，再点击“确认水平轴为 0°”；保存的作业原点不能替代设备参考。</p>}
     <p className="field-subtext">机械回零向上寻找 +35° 限位；回水平 0° 后对准风机中线，再用“设置归零”建立作业原点。</p>
     <p className="field-subtext">清除俯仰轴参考用于重新建立设备角度，之后须机械回零；日常采集无需清除。</p>
     {homing && <p className="field-subtext">设备坐标：俯仰 {angle(turntable?.feedback?.axes?.["1"]?.output_angle_deg)} · 水平 {angle(turntable?.feedback?.axes?.["2"]?.output_angle_deg)}</p>}

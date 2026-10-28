@@ -1,11 +1,16 @@
-import { fieldDate, type FieldAutomaticRecord, type FieldRecording } from "./field-types";
+import type { FieldRecording } from "./field-types";
+import { summarizeBladeRecords, type BladeRecordGroup, type BladeCollectionSummary, type BladeTaskSummary } from "./field-blade-summary-data";
 
-export type BladePassRecording = FieldRecording & { sourceMetadata?: { pointCycle?: FieldAutomaticRecord; windFarm?: string; turbine?: string; object?: string } };
+export type BladePassRecording = FieldRecording & { sourceMetadata?: { pointCycle?: FieldRecording["pointCycle"]; windFarm?: string; turbine?: string; object?: string } };
 export type BladePassTaskIdentity = { collectionId: string; bladeId: string; windFarm: string; turbine: string; object: string };
 export type BladePassCompositionTask = BladePassTaskIdentity & { recordingIds: string[] };
-export type BladePassTask = BladePassTaskIdentity & { key: string; name: string; records: BladePassRecording[] };
+export type BladePassTask = BladePassTaskIdentity & { key: string; name: string; records: BladePassRecording[];
+  summary: BladeCollectionSummary; collection: BladeTaskSummary };
 export type BladePassAngleGroup = { key: string; azimuthDeg: number | null; records: BladePassRecording[] };
-export type BladePassPointGroup = { id: string; name: string; radius: number | undefined; records: BladePassRecording[]; angles: BladePassAngleGroup[] };
+export type BladePassPointGroup = { id: string; name: string; radius: number | undefined; records: BladePassRecording[];
+  angles: BladePassAngleGroup[]; groups: BladeRecordGroup[] };
+export type BladePassGroupSelection = Record<string, string>;
+export const bladePassPointKey = (task: BladePassTask, pointId: string) => JSON.stringify([task.key, pointId]);
 export type BladePassMetrics = { rmsVelocityMps: number; peakVelocityMps: number; peakToPeakVelocityMps: number };
 export type BladePassSegment = {
   start: number; end: number; samples: number; sourceSamples?: number; durationSeconds: number; metrics: BladePassMetrics;
@@ -100,25 +105,25 @@ export function bladePassUnavailableReason(record: BladePassRecording): string |
   if (typeof metadata.collectionId !== "string" || metadata.collectionId.length !== 32 || !/^[a-f0-9]{32}$/.test(metadata.collectionId)) return "缺少有效任务归属";
   if (typeof metadata.bladeId !== "string" || !metadata.bladeId.trim()) return "缺少叶片编号";
   if (typeof metadata.radialPointId !== "string" || !metadata.radialPointId.trim()) return "缺少径向测点编号";
+  if (typeof metadata.sessionId !== "string" || !/^[a-f0-9]{32}$/.test(metadata.sessionId) || typeof metadata.pointId !== "string" || !metadata.pointId.trim() ||
+      ![metadata.lapIndex, metadata.stationIndex, metadata.stationCount, metadata.cycles].every(value => Number.isInteger(value) && Number(value) > 0) ||
+      Number(metadata.cycles) > 100 || Number(metadata.lapIndex) > Number(metadata.cycles) || Number(metadata.stationIndex) > 200 || Number(metadata.stationCount) > 200)
+    return "缺少有效批次、轮次或圆周点位信息";
   return null;
 }
 
-/** Group by stable task, operator-assigned blade and turbine/object scope. */
+/** Use the acquisition summary hierarchy, including failed and planned observations. */
 export function bladePassTasks(records: readonly BladePassRecording[]): BladePassTask[] {
-  const tasks = new Map<string, BladePassTask>();
-  const seen = new Set<string>();
-  for (const record of records) {
-    const metadata = bladePassMetadata(record);
-    if (seen.has(record.id) || !metadata || bladePassUnavailableReason(record)) continue;
-    seen.add(record.id);
-    const { collectionId, bladeId, radialPointId } = metadata;
-    if (!collectionId || collectionId.length !== 32 || !/^[a-f0-9]{32}$/.test(collectionId) || !bladeId?.trim() || !radialPointId?.trim()) continue;
-    const identity = bladePassTaskIdentity(record), key = bladePassTaskKey(identity);
-    const existing = tasks.get(key);
-    if (existing) existing.records.push(record);
-    else tasks.set(key, { key, ...identity, name: record.name, records: [record] });
-  }
-  return [...tasks.values()];
+  const normalized = records.map(record => ({ ...record, pointCycle: bladePassMetadata(record),
+    windFarm: identityText(record.windFarm ?? record.sourceMetadata?.windFarm),
+    turbine: identityText(record.turbine ?? record.sourceMetadata?.turbine),
+    object: identityText(record.object ?? record.sourceMetadata?.object) }));
+  return summarizeBladeRecords(normalized).tasks.flatMap(collection => collection.blades.map(summary => {
+    const identity = { collectionId: collection.collectionId ?? "", bladeId: summary.bladeId,
+      windFarm: collection.windFarm, turbine: collection.turbine, object: collection.measurementObject };
+    return { ...identity, key: collection.collectionId ? bladePassTaskKey(identity) : summary.key, name: collection.taskName, summary, collection,
+      records: summary.groups.flatMap(group => group.stations.flatMap(station => station.records)) };
+  }));
 }
 
 export function preferredBladePassTask(tasks: readonly BladePassTask[], preferredIds: readonly string[], currentKey?: string) {
@@ -132,7 +137,7 @@ export function preferredBladePassTask(tasks: readonly BladePassTask[], preferre
 export function preferredBladePassTasks(tasks: readonly BladePassTask[], preferredIds: readonly string[], currentKeys: readonly string[] = []) {
   const preferred = new Set(preferredIds);
   const found = tasks.filter(task => task.records.some(record => preferred.has(record.id)));
-  if (found.length) return found;
+  if (found.length) return found.filter((task, index) => found.findIndex(item => item.collection.key === task.collection.key) === index);
   const current = tasks.filter(task => currentKeys.includes(task.key));
   return current.length ? current : tasks.slice(0, 1);
 }
@@ -141,17 +146,22 @@ export function preferredBladePassTasks(tasks: readonly BladePassTask[], preferr
 export function selectedBladePassRecords(task: BladePassTask | undefined, ids: readonly string[]) {
   const selected = new Set(ids);
   return (task?.records ?? []).filter(record => selected.has(record.id) &&
-    bladePassTaskKey(bladePassTaskIdentity(record)) === task?.key).slice(0, BLADE_PASS_RECORD_LIMIT);
+    !bladePassUnavailableReason(record) && bladePassTaskKey(bladePassTaskIdentity(record)) === task?.key).slice(0, BLADE_PASS_RECORD_LIMIT);
 }
 
-/** Prefer the latest confirmed pass at every angle, round-robin across points.
- * This prevents repeated passes at P1 from consuming every slot before P2. */
-export function defaultBladePassSelection(task: BladePassTask | undefined): string[] {
-  const queues = bladePassPointGroups(task).map(point => point.angles.flatMap(angle => {
-    const candidates = angle.records.filter(record => bladePassMetadata(record)?.completion === "confirmed_pass").sort((a, b) =>
-      (fieldDate(b.startedAt)?.getTime() ?? 0) - (fieldDate(a.startedAt)?.getTime() ?? 0) || a.id.localeCompare(b.id));
-    return candidates[0] ? [candidates[0].id] : [];
-  }));
+export function activeBladePassGroup(task: BladePassTask, point: BladePassPointGroup, groups: BladePassGroupSelection = {}) {
+  return point.groups.find(group => group.key === groups[bladePassPointKey(task, point.id)]) ?? point.groups[0];
+}
+export function defaultBladePassGroupSelection(group: BladeRecordGroup): string[] {
+  if (group.planConflict) return [];
+  return group.stations.flatMap(station => {
+    const latest = station.records[0];
+    return latest && station.state === "observed" && !bladePassUnavailableReason(latest) ? [latest.id] : [];
+  });
+}
+/** Use only the active observation group, never fill gaps from older runs. */
+export function defaultBladePassSelection(task: BladePassTask | undefined, groups: BladePassGroupSelection = {}): string[] {
+  const queues = task ? bladePassPointGroups(task).map(point => defaultBladePassGroupSelection(activeBladePassGroup(task, point, groups))) : [];
   const selected: string[] = [];
   for (let round = 0; queues.some(queue => round < queue.length) && selected.length < BLADE_PASS_RECORD_LIMIT; round++) {
     for (const queue of queues) if (queue[round] && selected.length < BLADE_PASS_RECORD_LIMIT) selected.push(queue[round]);
@@ -163,7 +173,7 @@ export function defaultBladePassSelection(task: BladePassTask | undefined): stri
 export function bladePassAnalysisJobs(tasks: readonly BladePassTask[], taskKeys: readonly string[], selected: readonly string[]) {
   const keys = new Set(taskKeys), ids = new Set(selected);
   return tasks.filter(task => keys.has(task.key)).flatMap(task => {
-    const matching = task.records.filter(record => ids.has(record.id) && bladePassTaskKey(bladePassTaskIdentity(record)) === task.key);
+    const matching = task.records.filter(record => ids.has(record.id) && !bladePassUnavailableReason(record) && bladePassTaskKey(bladePassTaskIdentity(record)) === task.key);
     if (matching.length > BLADE_PASS_RECORD_LIMIT) throw new Error(`任务 ${task.name} 最多选择 ${BLADE_PASS_RECORD_LIMIT} 条记录，请减少该任务的选择。`);
     return matching.length ? [{ task, records: matching,
       identity: { collectionId: task.collectionId, bladeId: task.bladeId, windFarm: task.windFarm, turbine: task.turbine,
@@ -193,19 +203,18 @@ export function bladePassCompositionError(jobs: ReturnType<typeof bladePassAnaly
   return null;
 }
 
-/** Build the two selection levels used by the segmented workflow. Identity is
- * explicit: angle groups never join records from another radial point. */
+/** Points and observation groups have exactly the same order and coverage as the archive. */
 export function bladePassPointGroups(task: BladePassTask | undefined): BladePassPointGroup[] {
   const points = new Map<string, BladePassPointGroup>();
-  for (const record of task?.records ?? []) {
-    const metadata = bladePassMetadata(record);
-    if (!metadata?.radialPointId) continue;
-    const point = points.get(metadata.radialPointId) ?? { id: metadata.radialPointId, name: metadata.radialPointName || metadata.radialPointId,
-      radius: metadata.radiusM, records: [], angles: [] };
-    point.records.push(record);
-    points.set(metadata.radialPointId, point);
+  for (const group of task?.summary.groups ?? []) {
+    const point = points.get(group.radialPointId) ?? { id: group.radialPointId, name: group.radialPointName,
+      radius: group.radiusM ?? undefined, records: [], angles: [], groups: [] };
+    point.groups.push(group);
+    point.records.push(...group.stations.flatMap(station => station.records));
+    points.set(point.id, point);
   }
   for (const point of points.values()) {
+    point.groups.sort((a, b) => b.latestAt - a.latestAt || a.key.localeCompare(b.key));
     const angles = new Map<string, BladePassAngleGroup>();
     for (const record of point.records) {
       const angle = bladePassMetadata(record)?.azimuthDeg;
@@ -215,7 +224,7 @@ export function bladePassPointGroups(task: BladePassTask | undefined): BladePass
     }
     point.angles = [...angles.values()].sort((a, b) => (a.azimuthDeg ?? Infinity) - (b.azimuthDeg ?? Infinity));
   }
-  return [...points.values()].sort((a, b) => (a.radius ?? Infinity) - (b.radius ?? Infinity) || a.id.localeCompare(b.id));
+  return [...points.values()].sort((a, b) => a.name.localeCompare(b.name, "zh-CN", { numeric: true }));
 }
 
 export function bladePassWaveSeries(source: BladePassSource) {

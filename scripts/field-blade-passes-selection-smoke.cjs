@@ -26,11 +26,25 @@ const tasks=[['a'.repeat(32),'任务甲'],['b'.repeat(32),'任务乙']];
 let sequence=0;
 const recordings=tasks.flatMap(([collectionId,name], taskIndex)=>['P1','P2'].map((point,index)=>{
   sequence++;
-  return {id:String(sequence).padStart(32,'0'),name,samples:1000,sampleRate:1000,startedAt:1700000000000+sequence,status:'complete',
+  return {id:String(sequence).padStart(32,'0'),name,samples:1000,sampleRate:1000,startedAt:1700000000+sequence,endedAt:1700000001+sequence,status:'complete',source:'polytec_ivs500',
     windFarm:'风场 A',turbine:'机组 1',object:'叶片',pointCycle:{mode:'automatic_stations',collectionId,
-      sessionId:String(sequence).padStart(32,'0'),bladeId:'2',radialPointId:point,radialPointName:point,
+      sessionId:String(sequence).padStart(32,'0'),pointId:point+'-station',cycles:1,bladeId:'2',radialPointId:point,radialPointName:point,
       radiusM:index===0?.31:.5,azimuthDeg:taskIndex*90,stationIndex:taskIndex+1,stationCount:2,lapIndex:1,completion:'confirmed_pass'}};
 }));
+for (const record of recordings) {
+  const meta=record.pointCycle;
+  meta.stationCount=4; meta.pointId=meta.radialPointId+'-'+meta.azimuthDeg;
+  meta.plannedStations=[0,90,180,270].map((azimuthDeg,index)=>({pointId:meta.radialPointId+'-'+azimuthDeg,
+    bladeId:meta.bladeId,radialPointId:meta.radialPointId,radialPointName:meta.radialPointName,
+    radiusM:meta.radiusM,azimuthDeg,stationIndex:index+1,stationCount:4}));
+}
+// A second blade and an older observation group share task A without becoming
+// extra task cards or leaking records into the current analysis selection.
+const older={...recordings[0],id:'c'.repeat(32),startedAt:1699999900,endedAt:1699999901,
+  pointCycle:{...recordings[0].pointCycle,sessionId:'c'.repeat(32),pointId:'P1-180',stationIndex:3,azimuthDeg:180}};
+const otherBlade={...recordings[0],id:'d'.repeat(32),startedAt:1699999800,endedAt:1699999801,
+  pointCycle:{...recordings[0].pointCycle,sessionId:'d'.repeat(32),bladeId:'3',plannedStations:recordings[0].pointCycle.plannedStations.map(station=>({...station,bladeId:'3'}))}};
+recordings.push(older,otherBlade);
 window.__bladePassFixture={analysis:null,errors:[]};
 window.__bladePassFixture.charts=()=>[...document.querySelectorAll('[role=img]')].map(element=>({label:element.getAttribute('aria-label'),option:echarts.getInstanceByDom(element)?.getOption()}));
 const localData={listRecordings:async()=>({recordings}),analyze:async parameters=>{
@@ -102,7 +116,7 @@ app.whenReady().then(async () => {
     await win.loadFile(path.join(temp, 'index.html'));
     await waitFor('document.querySelectorAll(".blade-task-options > label").length===2');
 
-    await run(`(()=>{const e=[...document.querySelectorAll('.blade-task-options input')].find(x=>x.getAttribute('aria-label').includes('任务乙'));if(!e)throw Error('Second task checkbox missing');e.click()})()`);
+    await run(`(()=>{const e=[...document.querySelectorAll('.blade-task-options input')].find(x=>!x.checked);if(!e)throw Error('Second task checkbox missing');e.click()})()`);
     await waitFor('document.querySelectorAll(".blade-task-workspace").length===2');
     assert.equal(await run('document.querySelectorAll(".blade-task-workspace").length'), 2);
     assert.equal(await run('document.querySelector(".blade-pass-selection").innerText.includes("4 / 64")'), true);
@@ -113,11 +127,43 @@ app.whenReady().then(async () => {
     await run(`(()=>document.querySelectorAll('.blade-task-workspace')[0].querySelector('input[aria-label="选择测点 P2"]').click())()`);
     await waitFor('document.querySelector(".blade-pass-selection").innerText.includes("4 / 64")');
 
+    // Scope changes must replace source IDs, while the other selected task stays intact.
+    await run(`(()=>{const workspace=[...document.querySelectorAll('.blade-task-workspace')].find(e=>e.textContent.includes('任务甲'));workspace.querySelectorAll('[role=tab]')[1].click()})()`);
+    await waitFor('document.querySelector(".blade-pass-selection").innerText.includes("3 / 64")');
+    assert.equal(await run(`document.querySelector('input[aria-label="选择记录 ${'d'.repeat(32)}"]')!==null`), true);
+    await run(`(()=>{const workspace=[...document.querySelectorAll('.blade-task-workspace')].find(e=>e.textContent.includes('任务甲'));workspace.querySelectorAll('[role=tab]')[0].click()})()`);
+    await waitFor('document.querySelector(".blade-pass-selection").innerText.includes("4 / 64")');
+    // Open the task A point's own dropdown; task B's similarly named point is independent.
+    await run(`(()=>{const workspace=[...document.querySelectorAll('.blade-task-workspace')].find(e=>e.textContent.includes('任务甲'));workspace.querySelector('[role=combobox][aria-label="P1 观测组"]').click()})()`);
+    await waitFor('!!document.querySelector("[role=listbox]")');
+    await run(`(()=>{const options=[...document.querySelectorAll('[role=option]')];if(options.length!==2)throw Error('Missing history group');options[1].click()})()`);
+    await waitFor(`document.querySelector('input[aria-label="选择记录 ${'c'.repeat(32)}"]')!==null`);
+    assert.equal(await run(`document.querySelector('input[aria-label="选择记录 ${'c'.repeat(32)}"]').checked`), true);
+    assert.equal(await run(`document.querySelector('input[aria-label="选择记录 ${'00000000000000000000000000000001'}"]')===null`), true);
+    await run(`(()=>{const workspace=[...document.querySelectorAll('.blade-task-workspace')].find(e=>e.textContent.includes('任务甲'));workspace.querySelector('[role=combobox][aria-label="P1 观测组"]').click()})()`);
+    await waitFor('!!document.querySelector("[role=listbox]")');
+    await run(`document.querySelectorAll('[role=option]')[0].click()`);
+    await waitFor(`document.querySelector('input[aria-label="选择记录 ${'00000000000000000000000000000001'}"]')!==null`);
+    assert.equal(await run('document.querySelectorAll(".blade-task-options > label").length'),2,'Two tasks, despite three blades');
+    assert.equal(await run('document.querySelectorAll(".blade-pass-angle-group").length'),16,'Unrecorded planned stations remain visible in the hierarchy');
+    console.log('PASS task > blade > point > observation-group navigation replaces IDs without mixing blades or historical groups');
+    const selectionOutput=path.join(root,'artifacts/blade-analysis-hierarchy-ui');
+    fs.mkdirSync(selectionOutput,{recursive:true});
+    for (const width of [1280,480]) {
+      win.setContentSize(width,1100);
+      await new Promise(resolve=>setTimeout(resolve,100));
+      await run(`document.querySelector('.blade-task-workspace').scrollIntoView({block:'start'})`);
+      const bounds=await run('({width:innerWidth,scroll:document.documentElement.scrollWidth})');
+      assert.ok(bounds.scroll<=bounds.width+2,JSON.stringify(bounds));
+      fs.writeFileSync(path.join(selectionOutput,`selection-${width}.png`),(await win.webContents.capturePage()).toPNG());
+    }
+    win.setContentSize(1280,900);
     await run(`(()=>{const field=document.querySelector('input[aria-label="组合叶片标识"]');if(!field)throw Error('Composition confirmation missing');const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(field,'叶片实体 A');field.dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('input[aria-label="确认所选任务来自同一根实体叶片"]').click();})()`);
     await run(`(()=>{const button=[...document.querySelectorAll('button')].find(e=>e.textContent.includes('合并片段并查看叶片'));if(!button||button.disabled)throw Error('Analyze button unavailable');button.click()})()`);
     await waitFor('window.__bladePassFixture.analysis!==null');
     const sent = await run('window.__bladePassFixture.analysis');
     assert.equal(sent.recordingIds.length, 4);
+    assert.ok(!sent.recordingIds.includes('c'.repeat(32))&&!sent.recordingIds.includes('d'.repeat(32)),'No stale history or other blade IDs submitted');
     assert.equal(sent.bladeComposition.bladeLabel, '叶片实体 A');
     assert.deepEqual(sent.bladeComposition.tasks.map(task=>task.recordingIds.length), [2,2]);
     assert.equal(await run('window.__bladePassFixture.errors.length'), 0);

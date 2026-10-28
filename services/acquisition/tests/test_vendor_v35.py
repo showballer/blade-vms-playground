@@ -36,7 +36,15 @@ class RecoverySerial(SerialFixture):
         if cmd == CMD_SET_REFERENCE:
             if not status:
                 self.angles[axis] = struct.unpack('>i', frame[7:11])[0] / 1000
+                self.guard_fault[axis] = 0
+                self.flags[axis] = (self.flags[axis] | 1) & ~0x30
+                self.limit_flags[axis] = 0
             data = frame[7:11]
+        if cmd == CMD_SET_ZERO and not status:
+            self.angles[axis] = 25 if axis == 1 else 0
+            self.guard_fault[axis] = 0
+            self.flags[axis] = (self.flags[axis] | 1) & ~0x30
+            self.limit_flags[axis] = 0
         if cmd == CMD_TRAJECTORY_CLEAR:
             if not status and not self.ignore_clear:
                 self.state, self.fault = 0, 0
@@ -99,6 +107,56 @@ class VendorV35Tests(unittest.TestCase):
         self.assertEqual(self.commands().count(CMD_SET_REFERENCE), 1)
         self.assertNotIn(CMD_SET_ZERO, self.commands())
 
+    def test_yaw_reference_repairs_fault3_pending_only_after_two_stationary_samples(self):
+        self.serial.flags[2] = 0x10
+        self.serial.guard_fault[2] = 3
+        self.serial.limit_flags[2] = 2
+        self.serial.angles[2] = 27
+        pitch = self.motor.get_feedback(1)
+        self.serial.frames.clear()
+        result = self.motor.set_current_reference(2)
+        commands = self.commands()
+        write = commands.index(CMD_SET_ZERO)
+        self.assertEqual(commands[:write].count(0x20), 2)
+        self.assertEqual(commands[:write].count(0x07), 2)
+        self.assertEqual(commands[:write].count(0x09), 2)
+        self.assertEqual(commands.count(0x06), 1)
+        self.assertEqual(result.output_angle_deg, 0)
+        self.assertEqual(result.fault, 0)
+        self.assertFalse(result.flags & 0x30)
+        self.assertEqual(self.motor.get_feedback(1), pitch)
+        self.assertFalse({0x05, 0x19, 0x1A, CMD_TRAJECTORY_START, CMD_RESET_ALARM}.intersection(commands))
+
+    def test_reference_capture_does_not_bypass_positioning_other_fault_alarm_or_units(self):
+        for case in ('positioning', 'fault', 'alarm', 'limit', 'units'):
+            with self.subTest(case=case):
+                self.serial.frames.clear()
+                self.serial.flags[2], self.serial.guard_fault[2] = 0x10, 3
+                self.serial.alarm[2], self.serial.limit_flags[2] = 0, 2
+                if case == 'positioning': self.serial.flags[2] |= 0x20
+                if case == 'fault': self.serial.guard_fault[2] = 8
+                if case == 'alarm': self.serial.alarm[2] = 59
+                if case == 'limit': self.serial.limit_flags[2] = 1
+                actual = self.motor.get_feedback
+                def feedback(axis):
+                    value = actual(axis)
+                    return replace(value, display_mode=0) if case == 'units' else value
+                with patch.object(self.motor, 'get_feedback', side_effect=feedback):
+                    with self.assertRaises(MotorError): self.motor.set_current_reference(2)
+                self.assertNotIn(CMD_SET_ZERO, self.commands())
+                self.assertNotIn(CMD_SET_REFERENCE, self.commands())
+
+    def test_reference_ack_without_pending_and_fault_clear_is_not_success(self):
+        self.serial.flags[2], self.serial.guard_fault[2] = 0x10, 3
+        actual = self.motor.get_feedback
+        def feedback(axis):
+            value = actual(axis)
+            return replace(value, flags=0x11, fault=3) if CMD_SET_ZERO in self.commands() else value
+        with patch.object(self.motor, 'get_feedback', side_effect=feedback):
+            with self.assertRaisesRegex(MotorError, '读回校验'):
+                self.motor.set_current_reference(2)
+        self.assertEqual(self.commands().count(CMD_SET_ZERO), 1)
+
     def test_adaptive_rejection_never_retries_with_protection_disabled_or_starts(self):
         self.serial.guard_fault[1] = 0
         self.serial.soft[2] = True
@@ -156,11 +214,11 @@ class VendorV35Tests(unittest.TestCase):
         self.serial.ignore_clear = True
         with self.assertRaisesRegex(MotorError, '未清除'): self.motor.clear_guard_fault(1)
         self.serial.ignore_clear = False
-        real = self.motor.get_feedback; count = [0]
+        self.serial.frames.clear()
+        real = self.motor.get_feedback
         def changed(axis):
-            count[0] += 1
             value = real(axis)
-            return replace(value, command_counts_per_rev=20000) if count[0] > 1 else value
+            return replace(value, command_counts_per_rev=20000) if CMD_CONFIG_GUARD in self.commands() else value
         with patch.object(self.motor, 'get_feedback', side_effect=changed):
             with self.assertRaisesRegex(MotorError, '读回发生变化'): self.motor.clear_guard_fault(1)
 

@@ -1,5 +1,5 @@
 "use client";
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Download, RefreshCw, Layers3 } from "lucide-react";
 import { api, saveBlob } from "./api";
 import { Button } from "./common";
@@ -8,10 +8,12 @@ import { Chart } from "./charts";
 import { ChartLoading } from "./chart-loading";
 import { BladeMergedPointSignals, BladeSynthesisResults } from "./web-blade-synthesis";
 import { BladeTaskSelection } from "./web-blade-task-selection";
-import { BLADE_PASS_RECORD_LIMIT, bladePassCompositionError, bladePassMetadata, bladePassNumber as number, bladePassReason, bladePassTasks, bladePassUnavailableReason, bladePassWaveSeries, bladePassAnalysisJobs, defaultBladePassSelection, preferredBladePassTasks,
-  type BladePassRecording, type BladePassResult, type BladePassSource } from "./web-blade-passes-data";
+import { BLADE_PASS_RECORD_LIMIT, activeBladePassGroup, bladePassPointGroups, bladePassPointKey, bladePassCompositionError, bladePassMetadata, bladePassNumber as number, bladePassReason, bladePassTasks, bladePassUnavailableReason, bladePassWaveSeries, bladePassAnalysisJobs, defaultBladePassSelection, defaultBladePassGroupSelection, preferredBladePassTasks,
+  type BladePassGroupSelection, type BladePassPointGroup, type BladePassTask, type BladePassRecording, type BladePassResult, type BladePassSource } from "./web-blade-passes-data";
+import type { BladeRecordGroup } from "./field-blade-summary-data";
 
 type Props = { canAnalyze: boolean; refreshKey: number; preferredIds: string[]; onError: (cause: unknown) => void;
+  desktopTemplateSelector?: ReactNode; renderTemplateComparison?: (synthesis: NonNullable<BladePassResult["synthesis"]>) => ReactNode;
   localData?: { listRecordings: () => Promise<{ recordings: BladePassRecording[] }>; analyze: (parameters: Record<string, unknown>) => Promise<BladePassResult> } };
 const token = (name: string, fallback: string) => typeof window === "undefined" ? fallback : getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
 function chartBase() {
@@ -23,10 +25,11 @@ function chartBase() {
 const station = (angle: number | undefined) => Number.isFinite(angle) ? `${number(angle)}°` : "点位未知";
 const sourceLabel = (source: BladePassSource) => `${source.radialPointName || source.radialPointId} · ${station(source.azimuthDeg)} · ${source.sessionId?.slice(0, 8) || source.recordingId.slice(0, 8)}`;
 
-export function WebBladePasses({ canAnalyze, refreshKey, preferredIds, onError, localData }: Props) {
+export function WebBladePasses({ canAnalyze, refreshKey, preferredIds, onError, localData, desktopTemplateSelector, renderTemplateComparison }: Props) {
   const [records, setRecords] = useState<BladePassRecording[]>([]);
   const [taskKeys, setTaskKeys] = useState<string[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
+  const [groupKeys, setGroupKeys] = useState<BladePassGroupSelection>({});
   const [selectionNotice, setSelectionNotice] = useState("");
   const [sameBladeConfirmed, setSameBladeConfirmed] = useState(false), [bladeLabel, setBladeLabel] = useState("");
   const [detrend, setDetrend] = useState("constant"), [rssi, setRssi] = useState("");
@@ -51,6 +54,7 @@ export function WebBladePasses({ canAnalyze, refreshKey, preferredIds, onError, 
       const next = preferredBladePassTasks(nextTasks, JSON.parse(preferredKey), selection.current.taskKeys);
       const defaults = next.flatMap(task => defaultBladePassSelection(task));
       setRecords(response.recordings); setTaskKeys(next.map(task => task.key));
+      setGroupKeys({});
       setSelected(defaults.slice(0, BLADE_PASS_RECORD_LIMIT));
       setSelectionNotice(defaults.length > BLADE_PASS_RECORD_LIMIT ? `默认选择超过 ${BLADE_PASS_RECORD_LIMIT} 条上限；已保留前 ${BLADE_PASS_RECORD_LIMIT} 条，请核对各测点。` : "");
       setSameBladeConfirmed(false); setBladeLabel(next[0]?.bladeId ? `叶片 ${next[0].bladeId}` : "");
@@ -68,16 +72,29 @@ export function WebBladePasses({ canAnalyze, refreshKey, preferredIds, onError, 
   function selectTask(task: (typeof tasks)[number], checked: boolean) {
     invalidate();
     setTaskKeys(current => checked ? [...new Set([...current, task.key])] : current.filter(key => key !== task.key));
-    updateSelection(checked ? [...selected, ...defaultBladePassSelection(task)] : selected.filter(id => !task.records.some(record => record.id === id)));
+    updateSelection(checked ? [...selected, ...defaultBladePassSelection(task, groupKeys)] : selected.filter(id => !task.records.some(record => record.id === id)));
     setSameBladeConfirmed(false);
   }
+  function selectBlade(current: BladePassTask, next: BladePassTask) {
+    invalidate();
+    setTaskKeys(keys => keys.map(key => key === current.key ? next.key : key));
+    updateSelection([...selected.filter(id => !current.records.some(record => record.id === id)), ...defaultBladePassSelection(next, groupKeys)]);
+    setSameBladeConfirmed(false);
+  }
+  function selectGroup(task: BladePassTask, point: BladePassPointGroup, group: BladeRecordGroup) {
+    invalidate();
+    setGroupKeys(current => ({ ...current, [bladePassPointKey(task, point.id)]: group.key }));
+    const wasSelected = point.records.some(record => selected.includes(record.id));
+    updateSelection([...selected.filter(id => !point.records.some(record => record.id === id)), ...(wasSelected ? defaultBladePassGroupSelection(group) : [])]);
+  }
   function selectRecords(task: (typeof tasks)[number], ids: string[], checked: boolean) {
-    const allowed = new Set(task.records.map(record => record.id));
+    const allowed = new Set(bladePassPointGroups(task).flatMap(point => activeBladePassGroup(task, point, groupKeys).stations.flatMap(station => station.records))
+      .filter(record => !bladePassUnavailableReason(record)).map(record => record.id));
     if (checked && !taskKeys.includes(task.key)) return;
     invalidate(); updateSelection(checked ? [...selected, ...ids.filter(id => allowed.has(id))] : selected.filter(id => !ids.includes(id)));
   }
   function restoreSelection() {
-    invalidate(); updateSelection(taskKeys.flatMap(key => { const task = tasks.find(item => item.key === key); return defaultBladePassSelection(task); }));
+    invalidate(); updateSelection(taskKeys.flatMap(key => { const task = tasks.find(item => item.key === key); return defaultBladePassSelection(task, groupKeys); }));
   }
   async function run(event: React.FormEvent) {
     event.preventDefault();
@@ -103,8 +120,10 @@ export function WebBladePasses({ canAnalyze, refreshKey, preferredIds, onError, 
     <form className="field-card blade-pass-setup" onSubmit={run}>
       <div className="field-section-heading"><div><h2><Layers3 size={18} /> 分段数据合并与叶片分析</h2><p>勾选一个或多个采集任务，核对各自测点；跨任务组合前确认它们来自同一根实体叶片。</p></div><div className="blade-pass-header-actions"><div className="blade-pass-selection"><strong>{chosen.length}</strong> / {BLADE_PASS_RECORD_LIMIT} 条记录</div><Button type="submit" variant="primary" disabled={!canAnalyze || !chosen.length || loading || busy}>{busy ? "正在合并并分析…" : "合并片段并查看叶片"}</Button>{busy && <Button type="button" variant="ghost" onClick={invalidate}>取消等待</Button>}<Button type="button" disabled={loading} onClick={() => void refresh()}><RefreshCw size={14} />刷新记录</Button></div></div>
       {!canAnalyze && <p className="blade-pass-note">当前账号可查看记录，运行分析需要分析权限。</p>}
-      <BladeTaskSelection tasks={tasks} taskKeys={taskKeys} selected={selected} loading={loading}
-        onTask={selectTask} onRecords={selectRecords} onRestore={restoreSelection} onClear={() => { invalidate(); updateSelection([]); setSameBladeConfirmed(false); }} />
+      <BladeTaskSelection tasks={tasks} taskKeys={taskKeys} selected={selected} groupKeys={groupKeys} loading={loading}
+        onTask={selectTask} onBlade={selectBlade} onGroup={selectGroup} onRecords={selectRecords} onRestore={restoreSelection} onClear={() => { invalidate(); updateSelection([]); setSameBladeConfirmed(false); }} />
+      {chosen.length > 0 && <p className="blade-pass-note" aria-label="本次分析范围">本次分析范围：{jobs.map(job => `${job.task.name} / 叶片 ${job.task.bladeId} / ${new Set(job.records.map(record => bladePassMetadata(record)?.radialPointId)).size} 个测点 / ${job.records.length} 条记录`).join("；")}</p>}
+      {unavailable.length > 0 && <details className="blade-pass-advanced"><summary>{unavailable.length} 条记录暂不可分析</summary>{unavailable.map(({ record, reason }) => <p className="blade-pass-note" key={record.id}>{record.name} · {record.id.slice(0, 8)}：{reason}</p>)}</details>}
       {selectionNotice && <p className="blade-pass-selection-notice" role="status">{selectionNotice}</p>}
       {jobs.length > 1 && <section className="blade-pass-composition" aria-label="跨任务叶片组合确认">
         <h3>跨任务组合确认</h3><p>请确认上面所选任务的测点来自同一根实体叶片。系统会保留每条记录的原任务、叶片编号和采集批次。</p>
@@ -112,14 +131,15 @@ export function WebBladePasses({ canAnalyze, refreshKey, preferredIds, onError, 
         <label>组合叶片标识<input aria-label="组合叶片标识" maxLength={80} value={bladeLabel} onChange={event => { invalidate(); setBladeLabel(event.target.value); }} placeholder="例如：叶片 2 · 机组 A" /></label>
       </section>}
       <div className="blade-pass-advanced-fields"><label><input aria-label="合并片段并合成振型候选" type="checkbox" checked={synthesize} onChange={event => { invalidate(); setSynthesize(event.target.checked); }} />合并片段并合成振型候选</label>{synthesize && <><label>频率下限 Hz<input aria-label="合成频率下限" type="number" min={.1} max={100000} step="any" value={minHz} onChange={event => { invalidate(); setMinHz(event.target.value); }} /></label><label>频率上限 Hz<input aria-label="合成频率上限" type="number" min={.1} max={100000} step="any" value={maxHz} onChange={event => { invalidate(); setMaxHz(event.target.value); }} /></label></>}</div>
+      {desktopTemplateSelector}
       <details className="blade-pass-advanced"><summary>筛选与预处理设置</summary><div className="blade-pass-advanced-fields"><label>预处理<CustomSelect value={detrend} onChange={event => { invalidate(); setDetrend(event.target.value); }}><option value="constant">去均值</option><option value="linear">去线性趋势</option><option value="none">不去趋势</option></CustomSelect></label><label>RSSI 下限 · %<input aria-label="RSSI 下限百分比" type="number" min={0} max={100} step="any" placeholder="不设强度阈值" value={rssi} onChange={event => { invalidate(); setRssi(event.target.value); }} /></label></div><p className="blade-pass-note">保留原始时间和片段间隙，频谱按单个连续有效段计算。更改设置后需重新分析。</p></details>
     </form>
     {busy && <ChartLoading label="正在筛选有效片段并计算幅值…" />}
-    {result && <BladePassResults result={result} />}
+    {result && <BladePassResults result={result} renderTemplateComparison={renderTemplateComparison} />}
   </div>;
 }
 
-export function BladePassResults({ result }: { result: BladePassResult }) {
+export function BladePassResults({ result, renderTemplateComparison }: Pick<Props, "renderTemplateComparison"> & { result: BladePassResult }) {
   const [azimuthIndex, setAzimuthIndex] = useState(0), [recordingIndex, setRecordingIndex] = useState(0), [segmentIndex, setSegmentIndex] = useState(0);
   const [signalView, setSignalView] = useState("merged"), [mergedPointIndex, setMergedPointIndex] = useState(0);
   const mergedPoints = result.synthesis?.mergedPoints ?? [];
@@ -150,6 +170,7 @@ export function BladePassResults({ result }: { result: BladePassResult }) {
       {result.warnings.length > 0 && <details className="blade-pass-detail"><summary>数据说明 · {result.warnings.length} 项</summary><ul>{result.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul></details>}
     </section>
     {result.synthesis && <BladeSynthesisResults synthesis={result.synthesis} showMergedSignals={false} />}
+    {result.synthesis && renderTemplateComparison?.(result.synthesis)}
     {distribution && <section className="field-card"><div className="field-section-heading"><div><h2>多点幅值分布</h2><p>同一圆周点位下，比较不同径向测点的有效段速度 RMS。</p></div><label className="blade-pass-inline">圆周点位<CustomSelect aria-label="幅值分布圆周点位" value={azimuthIndex} onChange={event => setAzimuthIndex(Number(event.target.value))}>{result.amplitudeDistributions.map((item, index) => <option key={item.azimuthDeg} value={index}>{station(item.azimuthDeg)}</option>)}</CustomSelect></label></div>
       <Chart height={280} label="径向测点速度 RMS 分布，非相位振型" option={{ ...chartBase(), xAxis: { type: "value", name: "测点半径 / m", nameLocation: "middle", nameGap: 30, axisLabel: { hideOverlap: true } }, series: [{ type: "line", showSymbol: true, symbolSize: 7, lineStyle: { type: "dashed" }, data: [...distribution.points].sort((a, b) => a.radiusM - b.radiusM).map(point => [point.radiusM, point.value * 1000]) }] }} />
       <div className="field-table-scroll blade-pass-values"><table className="field-table"><thead><tr><th>测点</th><th>半径 m</th><th>速度 RMS mm/s</th><th>有效样本</th></tr></thead><tbody>{distribution.points.map(point => <tr key={point.radialPointId}><td>{point.radialPointName || point.radialPointId}</td><td>{number(point.radiusM)}</td><td>{number(point.value * 1000)}</td><td>{point.validSamples.toLocaleString()}</td></tr>)}</tbody></table></div>

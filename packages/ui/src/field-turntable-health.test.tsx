@@ -15,6 +15,20 @@ const ready = (): FieldStatus => ({ service: { state: "ready", dllConfigured: tr
     motionCapability: { supported: true, mode: "dual_axis_timed", protocol: "0x30-0x36", probe: "confirmed", status: { state: 0, fault: 0 } } } });
 let checks = 0;
 function check(name: string, run: () => void) { run(); checks++; console.log(`PASS ${name}`); }
+check("定位运动标志不报故障，停止待确认显示等待，真实故障仍为红色", () => {
+  const value = ready();
+  value.turntable!.feedback!.axes!["1"].flags |= 0x20;
+  let report = turntableHealthReport(value, "COM3");
+  assert.equal(report.tone, "blue");
+  assert.equal(report.axes[0].stop, "定位运动中");
+  value.turntable!.feedback!.axes!["1"].flags = 0x13;
+  report = turntableHealthReport(value, "COM3");
+  assert.equal(report.tone, "amber");
+  assert.equal(report.axes[0].stop, "停机待确认");
+  assert.equal(report.problems.length, 0);
+  value.turntable!.feedback!.axes!["1"].fault = 8;
+  assert.equal(turntableHealthReport(value, "COM3").tone, "red");
+});
 check("回零参考变化或读取失败只触发重新核查，不全局锁住恢复按钮", () => {
   const value = ready();
   value.turntable!.state = "error";
@@ -72,6 +86,8 @@ check("第二轴驱动器报警和停止标记不会被第一轴零报警掩盖"
   const value = ready(); value.turntable!.health!.axes["2"].alarmCode = 12;
   assert.ok(turntableHealthReport(value, "COM3").problems.some(text => text.includes("水平轴驱动器报警：12")));
   value.turntable!.health!.axes["2"].alarmCode = 0; value.turntable!.health!.axes["2"].limitFlags = 2;
+  assert.equal(turntableHealthReport(value, "COM3").tone, "amber");
+  value.turntable!.health!.axes["2"].limitFlags = 1;
   assert.equal(turntableHealthReport(value, "COM3").tone, "red");
 });
 check("新固件定位执行故障可识别，停稳且参考有效才允许清除", () => {

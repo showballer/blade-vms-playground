@@ -156,11 +156,18 @@ def stopped_bank_snapshots(motor, initial, *, interrupted=None):
     if len(positions) != 2:
         raise MotorError('两轴实测反馈不完整，未发送运动')
     for axis, p in enumerate(positions, 1):
-        if (not p.usable or p.source != 0 or p.motor_rpm or p.alarm_code or p.guard_fault or
-                not p.flags & 1 or p.flags & 0x30 or not math.isfinite(p.angle_deg) or p.sample_age_ms < 0):
+        if (not p.usable or p.source != 0 or p.alarm_code or p.guard_fault or
+                not p.flags & 1 or not math.isfinite(p.angle_deg) or p.sample_age_ms < 0):
             raise MotorError(f'轴{axis}新鲜停稳反馈未确认或存在故障，未发送运动')
         if p.flags & 7 != initial[0]['axes'][str(axis)]['flags'] & 7:
             raise MotorError(f'轴{axis}参考或保护状态发生变化，未发送运动')
+    if any(p.motor_rpm or p.flags & 0x30 for p in positions):
+        trace_event('bank_stop_pending', axes=[dict(axis=axis, flags=p.flags,
+                    flagsHex=f'0x{p.flags:04X}', motorRpm=p.motor_rpm,
+                    guardFault=p.guard_fault, alarmCode=p.alarm_code,
+                    source=p.source, sampleAgeMs=p.sample_age_ms)
+                    for axis, p in enumerate(positions, 1)])
+        return None  # The caller performs bounded full-feedback stop waiting.
     if any(p.sample_age_ms + elapsed_ms > 200 for p in positions):
         # A scheduler/transport delay is not a drive fault. Do not bless the old
         # pose: caller falls back to a new full read, with all existing guards.

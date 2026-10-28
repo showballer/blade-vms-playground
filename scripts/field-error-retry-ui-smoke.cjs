@@ -114,6 +114,32 @@ app.whenReady().then(async () => {
     win.webContents.session.webRequest.onBeforeRequest((details, callback) => callback({ cancel: !details.url.startsWith('file:') && !details.url.startsWith('data:') }));
     await win.loadFile(path.join(output, 'index.html'));
     await wait('!!document.querySelector("input[aria-label=任务名称]")');
+    if (process.env.BLADE_REFERENCE_RECOVERY_ONLY === '1') {
+      await check('轴2参考失效且停止待确认时可人工重建，保持俯仰轴和作业原点', async () => {
+        await changed('window.__retryFixture.server.state="idle";window.__retryFixture.server.error=null;Object.assign(window.__retryFixture.server.turntable.feedback.axes["2"],{fault:3,flags:18,output_angle_deg:null})');
+        await click('document.querySelector("input[aria-label=联动转盘与测振仪]")');
+        await click(button('转盘点位')); await click(button('转盘状态'));
+        await wait('('+button('确认水平轴为 0°')+').disabled===false');
+        assert.ok(await js('document.querySelector(".field-mechanical-home").textContent.includes("轴2故障码 3 · 反馈标志 0x0012")'));
+        const before = await js('({count:window.__retryFixture.calls.length,pitch:structuredClone(window.__retryFixture.server.turntable.feedback.axes["1"]),origin:localStorage.getItem("blade-turntable-work-origins-v1")})');
+        await click(button('确认水平轴为 0°'));
+        await wait('document.querySelector(".field-mechanical-home").textContent.includes("水平轴当前位置已设为设备0°")');
+        const calls=await js('window.__retryFixture.calls.slice('+before.count+').filter(c=>c.action==="turntable")');
+        assert.deepEqual(calls.map(c=>c.request.action), ['reference']);
+        assert.equal(calls[0].request.axis, 2); assert.equal(calls[0].request.confirmMotion, true);
+        assert.deepEqual(await js('window.__retryFixture.server.turntable.feedback.axes["1"]'), before.pitch);
+        assert.equal(await js('localStorage.getItem("blade-turntable-work-origins-v1")'), before.origin);
+      });
+      await check('真实轴2故障保持禁用并显示原因，读取状态不会自动写参考', async () => {
+        const before = await js('window.__retryFixture.calls.filter(c=>c.action==="turntable"&&c.request.action==="reference").length');
+        await changed('window.__retryFixture.server.turntable.feedback.axes["2"].fault=8');
+        await wait('('+button('确认水平轴为 0°')+').disabled===true');
+        assert.ok(await js('document.querySelector(".field-mechanical-home").textContent.includes("轴2故障码 8，请先排除故障")'));
+        assert.equal(await js('window.__retryFixture.calls.filter(c=>c.action==="turntable"&&c.request.action==="reference").length'), before);
+        fs.writeFileSync(path.join(output, 'axis2-reference-blocked.png'), (await win.webContents.capturePage()).toPNG());
+      });
+      clearTimeout(watchdog); finish(); return;
+    }
     await check('终态采集错误持续显示，普通采集可重试', async () => {
       await wait(button('开始采集') + '&&!(' + button('开始采集') + ').disabled');
       await input('风场编号', ' WF-001 ');
