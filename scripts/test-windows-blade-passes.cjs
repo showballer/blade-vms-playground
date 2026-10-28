@@ -32,7 +32,14 @@ function guardServiceRequest(url, request = {}) {
   const parsed = new URL(url);
   assert.equal(parsed.protocol, 'http:');
   assert.equal(parsed.hostname, '127.0.0.1', 'Gate may only contact its private local service');
-  assert.equal(parsed.search, '');
+  if (parsed.search) {
+    assert.equal(parsed.pathname, '/api/field/recordings', 'Only the summary list accepts pagination');
+    assert.deepEqual([...parsed.searchParams.keys()], ['summary', 'offset'], 'Only bounded summary pagination is permitted');
+    assert.equal(parsed.searchParams.get('summary'), 'true');
+    const offset = parsed.searchParams.get('offset');
+    assert.match(offset, /^(?:0|[1-9]\d{0,3})$/);
+    assert.ok(Number(offset) <= 1001, 'Summary pagination offset exceeds bridge bound');
+  }
   assert.equal(parsed.username + parsed.password + parsed.hash, '');
   assert.equal(request.method || 'GET', 'GET', 'No operation requests are permitted');
   assert.equal(request.body, undefined, 'Read-only fixture checks cannot carry operation bodies');
@@ -362,6 +369,12 @@ async function main(argv = process.argv.slice(2)) {
   }
   console.log(`${report.passed ? 'PASS' : 'FAIL'} frozen point-record export/upload and server pass analysis; hardware not tested`);
   console.log(`Report: ${path.join(options.output, 'report.json')}`);
+  if (!report.passed) {
+    // Preserve a useful failure when GitHub artifact storage is unavailable.
+    // The gate owns disposable fixtures and never loads account credentials.
+    if (report.error) console.error(`Gate error: ${report.error}`);
+    if (report.cleanupError) console.error(`Gate cleanup error: ${report.cleanupError}`);
+  }
   return report;
 }
 

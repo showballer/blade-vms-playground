@@ -28,6 +28,17 @@ test('read-only loopback allowlist rejects every operation route, method and red
   for (const route of ['status', 'recordings', `recordings/${'a'.repeat(32)}`, `recordings/${'a'.repeat(32)}/export`]) {
     assert.doesNotThrow(() => guardServiceRequest(`http://127.0.0.1:1234/api/field/${route}`, { redirect: 'error' }));
   }
+  for (const offset of [0, 1, 500, 1001]) {
+    assert.doesNotThrow(() => guardServiceRequest(`http://127.0.0.1:1234/api/field/recordings?summary=true&offset=${offset}`, { redirect: 'error' }));
+  }
+  for (const query of ['summary=true', 'summary=true&offset=-1', 'summary=true&offset=1002',
+    'summary=true&offset=NaN', 'summary=true&offset=01', 'summary=false&offset=0',
+    'summary=true&offset=0&offset=1', 'summary=true&offset=0&deviceIp=192.168.106.90']) {
+    assert.throws(() => guardServiceRequest(`http://127.0.0.1:1234/api/field/recordings?${query}`, { redirect: 'error' }));
+  }
+  for (const route of ['status', `recordings/${'a'.repeat(32)}`, `recordings/${'a'.repeat(32)}/export`]) {
+    assert.throws(() => guardServiceRequest(`http://127.0.0.1:1234/api/field/${route}?summary=true&offset=0`, { redirect: 'error' }));
+  }
   for (const route of ['start', 'stop', 'device', 'turntable', 'turntable/ports', 'single-point', 'motion-trial', 'simulation', 'rssi-calibration']) {
     assert.throws(() => guardServiceRequest(`http://127.0.0.1:1234/api/field/${route}`, { redirect: 'error' }));
   }

@@ -60,6 +60,27 @@ function assertIdleWaveformUi(value) {
   assert.equal(value.rssiTitle, 'RSSI 回波强度');
 }
 
+async function idleWaveformUi(cdp) {
+  return cdp.evaluate(`(() => {
+    const panel = document.querySelector('.field-capture-chart');
+    return { emptyCount: panel?.querySelectorAll('.field-chart-empty').length ?? 0,
+      waveformCount: panel?.querySelectorAll('.field-wave-svg').length ?? 0,
+      velocityTitle: panel?.querySelector('.field-capture-wave-heading h2')?.textContent.trim(),
+      rssiTitle: panel?.querySelector('.field-rssi-heading h3')?.textContent.trim() };
+  })()`);
+}
+
+async function captureFormState(cdp) {
+  return cdp.evaluate(`(() => {
+    const form = document.querySelector('.field-capture-setup form');
+    const inputs = [...form.querySelectorAll('input[required]')];
+    const button = document.querySelector('.field-plain-capture-toolbar .field-auto-capture-primary');
+    if (!button || button.type !== 'button') throw Error('Missing current acquisition action');
+    return { valid: form.checkValidity(), missingRequired: inputs.filter(input => input.validity.valueMissing).length,
+      requiredValues: inputs.map(input => input.value), startDisabled: button.disabled };
+  })()`);
+}
+
 async function deadline(promise, milliseconds, message) {
   let timer;
   try {
@@ -317,7 +338,7 @@ async function connectCdp(url) {
   } };
 }
 
-async function validateInstalledAutoFollow(cdp, field, output) {
+async function validateInstalledAutoFollow(cdp, field, output, { expectedRecordingIds = [] } = {}) {
   // Exercise the installed renderer, not a source fixture. Only navigate and edit
   // its disposable draft: never probe, calibrate, start, or send device commands.
   const click = async (selector, text) => {
@@ -329,81 +350,113 @@ async function validateInstalledAutoFollow(cdp, field, output) {
     })()`);
   };
   const snapshot = () => cdp.evaluate(`(() => {
-    const panel = document.querySelector('.field-auto-follow');
+    const panel = document.querySelector('.field-auto-follow.field-turntable-configuration')?.closest('dialog') || document.querySelector('.field-auto-follow');
     if (!panel) return null;
-    const rows = [...panel.querySelectorAll('.field-auto-point')];
-    const start = [...panel.querySelectorAll('button')].find(button => button.textContent.trim() === '开始自动采集');
-    return { text: panel.innerText, pointCount: rows.length,
+    const rows = [...document.querySelectorAll('.field-follow-configuration:not([hidden]) .field-auto-point')];
+    return { text: document.querySelector('.field-auto-follow').innerText, pointCount: rows.length,
       selected: rows.map((row, index) => row.querySelector('input[type=radio]').checked ? index : -1).filter(index => index >= 0),
       names: rows.map(row => row.querySelector('input[aria-label$="名称"]').value),
       radii: rows.map(row => row.querySelector('input[aria-label$="半径"]').value),
-      metrics: [...panel.querySelectorAll('.field-auto-metrics strong')].map(item => item.textContent.trim()),
-      installationOpen: panel.querySelector('.field-auto-turntable-setup')?.open,
-      installationLabels: [...panel.querySelectorAll('.field-auto-turntable-setup [aria-label]')].map(item => item.getAttribute('aria-label')),
-      calibrated: panel.querySelector('.field-auto-anchor .field-badge')?.textContent.trim(),
-      targetRows: panel.querySelectorAll('.field-auto-route tbody tr').length,
-      startDisabled: start?.disabled, simulationControls: [...panel.querySelectorAll('button,input,[role=switch]')]
+      firstAngles: rows.map(row => row.querySelector('.field-auto-point-angle')?.textContent.trim()),
+      calibratedCount: rows.filter(row => row.querySelector('.field-badge.green')).length,
+      installationOpen: !!document.querySelector('dialog .field-auto-turntable-setup'),
+      installationLabels: [...document.querySelectorAll('dialog .field-auto-turntable-setup [aria-label]')].map(item => item.getAttribute('aria-label')),
+      selectedMode: document.querySelector('.field-turntable-mode-tabs [aria-selected=true]')?.textContent.trim(),
+      simulationControls: [...document.querySelectorAll('.field-auto-follow button,.field-auto-follow input,.field-auto-follow [role=switch]')]
         .filter(item => /模拟|演示/.test(item.textContent + ' ' + item.getAttribute('aria-label'))).length };
   })()`);
+  const setInput = async (label, value) => {
+    const selector = `input[aria-label=${JSON.stringify(label)}]`;
+    await cdp.evaluate(`(() => {
+      const input = document.querySelector(${JSON.stringify(selector)});
+      if (!input || input.disabled) throw Error('Unavailable installed input');
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(value)});
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+    await waitFor(() => cdp.evaluate(`document.querySelector(${JSON.stringify(selector)})?.value === ${JSON.stringify(value)}`), 'installed input: ' + label);
+  };
+  const savedSurvey = () => cdp.evaluate('JSON.parse(localStorage.getItem("blade-auto-follow-draft-v1"))');
   await click('.field-sidebar button', '转盘点位');
   await waitFor(() => cdp.evaluate(`Array.from(document.querySelectorAll('[role=tab]')).some(item => item.textContent.trim() === '自动跟随' && !item.closest('[hidden]'))`),
     'installed turntable work-mode tabs');
+  assert.deepEqual(await cdp.evaluate(`[...document.querySelectorAll('.field-turntable-mode-tabs [role=tab]')].map(item=>item.textContent.trim())`), ['分段采集', '自动跟随', '手动控制']);
+  assert.equal((await snapshot()).selectedMode, '分段采集', 'New installations must default to segmented capture');
   await click('[role=tab]', '自动跟随');
   const initial = await waitFor(async () => { const value = await snapshot(); return value?.pointCount === 1 && value; },
     'installed automatic-follow page and current measurement point');
-  for (const label of ['叶片逐点采集', '本次采集测点', '添加下一测点', '校准起点', '自动换点速度上限（每轴）']) {
+  for (const label of ['测量设置', '自动跟随配置', '叶片与测点', '添加测点', '校准', '转盘设置']) {
     assert.ok(initial.text.includes(label), `Installed automatic-follow UI lacks ${label}`);
   }
   assert.equal(initial.installationOpen, false, 'Installation calibration must start collapsed');
+  // Open settings with an empty connection, so its normal automatic health
+  // check is blocked locally and cannot issue a serial/TCP device request.
+  await setInput('自动跟随转盘串口', '');
+  await click('button[aria-label="打开转盘设置"]', '配置与检查');
+  const installation = await waitFor(async () => { const value = await snapshot(); return value?.installationOpen && value; }, 'installed turntable settings dialog');
   for (const label of ['俯仰轴方向', '水平轴方向', '两轴换点转速上限 · rpm']) {
-    assert.ok(initial.installationLabels.includes(label), `Missing installation parameter ${label}`);
+    assert.ok(installation.installationLabels.includes(label), `Missing installation parameter ${label}`);
   }
+  await setInput('两轴换点转速上限 · rpm', '5');
+  await waitFor(async () => (await savedSurvey())?.settings?.maxMoveRpm === 5, 'installed movement-setting persistence');
+  await click('dialog button[aria-label="关闭弹窗"]', '');
   assert.deepEqual(initial.selected, [0]);
   assert.deepEqual(initial.names, ['P1']);
-  assert.equal(initial.metrics[0], 'P1 / 4');
-  assert.equal(initial.metrics[1], '4 条');
-  assert.equal(initial.calibrated, '待校准');
-  assert.equal(initial.targetRows, 0, 'Installed UI must not invent a reference or target-angle route');
-  assert.equal(initial.startDisabled, true, 'Uncalibrated installed UI must block acquisition');
+  assert.equal(initial.calibratedCount, 0, 'Installed UI must not invent a hardware calibration');
+  assert.ok(!initial.text.includes('待校准'), 'Point calibration is optional, not a prerequisite for theoretical geometry');
+  assert.ok(!initial.text.includes('开始自动采集'), 'Capture must be started from the acquisition page');
   assert.equal(initial.simulationControls, 0, 'Automatic-follow production page must not offer simulation controls');
 
-  await click('.field-auto-follow button', '添加下一测点');
+  await click('.field-auto-follow button', '添加测点');
   const added = await waitFor(async () => { const value = await snapshot(); return value?.pointCount === 2 && value; },
     'next radial point added to installed renderer');
   assert.deepEqual(added.selected, [1], 'Adding P2 must select P2 alone');
   assert.deepEqual(added.names, ['P1', 'P2']);
   assert.equal(added.radii[1], '', 'P2 must require its own measured radius');
-  assert.equal(added.metrics[0], 'P2 / 4');
-  assert.equal(added.metrics[1], '4 条', 'Two configured radial points must not plan eight records in one run');
-  assert.equal(added.startDisabled, true);
-  await cdp.evaluate(`(() => {
-    const input = document.querySelector('.field-auto-follow input[aria-label="测点2半径"]');
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '0.5');
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-  })()`);
+  await setInput('测点2半径', '0.5');
+  await setInput('激光出射点离地高度 · m', '0.65');
+  await setInput('风机旋转中心离地高度 · m', '1.5');
   await waitFor(async () => (await snapshot()).radii[1] === '0.5', 'installed P2 radius draft');
-  await cdp.evaluate('document.querySelector(\'.field-auto-follow input[aria-label="选择测点1"]\').click()');
-  const selected = await waitFor(async () => { const value = await snapshot(); return value?.metrics[0] === 'P1 / 4' && value; },
+  await waitFor(async () => (await snapshot()).firstAngles.every(text => /俯仰 -?\d/.test(text) && /水平 -?\d/.test(text)), 'uncalibrated points have calculated angles');
+  await cdp.evaluate('document.querySelector(\'.field-auto-follow .field-auto-point\').click()');
+  const selected = await waitFor(async () => { const value = await snapshot(); return value?.selected[0] === 0 && value; },
     'manual radial-point selection in installed renderer');
   assert.deepEqual(selected.selected, [0]);
-  assert.equal(selected.metrics[1], '4 条');
   assert.equal(selected.radii[1], '0.5', 'Selecting P1 must preserve the separately configured P2');
-  assert.equal(selected.startDisabled, true, 'Editing point drafts cannot establish device calibration');
+  assert.equal(selected.calibratedCount, 0, 'Editing point drafts cannot establish device calibration');
   const saved = await waitFor(async () => {
-    const value = await cdp.evaluate('JSON.parse(localStorage.getItem("blade-auto-follow-draft-v1"))');
-    return value?.draft?.points.length === 2 && value.draft.activePointId === value.draft.points[0].id && value;
+    const value = await savedSurvey(), blade = value?.blades?.find(item => item.id === value.selectedBladeId);
+    return value?.version === 3 && blade?.points.length === 2 && value.selectedPointId === blade.points[0].id && value;
   }, 'installed current-point draft persistence');
-  assert.equal(saved.draft.activePointId, saved.draft.points[0].id);
-  assert.equal(saved.draft.points.length, 2);
+  const savedBlade = saved.blades.find(item => item.id === saved.selectedBladeId);
+  assert.equal(saved.selectedPointId, savedBlade.points[0].id);
+  assert.equal(savedBlade.points.length, 2);
+  assert.equal(saved.settings.stepDeg, 90);
+  assert.equal(saved.settings.cycles, 1, 'Two radial points must preserve one requested circle for each selected point');
   assert.ok(!('anchor' in saved), 'A draft must not persist a fabricated hardware reference');
   assert.equal(saved.collectionId, '', 'Editing alone must not create an acquisition task');
+  await click('.field-sidebar button', '数据采集');
+  await cdp.evaluate(`(() => { const checkbox = document.querySelector('input[aria-label="联动转盘与测振仪"]'); if (!checkbox || checkbox.disabled) throw Error('Unavailable linkage control'); if (!checkbox.checked) checkbox.click(); })()`);
+  await waitFor(() => cdp.evaluate(`!!document.querySelector('.field-link-mode')`), 'installed linkage modes');
+  await click('.field-link-mode button', '自动跟随');
+  const captureTargets = await waitFor(() => cdp.evaluate(`(() => {
+    const rows = [...document.querySelectorAll('.field-auto-capture-blade tbody tr')];
+    if (rows.length !== 2) return null;
+    return rows.map(row => ({ name: row.querySelector('th').textContent.trim(),
+      stations: row.querySelectorAll('td')[1].textContent.trim(),
+      cycles: row.querySelectorAll('td')[2].textContent.trim(), selected: row.dataset.selected === 'true' }));
+  })()`), 'installed independent point capture choices');
+  assert.deepEqual(captureTargets.map(row => [row.name, row.stations, row.cycles]), [['P1', '4 个', '1 轮'], ['P2', '4 个', '1 轮']]);
+  assert.deepEqual(captureTargets.map(row => row.selected), [true, false]);
+  assert.equal(await cdp.evaluate(`document.querySelector('.field-auto-capture-list .field-auto-capture-primary').disabled`), true,
+    'Missing turntable connection must block acquisition without inventing calibration');
   assertIdle((await field({ action: 'status' })).data);
-  assert.deepEqual((await field({ action: 'recordings' })).data.recordings, []);
+  assert.deepEqual((await field({ action: 'recordings' })).data.recordings.map(item => item.id).sort(), [...expectedRecordingIds].sort(),
+    'Editing the installed point configuration must not create or remove recordings');
   await cdp.evaluate('document.querySelector(".field-content").scrollTop = 0');
   const shot = await cdp.send('Page.captureScreenshot', { format: 'png' });
   fs.writeFileSync(path.join(output, 'installed-windows-auto-follow-current-point.png'), Buffer.from(shot.data, 'base64'));
   return { installedRenderer: true, oneSelectedRadialPoint: true, separatePointDrafts: true,
-    fourStationsPerSelectedPoint: true, installationCollapsed: true, uncalibratedStartBlocked: true,
+    fourStationsPerSelectedPoint: true, installationCollapsed: true, optionalCalibrationWithTheoreticalAngles: true,
     noSimulationControls: true, collectionNotCreatedByEditing: true, deviceControlsInvoked: false,
     screenshot: 'installed-windows-auto-follow-current-point.png' };
 }
@@ -462,31 +515,17 @@ async function validateInstalledDesktop(directory, environment, temporary, outpu
     const frame = await field({ action: 'frame' });
     assert.equal(frame.status, 200); assert.deepEqual(frame.data.waveform.values, []);
     assert.deepEqual((await field({ action: 'recordings' })).data.recordings, []);
-    const idleWaveformUi = () => cdp.evaluate(`(() => {
-      const panel = document.querySelector('.field-capture-chart [role="tabpanel"]:not([hidden])');
-      return { emptyCount: panel?.querySelectorAll('.field-chart-empty').length ?? 0,
-        waveformCount: panel?.querySelectorAll('.field-wave-svg').length ?? 0,
-        velocityTitle: panel?.querySelector('.field-capture-wave-heading h2')?.textContent.trim(),
-        rssiTitle: panel?.querySelector('.field-rssi-heading h3')?.textContent.trim() };
-    })()`);
-    await waitFor(async () => (await idleWaveformUi()).emptyCount === 2, 'empty velocity and RSSI waveform UI');
-    assertIdleWaveformUi(await idleWaveformUi());
+    await waitFor(async () => (await idleWaveformUi(cdp)).emptyCount === 2, 'empty velocity and RSSI waveform UI');
+    assertIdleWaveformUi(await idleWaveformUi(cdp));
     const text = await body();
     assert.ok(!text.includes('离线演示工作区'));
-    // The current form uses native required validation, rather than disabling
-    // its button for missing task/IP fields. Prove both validation states
-    // without submitting the form or invoking start against any device.
-    const captureForm = () => cdp.evaluate(`(() => {
-      const form = document.querySelector('.field-capture-setup form');
-      const inputs = [...form.querySelectorAll('input[required]')];
-      const button = form.querySelector('button[type="submit"]');
-      return { valid: form.checkValidity(), missingRequired: inputs.filter(input => input.validity.valueMissing).length,
-        requiredValues: inputs.map(input => input.value), startDisabled: button.disabled };
-    })()`);
-    const emptyForm = await captureForm();
+    // Native validation and the separate primary action must agree. Never
+    // click Start: these reserved documentation addresses are draft values only.
+    const emptyForm = await captureFormState(cdp);
     assert.equal(emptyForm.valid, false, 'Empty acquisition configuration must not pass form validation');
     assert.equal(emptyForm.missingRequired, 3, 'Task name, device IP and host IP must all be required');
     assert.deepEqual(emptyForm.requiredValues, ['', '', '']);
+    assert.equal(emptyForm.startDisabled, true, 'Empty configuration must disable the separate Start button');
     for (const [selector, value] of [
       ['input[aria-label="任务名称"]', 'TEST ONLY · ready control without acquisition'],
       ['input[placeholder="设备 IPv4 地址"]', '192.0.2.10'],
@@ -500,7 +539,7 @@ async function validateInstalledDesktop(directory, environment, temporary, outpu
       await waitFor(async () => await cdp.evaluate(`document.querySelector(${JSON.stringify(selector)}).value`) === value,
         'test-only acquisition field is displayed');
     }
-    await waitFor(async () => { const form = await captureForm(); return form.valid && !form.startDisabled; },
+    await waitFor(async () => { const form = await captureFormState(cdp); return form.valid && !form.startDisabled; },
       'valid test-only configuration enables the ready start control');
     assertIdle((await field({ action: 'status' })).data);
     assert.deepEqual((await field({ action: 'frame' })).data.waveform.values, []);
@@ -653,4 +692,5 @@ async function main() {
 }
 
 if (require.main === module) main().catch(error => { console.error(error.message); process.exitCode = 1; });
-module.exports = { optionsFrom, isolatedEnvironment, assertIdle, assertSdkBindings, REQUIRED_SDK_SYMBOLS, assertIdleWaveformUi };
+module.exports = { optionsFrom, isolatedEnvironment, assertIdle, assertSdkBindings, REQUIRED_SDK_SYMBOLS, assertIdleWaveformUi,
+  idleWaveformUi, captureFormState, validateInstalledAutoFollow, connectCdp };
