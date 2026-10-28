@@ -263,7 +263,7 @@ def import_packages(paths, output, name):
     if output.exists():
         if not receipt_path.is_file():
             raise ValueError('输出目录已存在且不是本工具创建的导入目录；请选择新目录。')
-        receipt = json.loads(receipt_path.read_text())
+        receipt = json.loads(receipt_path.read_text(encoding='utf-8'))
         if receipt.get('collectionId') != plan['collectionId']:
             raise ValueError('输出目录已属于其他导入任务。')
         expected_ids = sorted(r['id'] for r in plan['records'])
@@ -273,7 +273,7 @@ def import_packages(paths, output, name):
             target = output / rid
             if target.is_symlink() or not (target/'manifest.json').is_file():
                 raise ValueError('既有导入文件缺失或不安全。')
-            meta = json.loads((target/'manifest.json').read_text())
+            meta = json.loads((target/'manifest.json').read_text(encoding='utf-8'))
             if meta.get('id') != rid or meta.get('mergedTask',{}).get('collectionId') != plan['collectionId']:
                 raise ValueError('既有导入记录信息不一致。')
             for filename, digest in receipt.get('fileHashes',{}).get(rid,{}).items():

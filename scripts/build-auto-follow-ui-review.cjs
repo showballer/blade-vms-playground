@@ -16,6 +16,7 @@ import ${JSON.stringify(path.join(ui, 'styles.css'))};
 import ${JSON.stringify(path.join(ui, 'field-styles.css'))};
 import ${JSON.stringify(path.join(ui, 'field-turntable.css'))};
 import ${JSON.stringify(path.join(ui, 'field-auto-follow.css'))};
+import ${JSON.stringify(path.join(ui, 'field-turntable-health.css'))};
 const axis=(angle,limit)=>({output_angle_deg:angle,motor_rpm:0,actual_counts:0,commanded_counts:0,error_counts:0,display_mode:3,command_counts_per_rev:10000,encoder_bits:17,flags:3,fault:0,origin_counts:0,home_phase:0,observedAt:1792400000,referenceAngleDeg:0,guard:{soft_enabled:true,hardware_enabled:false,minimum_deg:-limit,maximum_deg:limit}});
 const ready={service:{state:'ready',dllConfigured:true,generation:1},state:'idle',turntable:{state:'idle',port:'COM3',connected:true,motionCapability:{supported:true,mode:'dual_axis_timed',protocol:'0x30-0x36',probe:'confirmed',status:null},feedback:{outputRpm:0,motorRpm:0,alarmCode:0,limitFlags:0,positionRaw:0,axes:{'1':axis(10,35),'2':axis(0,180)}}}};
 window.__autoFixture={calls:[],statusUpdates:[],noHardware:true};
@@ -28,6 +29,9 @@ function App(){
  async function request(options){
   window.__autoFixture.calls.push(options);
   if(options.action==='turntablePorts'){if(window.__autoFixture.holdPorts)await new Promise(resolve=>window.__autoFixture.releasePorts=resolve);return {ports:window.__autoFixture.ports||[{port:'COM3',description:'隔离验收串口'}]};}
+  if(options.action==='turntable'&&options.request.action==='health'){
+   return {...structuredClone(ready),turntable:{...structuredClone(ready.turntable),health:{readOnly:true,readAt:1792400000,axes:{'1':{alarmCode:0,limitFlags:0},'2':{alarmCode:0,limitFlags:0}},motionProfiles:{'1':{accel_ms:100,decel_ms:100,s_curve_ms:0},'2':{accel_ms:100,decel_ms:100,s_curve_ms:0}}}}};
+  }
   if(options.action==='turntable'&&options.request.action==='probe'){
    const reply=structuredClone(window.__autoFixture.probeStatus||ready);
    if(window.__autoFixture.holdProbe)await new Promise(resolve=>window.__autoFixture.releaseProbe=resolve);

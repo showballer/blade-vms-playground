@@ -129,12 +129,15 @@ app.on('browser-window-created', (_event, win) => {
         assert.ok((await body()).includes('显示已暂停，采集和保存仍在继续。'));
         await capture('01-paused');
         await click('恢复显示');
-        await click('停止并保存', 'document.querySelector(".field-live-controls")');
+        await click('停止并保存', 'document.querySelector(".field-plain-capture-toolbar")');
         await waitFor(() => fixture.stops === 1, 'stop');
         // Receiving stop is not UI completion: the handler still flushes the
         // capture and refreshes records before clearing stoppingCapture. Its
         // operation guard intentionally ignores record actions during cleanup.
-        await waitFor(() => js('!document.querySelector(".field-live-controls")'), 'stop/save UI cleanup');
+        // This isolated profile has no configured device/task, so Start may
+        // correctly remain disabled after stopping. Its label plus the account
+        // control verify that both active and stopping state have cleared.
+        await waitFor(() => js(`(() => { const button = document.querySelector('.field-plain-capture-toolbar .field-auto-capture-primary'); const password = document.querySelector('button[aria-label="修改本机密码"]'); return button?.textContent.trim() === '开始采集' && password && !password.disabled; })()`), 'stop/save UI cleanup');
       });
       await click('本机记录'); await waitFor(async () => (await body()).includes('查看波形'), 'records'); await click('查看波形');
       await check('history opens the entire recording, not just its tail', async () => {
@@ -179,7 +182,7 @@ app.on('browser-window-created', (_event, win) => {
         await waitFor(() => panelRequests().length === 2, 'setting confirmed');
         assert.equal(panelRequests()[1].confirmChange, true);
         assert.equal(panelRequests()[1].key, 'bandwidth');
-        await waitFor(async () => (await body()).includes('已修改并读回确认'), 'verified setting');
+        await waitFor(async () => (await body()).includes('配置已修改并确认。'), 'verified setting');
         await capture('04-device-settings');
       });
       await check('autofocus requires separate laser confirmation and no implicit start', async () => {

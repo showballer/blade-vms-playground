@@ -151,6 +151,9 @@ class LaserMotionInterlockTests(unittest.TestCase):
         self.assertEqual(self.api.integers[46], 1)
         self.assertEqual(sum(event[0] == "off_write" for event in self.events), 0)
         self.assertEqual(len({id(gate) for gate in self.gates}), 4)
+        # Older clients omit optical calibration. The normalized status and
+        # saved records must explicitly retain identity scales, not omit them.
+        expected_geometry = {**config["geometry"], "pitchAngleScale": 1, "yawAngleScale": 1}
         for record in records:
             meta = record["pointCycle"]
             self.assertEqual(record["samples"], 900)
@@ -166,7 +169,35 @@ class LaserMotionInterlockTests(unittest.TestCase):
             self.assertEqual(meta["rootRadiusM"], .1)
             self.assertEqual(meta["bladeLengthM"], .6)
             self.assertEqual(meta["plannedStations"][0]["axis1AngleDeg"], config["points"][0]["axis1AngleDeg"])
-        self.assertEqual(result["pointCycle"]["geometry"], config["geometry"])
+            self.assertEqual(record["turntable"]["config"]["geometry"], expected_geometry)
+        self.assertEqual(result["pointCycle"]["geometry"], expected_geometry)
+
+    def test_calibrated_targets_and_saved_geometry_survive_the_motion_interlock(self):
+        config = automatic_config(azimuths=(90, 180))
+        pitch_scale, yaw_scale = .896932, .950153
+        config["geometry"] = {**config["geometry"], "pitchAngleScale": pitch_scale,
+                              "yawAngleScale": yaw_scale}
+        # This fixture's anchor is zero, so the corrected target is the
+        # uncalibrated angle times its axis scale. Do not recalculate using the
+        # production geometry helper: this also catches applying a scale twice.
+        for point in config["points"]:
+            point["axis1AngleDeg"] *= pitch_scale
+            point["axis2AngleDeg"] *= yaw_scale
+        original = copy.deepcopy(config)
+        result = self.run_cycle(config)
+        self.assertEqual(result["state"], "idle", result)
+        self.assertEqual(config, original)
+        self.assertEqual(result["pointCycle"]["geometry"], original["geometry"])
+        self.assertEqual([event[1] for event in self.events if event[0] == "daq_open"],
+                         [{1: point["axis1AngleDeg"], 2: point["axis2AngleDeg"]}
+                          for point in original["points"]])
+        records = self.controller.store.list()
+        self.assertEqual(len(records), 2)
+        for record in records:
+            self.assertEqual(record["pointCycle"]["completion"], "confirmed_pass")
+            self.assertEqual(record["turntable"]["config"]["geometry"], original["geometry"])
+        self.assertEqual(len({id(gate) for gate in self.gates}), 2)
+        self.assertEqual(sum(event[0] == "off_write" for event in self.events), 0)
 
     def test_calibrated_first_hold_does_not_reposition_or_turn_off_before_start(self):
         result = self.run_cycle(automatic_config(azimuths=(0,), startAtCurrentPose=True))

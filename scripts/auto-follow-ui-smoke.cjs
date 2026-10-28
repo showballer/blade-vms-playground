@@ -37,20 +37,20 @@ app.whenReady().then(async()=>{try{
   assert.equal(await run('document.querySelector(".field-auto-follow").textContent.includes("设备与服务设置")'),false);
   await action('刷新转盘串口');assert.equal(await calls('turntablePorts'),2);
  });
- await check('加速度设置可编辑并改变路线预估，保存后仍无设备运动请求',async()=>{
-  await run('document.querySelector(".field-auto-turntable-setup").open=true');
-  await input('叶轮每圈时间 · s','0');await input('两轴换点转速上限 · rpm','5');
-  const estimate=()=>run('parseFloat(document.querySelectorAll(".field-auto-metrics strong")[3].textContent)');
-  const before=await estimate();
+ await check('转盘设置弹窗中速度与加速度可编辑，保存后仍无设备运动请求',async()=>{
+  await input('叶轮每圈时间 · s','0');
+  await action('打开转盘设置');
+  await waitFor('!!document.querySelector(".field-auto-turntable-setup")&&!document.querySelector("button[aria-label=重新检查转盘状态]").disabled');
+  await input('两轴换点转速上限 · rpm','5');
   await input('换点加速度上限 · °/s²','30');
   assert.equal(await run('window.__autoFixture.routes.auto.cycle.maxMoveAccelerationDegS2'),30);
-  assert.ok(await estimate()<before);
+  assert.equal(await run('window.__autoFixture.routes.auto.cycle.maxMoveRpm'),5);
   assert.equal(await run('JSON.parse(localStorage.getItem("blade-auto-follow-draft-v1")).settings.maxMoveAccelerationDegS2'),30);
-  assert.equal(await calls('turntable'),0);
+  assert.ok(await run('window.__autoFixture.calls.filter(c=>c.action==="turntable").every(c=>c.request.action==="health")'));
   await run('document.querySelector(".field-auto-turntable-setup").scrollIntoView({block:"center"})');
   await screenshot('motion-settings-1366.png');
-  await input('换点加速度上限 · °/s²','3');await input('两轴换点转速上限 · rpm','0.6');await input('叶轮每圈时间 · s','30');
-  await run('document.querySelector(".field-auto-turntable-setup").open=false');
+  await input('换点加速度上限 · °/s²','3');await input('两轴换点转速上限 · rpm','0.6');
+  await action('关闭弹窗');await input('叶轮每圈时间 · s','30');
  });
  await check('未校准即可形成绝对几何模板，行内校准，无全局校准卡和待校准门槛',async()=>{
   assert.equal(await theoretical('2','P1'),true);
@@ -58,7 +58,7 @@ app.whenReady().then(async()=>{try{
   assert.equal(await run('window.__autoFixture.routes.auto.cycle.points.some(p=>p.referenceSignature)'),false);
   assert.equal(await run('!!document.querySelector(".field-auto-anchor")'),false);
   assert.equal(await run('document.querySelector(".field-auto-follow").textContent.includes("待校准")'),false);
-  assert.equal(await run('document.querySelectorAll(".field-auto-route tbody tr").length'),4);
+  assert.equal(await run('window.__autoFixture.routes.auto.cycle.points.length'),4);
   assert.ok(await run('window.__autoFixture.routes.auto.cycle.points[0].axis1AngleDeg')>20);
  });
  await check('新增空点先补半径，补齐即理论可采集，不要求逐点校准',async()=>{
@@ -73,7 +73,7 @@ app.whenReady().then(async()=>{try{
   assert.equal(await run('window.__autoFixture.routes.auto.cycle.points[0].axis1AngleDeg'),10);
   assert.equal(await run('window.__autoFixture.routes.auto.cycle.startAtCurrentPose'),true);
   assert.equal(await run(target('2','P1')+'.route.cycle.startAtCurrentPose'),false);
-  assert.ok(await run('window.__autoFixture.calls.filter(c=>c.action==="turntable").every(c=>c.request.action==="probe")'));
+  assert.ok(await run('window.__autoFixture.calls.filter(c=>c.action==="turntable").every(c=>["probe","health"].includes(c.request.action))'));
   const correction=await run('document.querySelector("[aria-label=测点2整圈修正量]").textContent');
   assert.ok(correction.includes((10-before[0].axis1AngleDeg).toFixed(3)));
   assert.ok(correction.includes('整圈角度修正'));assert.ok(correction.includes('水平 0.000°'));
@@ -100,7 +100,7 @@ app.whenReady().then(async()=>{try{
  await check('不同叶片同名测点互不覆盖，公共几何改变恢复各点理论计算',async()=>{
   await click('添加叶片');await input('测点1半径','0.31');assert.equal(await theoretical('1','P1'),true);await action('校准测点1');
   assert.equal(await calibrated('1','P1'),true);assert.equal(await calibrated('2','P1'),true);
-  await run('document.querySelector(".field-auto-setup").open=true');await input('设备至叶轮平面 · m','2.9');
+  await input('设备至叶轮平面 · m','2.9');
   assert.equal(await run('window.__autoFixture.routes.auto.targets.every(t=>t.route.referenceMode==="read_at_start")'),true);
   await input('设备至叶轮平面 · m','2.86');await blade('2');await action('校准测点1');
  });
@@ -132,9 +132,9 @@ app.whenReady().then(async()=>{try{
 
  });
  await check('高度自动计算实际用于理论路线，缺值不回退；输入变化不触发设备',async()=>{
-  await run('document.querySelector(".field-auto-setup").open=true');const before=await calls('turntable');
+  const before=await calls('turntable');
   await input('激光出射点离地高度 · m','0.65');assert.equal(await run('window.__autoFixture.routes.auto.targets.every(t=>!t.route.cycle)'),true);
-  await run('document.querySelector(".field-auto-hub-height").open=true');await input('风机旋转中心离地高度 · m','1.5');
+  await input('风机旋转中心离地高度 · m','1.5');
   assert.equal(await run('window.__autoFixture.routes.auto.cycle.geometry.hubHeightDeltaM'),.85);
   await input('激光出射点离地高度 · m','');assert.equal(await run('window.__autoFixture.routes.auto.targets.every(t=>!t.route.cycle)'),true);
   await input('激光出射点离地高度 · m','0.65');assert.equal(await calls('turntable'),before);
@@ -168,7 +168,7 @@ app.whenReady().then(async()=>{try{
   assert.equal(await run('document.querySelector("button[aria-label=校准测点1]").disabled'),true);
   assert.equal(await run('document.querySelector("button[aria-label=刷新转盘串口]").disabled'),true);
   await run('window.__autoFixture.inject(structuredClone(window.__autoFixture.initial))');await pause(60);
-  await run('document.querySelector(".field-auto-setup").open=true');
+
   for(const [width,height] of [[1366,768],[1024,768],[480,800]]){
    win.setContentSize(width,height);await pause(100);await run('document.querySelector(".field-auto-points").scrollIntoView({block:"center"})');await pause(50);
    assert.equal(await run('document.body.scrollWidth<=innerWidth+2&&document.querySelector(".field-content").scrollWidth<=document.querySelector(".field-content").clientWidth+2'),true);

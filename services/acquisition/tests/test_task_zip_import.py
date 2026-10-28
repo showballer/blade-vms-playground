@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
 
 import numpy as np
@@ -90,7 +91,7 @@ class TaskZipImportTests(unittest.TestCase):
             self.assertNotIn('captureSessionId',m)
             self.assertEqual(m['importSource']['originalCaptureSessionId'],original['captureSessionId'])
             self.assertFalse(m['importSource']['rawCodesAvailable']);self.assertFalse(m['mergedTask']['continuousMeasurement'])
-            self.assertEqual(json.loads((store.directory(rid)/'source-export-manifest.json').read_text()),original)
+            self.assertEqual(json.loads((store.directory(rid)/'source-export-manifest.json').read_text(encoding='utf-8')),original)
             chunk=store.chunks(store.directory(rid))[0].read_bytes()
             self.assertEqual(HEADER.unpack(chunk[:HEADER.size]),(MAGIC,250000.,1700000000.,0))
             data=np.frombuffer(chunk[HEADER.size:],dtype=RECORD_DTYPE)
@@ -103,6 +104,20 @@ class TaskZipImportTests(unittest.TestCase):
         first=importer.import_packages([path,duplicate],self.root/'out','合并')
         second=importer.import_packages([path],self.root/'out','合并')
         self.assertEqual(first['recordCount'],1);self.assertTrue(second['reused'])
+        self.assertEqual(first['recordingIds'],second['recordingIds'])
+
+    def test_repeat_import_reads_utf8_metadata_under_legacy_windows_default(self):
+        path,_=self.package()
+        read_text = Path.read_text
+        def legacy_read_text(file, *args, **kwargs):
+            if not args and not kwargs.get('encoding'):
+                kwargs['encoding'] = 'cp1252'
+            return read_text(file, *args, **kwargs)
+        with patch.object(Path, 'read_text', legacy_read_text):
+            first=importer.import_packages([path],self.root/'out','叶片2 · 合并任务')
+            second=importer.import_packages([path],self.root/'out','叶片2 · 合并任务')
+        self.assertTrue(second['reused'])
+        self.assertEqual(second['name'], '叶片2 · 合并任务')
         self.assertEqual(first['recordingIds'],second['recordingIds'])
 
     def test_existing_live_store_is_never_modified(self):

@@ -259,7 +259,7 @@ class ContinuousCycleTests(unittest.TestCase):
         if live_fences:
             self.assertGreaterEqual(len(fence_checks), 3, 'must exercise startup and moving-point fences')
         records = sorted((root / 'recordings').glob('*/manifest.json'),
-                         key=lambda p: json.loads(p.read_text())['pointCycle']['pointIndex'])
+                         key=lambda p: json.loads(p.read_text(encoding='utf-8'))['pointCycle']['pointIndex'])
         raw = list((root / 'continuous-sessions').glob('*/manifest.json'))
         return controller, sdk, records, raw, gates, moves, movement_ranges
 
@@ -271,7 +271,7 @@ class ContinuousCycleTests(unittest.TestCase):
                 self.assertEqual(len(moves), 1)
                 self.assertEqual(sdk.events.count('start'), 1)
                 self.assertEqual(len(paths), 2)
-                second = json.loads(paths[1].read_text())
+                second = json.loads(paths[1].read_text(encoding='utf-8'))
                 self.assertEqual(second['name'], START['name'])
                 self.assertEqual(second['originalTaskName'], START['name'])
                 self.assertTrue(second['diagnosticOnly'])
@@ -300,11 +300,11 @@ class ContinuousCycleTests(unittest.TestCase):
                 self.assertEqual(controller.status()['pointCycle']['state'], 'complete')
                 self.assertEqual(len(moves), 2)
                 self.assertEqual(len(gates), 1)
-                raw_manifest = json.loads(raw[0].read_text())
+                raw_manifest = json.loads(raw[0].read_text(encoding='utf-8'))
                 self.assertEqual(raw_manifest['samples'], sdk.submitted)
                 self.assertEqual(len(raw_manifest['diagnosticBookmarks']), 2)
                 raw_rows = stored_rows(raw[0])
-                records = [json.loads(p.read_text()) for p in paths]
+                records = [json.loads(p.read_text(encoding='utf-8')) for p in paths]
                 third_command = records[1]['pointCycle']['handoff']['motionCommandAt']
                 for manifest, path in zip(records[1:], paths[1:]):
                     pc = manifest['pointCycle']
@@ -334,14 +334,14 @@ class ContinuousCycleTests(unittest.TestCase):
                     linger_after_early=True)
                 frames.append(controller.frame(1000))
                 self.assertEqual(len(frames), 2)
-                records = {json.loads(p.read_text())['id']: p for p in paths}
+                records = {json.loads(p.read_text(encoding='utf-8'))['id']: p for p in paths}
                 for frame in frames:
                     manifest, wave = frame['recording'], frame['waveform']
                     self.assertTrue(manifest['diagnosticOnly'])
                     self.assertFalse(manifest['validMeasurement'])
                     self.assertEqual(manifest['pointCycle']['handoff']['sampleClock'], 'continuous_session_raw')
                     actual = stored_rows(records[manifest['id']])
-                    final = json.loads(records[manifest['id']].read_text())
+                    final = json.loads(records[manifest['id']].read_text(encoding='utf-8'))
                     self.assertEqual(manifest['samples'], len(actual))
                     self.assertEqual(wave['sampleStart'], 0)
                     self.assertEqual(wave['sampleRate'], final['sampleRate'])
@@ -363,7 +363,7 @@ class ContinuousCycleTests(unittest.TestCase):
                     self.assertIn(controller.status()['pointCycle']['state'], ('error', 'cancelled'))
                     self.assertEqual(len(moves), 1, 'must not command third point after fault/cancel')
                     self.assertEqual(len(gates), 1)
-                    manifest = json.loads(raw[0].read_text())
+                    manifest = json.loads(raw[0].read_text(encoding='utf-8'))
                     self.assertEqual(manifest['samples'], sdk.submitted)
                     self.assertEqual(manifest['status'], 'error')
 
@@ -375,11 +375,11 @@ class ContinuousCycleTests(unittest.TestCase):
                 self.assertEqual(controller.status()['pointCycle']['state'], 'error')
                 self.assertIn('deferred copy disk failure', controller.status()['error'])
                 self.assertEqual(len(moves), 2)
-                manifest = json.loads(raw[0].read_text())
+                manifest = json.loads(raw[0].read_text(encoding='utf-8'))
                 self.assertEqual(manifest['samples'], sdk.submitted)
                 self.assertEqual(len(manifest['diagnosticBookmarks']), 2)
                 self.assertEqual(controller.status()['pointCycle']['completedRecords'], 1)
-                self.assertEqual([json.loads(p.read_text())['status'] for p in paths],
+                self.assertEqual([json.loads(p.read_text(encoding='utf-8'))['status'] for p in paths],
                                  ['complete', 'error', 'error'])
                 self.assertEqual(controller.frame(1000)['waveform']['values'], [])
 
@@ -391,7 +391,7 @@ class ContinuousCycleTests(unittest.TestCase):
                 self.assertEqual(controller.status()['pointCycle']['state'], 'complete')
                 self.assertEqual(len(moves), 1)
                 self.assertEqual(len(records), 2)
-                manifest = json.loads(raw[0].read_text())
+                manifest = json.loads(raw[0].read_text(encoding='utf-8'))
                 self.assertEqual(manifest['status'], 'complete')
                 self.assertEqual(manifest['samples'], sdk.submitted)
 
@@ -403,10 +403,10 @@ class ContinuousCycleTests(unittest.TestCase):
                 self.assertEqual(sdk.events.count('start'), 1)
                 self.assertEqual(len(moves), 1)
                 for path in paths:
-                    pc = json.loads(path.read_text())['pointCycle']
+                    pc = json.loads(path.read_text(encoding='utf-8'))['pointCycle']
                     self.assertEqual(pc['laserPolicy'], 'off_during_motion')
                     self.assertFalse(any(a <= row[1] < b for row in stored_rows(path) for a,b in transit))
-                move = json.loads(paths[0].read_text())['pointCycle']['handoff']['completedMove']
+                move = json.loads(paths[0].read_text(encoding='utf-8'))['pointCycle']['handoff']['completedMove']
                 self.assertEqual(move['laserOffBeforeMotion']['state'], 'off')
                 self.assertEqual(move['laserOnAfterArrival']['state'], 'on')
                 self.assertGreaterEqual(move['laserOnAfterArrival']['confirmedAt'], move['motionArrivedAt'])
@@ -423,7 +423,7 @@ class ContinuousCycleTests(unittest.TestCase):
                 self.assertEqual(len(gates), 2)
                 self.assertEqual(len(paths), 2)
                 self.assertEqual(len(raw), 1)
-                raw_manifest = json.loads(raw[0].read_text())
+                raw_manifest = json.loads(raw[0].read_text(encoding='utf-8'))
                 self.assertEqual(raw_manifest['kind'], 'continuous_raw_session')
                 self.assertEqual(raw_manifest['status'], 'complete')
                 rows = stored_rows(raw[0])
@@ -431,7 +431,7 @@ class ContinuousCycleTests(unittest.TestCase):
                 self.assertEqual([row[1] for row in rows], list(range(sdk.submitted)))
                 self.assertEqual(raw_manifest['samples'], sdk.submitted)
                 for path in paths:
-                    record = json.loads(path.read_text())
+                    record = json.loads(path.read_text(encoding='utf-8'))
                     pc = record['pointCycle']
                     self.assertEqual(record['status'], 'complete')
                     self.assertEqual(pc['completion'], 'confirmed_pass')
@@ -463,7 +463,7 @@ class ContinuousCycleTests(unittest.TestCase):
         self.assertEqual(sdk.events.count('start'), 1)
         self.assertFalse(sdk.active)
         self.assertEqual(len(raw), 1)
-        self.assertNotEqual(json.loads(raw[0].read_text())['status'], 'complete')
+        self.assertNotEqual(json.loads(raw[0].read_text(encoding='utf-8'))['status'], 'complete')
         self.assertEqual(len(stored_rows(raw[0])), sdk.submitted)
         self.assertLessEqual(len(paths), 1)
 
@@ -476,9 +476,9 @@ class ContinuousCycleTests(unittest.TestCase):
         self.assertEqual(sdk.events.count('start'), 1)
         self.assertFalse(sdk.active)
         self.assertEqual(len(raw), 1)
-        self.assertNotEqual(json.loads(raw[0].read_text())['status'], 'complete')
-        self.assertTrue(all(json.loads(path.read_text())['pointCycle']['pointIndex'] == 1 or
-                            json.loads(path.read_text())['status'] != 'complete' for path in paths))
+        self.assertNotEqual(json.loads(raw[0].read_text(encoding='utf-8'))['status'], 'complete')
+        self.assertTrue(all(json.loads(path.read_text(encoding='utf-8'))['pointCycle']['pointIndex'] == 1 or
+                            json.loads(path.read_text(encoding='utf-8'))['status'] != 'complete' for path in paths))
 
 
     def test_user_stop_closes_one_daq_and_preserves_partial_station(self):
@@ -490,10 +490,10 @@ class ContinuousCycleTests(unittest.TestCase):
         self.assertFalse(sdk.active)
         self.assertIsNone(controller.continuous_capture)
         self.assertEqual(len(raw), 1)
-        self.assertNotEqual(json.loads(raw[0].read_text())['status'], 'complete')
+        self.assertNotEqual(json.loads(raw[0].read_text(encoding='utf-8'))['status'], 'complete')
         self.assertEqual([row[1] for row in stored_rows(raw[0])], list(range(sdk.submitted)))
-        point_two = next(json.loads(path.read_text()) for path in paths
-                         if json.loads(path.read_text())['pointCycle']['pointIndex'] == 2)
+        point_two = next(json.loads(path.read_text(encoding='utf-8')) for path in paths
+                         if json.loads(path.read_text(encoding='utf-8'))['pointCycle']['pointIndex'] == 2)
         self.assertNotEqual(point_two['status'], 'complete')
         self.assertNotEqual(point_two['pointCycle'].get('completion'), 'confirmed_pass')
 
@@ -506,8 +506,8 @@ class ContinuousCycleTests(unittest.TestCase):
         self.assertEqual(sdk.events.count('start'), 1)
         self.assertFalse(sdk.active)
         self.assertEqual(controller.status()['pointCycle']['completedRecords'], 0)
-        self.assertTrue(all(json.loads(path.read_text())['status'] != 'complete' for path in paths))
-        self.assertNotEqual(json.loads(raw[0].read_text())['status'], 'complete')
+        self.assertTrue(all(json.loads(path.read_text(encoding='utf-8'))['status'] != 'complete' for path in paths))
+        self.assertNotEqual(json.loads(raw[0].read_text(encoding='utf-8'))['status'], 'complete')
 
 
     def test_pending_disk_owner_blocks_start_after_receiver_thread_exits(self):

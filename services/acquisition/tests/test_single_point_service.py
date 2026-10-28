@@ -445,8 +445,17 @@ class SinglePointServiceTests(unittest.TestCase):
         self.seed_sync()
         self.motor.command_delay[1] = 0.04
         self.assertEqual(self.post("arm", confirmMotion=True).status_code, 200)
-        done = self.wait_state({"error"})
+        # The injected protocol clock must still reject 40 ms against the
+        # configured 20 ms budget. Terminal publication also fsyncs pending
+        # motion and telemetry files; allow a busy Windows runner to finish
+        # those real writes without mistaking their wall time for wire time.
+        done = self.wait_state({"error"}, timeout=15)
         self.assertTrue("延迟预算" in done["error"] or "发送时限" in done["error"])
+        commands = [event for event in done["events"] if event["event"] == "single_point_motion_command"]
+        self.assertEqual(len(commands), 1)
+        self.assertEqual(commands[0]["axis"], 1)
+        self.assertAlmostEqual(commands[0]["commandReturnedAt"] - commands[0]["commandSentAt"], 0.04, places=5)
+        self.assertIsNone(commands[0]["acceptedRpm"])
         self.assertEqual([item[0] for item in self.motor.commands], [1])
         self.assertEqual(self.motor.start_calls, 0)
         self.assertTrue(done["stopConfirmed"])

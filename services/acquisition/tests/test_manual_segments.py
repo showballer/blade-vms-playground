@@ -164,7 +164,7 @@ class ManualSegmentLifecycleTests(unittest.TestCase):
                     break
                 self.assertEqual(controller.status()['pointCycle']['state'], 'complete', controller.status())
             preload.assert_not_called()
-        records = [json.loads(p.read_text()) for p in (root/'recordings').glob('*/manifest.json')]
+        records = [json.loads(p.read_text(encoding='utf-8')) for p in (root/'recordings').glob('*/manifest.json')]
         return controller, sdk, motor, records, moves, gate_counts, sessions
 
     def test_single_and_two_point_segments_on_mac_and_windows_stop_then_wait(self):
