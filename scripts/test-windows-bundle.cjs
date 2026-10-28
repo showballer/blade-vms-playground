@@ -388,9 +388,13 @@ async function validateInstalledAutoFollow(cdp, field, output, { expectedRecordi
     assert.ok(initial.text.includes(label), `Installed automatic-follow UI lacks ${label}`);
   }
   assert.equal(initial.installationOpen, false, 'Installation calibration must start collapsed');
-  // Open settings with an empty connection, so its normal automatic health
-  // check is blocked locally and cannot issue a serial/TCP device request.
-  await setInput('自动跟随转盘串口', '');
+  // A fresh Windows VM can enumerate exactly one virtual COM port and select
+  // it asynchronously. Writing an already-empty value does not fire React's
+  // onChange, so explicitly enter an invalid nonempty draft: this increments
+  // the user's edit revision and prevents the pending enumeration replacing it.
+  // Opening settings then remains locally blocked and cannot query any device.
+  await setInput('自动跟随转盘串口', 'qa-invalid-before-settings');
+  await waitFor(async () => (await savedSurvey())?.port === 'qa-invalid-before-settings', 'invalid connection persisted before settings');
   await click('button[aria-label="打开转盘设置"]', '配置与检查');
   const installation = await waitFor(async () => { const value = await snapshot(); return value?.installationOpen && value; }, 'installed turntable settings dialog');
   for (const label of ['俯仰轴方向', '水平轴方向', '两轴换点转速上限 · rpm']) {
@@ -447,8 +451,24 @@ async function validateInstalledAutoFollow(cdp, field, output, { expectedRecordi
   })()`), 'installed independent point capture choices');
   assert.deepEqual(captureTargets.map(row => [row.name, row.stations, row.cycles]), [['P1', '4 个', '1 轮'], ['P2', '4 个', '1 轮']]);
   assert.deepEqual(captureTargets.map(row => row.selected), [true, false]);
-  assert.equal(await cdp.evaluate(`document.querySelector('.field-auto-capture-list .field-auto-capture-primary').disabled`), true,
-    'Missing turntable connection must block acquisition without inventing calibration');
+  // The hidden configuration remains editable. Establish this precondition
+  // again after navigation/mode effects, instead of assuming no ports exist on
+  // the host. Never click Start or probe the enumerated virtual/physical port.
+  await setInput('自动跟随转盘串口', 'qa-invalid-before-start');
+  const connectionGuard = () => cdp.evaluate(`(() => {
+    const input = document.querySelector('input[aria-label="自动跟随转盘串口"]');
+    const saved = JSON.parse(localStorage.getItem('blade-auto-follow-draft-v1'));
+    const button = document.querySelector('.field-auto-capture-list .field-auto-capture-primary');
+    return { port: input?.value, savedPort: saved?.port, startDisabled: button?.disabled,
+      reason: button?.title, mode: document.querySelector('.field-link-mode [aria-pressed=true]')?.textContent.trim() };
+  })()`);
+  await waitFor(async () => {
+    const value = await connectionGuard();
+    return value.port === 'qa-invalid-before-start' && value.savedPort === value.port &&
+      value.startDisabled === true && /请选择有效的转盘串口/.test(value.reason) && value.mode === '自动跟随';
+  }, 'explicitly invalid connection blocks installed acquisition').catch(async error => {
+    throw Error(`${error.message}: ${JSON.stringify(await connectionGuard())}`);
+  });
   assertIdle((await field({ action: 'status' })).data);
   assert.deepEqual((await field({ action: 'recordings' })).data.recordings.map(item => item.id).sort(), [...expectedRecordingIds].sort(),
     'Editing the installed point configuration must not create or remove recordings');
