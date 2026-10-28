@@ -39,6 +39,7 @@ async function main() {
       rotationWorker(user, { action: "recordings" }),
     ]);
     assert.deepEqual(catalogs[0], catalogs[1]);
+    assert.deepEqual(catalogs[0].recordings[0], upload.recordings[0], "read-only catalogue preserves the worker's manifest metadata");
     const overlapping = await Promise.all([
       rotationWorker(user, { action: "recordings" }),
       rotationWorker(user, {
@@ -47,6 +48,14 @@ async function main() {
       }),
     ]);
     assert.equal(overlapping[1].peaks[0].frequencyHz, 50);
+    // The opposite ordering exposed the real UI race: analysis already owns
+    // the account worker when a catalogue refresh or source selector opens.
+    const busyAnalysis = rotationWorker(user, {
+      action: "measurement-analysis", parameters: { recordingId, windowSeconds: 1 },
+    });
+    const duringAnalysis = await rotationWorker(user, { action: "recordings" });
+    assert.equal(duringAnalysis.recordings[0].id, recordingId);
+    assert.equal((await busyAnalysis).peaks[0].frequencyHz, 50);
     const r = await rotationWorker(user, {
       action: "measurement-analysis",
       parameters: { recordingId, windowSeconds: 1 },

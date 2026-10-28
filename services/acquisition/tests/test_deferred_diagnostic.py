@@ -43,6 +43,10 @@ class DeferredDiagnosticTests(unittest.TestCase):
     def test_no_station_io_before_raw_finish_and_lossless_cross_chunk_copy(self):
         self.write_raw()
         record = self.record()
+        self.assertEqual(record.manifest['status'], 'incomplete')
+        self.assertEqual(record.manifest['samples'], 13)
+        self.assertEqual(record.manifest['sampleRate'], 1000)
+        self.assertEqual(record.manifest['sampleOrigin'], 1234.503)
         record.finish(wait=False)
         self.assertEqual(self.store.list(), [])
         with self.assertRaises(TimeoutError):

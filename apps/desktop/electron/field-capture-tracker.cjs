@@ -81,6 +81,16 @@ function createCaptureTracker({ file, dataDir, auth, sync, getSnapshot, interval
       const inactive = !snapshot?.receiver?.running && !['starting', 'acquiring', 'stopping'].includes(snapshot?.state) &&
         ['ready', 'stopped'].includes(snapshot?.service?.state) && !snapshot?.service?.error;
       const activeId = snapshot?.receiver?.running && snapshot?.recording?.status === 'incomplete' ? snapshot.recording.id : null;
+      // Early-pass records can remain in memory until the continuous archive is
+      // finalized. Authorize their live preview from this run's current writer;
+      // only a terminal on-disk manifest below may enroll a completed upload.
+      const current = snapshot?.recording;
+      const currentRun = plain(current) && ID.test(current.id) && activeId === current.id &&
+        saved.runs.find(run => run.id === current.captureSessionId && run.owner === owner &&
+          !pending.has(run.id) && !run.records[current.id]);
+      if (currentRun && ownerOf(auth.cloudBinding()) === owner) {
+        sync.observeRecording(current, { owner, active: true });
+      }
       let entries, root;
       try { root = await fs.promises.realpath(dataDir); entries = await fs.promises.readdir(dataDir, { withFileTypes: true }); }
       catch (cause) { if (cause.code === 'ENOENT') return; throw cause; }
@@ -95,6 +105,7 @@ function createCaptureTracker({ file, dataDir, auth, sync, getSnapshot, interval
         const run = saved.runs.find(item => item.id === recording.captureSessionId);
         if (!run) { ignored.add(entry.name); continue; }
         if (run.owner !== owner || pending.has(run.id)) continue;
+        if (currentRun && recording.id === current.id && recording.status === 'incomplete') continue;
         const active = recording.id === activeId && recording.status === 'incomplete';
         // A newly created next point can appear after the status snapshot.
         // Do not label that point incomplete/error until the worker is idle.

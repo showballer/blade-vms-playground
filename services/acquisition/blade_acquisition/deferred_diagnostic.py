@@ -60,6 +60,15 @@ class DeferredDiagnosticRecord:
         self.store, self.raw_writer = store, raw_writer
         self.start, self.end = start, end
         self.manifest = recording_manifest(copy.deepcopy(metadata))
+        # The raw window is already received, but is not a saved station yet.
+        # Expose its real local clock for live preview; only wait() may publish
+        # a complete manifest/files eligible for upload.
+        source = raw_writer.manifest
+        self.manifest.update(samples=end - start, sampleRate=source['sampleRate'],
+                             sampleOrigin=source['sampleOrigin'] + start / source['sampleRate'])
+        for key in ('rssiSampleStride', 'rssiSampleRate'):
+            if key in source:
+                self.manifest[key] = source[key]
         self.id = self.manifest['id']
         self.directory = store.directory(self.id)
         self._final_metadata = None
@@ -98,6 +107,10 @@ class DeferredDiagnosticRecord:
         try:
             writer = RecordingWriter(self.store, self._final_metadata, recording_id=self.id,
                                      started_at=self.manifest['startedAt'])
+            # Keep the known clock coherent even if copying fails before the
+            # first batch. Samples/chunks still remain zero until actual writes.
+            writer.manifest.update(sampleRate=self.manifest['sampleRate'],
+                                   sampleOrigin=self.manifest['sampleOrigin'])
             if raw_error:
                 raise RuntimeError(raw_error)
             copy_raw_window(self.raw_writer, writer, self.start, self.end)

@@ -74,9 +74,11 @@
     "test:capture-layout-ui": "electron scripts/field-capture-layout-smoke.cjs",
     "package:mac": "node scripts/package-macos.cjs",
     "test:task-search-ui": "electron scripts/field-task-search-ui-smoke.cjs",
-    "test:measurement": "tsx scripts/test-measurement-domain.ts && tsx scripts/test-measurement-worker.ts && tsx scripts/test-measurement-live.ts && tsx scripts/test-measurement-report.ts && npm run test:measurement-synthesis",
+    "test:measurement": "tsx scripts/test-measurement-domain.ts && tsx scripts/test-measurement-worker.ts && tsx scripts/test-measurement-live.ts && tsx scripts/test-measurement-report.ts && npm run test:measurement-synthesis && npm run test:measurement-sync",
     "test:measurement-synthesis": "tsx --tsconfig apps/web/tsconfig.json scripts/test-measurement-synthesis.ts && tsx --tsconfig apps/web/tsconfig.json packages/ui/src/measurement-response-3d.test.tsx",
-    "test:measurement-ui": "electron scripts/measurement-ui-smoke.cjs"
+    "test:measurement-ui": "electron scripts/measurement-ui-smoke.cjs",
+    "test:measurement-sync": "tsx --tsconfig apps/web/tsconfig.json scripts/test-measurement-sync.ts",
+    "test:measurement-sync-e2e": "node --env-file=apps/web/.env.local scripts/test-measurement-sync-e2e.cjs"
   },
   "devDependencies": {
     "@types/node": "^22.19.0",

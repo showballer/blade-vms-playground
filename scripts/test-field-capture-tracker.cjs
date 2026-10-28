@@ -117,6 +117,40 @@ test('ordinary acquisition retains live and automatic save upload behavior', asy
   assert.equal(f.captures.get(current.id).complete, true);
 });
 
+test('in-memory deferred points preview immediately but upload only after complete manifests materialize', async t => {
+  const f = fixture(t), sync = f.queue(), tracker = f.tracker(sync), run = tracker.prepare(); tracker.activate(run);
+  const deferred = number => {
+    const record = f.recording(number, run, 'incomplete', true);
+    record.diagnosticOnly = true; record.validMeasurement = false;
+    record.pointCycle.recordPreparation = 'deferred_from_continuous_raw';
+    fs.rmSync(path.join(f.dataDir, record.id), { recursive: true });
+    return record;
+  };
+  const first = deferred(1); f.active(first); await tracker.scan(); await f.settle(sync);
+  assert.equal(f.captures.get(first.id).live.length > 0, true);
+  assert.equal(f.captures.get(first.id).live.at(-1).recording.diagnosticOnly, true);
+  assert.equal(fs.existsSync(path.join(f.dataDir, first.id)), false, 'preview never writes a fake record');
+  const second = deferred(2); f.active(second); await tracker.scan(); await f.settle(sync);
+  assert.equal(f.captures.get(second.id).live.length > 0, true);
+  assert.equal(f.requests.some(request => request.url.endsWith('/upload')), false, 'switching writers cannot upload a deferred record before materialization');
+  assert.equal(sync.status().items.every(item => item.state === 'recording' && !item.error), true);
+  f.recording(1, run, 'complete', true); f.recording(2, run, 'complete', true);
+  f.idle(); await tracker.flush(f.snapshot); await f.settle(sync);
+  assert.equal(f.captures.get(first.id).complete, true); assert.equal(f.captures.get(second.id).complete, true);
+  assert.equal(f.captures.get(first.id).live.at(-1).state, 'stopped');
+  assert.equal(f.captures.get(second.id).live.at(-1).state, 'stopped');
+  assert.equal(tracker.status().pendingRuns, 0);
+});
+
+test('a live memory snapshot without an authorized run cannot enroll or upload history', async t => {
+  const f = fixture(t), sync = f.queue(), tracker = f.tracker(sync), run = tracker.prepare(); tracker.activate(run);
+  const foreign = f.recording(1, id(999), 'incomplete', true);
+  fs.rmSync(path.join(f.dataDir, foreign.id), { recursive: true }); f.active(foreign);
+  await tracker.scan(); await f.settle(sync);
+  assert.equal(f.captures.size, 0); assert.equal(sync.status().items.length, 0);
+  assert.equal(tracker.status().pendingRuns, 1);
+});
+
 test('auto-sync off or no bound account enrolls no run and cannot sweep existing recordings', async t => {
   const f = fixture(t), sync = f.queue(), tracker = f.tracker(sync);
   sync.setEnabled(false); assert.equal(tracker.prepare(), null); f.recording(1); await tracker.scan();

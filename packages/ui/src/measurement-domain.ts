@@ -227,7 +227,7 @@ export function isDiagnosticMeasurement(value: any): boolean {
     item.diagnosticOnly === true || item.validMeasurement === false ||
     item.pointCycle?.completion === "diagnostic_pass" ||
     item.pointCycle?.outcome === "diagnostic" ||
-    item.pointCycle?.diagnosticOnly === true
+    item.pointCycle?.diagnosticOnly === true || item.pointCycle?.validMeasurement === false
   ));
 }
 /** A local waveform alert must not disappear behind another azimuth's quiet result. */

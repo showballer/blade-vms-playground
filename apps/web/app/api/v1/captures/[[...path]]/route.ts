@@ -1,5 +1,6 @@
 import { auth, HttpError } from "../../../../../lib/db";
 import { captureBody, createCaptureService } from "../../../../../lib/captures";
+import { autoLinkCapture } from "../../../../../lib/measurement-store";
 import { Readable } from "node:stream";
 
 export const runtime = "nodejs";
@@ -9,6 +10,10 @@ const json = (value: unknown, status = 200) => Response.json(value, { status, he
 async function input(request: Request) {
   try { return JSON.parse((await captureBody(request)).toString("utf8")); }
   catch (error) { if (error instanceof HttpError) throw error; throw new HttpError(400, "请求必须为 JSON。"); }
+}
+async function associate(user: Parameters<typeof autoLinkCapture>[0], id: string) {
+  try { return { association: await autoLinkCapture(user, id) }; }
+  catch (error) { return { association: { linked: false, warning: error instanceof HttpError ? error.message : "记录已保存，测量对象关联稍后重试" } }; }
 }
 async function handle(request: Request, context: Context) {
   try {
@@ -21,17 +26,28 @@ async function handle(request: Request, context: Context) {
     }
     if (!parts.length) {
       if (request.method === "GET") return json(await service.list(user));
-      if (request.method === "POST") return json(await service.create(user, await input(request)), 201);
+      if (request.method === "POST") {
+        const result = await service.create(user, await input(request));
+        return json({ ...result, ...await associate(user, result.capture.id) }, 201);
+      }
     }
     if (parts.length === 1 && request.method === "GET") return json(await service.detail(user, id));
     if (parts.length === 2) {
-      if (action === "live" && request.method === "PUT") return json(await service.live(user, id, await input(request)));
+      if (action === "live" && request.method === "PUT") {
+        const payload = await input(request), result = await service.live(user, id, payload);
+        return json({ ...result, ...(["stopped", "error"].includes(payload.state) ? await associate(user, id) : {}) });
+      }
       if (action === "upload" && request.method === "POST") return json(await service.upload(user, id, await input(request)));
       if (["complete", "prepare-analysis"].includes(action) && request.method === "POST") {
         const body = await input(request);
         if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).length) throw new HttpError(400, "此操作不接受额外参数。");
-        return json(action === "complete" ? await service.complete(user, id) : await service.prepareAnalysis(user, id));
+        if (action === "complete") {
+          const result = await service.complete(user, id);
+          return json({ ...result, ...await associate(user, id) });
+        }
+        return json(await service.prepareAnalysis(user, id));
       }
+      if (action === "archive-preview" && request.method === "GET") return json(await service.archivePreview(user, id));
       if (action === "waveform" && request.method === "GET") return json(await service.waveform(user, id, Number(url.searchParams.get("start") || 0), url.searchParams.has("end") ? Number(url.searchParams.get("end")) : undefined));
     }
     if (parts.length === 3 && action === "files" && request.method === "GET") {

@@ -12,16 +12,56 @@ export type CaptureBody = { recording: JsonObject; liveState: "acquiring" | "sto
   uploadState: "pending" | "uploading" | "complete" | "error"; receivedBytes: number; totalBytes: number;
   lastSeenAt: number | null; sequence: number; files?: CaptureFile[]; planHash?: string; error?: string };
 export type CaptureRow = { id: string; owner_id: string; owner_name?: string; tenant: string; client_id: string; local_id: string;
-  body: CaptureBody; created_at: string; updated_at: string };
+  body: CaptureBody; created_at: string; updated_at: string; page_created_at?: string };
 export interface CaptureRepository {
   create(user: User, clientId: string, recording: JsonObject): Promise<CaptureRow>;
   list(user: User): Promise<CaptureRow[]>;
+  page?(user: User, options?: CapturePageOptions): Promise<CapturePage>;
   get(id: string): Promise<CaptureRow | null>;
   mutate<T>(id: string, action: (row: CaptureRow) => Promise<T>): Promise<T>;
+}
+export type CapturePageOptions = { limit?: number; cursor?: string | null; completed?: boolean; tenantOnly?: boolean; ids?: string[] };
+export type CapturePage = { rows: CaptureRow[]; nextCursor: string | null };
+export function capturePageParameters(options: CapturePageOptions = {}) {
+  const limit = options.limit ?? 200;
+  if (!Number.isInteger(limit) || limit < 1 || limit > 500) throw new HttpError(400, "每页采集记录数量须为 1～500");
+  let after: { at: string; id: string } | null = null;
+  if (options.cursor) {
+    try {
+      if (options.cursor.length > 256) throw Error();
+      const value = JSON.parse(Buffer.from(options.cursor, "base64url").toString());
+      if (options.cursor.length > 256 || value.v !== 1 || !/^[a-f0-9]{32}$/.test(value.id) ||
+          !/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{6}$/.test(value.at)) throw Error();
+      after = { at: value.at, id: value.id };
+    } catch { throw new HttpError(400, "采集记录分页游标无效"); }
+  }
+  if (options.ids && (options.ids.length > 500 || options.ids.some(id => !/^[a-f0-9]{32}$/.test(id))))
+    throw new HttpError(400, "采集记录编号无效或过多");
+  return { limit, after };
+}
+export async function capturePage(user: User, options: CapturePageOptions = {}): Promise<CapturePage> {
+  const { limit, after } = capturePageParameters(options), scope = captureScope(user);
+  const clauses = [scope.sql], args = [...scope.args] as string[];
+  if (options.tenantOnly) { clauses.push(" AND c.tenant=?"); args.push(user.tenant); }
+  if (options.completed) clauses.push(" AND JSON_UNQUOTE(JSON_EXTRACT(c.body,'$.uploadState'))='complete'");
+  if (after) { clauses.push(" AND (c.created_at<? OR (c.created_at=? AND c.id<?))"); args.push(after.at, after.at, after.id); }
+  if (options.ids) {
+    if (!options.ids.length) return { rows: [], nextCursor: null };
+    clauses.push(` AND c.id IN (${options.ids.map(() => "?").join(",")})`); args.push(...options.ids);
+  }
+  const [selected] = await pool().execute<RowDataPacket[]>(
+    `SELECT ${columns},DATE_FORMAT(recent.created_at,'%Y-%m-%d %H:%i:%s.%f') AS page_created_at
+     FROM (SELECT c.id,c.created_at FROM captures c WHERE 1=1${clauses.join("")} ORDER BY c.created_at DESC,c.id DESC LIMIT ${limit + 1}) recent
+     INNER JOIN captures c ON c.id=recent.id LEFT JOIN users u ON u.id=c.owner_id`, args);
+  selected.sort((a, b) => b.page_created_at.localeCompare(a.page_created_at) || b.id.localeCompare(a.id));
+  const selectedRows = selected.slice(0, limit).map(decode), last = selectedRows.at(-1);
+  return { rows: selectedRows, nextCursor: selected.length > limit && last
+    ? Buffer.from(JSON.stringify({ v: 1, at: last.page_created_at, id: last.id })).toString("base64url") : null };
 }
 const decode = (row: any): CaptureRow => ({ ...row, body: typeof row.body === "string" ? JSON.parse(row.body) : row.body });
 const columns = "c.*,u.name AS owner_name";
 export const sqlCaptureRepository: CaptureRepository = {
+  page: capturePage,
   async create(user, clientId, recording) {
     const id = randomUUID().replaceAll("-", "");
     const body: CaptureBody = { recording, liveState: recording.status === "complete" ? "stopped" : "offline",
@@ -195,6 +235,39 @@ export async function captureBody(request: Request, limit = 512 * 1024) {
   finally { clearTimeout(timer); await reader.cancel().catch(() => {}); }
 }
 
+/** A preview selects a window only. Raw source gates remain unchanged in metadata. */
+export function archivePreviewWindow(r: JsonObject) {
+  const rate = r.sampleRate, pc = r.pointCycle, h = pc?.handoff;
+  if (!Number.isFinite(rate) || rate <= 0 || !integer(r.samples, 1)) throw new HttpError(422, "归档采样时钟无效");
+  let entry = h?.entrySampleIndex, end = h?.exitConfirmedSampleIndex;
+  // Normal continuous DAQ also links a global session, but its handoff indices
+  // are LOCAL. Only an explicitly global handoff requires offset conversion.
+  if (h?.sampleClock === "continuous_session_raw") {
+    const link = pc.continuousSession, sampling = r.sampling, mapping = sampling?.pointCycleIndexMapping;
+    const offset = link?.sampleStart, stop = link?.sampleEndExclusive, sourceRate = link?.sampleRate;
+    if (link?.sampleClock !== "continuous_session_raw" || !integer(offset) || !integer(stop, offset + 1) ||
+        !Number.isFinite(sourceRate) || sourceRate <= 0) throw new HttpError(422, "归档缺少有效的连续采样时钟映射");
+    const count = stop - offset, same = rate === sourceRate && count === r.samples;
+    if (!same) {
+      const gcd = (a: number, b: number): number => b ? gcd(b, a % b) : a;
+      const up = mapping?.numerator, down = mapping?.denominator;
+      const expected = { version: 1, sourceClock: "continuous_session_raw", targetClock: "recording_local", sourceOffset: offset, numerator: up, denominator: down };
+      if (sampling?.version !== 2 || sampling?.kind !== "anti_alias_lowpass" || !integer(up, 1) || !integer(down, 1) ||
+          gcd(up, down) !== 1 || up * sourceRate !== down * rate || rate >= sourceRate ||
+          canonical(mapping) !== canonical(expected) || sampling.sourceSampleRate !== sourceRate || sampling.targetSampleRate !== rate ||
+          sampling.sourceSamples !== count || Math.ceil(count * up / down) !== r.samples || canonical(sampling.sourceHandoff) !== canonical(h))
+        throw new HttpError(422, "归档降采样副本缺少一致的原始时钟映射");
+    }
+    if (!integer(entry, offset, stop - 1) || !integer(end, entry, stop - 1)) throw new HttpError(422, "归档经过边界超出连续记录窗口");
+    entry = Math.floor((entry - offset) * rate / sourceRate);
+    end = Math.ceil((end - offset + 1) * rate / sourceRate) - 1;
+  }
+  const size = Math.max(1, Math.min(250000, Math.ceil(rate)));
+  let start = integer(entry) && entry < r.samples ? Math.max(0, entry - Math.ceil(rate * .05)) : 0;
+  if (integer(end) && end < r.samples && end - start < size) start = Math.max(0, Math.min(start, end - size + 1));
+  return { start, end: Math.min(r.samples, start + size) };
+}
+
 export function createCaptureService({ repository = sqlCaptureRepository, root = captureDataRoot(), now = Date.now,
   worker = rotationWorker }: { repository?: CaptureRepository; root?: string; now?: () => number; worker?: typeof rotationWorker } = {}) {
   const directory = (id: string, section = "") => { if (!ID.test(id)) throw invalid("采集编号无效。"); return path.join(root, id, section); };
@@ -239,6 +312,12 @@ export function createCaptureService({ repository = sqlCaptureRepository, root =
   }
   return {
     async list(user: User) { return { captures: (await repository.list(user)).filter(row => canReadCapture(user, { ownerId: row.owner_id, tenant: row.tenant })).map(summary) }; },
+    async page(user: User, options: CapturePageOptions = {}) {
+      capturePageParameters(options);
+      if (!repository.page) throw new HttpError(501, "采集仓库不支持分页");
+      const result = await repository.page(user, options);
+      return { captures: result.rows.filter(row => canReadCapture(user, { ownerId: row.owner_id, tenant: row.tenant })).map(summary), nextCursor: result.nextCursor };
+    },
     async create(user: User, input: unknown) {
       requireCaptureWrite(user); object(input); only(input, ["clientId", "recording"]);
       if (typeof input.clientId !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(input.clientId)) throw invalid("客户端编号无效。");
@@ -257,14 +336,19 @@ export function createCaptureService({ repository = sqlCaptureRepository, root =
     async live(user: User, id: string, input: unknown) {
       requireCaptureWrite(user); directory(id); object(input); only(input, ["sequence", "sentAt", "recording", "waveform", "realtime", "state"]); bounded(input, 0, 4096);
       if (!integer(input.sequence) || !Number.isFinite(input.sentAt) || !["acquiring", "stopped", "error"].includes(input.state)) throw invalid("实时帧序号、时间或状态无效。");
-      const recording = validateCaptureRecording(input.recording); validatePreview(input.waveform, input.realtime);
+      const recording = validateCaptureRecording(input.recording);
+      const metadataOnly = input.waveform === undefined && ["stopped", "error"].includes(input.state);
+      if (!metadataOnly) validatePreview(input.waveform, input.realtime);
+      else if (input.realtime !== undefined) throw invalid("仅终态元数据不能携带旧频谱");
+      const waveform = metadataOnly ? { values: [], rssi: [], overrange: [], unit: "m/s", sampleRate: recording.sampleRate ?? null,
+        sampleStart: 0, sampleStride: 1, sampleOrigin: recording.sampleOrigin ?? null } : input.waveform;
       return repository.mutate(id, async row => {
         writable(user, row);
         if (recording.id !== row.local_id || recording.source !== row.body.recording.source) throw invalid("实时帧不属于该采集记录。");
         if (input.sequence <= row.body.sequence) return { ok: true, sequence: row.body.sequence };
         if (row.body.uploadState === "complete" && input.state === "acquiring") throw new HttpError(409, "完整上传的记录不能重新进入采集状态。");
         const receivedAt = now();
-        await atomicJson(directory(id, "latest.json"), { ...input, recording, receivedAt });
+        await atomicJson(directory(id, "latest.json"), { ...input, recording, waveform, receivedAt, ...(metadataOnly ? { terminalMetadataOnly: true } : {}) });
         row.body.sequence = input.sequence; row.body.lastSeenAt = receivedAt; row.body.liveState = input.state;
         if (row.body.uploadState === "pending") row.body.recording = recording;
         return { ok: true, sequence: input.sequence };
@@ -412,6 +496,17 @@ export function createCaptureService({ repository = sqlCaptureRepository, root =
       requireCaptureAnalysis(user); const row = await get(user, id);
       if (row.body.uploadState !== "complete") throw new HttpError(409, "原始记录尚未完整上传，不能用于分析。");
       return worker(user, { action: "capture-import", captureDirectory: directory(id, "complete") });
+    },
+    async archivePreview(user: User, id: string) {
+      const row = await get(user, id);
+      if (row.body.uploadState !== "complete") throw new HttpError(409, "原始记录尚未完整上传");
+      // Select a bounded window only; the reader returns its own authoritative
+      // manifest and waveform together, never mixed with raw-rate live metadata.
+      const r = JSON.parse(await readFile(directory(id, "complete/manifest.json"), "utf8"));
+      const range = archivePreviewWindow(r);
+      const result = await worker(user, { action: "capture-waveform", captureDirectory: directory(id, "complete"), ...range });
+      return { capture: summary(row), origin: "archive", frame: { sequence: row.body.sequence, receivedAt: now(), state: "stopped", archive: true,
+        recording: result.recording, waveform: result.waveform } };
     },
     async waveform(user: User, id: string, start = 0, end?: number) {
       const row = await get(user, id);

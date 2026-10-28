@@ -38,7 +38,7 @@ async function harness(t, hooks = {}) {
     fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify(manifest)); return manifest;
   }
   const service = {
-    async start() { return snapshot; }, async status() { return snapshot; }, async frame() { return snapshot; },
+    async start() { return snapshot; }, async status() { return snapshot; }, async frame(windowMs) { hooks.frame?.(windowMs); return snapshot; },
     async begin(_config, context) {
       startedWith = context;
       snapshot = { service: { state: 'ready' }, state: 'starting', receiver: { running: true }, recording: null };
@@ -78,7 +78,7 @@ async function harness(t, hooks = {}) {
     if (name === './unified-auth.cjs') return { createUnifiedAuth: () => auth };
     if (name === './bootstrap-admin.json') return {}; // Never inspect real local credentials.
     if (name === './field-service.cjs') return { createFieldService: () => service, failure: (message, status) => Object.assign(Error(message), { status }) };
-    if (name === './field-cloud-sync.cjs') return { createFieldCloudSync: () => queue };
+    if (name === './field-cloud-sync.cjs') return { createFieldCloudSync: options => { hooks.cloudSync?.(options); return queue; } };
     if (name === './field-capture-tracker.cjs') return { createCaptureTracker: options => {
       tracker = createCaptureTracker({ ...options, intervalMs: 10 }); return tracker;
     } };
@@ -97,6 +97,13 @@ async function harness(t, hooks = {}) {
     active(recording) { snapshot = { service: { state: 'ready' }, state: 'acquiring', receiver: { running: true }, recording }; },
     close() { win.emit('close', { preventDefault() {} }); }, get closed() { return quit && queueDisposed; } };
 }
+
+test('actual main sends a one-second cloud preview even without the acquisition page open', async t => {
+  let cloud, selectedWindow;
+  await harness(t, { cloudSync: options => { cloud = options; }, frame: window => { selectedWindow = window; } });
+  await cloud.getLive();
+  assert.equal(selectedWindow, 1000, 'cloud preview must not use the 2048-sample no-argument frame');
+});
 
 test('actual main enrolls a cycle before first writer exists; background follows points and stop flushes all records', async t => {
   const h = await harness(t);

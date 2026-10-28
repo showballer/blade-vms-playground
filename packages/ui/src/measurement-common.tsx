@@ -12,6 +12,7 @@ export type Catalog = {
   results: any[];
   rules: any;
   revision: string | null;
+  nextSourcesCursor?: string | null;
 };
 export const numberText = (v: unknown, d = 3) =>
   typeof v === "number" && Number.isFinite(v) ? v.toFixed(d) : "—";
@@ -26,28 +27,55 @@ export function useMeasurements(refreshKey = 0) {
       revision: null,
     }),
     [loading, setLoading] = useState(true),
-    [error, setError] = useState("");
-  const generation = useRef(0);
-  const load = useCallback(async () => {
+    [error, setError] = useState(""),
+    [loadingMore, setLoadingMore] = useState(false);
+  const generation = useRef(0), sourcePage = useRef<string | null>(null), paging = useRef(false), hasPaged = useRef(false), mounted = useRef(true);
+  const load = useCallback(async (options?: { quiet?: boolean }) => {
     const g = ++generation.current;
-    setLoading(true);
+    if (!options?.quiet) setLoading(true);
     setError("");
     try {
       const next = await api<Catalog>("measurements");
-      if (g === generation.current) setData(next);
+      if (g === generation.current) {
+        if (!options?.quiet || !hasPaged.current) {
+          sourcePage.current = next.nextSourcesCursor || null; hasPaged.current = false;
+          setData(next);
+        } else {
+          // A quiet live refresh updates the head without discarding pages already loaded by the user.
+          setData(current => ({ ...next, nextSourcesCursor: sourcePage.current,
+            sources: [...new Map([...current.sources, ...next.sources].map(s => [s.key, s])).values()] }));
+        }
+      }
     } catch (e) {
       if (g === generation.current) setError((e as Error).message);
     } finally {
       if (g === generation.current) setLoading(false);
     }
   }, []);
+  const loadMore = useCallback(async () => {
+    if (!sourcePage.current || paging.current) return;
+    const g = generation.current, cursor = sourcePage.current;
+    paging.current = true; setLoadingMore(true);
+    try {
+      const next = await api<{ sources: any[]; nextCursor: string | null }>(`measurements/sources?limit=200&cursor=${encodeURIComponent(cursor)}`);
+      if (g === generation.current && sourcePage.current === cursor) {
+        sourcePage.current = next.nextCursor; hasPaged.current = true;
+        setData(current => ({ ...current, nextSourcesCursor: next.nextCursor,
+          sources: [...new Map([...current.sources, ...next.sources].map(s => [s.key, s])).values()] }));
+        setError("");
+      }
+    } catch (e) { if (g === generation.current) setError((e as Error).message); }
+    finally { paging.current = false; if (mounted.current) setLoadingMore(false); }
+  }, []);
   useEffect(() => {
+    mounted.current = true;
     void load();
     return () => {
+      mounted.current = false;
       generation.current++;
     };
   }, [load, refreshKey]);
-  return { data, loading, error, setError, reload: load };
+  return { data, loading, error, setError, reload: load, loadMore, loadingMore, hasMoreSources: !!data.nextSourcesCursor };
 }
 export function MeasurementStatus({
   loading,

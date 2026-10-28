@@ -247,7 +247,9 @@ else {
       auth = createUnifiedAuth({ file: path.join(userData, 'blade-unified-account.json'), localAuth, retainSessionToken: true });
       service = createFieldService({ getConfig: () => config, dataDir,
         resourcesDir: app.isPackaged ? process.resourcesPath : path.join(__dirname, '../resources') });
-      cloudSync = createFieldCloudSync({ file: path.join(userData, 'blade-cloud-sync.json'), dataDir: path.join(dataDir, 'recordings'), auth, getLive: () => service.frame(), prepareUpload: (id, rate) => service.prepareUpload(id, rate) });
+      // Send the same bounded one-second view used by the desktop. The service's
+      // no-argument frame is only the last 2048 raw samples (8 ms at 250 kHz).
+      cloudSync = createFieldCloudSync({ file: path.join(userData, 'blade-cloud-sync.json'), dataDir: path.join(dataDir, 'recordings'), auth, getLive: () => service.frame(1000), prepareUpload: (id, rate) => service.prepareUpload(id, rate) });
       captureTracker = createCaptureTracker({ file: path.join(userData, 'blade-capture-runs.json'),
         dataDir: path.join(dataDir, 'recordings'), auth, sync: cloudSync, getSnapshot: () => service.status() });
     } catch {

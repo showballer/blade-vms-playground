@@ -15,6 +15,7 @@ import threading
 from typing import Callable
 
 from .async_recording import AsyncRecordingWriter
+from .continuous_preview import ContinuousPreviewBuffer
 from .receiver import Batch
 
 
@@ -41,6 +42,7 @@ class ContinuousCaptureSession:
         self._fence = 0
         self._station_first: int | None = None
         self._station_next = 0
+        self.preview = ContinuousPreviewBuffer()
 
     @property
     def gate_is_open(self) -> bool:
@@ -146,6 +148,9 @@ class ContinuousCaptureSession:
             if count:
                 self._stride = stride
             if self.diagnostic_observer is not None and not self.stop.is_set() and not self.abort.is_set():
+                # Display memory is independent of admission/detection and raw
+                # persistence. Ordinary stationary captures need no extra copy.
+                self.preview.append(batch)
                 self.diagnostic_observer(batch)
             callback = self._callback
             if (callback is None or not count or self.stop.is_set() or self.abort.is_set()):

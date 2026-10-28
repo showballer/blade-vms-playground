@@ -4,7 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rename, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { captureBody, createCaptureService, type CaptureRepository, type CaptureRow } from "../apps/web/lib/captures";
+import { captureBody, capturePageParameters, createCaptureService, type CaptureRepository, type CaptureRow } from "../apps/web/lib/captures";
 import { canReadCapture, HttpError, type User } from "../apps/web/lib/db";
 import { rotationWorker } from "../apps/web/lib/rotation";
 
@@ -162,6 +162,30 @@ async function main() {
     assert.equal((await recreated.upload(owner, id, { recording: f.recording, files: f.files })).received.length, f.files.length);
     assert.equal((await recreated.complete(owner, id)).capture.uploadState, "complete");
     passed.push("Resumable offsets, MySQL JSON precision, hash/finalize crash recovery and unpaired RSSI preservation");
+
+    // A terminal status may arrive after a downsampled archive was completed.
+    // Preserve the archived metadata and discard the previous live waveform.
+    const archivedRate = (await recreated.detail(viewer, id)).capture.recording.sampleRate;
+    await recreated.live(owner, id, { sequence: 100, sentAt: time, state: "stopped",
+      recording: { ...f.recording, sampleRate: 250000, samples: 250250 } });
+    const terminal = await recreated.detail(viewer, id);
+    assert.equal(terminal.frame.terminalMetadataOnly, true);
+    assert.deepEqual(terminal.frame.waveform.values, []);
+    assert.equal(terminal.frame.recording.sampleRate, 250000);
+    assert.equal(terminal.capture.recording.sampleRate, archivedRate, "late raw terminal cannot overwrite uploaded derivative metadata");
+    await assert.rejects(recreated.live(owner, id, { sequence: 101, sentAt: time, state: "acquiring", recording: f.recording }), rejected(400));
+    await assert.rejects(recreated.live(owner, id, { sequence: 101, sentAt: time, state: "stopped", recording: f.recording, realtime }), rejected(400));
+    const archive = await recreated.archivePreview(viewer, id);
+    assert.equal(archive.origin, "archive"); assert.equal(archive.frame.archive, true);
+    assert.equal(archive.frame.recording.sampleRate, archive.frame.waveform.sampleRate);
+    assert.equal(archive.frame.recording.sampleRate, 1000);
+    assert.equal(archive.frame.waveform.rangeEnd - archive.frame.waveform.rangeStart, 1000);
+    await assert.rejects(recreated.archivePreview(outsider, id), rejected(404));
+    passed.push("Metadata-only terminal clears stale live samples; completed archive preview retains its own rate and ownership");
+    const cursor = Buffer.from(JSON.stringify({ v: 1, at: "2026-10-27 00:00:00.123456", id })).toString("base64url");
+    assert.equal(capturePageParameters({ limit: 1, cursor }).after?.id, id);
+    for (const options of [{ limit: 0 }, { limit: 501 }, { limit: 1.5 }, { cursor: "invalid" }, { ids: ["bad"] }]) assert.throws(() => capturePageParameters(options), rejected(400));
+    passed.push("Bounded keyset pagination rejects malformed cursors, record IDs and excessive page sizes");
 
     const historical = await recreated.waveform(viewer, id, 20, 120);
     assert.equal(historical.waveform.values.length, 100);

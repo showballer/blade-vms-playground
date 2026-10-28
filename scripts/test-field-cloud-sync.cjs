@@ -74,6 +74,72 @@ test('high-rate min/max live envelopes reach Web without requiring a raw display
   assert.equal(delivered.rangeEnd, 250000);
 });
 
+test('completed points send metadata-only terminal frames after active writer changes', async t => {
+  const f = fixture(t), current = f.recording('a'.repeat(32), 100, 'incomplete');
+  const queue = f.create(), owner = JSON.stringify([f.identity.serverUrl, f.identity.user.id, f.identity.user.tenant]);
+  f.setFrame({ state: 'acquiring', recording: current.manifest,
+    waveform: { sampleRate: 1000, sampleStart: 0, sampleOrigin: 1800000000, values: [1, 2], rssi: [80, 80], overrange: [false, false] } });
+  queue.resume(); queue.observeRecording(current.manifest, { owner, active: true }); await queue.settled();
+  const complete = f.recording(current.manifest.id, 100).manifest;
+  complete.pointCycle = { completion: 'confirmed_pass', handoff: { sampleClock: 'continuous_session_raw', entrySampleIndex: 5001, exitSampleIndex: 5050 } };
+  fs.writeFileSync(path.join(current.dir, 'manifest.json'), JSON.stringify(complete));
+  // The service has already switched writers; no final getLive() is available.
+  f.setFrame({ state: 'acquiring', recording: { id: 'b'.repeat(32) }, waveform: { values: [99] } });
+  queue.observeRecording(complete, { owner, active: false }); await queue.settled();
+  const capture = f.captures.get(current.manifest.id), last = capture.live.at(-1);
+  assert.equal(capture.complete, true);
+  assert.equal(last.state, 'stopped'); assert.equal(last.recording.status, 'complete');
+  assert.deepEqual(last.recording.pointCycle, complete.pointCycle);
+  assert.equal(last.waveform, undefined, 'never relabel a stale short window as the completed pass');
+  assert.equal(last.realtime, undefined);
+  assert.equal(JSON.parse(fs.readFileSync(f.file)).items[0].terminalPending, false);
+  queue.observeRecording(current.manifest, { owner, active: true }); queue.resume(); await queue.settled();
+  assert.equal(capture.live.at(-1).state, 'stopped', 'late incomplete snapshots cannot reactivate a completed record');
+});
+
+test('terminal retry survives restart independently of upload success and remains with its original owner', async t => {
+  const f = fixture(t), current = f.recording('a'.repeat(32), 100, 'incomplete');
+  let binding = f.identity;
+  const auth = { ...f.auth, cloudBinding: () => binding, cloudSession: () => ({ ...binding, token: f.token }) };
+  let queue = f.create({ auth }); queue.resume(); queue.started(current.manifest); await queue.settled();
+  f.setHandler((url, options, respond) => url.endsWith('/live') && JSON.parse(options.body).state === 'stopped' ? json({}, 503) : respond(url, options));
+  const complete = f.recording(current.manifest.id, 100); queue.finished(complete.manifest); await queue.settled();
+  assert.equal(queue.status().items[0].state, 'synced');
+  assert.equal(JSON.parse(fs.readFileSync(f.file)).items[0].terminalPending, true);
+  queue.dispose(); await queue.settled();
+  binding = { ...f.identity, user: { ...f.identity.user, id: 'different-owner' } };
+  f.setHandler(null); queue = f.create({ auth }); queue.resume(); await queue.settled();
+  assert.equal(f.captures.get(current.manifest.id).live.length, 0, 'new account cannot send old terminal metadata');
+  binding = f.identity; queue.resume(); await queue.settled();
+  assert.equal(f.captures.get(current.manifest.id).live.at(-1).state, 'stopped');
+  assert.equal(queue.status().items[0].state, 'synced');
+  assert.equal(JSON.parse(fs.readFileSync(f.file)).items[0].terminalPending, false);
+});
+
+test('terminal metadata keeps the original clock while archive upload uses a sampled derivative', async t => {
+  const f = fixture(t), current = f.recording('a'.repeat(32), 100, 'incomplete');
+  current.manifest.sampleRate = 250000; current.raw.writeDoubleLE(250000, 8);
+  fs.writeFileSync(path.join(current.dir, 'chunk-00000000.bin'), current.raw);
+  fs.writeFileSync(path.join(current.dir, 'manifest.json'), JSON.stringify(current.manifest));
+  const queue = f.create({ prepareUpload: async (id, rate) => {
+    const directory = path.join(path.dirname(f.dataDir), 'upload-cache', `${id}-${rate}`); fs.mkdirSync(directory, { recursive: true });
+    const raw = Buffer.from(current.raw.subarray(0, 32 + 20 * 29)); raw.writeDoubleLE(rate, 8);
+    const recording = { ...current.manifest, status: 'complete', samples: 20, sampleRate: rate, endedAt: 1800000001, sampling: { sourceSampleRate: 250000 } };
+    fs.writeFileSync(path.join(directory, 'chunk-00000000.bin'), raw); fs.writeFileSync(path.join(directory, 'manifest.json'), JSON.stringify(recording));
+    return { directory, recording };
+  } });
+  queue.resume(); queue.started(current.manifest); await queue.settled();
+  const complete = { ...current.manifest, status: 'complete', endedAt: 1800000001 };
+  fs.writeFileSync(path.join(current.dir, 'manifest.json'), JSON.stringify(complete));
+  queue.finished(complete); await queue.settled();
+  const capture = f.captures.get(current.manifest.id);
+  assert.equal(capture.recording.sampleRate, 50000); assert.equal(capture.recording.samples, 20);
+  const terminal = capture.live.at(-1);
+  assert.equal(terminal.state, 'stopped'); assert.equal(terminal.recording.sampleRate, 250000);
+  assert.equal(terminal.recording.samples, 100); assert.equal(terminal.recording.sampling, undefined);
+  assert.equal(terminal.waveform, undefined); assert.deepEqual(fs.readFileSync(path.join(current.dir, 'chunk-00000000.bin')), current.raw);
+});
+
 test('failed derivative preparation can switch to original-rate upload without discarding the record', async t => {
   const f = fixture(t), original = f.recording();
   original.manifest.sampleRate = 250000; original.raw.writeDoubleLE(250000, 8);

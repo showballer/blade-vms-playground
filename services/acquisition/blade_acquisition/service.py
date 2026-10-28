@@ -247,6 +247,9 @@ class AcquisitionController:
         self.stop_event = threading.Event()
         self.device_ip = self.host_ip = ""
         self.rows: deque = deque(maxlen=250_000)
+        # Only the current deferred point may retain a bounded raw preview.
+        # Completed points are read from their archives, not accumulated here.
+        self.deferred_preview = None
         self.device_busy = False
         self.laser_poll_busy = False
         self.device_snapshot = None
@@ -513,6 +516,7 @@ class AcquisitionController:
                 self.source, self.simulation = "polytec_ivs500", None
                 self.device_ip, self.host_ip = capture.deviceIp, capture.hostIp
                 self.rows.clear()
+                self.deferred_preview = None
                 self.point_cycle, self.rssi_handoff = None, None
                 self.turntable_preparation = None
                 self.stop_event.clear()
@@ -1500,6 +1504,9 @@ class AcquisitionController:
         with self.lock:
             status = self.status()
             rate = status["receiver"]["sampleRate"]
+            preview = (self.deferred_preview[1] if self.deferred_preview and
+                       status["recording"] and status["recording"]["status"] != "error" and
+                       self.deferred_preview[0] == status["recording"]["id"] else None)
             size = min(250_000, max(1, math.ceil(rate * window_ms / 1000))) if rate and window_ms else DISPLAY_LIMIT
             # Copy only the needed tail, never all 250k buffered samples for a
             # 2048-point display. No numerical work is done under this lock.
@@ -1508,7 +1515,12 @@ class AcquisitionController:
             rows = tail[-size:]
             realtime_rows = tail[-4096:]
             origin = self.writer.manifest.get("sampleOrigin") if self.writer else None
-        wave = make_wave(rows, rate, origin, rssi_stride=recording_rssi_stride(status["recording"] or {}))
+        if preview is not None:
+            # Chart aggregation and FFT run on the HTTP caller, never while
+            # consuming an early pass or issuing the next motor command.
+            wave, realtime_rows = preview.frame(window_ms)
+        else:
+            wave = make_wave(rows, rate, origin, rssi_stride=recording_rssi_stride(status["recording"] or {}))
         wave.update(source=status["receiver"]["source"], simulation=status["receiver"]["simulation"])
         return {**status, "waveform": wave, "realtime": self._cached_realtime(realtime_rows, rate, status)}
 
@@ -1759,6 +1771,7 @@ class AcquisitionController:
                 self.device_ip, self.host_ip = metadata["deviceIp"], metadata["hostIp"]
                 self.source, self.simulation = request.source, simulation
                 self.rows.clear()
+                self.deferred_preview = None
                 self.stop_event.clear()
                 self.state, self.error = "starting", None
                 # A completed linked run remains in its saved manifests. It must
@@ -1787,6 +1800,7 @@ class AcquisitionController:
         self.source, self.simulation = request.source, None
         self.writer = None
         self.rows.clear()
+        self.deferred_preview = None
         self.stop_event.clear()
         self.state, self.error = "starting", None
         self.point_cycle = {"diagnosticDetectBeforeSettled": cycle.diagnosticDetectBeforeSettled, "diagnosticAngleWindowDeg": cycle.diagnosticAngleWindowDeg, "state": "checking", "port": cycle.port, "cycles": cycle.cycles,
@@ -2216,7 +2230,8 @@ class AcquisitionController:
                 self.continuous_capture.diagnostic_observer = None
                 if any(p.pointId == point.pointId and p.name == point.name for p in cycle.points):
                     self.early_detection = EarlyPointDetection(cycle, point, self.continuous_capture.receiver.fence_active_samples, lock=self.lock)
-                    self.continuous_capture.diagnostic_observer = self.early_detection.feed
+                    early = self.early_detection
+                    self.continuous_capture.diagnostic_observer = lambda batch: self._observe_early_preview(early, batch)
         result = self._cycle_move_point(motor, cycle, point, **kwargs)
         if self.early_detection is not None and self.early_detection.point == point and result[0]:
             self.early_detection.observe(result[2], stopped=True)
@@ -2710,6 +2725,18 @@ class AcquisitionController:
         if errors:
             raise RuntimeError("; ".join(dict.fromkeys(errors)))
 
+    def _observe_early_preview(self, early, batch):
+        early.feed(batch)
+        trigger = early.detector.trigger
+        if trigger is not None and getattr(early, '_preview_trigger', None) is not trigger:
+            # Freeze bounded block references as soon as the pass is known;
+            # motor settling can outlast the rolling preview's one-second tail.
+            session = self.continuous_capture
+            stride = batch.rssi_sample_stride
+            early.preview = session.preview.window(trigger['entrySampleIndex'] // stride * stride,
+                            trigger['exitConfirmedSampleIndex'] + 1, session.rate, session.origin, stride)
+            early._preview_trigger = trigger
+
     def _capture_early_handoff(self, request, point, next_point, early, metadata, *,
                                before_capture, on_handoff, initial_snapshots):
         """Consume one remembered pass without preparing a new stationary DAQ window.
@@ -2771,6 +2798,9 @@ class AcquisitionController:
             self.cycle_writers.append(record)
             self.writer = record
             self.rows.clear()
+            preview = (early.preview if getattr(early, '_preview_trigger', None) is early.detector.trigger
+                       else session.preview.window(start, end, session.rate, session.origin, stride))
+            self.deferred_preview = (record.id, preview)
             self.state = 'acquiring'
             self.point_cycle.update(rssiPhase=None, latestRssi=None, nextPoint=trigger['nextPoint'])
             self._cycle_process('early_handoff_ready', point=point.name,
@@ -2817,7 +2847,7 @@ class AcquisitionController:
                 if early is None or early.point != point:
                     early = EarlyPointDetection(cycle, point, session.receiver.fence_active_samples, lock=self.lock)
                     self.early_detection = early
-                    session.diagnostic_observer = early.feed
+                    session.diagnostic_observer = lambda batch: self._observe_early_preview(early, batch)
             if not early.active:
                 early.observe({"axes": {str(axis): {"output_angle_deg": (actual_angles or {}).get(str(axis))}
                                            for axis in (1, 2)}}, stopped=True)
@@ -2901,6 +2931,7 @@ class AcquisitionController:
         with self.lock:
             self.writer = writer
             self.rows.clear()
+            self.deferred_preview = None
             self.state = "starting"
             self.rssi_event.clear()
             # Arrival/stop gating is unchanged; background qualifies recorded

@@ -58,14 +58,14 @@ export function FieldCloudSyncPanel({ account, status, busy, onAuto, onRetry, on
   const states = { recording: "采集中", queued: "等待上传", uploading: "上传中", synced: "已同步", error: "等待重试" };
   const pending = status?.items.filter(item => item.state !== "synced") || [];
   return <section className="field-card field-account-card">
-    <div className="field-section-heading"><div><h2>Web 数据同步</h2><p>实时查看采集波形，停止保存后按所选采样率上传。</p></div><CloudUpload size={18} /></div>
+    <div className="field-section-heading"><div><h2>Web 数据同步</h2><p>开启自动同步后可在 Web 查看实时预览；各点记录保存后按所选采样率上传。</p></div><CloudUpload size={18} /></div>
     <div className="field-account-state"><CloudUpload size={17} /><strong>{status ? labels[status.state] : "读取同步状态中"}</strong></div>
     <div className="field-account-actions"><span>自动同步新采集</span><button type="button" className="field-debug-toggle" role="switch" aria-label="自动同步新采集" aria-checked={Boolean(status?.enabled)} disabled={busy || !bound || !status} onClick={() => onAuto(!status?.enabled)}><span /></button></div>
     <label className="field-upload-sampling">上传采样率<CustomSelect aria-label="上传采样率" value={status?.uploadSampleRate ?? 50000} disabled={busy || !status || !onSampleRate} onChange={event => onSampleRate?.(Number(event.target.value))}>
       <option value={0}>原始采样率 · 全量上传</option>{[10000, 20000, 25000, 30000, 40000, 50000, 60000, 70000, 80000, 90000, 100000].map(rate => <option key={rate} value={rate}>{rate / 1000} kHz{rate === 50000 ? " · 推荐" : ""}</option>)}
     </CustomSelect></label>
     <p className="field-subtext">本机始终保存全量原始数据。上传副本先低通滤波再降采样；50 kHz 相比 250 kHz 减少约 80% 波形数据，建议用于 20 kHz 以下的分析。源采样率更低时保持原样。设置对尚未开始处理的上传生效，续传沿用原设置。</p>
-    <p className="field-subtext">{bound ? "开启后，新采集将同步到绑定的 Web 账号；关闭后已排队记录仍会继续上传。历史记录可在本机记录中逐条上传。断线保留本机队列，联网登录后继续同步。" : "请先绑定 Web 账号。本机采集和保存可独立使用。"}</p>
+    <p className="field-subtext">{bound ? "关闭自动同步后，新采集不会发送实时预览，已排队记录仍会继续上传。历史记录可在本机记录中上传；断线后联网登录继续同步。包含换点过程的整段原始档案保留在本机，Web 同步各测点记录。" : "请先绑定 Web 账号。本机采集和保存可独立使用。"}</p>
     {status?.error && <p className="field-notice warning" role="status">{status.error}</p>}
     {pending.length > 0 && <div className="field-table-scroll"><table className="field-table"><thead><tr><th>待同步记录</th><th>状态</th></tr></thead><tbody>{pending.slice(-5).reverse().map(item => <tr key={item.recordingId}><td><strong>{item.name}</strong>{item.error && <small>{item.error}</small>}</td><td>{states[item.state]}{item.state === "uploading" && ` ${item.progress}%`}</td></tr>)}</tbody></table></div>}
     {bound && <p className="field-inline-help">此处保留最近 200 条已同步记录摘要，完整记录以 Web 为准。</p>}

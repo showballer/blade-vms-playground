@@ -15,6 +15,8 @@ import {
   listMeasurementRows,
   readMeasurementRows,
   measurementSources,
+  measurementLive,
+  sourceBindings,
   objects,
   prepareSource,
   replaceMeasurementRow,
@@ -38,6 +40,14 @@ import {
   type MeasurementObject,
 } from "@blade/ui/measurement-domain";
 
+function sourceView(s: MeasurementSource) {
+  return { ...s, raw: undefined, metadata: {
+    windFarm: s.raw.windFarm, turbine: s.raw.turbine, point: s.raw.point,
+    pointCycle: s.raw.pointCycle || s.raw.sourceMetadata?.pointCycle,
+    source: s.raw.source, status: s.raw.status,
+    diagnosticOnly: isDiagnosticMeasurement(s.raw), validMeasurement: !isDiagnosticMeasurement(s.raw),
+  } };
+}
 function validation<T>(fn: () => T): T {
   try {
     return fn();
@@ -150,7 +160,7 @@ export function measurementSynthesisSelection(
 }
 async function synthesize(user: User, b: Record<string, any>) {
   requireAnalyst(user);
-  const [sources, all] = await Promise.all([measurementSources(user), objects(user)]);
+  const [sources, all] = await Promise.all([measurementSources(user, { context: { campaignId: b.campaignId, turbineId: b.turbineId, bladeId: b.bladeId } }), objects(user)]);
   const selection = measurementSynthesisSelection(user, sources, all, b);
   const recordingIds: string[] = [];
   for (const source of selection.chosen) recordingIds.push(await prepareSource(user, source));
@@ -164,7 +174,7 @@ async function synthesize(user: User, b: Record<string, any>) {
       synthesis: { minHz: selection.minHz, maxHz: selection.maxHz },
     },
   });
-  const links = await listMeasurementRows(user, "measurement_links");
+  const links = await sourceBindings(user, selection.chosen.map(s => s.key));
   for (const source of selection.chosen) {
     const link = links.find((l) => l.key === source.key);
     if (!link || digest(JSON.stringify(link)) !== source.bindingRevision)
@@ -174,16 +184,16 @@ async function synthesize(user: User, b: Record<string, any>) {
 }
 async function analyze(user: User, b: any) {
   requireAnalyst(user);
+  const refs = b.references || [b.reference];
+  if (!Array.isArray(refs) || !refs.length || refs.length > 16)
+    throw new HttpError(400, "请选择 1～16 条记录");
   const [sources, all, history, datasets, ruleState] = await Promise.all([
-    measurementSources(user),
+    measurementSources(user, { references: refs }),
     objects(user),
     analysisResults(user),
     listMeasurementRows(user, "wind_datasets"),
     measurementRules(user),
   ]);
-  const refs = b.references || [b.reference];
-  if (!Array.isArray(refs) || !refs.length || refs.length > 16)
-    throw new HttpError(400, "请选择 1～16 条记录");
   const selected = refs.map((ref: any) =>
     sources.find(
       (x) => x.reference.kind === ref?.kind && x.reference.id === ref?.id,
@@ -237,7 +247,7 @@ async function analyze(user: User, b: any) {
         : { recordingIds }),
     },
   });
-  const links = await listMeasurementRows(user, "measurement_links");
+  const links = await sourceBindings(user, chosen.map(s => s.key));
   for (const source of chosen) {
     const link = links.find((l) => l.key === source.key);
     if (!link || digest(JSON.stringify(link)) !== source.bindingRevision)
@@ -428,8 +438,11 @@ export async function measurementEndpoint(
       }
       return { objects: await objects(user) };
     }
-    if (path.length === 2 && action === "adopt" && method === "POST")
-      return adoptSources(user);
+    if (path.length === 2 && action === "adopt" && method === "POST") {
+      const b = await input(req);
+      if (Object.keys(b).some(key => key !== "cursor") || (b.cursor != null && typeof b.cursor !== "string")) throw new HttpError(400, "关联分页参数无效");
+      return adoptSources(user, b.cursor);
+    }
   }
   if (resource === "wind-datasets") {
     if (path.length === 1 && method === "GET")
@@ -486,6 +499,15 @@ export async function measurementEndpoint(
     }
   }
   if (resource === "measurements") {
+    if (path.length === 2 && action === "live" && method === "GET") {
+      const params = new URL(req.url).searchParams;
+      return measurementLive(user, { cursor: params.get("cursor"), limit: params.has("limit") ? Number(params.get("limit")) : 200 });
+    }
+    if (path.length === 2 && action === "sources" && method === "GET") {
+      const params = new URL(req.url).searchParams;
+      const sources = await measurementSources(user, { captureOnly: true, cursor: params.get("cursor"), limit: params.has("limit") ? Number(params.get("limit")) : 200 });
+      return { sources: sources.map(sourceView), nextCursor: sources.nextCursor };
+    }
     if (path.length === 1 && method === "GET") {
       const [sources, all, results, rules] = await Promise.all([
         measurementSources(user),
@@ -494,20 +516,8 @@ export async function measurementEndpoint(
         measurementRules(user),
       ]);
       return {
-        sources: sources.map((s) => ({
-          ...s,
-          raw: undefined,
-          metadata: {
-            windFarm: s.raw.windFarm,
-            turbine: s.raw.turbine,
-            point: s.raw.point,
-            pointCycle: s.raw.pointCycle || s.raw.sourceMetadata?.pointCycle,
-            source: s.raw.source,
-            status: s.raw.status,
-            diagnosticOnly: isDiagnosticMeasurement(s.raw),
-            validMeasurement: !isDiagnosticMeasurement(s.raw),
-          },
-        })),
+        sources: sources.map(sourceView),
+        nextSourcesCursor: sources.nextCursor,
         objects: all,
         results: results.map(summarizeAnalysis),
         ...rules,
@@ -520,7 +530,7 @@ export async function measurementEndpoint(
       method === "POST"
     ) {
       const b = await input(req);
-      const source = (await measurementSources(user)).find(
+      const source = (await measurementSources(user, { references: [b.reference] })).find(
         (s) =>
           s.reference.kind === b.reference?.kind &&
           s.reference.id === b.reference?.id,
@@ -768,7 +778,7 @@ export async function measurementEndpoint(
         );
         const reportEntries = reportRows(results, all);
         const diagnosticCount = reportEntries.filter(isDiagnosticMeasurement).length;
-        const reportSources = (await measurementSources(user)).filter((s) =>
+        const reportSources = (await measurementSources(user, { context: { campaignId: campaign.id, ...(turbineId ? { turbineId } : {}) } })).filter((s) =>
           s.context?.campaignId === campaign.id && (!turbineId || s.context?.turbineId === turbineId));
         const sourceCoverage = buildMeasurementReportCoverage(reportSources, reportEntries, all);
         const record = await saveMeasurementRow(user, "measurement_reports", {

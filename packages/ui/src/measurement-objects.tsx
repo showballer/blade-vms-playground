@@ -1,6 +1,7 @@
 "use client";
 import React, { useEffect, useState } from "react";
 import { api } from "./api";
+import { adoptMeasurementPages } from "./measurement-sync";
 import { Button, Card, Dialog, Select, Table } from "./common";
 import { MeasurementStatus, PageControls } from "./measurement-common";
 import type { MeasurementObject, ObjectKind } from "./measurement-domain";
@@ -106,9 +107,9 @@ export function MeasurementObjects({
             disabled={!canWrite || busy}
             onClick={() =>
               void act(async () => {
-                const r = await api<any>("objects/adopt", "POST", {});
+                const r = await adoptMeasurementPages(p => setMessage(`正在关联历史记录：已处理 ${p.pages} 批，新增 ${p.linked} 条关联…`));
                 setMessage(
-                  `已关联 ${r.linked} 条；${r.skipped} 条缺少完整身份信息，请手动关联。`,
+                  `已关联 ${r.linked} 条；${r.skipped} 条未新增关联，缺少身份信息的记录可手动关联。`,
                 );
               })
             }

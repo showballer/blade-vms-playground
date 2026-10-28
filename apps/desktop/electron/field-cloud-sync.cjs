@@ -22,7 +22,7 @@ function createFieldCloudSync({ file, dataDir, auth, getLive, prepareUpload, fet
   const validRate = value => Number.isInteger(value) && (value === 0 || value >= 10000 && value <= 100000);
   let saved = { version: 1, clientId: randomUUID(), enabled: true, uploadSampleRate: 50000, items: [] };
   let storeError = '', transientError = '', paused = true, disposed = false, activeId = null;
-  let worker = null, liveWork = null, generation = 0, timer = null, liveSequence = 0;
+  let worker = null, liveWork = null, terminalWork = null, generation = 0, timer = null, liveSequence = 0;
   const controllers = new Set();
   try {
     const stat = fs.lstatSync(file);
@@ -36,9 +36,12 @@ function createFieldCloudSync({ file, dataDir, auth, getLive, prepareUpload, fet
       if (item.captureId && !/^[A-Za-z0-9_-]{1,128}$/.test(item.captureId)) throw Error('invalid capture');
       if (item.files && (!Array.isArray(item.files) || item.files.length > MAX_FILES || item.files.some(f => !FILE.test(f.name) || !Number.isSafeInteger(f.bytes) || f.bytes < 0 || !SHA.test(f.sha256)))) throw Error('invalid file plan');
       if (item.uploadSampleRate !== undefined && !validRate(item.uploadSampleRate)) throw Error('invalid upload sampling');
+      if (item.terminalPending !== undefined && typeof item.terminalPending !== 'boolean') throw Error('invalid live terminal');
+      if ((item.terminalPending || item.terminalState !== undefined) && !['stopped', 'error'].includes(item.terminalState)) throw Error('invalid live terminal state');
       // Existing checksummed transfers must resume with their original bytes.
       if (item.planHash && item.uploadSampleRate === undefined) item.uploadSampleRate = 0;
       item.retryAt = 0; item.attempts = 0;
+      item.terminalRetryAt = 0; item.terminalAttempts = 0;
       if (item.state === 'uploading') item.state = 'queued';
     }
     saved = parsed;
@@ -48,16 +51,17 @@ function createFieldCloudSync({ file, dataDir, auth, getLive, prepareUpload, fet
   function compactHistory() {
     const complete = saved.items.filter(item => item.state === 'synced').sort((a, b) => (b.finishedAt || 0) - (a.finishedAt || 0));
     const retained = new Set(complete.slice(0, MAX_HISTORY));
-    saved.items = saved.items.filter(item => item.state !== 'synced' || retained.has(item));
+    saved.items = saved.items.filter(item => item.state !== 'synced' || item.terminalPending || retained.has(item));
     for (const item of saved.items) if (item.state === 'synced') { delete item.recording; delete item.files; }
   }
   function checkpoint(items = saved.items) {
     return { version: 1, clientId: saved.clientId, enabled: saved.enabled, uploadSampleRate: saved.uploadSampleRate, items: items.map(item => {
       const minimal = {};
-      for (const key of ['recordingId', 'name', 'owner', 'manual', 'state', 'captureId', 'progress', 'totalBytes', 'sentBytes', 'attempts', 'retryAt', 'finishedAt', 'planHash', 'uploadSampleRate']) {
+      for (const key of ['recordingId', 'name', 'owner', 'manual', 'state', 'captureId', 'progress', 'totalBytes', 'sentBytes', 'attempts', 'retryAt', 'finishedAt', 'planHash', 'uploadSampleRate', 'terminalPending', 'terminalState', 'terminalRetryAt', 'terminalAttempts']) {
         if (item[key] !== undefined) minimal[key] = item[key];
       }
       if (item.error) minimal.error = String(item.error).slice(0, 240);
+      if (item.terminalError) minimal.terminalError = String(item.terminalError).slice(0, 240);
       return minimal;
     }) };
   }
@@ -144,9 +148,9 @@ function createFieldCloudSync({ file, dataDir, auth, getLive, prepareUpload, fet
       throw fail('连接 Web 失败，已保留本机队列，联网后自动重试。', 503);
     } finally { clearTimeout(timeout); controllers.delete(controller); }
   }
-  async function ensureCapture(item, ctx) {
+  async function ensureCapture(item, ctx, recording = item.recording) {
     if (item.captureId) return;
-    const result = await request(ctx, '', { body: { clientId: saved.clientId, recording: item.recording } });
+    const result = await request(ctx, '', { body: { clientId: saved.clientId, recording } });
     if (typeof result.capture?.id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(result.capture.id)) throw fail('Web 未返回有效采集编号', 502);
     item.captureId = result.capture.id; persist();
   }
@@ -264,12 +268,15 @@ function createFieldCloudSync({ file, dataDir, auth, getLive, prepareUpload, fet
     try { persist(); } catch { /* A queue failure never propagates into capture. */ }
   }
   function pump() {
-    if (worker || !context() || !saved.items.some(item => owned(item) && item.state !== 'synced' && (item.retryAt || 0) <= now() && item.recordingId !== activeId)) return;
+    // A non-current in-memory deferred record is not an uploadable file yet.
+    // The run tracker promotes it only after a complete manifest is published.
+    const uploadable = item => ['queued', 'error'].includes(item.state) && (item.retryAt || 0) <= now() && item.recordingId !== activeId;
+    if (worker || !context() || !saved.items.some(item => owned(item) && uploadable(item))) return;
     worker = (async () => {
       for (const item of saved.items) {
         const ctx = context(); if (!ctx) break;
         const stamp = generation;
-        if (!owned(item, ctx) || item.state === 'synced' || (item.retryAt || 0) > now()) continue;
+        if (!owned(item, ctx) || !uploadable(item)) continue;
         try {
           if (item.recordingId === activeId) continue;
           await upload(item, ctx);
@@ -338,7 +345,45 @@ function createFieldCloudSync({ file, dataDir, auth, getLive, prepareUpload, fet
       item.error = ''; item.retryAt = 0; item.attempts = 0;
     })().catch(error => { if (id === activeId && stamp === generation && item.state !== 'synced') recordFailure(item, error); }).finally(() => { liveWork = null; });
   }
-  function wake() { pump(); live(); }
+  function queueTerminal(item, recording) {
+    item.terminalPending = true;
+    item.terminalState = recording.status === 'complete' ? 'stopped' : 'error';
+    item.terminalRetryAt = 0; item.terminalAttempts = 0; item.terminalError = '';
+  }
+  function terminal() {
+    if (terminalWork || !context() || !saved.items.some(item => owned(item) && item.terminalPending && (item.terminalRetryAt || 0) <= now())) return;
+    const pendingLive = liveWork;
+    terminalWork = (async () => {
+      // An older live request may still be in flight when the writer switches.
+      // This runs outside acquisition, so ordering it cannot delay motion.
+      await pendingLive;
+      for (const item of saved.items) {
+        const ctx = context(); if (!ctx) break;
+        if (!owned(item, ctx) || !item.terminalPending || (item.terminalRetryAt || 0) > now()) continue;
+        const stamp = generation;
+        try {
+          // upload() replaces item.recording with a downsampled derivative.
+          // A live terminal must always keep the original acquisition clock.
+          const recording = manifest(item.recordingId);
+          await ensureCapture(item, ctx, recording);
+          const sequence = Math.max(now(), liveSequence + 1); liveSequence = sequence;
+          const acknowledged = await request(ctx, `/${item.captureId}/live`, { method: 'PUT', body: {
+            sequence, sentAt: now(), recording, state: item.terminalState,
+          } });
+          if (acknowledged.ok !== true || acknowledged.sequence !== sequence) throw fail('Web 采集结束状态接收未确认', 502);
+          item.terminalPending = false; item.terminalRetryAt = 0; item.terminalAttempts = 0; item.terminalError = '';
+          persist();
+        } catch (error) {
+          if (stamp !== generation || !owned(item, ctx) || error.status === 499) continue;
+          item.terminalError = error.message || 'Web 采集结束状态同步失败，稍后重试。';
+          item.terminalAttempts = (item.terminalAttempts || 0) + 1;
+          item.terminalRetryAt = now() + Math.min(60000, 1000 * 2 ** Math.min(item.terminalAttempts, 6));
+          try { persist(); } catch { /* Terminal delivery never changes recording/upload success. */ }
+        }
+      }
+    })().finally(() => { terminalWork = null; });
+  }
+  function wake() { pump(); live(); terminal(); }
   function pause({ forgetActive = false } = {}) {
     paused = true; generation++;
     if (forgetActive) { activeId = null; transientError = ''; }
@@ -353,7 +398,7 @@ function createFieldCloudSync({ file, dataDir, auth, getLive, prepareUpload, fet
   function status() {
     const binding = auth.cloudBinding(), ctx = context();
     const items = saved.items.filter(item => owned(item, binding)).map(item => ({ recordingId: item.recordingId, name: item.recording ? normalizeRecordingName(item.recording).name : item.name,
-      state: item.state, captureId: item.captureId, error: item.error || undefined,
+      state: item.state, captureId: item.captureId, error: item.error || item.terminalError || undefined,
       progress: item.state === 'synced' ? 100 : item.totalBytes ? Math.max(0, Math.min(99, Math.round((item.sentBytes || 0) / item.totalBytes * 100))) : 0 }));
     const uploading = worker && saved.items.some(item => owned(item, binding) && item.state === 'uploading');
     const liveForCurrent = liveWork && saved.items.some(item => owned(item, binding) && item.recordingId === activeId);
@@ -373,7 +418,7 @@ function createFieldCloudSync({ file, dataDir, auth, getLive, prepareUpload, fet
     let item = saved.items.find(candidate => candidate.recordingId === recording.id && owned(candidate, binding));
     if (!item) {
       compactHistory();
-      if (saved.items.filter(item => item.state !== 'synced').length >= MAX_PENDING) throw fail('本机待同步队列已满，请先完成待同步记录', 409);
+      if (saved.items.filter(item => item.state !== 'synced' || item.terminalPending).length >= MAX_PENDING) throw fail('本机待同步队列已满，请先完成待同步记录', 409);
       item = { recordingId: recording.id, name: String(recording.name || recording.id).slice(0, 120), owner: scope(binding),
         manual, recording: clone(recording), state: recording.status === 'complete' ? 'queued' : 'recording', attempts: 0, retryAt: 0 };
       if (Buffer.byteLength(JSON.stringify(checkpoint([...saved.items, item]))) > MAX_QUEUE_BYTES) throw fail('同步队列超过容量限制，请先完成待同步记录。', 413);
@@ -389,13 +434,16 @@ function createFieldCloudSync({ file, dataDir, auth, getLive, prepareUpload, fet
     if (!binding || owner !== scope(binding)) return false;
     if (storeError) throw fail(storeError, 503);
     let item = saved.items.find(candidate => candidate.recordingId === recording.id && candidate.owner === owner);
+    // A delayed status frame must not reactivate a record already being
+    // uploaded/finalized, or clear the terminal marker queued for it.
+    if (active && recording.status === 'incomplete' && item && item.state !== 'recording') return true;
     const enrolled = !item, previous = item ? { ...item } : null, previousActiveId = activeId;
     if (active && recording.status === 'incomplete') activeId = recording.id;
     else if (activeId === recording.id) activeId = null;
     if (item?.state === 'synced') return true;
     if (!item) {
       compactHistory();
-      if (saved.items.filter(candidate => candidate.state !== 'synced').length >= MAX_PENDING) throw fail('本机待同步队列已满，请先完成待同步记录', 409);
+      if (saved.items.filter(candidate => candidate.state !== 'synced' || candidate.terminalPending).length >= MAX_PENDING) throw fail('本机待同步队列已满，请先完成待同步记录', 409);
       item = { recordingId: recording.id, name: String(recording.name || recording.id).slice(0, 120), owner,
         manual: false, recording: clone(recording), state: 'recording', attempts: 0, retryAt: 0 };
       if (Buffer.byteLength(JSON.stringify(checkpoint([...saved.items, item]))) > MAX_QUEUE_BYTES) throw fail('同步队列超过容量限制，请先完成待同步记录。', 413);
@@ -411,6 +459,7 @@ function createFieldCloudSync({ file, dataDir, auth, getLive, prepareUpload, fet
       item.state = 'error'; item.retryAt = Number.MAX_SAFE_INTEGER;
       item.error = '该记录未完整保存，已保留在本机，不能按完整记录自动上传。';
     }
+    if (!active && (previous?.state === 'recording' || previous?.captureId || previousActiveId === recording.id)) queueTerminal(item, recording);
     // Active samples are not stored in the queue file. Persist only enrollment
     // and terminal transitions, not every live frame or manifest sample count.
     try { if (enrolled || item.state !== 'recording') persist(); }
@@ -442,15 +491,27 @@ function createFieldCloudSync({ file, dataDir, auth, getLive, prepareUpload, fet
     started(recording) { activeId = recording?.id || null; try { return track(recording); } catch (error) { transientError = error.message || '新采集未能加入同步队列'; throw error; } },
     finished(recording) {
       if (!recording?.id) return status();
+      const wasActive = activeId === recording.id;
       if (activeId === recording.id) activeId = null;
       const item = saved.items.find(candidate => candidate.recordingId === recording.id && owned(candidate));
-      if (item && item.state !== 'synced') { item.recording = clone(recording); item.state = 'queued'; item.retryAt = 0; persist(); wake(); }
+      if (item && item.state !== 'synced') {
+        item.recording = clone(recording); item.state = 'queued'; item.retryAt = 0;
+        if (wasActive || item.captureId) queueTerminal(item, recording);
+        persist(); wake();
+      }
       return status();
     },
     uploadRecording(id) { const recording = manifest(id); if (recording.status !== 'complete') throw fail('请先停止并完整保存记录', 409); return track(recording, true); },
-    retry() { transientError = ''; for (const item of saved.items) if (owned(item) && item.state !== 'synced') { item.retryAt = 0; item.attempts = 0; item.error = ''; } persist(); wake(); return status(); },
+    retry() {
+      transientError = '';
+      for (const item of saved.items) if (owned(item)) {
+        if (item.state !== 'synced') { item.retryAt = 0; item.attempts = 0; item.error = ''; }
+        if (item.terminalPending) { item.terminalRetryAt = 0; item.terminalAttempts = 0; item.terminalError = ''; }
+      }
+      persist(); wake(); return status();
+    },
     dispose() { disposed = true; pause(); clearInterval(timer); },
-    async settled() { await Promise.all([worker, liveWork]); },
+    async settled() { await Promise.all([worker, liveWork, terminalWork]); },
   });
 }
 module.exports = { createFieldCloudSync };

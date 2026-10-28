@@ -63,7 +63,7 @@ class ContinuousCycleTests(unittest.TestCase):
     def run_cycle(self, filename, *, fail_move=False, fail_next_fence=False,
                   cancel_at_second=False, late_disk_error=False, dark_motion=False, early_detection=False,
                   live_fences=False, azimuths=(0, 90), early_pose_fault=False, cancel_early=False,
-                  fail_early_copy=False):
+                  fail_early_copy=False, frame_probe=None, linger_after_early=False):
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         root = Path(folder.name)
@@ -166,6 +166,8 @@ class ContinuousCycleTests(unittest.TestCase):
                 self.assertFalse(controller.writer.directory.exists(),
                                  'deferred station creation must not block the next command')
                 self.assertEqual(len(list((root/'recordings').glob('*/manifest.json'))), 1)
+                if frame_probe is not None:
+                    frame_probe(controller.frame(1000), controller.writer)
             if dark_motion:
                 self.assertEqual(controller.laser_observation['state'], 'off')
                 self.assertFalse(controller.continuous_capture.gate_is_open)
@@ -195,6 +197,11 @@ class ContinuousCycleTests(unittest.TestCase):
                 self.assertEqual(controller.point_cycle['currentPoint'],
                                  controller.early_detection.point.name)
                 self.assertEqual(len(gates), 1)
+                if linger_after_early:
+                    # A remembered pass must survive >1 s of received data
+                    # while the motor is still settling, without a larger ring.
+                    sdk.feed([260] * 1500)
+                    self.wait_for(lambda: session.global_samples >= sdk.submitted)
             if fail_move:
                 raise RuntimeError('fixture native movement rejected')
             if fail_next_fence:
@@ -286,8 +293,10 @@ class ContinuousCycleTests(unittest.TestCase):
     def test_three_early_stations_handoff_without_new_packet_or_record_setup_on_both_platforms(self):
         for filename in ('fixture.dll', 'fixture.dylib'):
             with self.subTest(filename=filename):
-                controller, sdk, paths, raw, gates, moves, _ = self.run_cycle(
-                    filename, early_detection=True, live_fences=True, azimuths=(0, 120, 240))
+                with patch('blade_acquisition.continuous_preview.PreviewWindow.frame',
+                           side_effect=AssertionError('motion must not aggregate preview or FFT')):
+                    controller, sdk, paths, raw, gates, moves, _ = self.run_cycle(
+                        filename, early_detection=True, live_fences=True, azimuths=(0, 120, 240))
                 self.assertEqual(controller.status()['pointCycle']['state'], 'complete')
                 self.assertEqual(len(moves), 2)
                 self.assertEqual(len(gates), 1)
@@ -311,6 +320,39 @@ class ContinuousCycleTests(unittest.TestCase):
                 self.assertLess(first_early['handoff']['detectedAt'],
                                 first_early['diagnosticDetection']['stopConfirmedAt'])
                 self.assertGreaterEqual(third_command, first_early['diagnosticDetection']['stopConfirmedAt'])
+
+    def test_deferred_live_frame_matches_final_bytes_on_both_platforms(self):
+        for filename in ('fixture.dll', 'fixture.dylib'):
+            with self.subTest(filename=filename):
+                frames = []
+                def probe(frame, writer):
+                    self.assertFalse(writer.directory.exists(), 'live preview must not force file creation')
+                    self.assertEqual(frame['recording']['status'], 'incomplete')
+                    frames.append(frame)
+                controller, sdk, paths, raw, gates, moves, _ = self.run_cycle(
+                    filename, early_detection=True, azimuths=(0, 120, 240), frame_probe=probe,
+                    linger_after_early=True)
+                frames.append(controller.frame(1000))
+                self.assertEqual(len(frames), 2)
+                records = {json.loads(p.read_text())['id']: p for p in paths}
+                for frame in frames:
+                    manifest, wave = frame['recording'], frame['waveform']
+                    self.assertTrue(manifest['diagnosticOnly'])
+                    self.assertFalse(manifest['validMeasurement'])
+                    self.assertEqual(manifest['pointCycle']['handoff']['sampleClock'], 'continuous_session_raw')
+                    actual = stored_rows(records[manifest['id']])
+                    final = json.loads(records[manifest['id']].read_text())
+                    self.assertEqual(manifest['samples'], len(actual))
+                    self.assertEqual(wave['sampleStart'], 0)
+                    self.assertEqual(wave['sampleRate'], final['sampleRate'])
+                    self.assertEqual(wave['sampleOrigin'], final['sampleOrigin'])
+                    self.assertEqual(wave['values'], [row[2] for row in actual])
+                    # BLADEV01 stores RSSI as float32; live values retain SDK precision.
+                    for live_rssi, row in zip(wave['rssi'], actual):
+                        self.assertAlmostEqual(live_rssi, row[4], delta=1e-5)
+                    self.assertEqual(wave['overrange'], [bool(row[5] & 1) for row in actual])
+                self.assertEqual(len(gates), 1, 'preview must never reopen the stationary gate')
+                self.assertEqual(sdk.events.count('start'), 1)
 
     def test_early_pass_never_bypasses_fault_or_cancellation(self):
         for filename in ('fixture.dll', 'fixture.dylib'):
@@ -339,6 +381,7 @@ class ContinuousCycleTests(unittest.TestCase):
                 self.assertEqual(controller.status()['pointCycle']['completedRecords'], 1)
                 self.assertEqual([json.loads(p.read_text())['status'] for p in paths],
                                  ['complete', 'error', 'error'])
+                self.assertEqual(controller.frame(1000)['waveform']['values'], [])
 
     def test_live_receiver_can_acknowledge_early_detection_fences_on_both_platforms(self):
         for filename in ('fixture.dll', 'fixture.dylib'):

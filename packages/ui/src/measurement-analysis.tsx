@@ -7,6 +7,7 @@ import { ChartLoading } from "./chart-loading";
 import { FieldWaveChart } from "./field-waveform";
 import { MeasurementLive } from "./measurement-live";
 import { MeasurementSynthesis } from "./measurement-synthesis";
+import { adoptMeasurementPages } from "./measurement-sync";
 import { measurementChartHeight, measurementZoomAxes } from "./measurement-chart-options";
 import { Activity, FolderOpen, RefreshCw } from "lucide-react";
 import { contextNames, isDiagnosticMeasurement, type MeasurementContext } from "./measurement-domain";
@@ -407,7 +408,7 @@ export function MeasurementAnalysis({
   preferredIds?: string[];
   onImport?: () => void;
 }) {
-  const { data, loading, error, setError, reload } =
+  const { data, loading, error, setError, reload, loadMore, loadingMore, hasMoreSources } =
     useMeasurements(refreshKey);
   const [context, setContext] = useState<Partial<MeasurementContext>>({}),
     [selected, setSelected] = useState(""),
@@ -425,6 +426,7 @@ export function MeasurementAnalysis({
     [combine, setCombine] = useState(false),
     [includeDiagnostic, setIncludeDiagnostic] = useState(false),
     [batchProgress, setBatchProgress] = useState(""),
+    [associationProgress, setAssociationProgress] = useState(""),
     [batchSummary, setBatchSummary] = useState<{ completed: number; failures: string[] } | null>(null),
     [windowSeconds, setWindow] = useState(0.25),
     [fadeFraction, setFade] = useState(0.05),
@@ -725,10 +727,13 @@ export function MeasurementAnalysis({
         </div>
         <div className="measurement-toolbar measurement-source-toolbar">
           <span>
-            {data.sources.length} 条来源 ·{" "}
+            {hasMoreSources ? "已加载 " : ""}{data.sources.length} 条来源 ·{" "}
             {data.sources.filter((s) => !s.context).length} 条待关联
           </span>
           <div className="measurement-heading-actions">
+            {hasMoreSources && <Button variant="ghost" disabled={loadingMore || loading || busy} onClick={() => void loadMore()}>
+              {loadingMore ? "正在加载…" : "加载更早记录"}
+            </Button>}
             <Button variant="ghost" onClick={() => setLibrary(true)}>
               <FolderOpen size={16} />
               记录与归属
@@ -774,7 +779,7 @@ export function MeasurementAnalysis({
           includeDiagnostic={includeDiagnostic} onDiagnosticChange={setIncludeDiagnostic}
         />
       ) : view === "live" ? (
-        <MeasurementLive context={context} objects={data.objects} />
+        <MeasurementLive context={context} objects={data.objects} onCatalogChange={() => void reload({ quiet: true })} />
       ) : (
         <>
           {source && (
@@ -1068,7 +1073,8 @@ export function MeasurementAnalysis({
                 onClick={async () => {
                   setBusy(true);
                   try {
-                    await api("objects/adopt", "POST", {});
+                    const progress = await adoptMeasurementPages(p => setAssociationProgress(`已处理 ${p.pages} 批，新增关联 ${p.linked} 条…`));
+                    setAssociationProgress(`已新增关联 ${progress.linked} 条`);
                     await reload();
                   } catch (e) {
                     setError((e as Error).message);
@@ -1083,6 +1089,7 @@ export function MeasurementAnalysis({
             <p className="hint">
               自动关联只使用记录中已有的风场、风机、叶片、点位和任务信息；信息不全的记录请单独关联。
             </p>
+            {associationProgress && <p role="status" className="hint">{associationProgress}</p>}
             <Table headers={["记录", "测量对象", "时间", "操作"]}>
               {libraryRows.slice(page * 20, page * 20 + 20).map((s) => {
                 const n = s.context
@@ -1131,6 +1138,9 @@ export function MeasurementAnalysis({
               total={libraryRows.length}
               onChange={setPage}
             />
+            {hasMoreSources && <Button disabled={loadingMore || loading} onClick={() => void loadMore()}>
+              {loadingMore ? "正在加载…" : "加载更早记录"}
+            </Button>}
             {error && <p className="error">{error}</p>}
           </div>
         </Dialog>

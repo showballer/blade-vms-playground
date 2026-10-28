@@ -4,12 +4,15 @@ import { existsSync } from "node:fs";
 import { mkdir, open, unlink } from "node:fs/promises";
 import path from "node:path";
 import { HttpError, type User } from "./db";
+import { readRotationCatalog } from "./rotation-catalog";
 
 const globalState = globalThis as typeof globalThis & { bladeRotationWorkers?: { active: number; users: Set<string> } };
 const workers = globalState.bladeRotationWorkers ??= { active: 0, users: new Set<string>() };
 const readState = globalThis as typeof globalThis & { bladeRotationListings?: Map<string, Promise<any>> };
 const listings = readState.bladeRotationListings ??= new Map<string, Promise<any>>();
 const listingKey = (user: Pick<User, "id" | "tenant">) => JSON.stringify([user.tenant, user.id, process.env.BLADE_ANALYSIS_DATA_DIR || ""]);
+const accountKey = (user: Pick<User, "id" | "tenant">) => createHash("sha256").update(`${user.tenant}\0${user.id}`).digest("hex");
+const accountData = (root: string, user: Pick<User, "id" | "tenant">) => path.join(/* turbopackIgnore: true */ process.env.BLADE_ANALYSIS_DATA_DIR || path.join(/* turbopackIgnore: true */ root, ".data/web-rotation"), accountKey(user));
 export const rotationFileLimit = 128 * 1024 * 1024;
 function projectRoot() {
   // Python and user data are runtime installations, not JavaScript bundle assets.
@@ -22,14 +25,14 @@ function projectRoot() {
 
 /** Each job owns a short-lived process. The Web session never exposes service tokens or paths. */
 async function withWorker<T>(user: Pick<User, "id" | "tenant">, operation: (service: string, python: string, data: string) => Promise<T>): Promise<T> {
-  const key = createHash("sha256").update(`${user.tenant}\0${user.id}`).digest("hex");
+  const key = accountKey(user);
   if (workers.users.has(key)) throw new HttpError(429, "当前账号已有导入或分析在运行，请稍后重试。");
   if (workers.active >= 2) throw new HttpError(429, "分析服务繁忙，请稍后重试。");
   const root = projectRoot();
   const service = path.join(/* turbopackIgnore: true */ root, "services/acquisition");
   const bundled = path.join(/* turbopackIgnore: true */ service, ".venv", process.platform === "win32" ? "Scripts/python.exe" : "bin/python");
   const python = process.env.BLADE_ANALYSIS_PYTHON || (existsSync(/* turbopackIgnore: true */ bundled) ? bundled : process.platform === "win32" ? "python" : "python3");
-  const data = path.join(/* turbopackIgnore: true */ process.env.BLADE_ANALYSIS_DATA_DIR || path.join(/* turbopackIgnore: true */ root, ".data/web-rotation"), key);
+  const data = accountData(root, user);
   workers.active++; workers.users.add(key);
   try {
     await mkdir(data, { recursive: true, mode: 0o700 });
@@ -90,14 +93,11 @@ export async function rotationWorker(user: Pick<User, "id" | "tenant">, payload:
     const key = listingKey(user);
     const current = listings.get(key);
     if (current) return current;
-    const pending = withWorker(user, (service, python, data) => runWorker(service, python, data, payload));
+    const pending = readRotationCatalog(accountData(projectRoot(), user));
     listings.set(key, pending);
     try { return await pending; }
     finally { if (listings.get(key) === pending) listings.delete(key); }
   }
-  // A short metadata read must not reject a user's analysis click as a second job.
-  // This waits for the actual read to finish; no timer and no retry of mutations.
-  await listings.get(listingKey(user));
   return withWorker(user, (service, python, data) => runWorker(service, python, data, payload));
 }
 
@@ -107,7 +107,6 @@ export async function rotationUpload(user: Pick<User, "id" | "tenant">, request:
   if (!/\.(xlsx|csv|csv\.gz)$/i.test(filename)) throw new HttpError(400, "请选择 XLSX、CSV 或 CSV.GZ 数据文件。");
   const limit = /\.xlsx$/i.test(filename) ? 16 * 1024 * 1024 : rotationFileLimit;
   if (Number(request.headers.get("content-length") || 0) > limit) throw new HttpError(413, "文件超过大小上限（XLSX 16 MB，CSV / CSV.GZ 128 MB）。");
-  await listings.get(listingKey(user));
   return withWorker(user, async (service, python, data) => {
     const inputFile = path.join(data, `.upload-${randomUUID()}`);
     const file = await open(inputFile, "wx", 0o600);

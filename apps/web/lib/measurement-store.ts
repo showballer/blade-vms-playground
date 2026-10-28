@@ -20,7 +20,7 @@ import {
   type RecordItem,
   type User,
 } from "./db";
-import { sqlCaptureRepository, createCaptureService } from "./captures";
+import { capturePage, createCaptureService, type CapturePageOptions } from "./captures";
 import { rotationWorker } from "./rotation";
 import { healthTime, isHealthDemo } from "@blade/ui/health-workspace-data";
 import type {
@@ -64,7 +64,9 @@ export async function listMeasurementRows(user: User, kind: string) {
 /** Operators may not gain access to a colleague's waveform through an aggregate. */
 export async function filterMeasurementAccess(user: User, records: any[]) {
   if (user.role !== "operator" || !records.length) return records;
-  const keys = new Set((await measurementSources(user)).map((s) => s.key));
+  const referenceKeys = [...new Set(records.flatMap(r => r.sourceKeys || (r.sourceKey ? [r.sourceKey] : [])))] as string[];
+  const references = referenceKeys.map(key => { const [kind, ...parts] = key.split(":"); return { kind, id: parts.at(-1)! }; }) as MeasurementReference[];
+  const keys = new Set((await measurementSources(user, { references })).map((s) => s.key));
   return records.filter((r) => {
     const sources = r.sourceKeys || (r.sourceKey ? [r.sourceKey] : []);
     return sources.length > 0 && sources.every((key: string) => keys.has(key));
@@ -292,78 +294,89 @@ export type MeasurementSource = {
 };
 export const sourceKey = (user: User, reference: MeasurementReference) =>
   `${reference.kind}:${reference.kind === "import" ? user.id + ":" : ""}${reference.id}`;
-export async function measurementSources(user: User) {
+export function measurementIdentity(raw: any) {
+  const metadata = raw?.sourceMetadata || {}, pc = raw?.pointCycle || metadata.pointCycle || {};
+  const text = (value: any) => typeof value === "string" ? value.trim() : "";
+  return { farmCode: text(raw?.windFarm || metadata.windFarm), turbineCode: text(raw?.turbine || metadata.turbine),
+    bladeCode: text(pc.bladeId), positionCode: canonicalPositionCode(pc.radialPointId, pc.radialPointName), campaignCode: text(pc.collectionId) };
+}
+export function inferredMeasurementContext(raw: any, all: MeasurementObject[]): MeasurementContext | null {
+  const i = measurementIdentity(raw), find = (kind: string, code: string, parentId: string | null) =>
+    all.find(o => o.active && o.kind === kind && o.code === code && o.parentId === parentId);
+  const farm = find("farm", i.farmCode, null), turbine = find("turbine", i.turbineCode, farm?.id || ""),
+    blade = find("blade", i.bladeCode, turbine?.id || ""), position = find("position", i.positionCode, blade?.id || ""),
+    campaign = find("campaign", i.campaignCode, farm?.id || "");
+  if (!farm || !turbine || !blade || !position || !campaign?.turbineIds?.includes(turbine.id)) return null;
+  return { farmId: farm.id, turbineId: turbine.id, bladeId: blade.id, positionId: position.id, campaignId: campaign.id };
+}
+export function resolvedMeasurementContext(raw: any, all: MeasurementObject[], binding?: any) {
+  return binding?.context || inferredMeasurementContext(raw, all);
+}
+export async function sourceBindings(user: User, keys: string[]) {
+  const found: any[] = [];
+  for (let offset = 0; offset < keys.length; offset += 200) {
+    const ids = keys.slice(offset, offset + 200).map(key => "link-" + digest(user.tenant + "|" + key).slice(0, 48));
+    if (ids.length) found.push(...(await rows<RecordItem>(`SELECT * FROM records WHERE kind='measurement_links' AND tenant=? AND id IN (${ids.map(() => "?").join(",")})`, [user.tenant, ...ids])).map(unpack));
+  }
+  return found;
+}
+type SourceSelection = { references?: MeasurementReference[]; context?: Partial<MeasurementContext>; captureOnly?: boolean; cursor?: string | null; limit?: number };
+export async function measurementSources(user: User, selection: SourceSelection = {}) {
   const s = recordScope(user, "tasks");
-  const [tasks, captures, imports, bindings] = await Promise.all([
-    rows<RecordItem>(
-      "SELECT r.* FROM records r WHERE r.kind='tasks'" +
-        s.sql +
-        " ORDER BY updated_at DESC LIMIT 1000",
-      s.args,
-    ).then((rs) =>
-      rs.map((r) => ({
-        raw: unpack(r),
-        tenant: r.tenant,
-        kind: "task" as const,
-        id: r.id,
-      })),
-    ),
-    sqlCaptureRepository.list(user).then((rs) =>
-      rs
-        .filter((r) => r.body.uploadState === "complete")
-        .map((r) => ({
-          raw: r.body.recording,
-          tenant: r.tenant,
-          kind: "capture" as const,
-          id: r.id,
-        })),
-    ),
-    rotationWorker(user, { action: "recordings" }).then((rs) =>
-      rs.recordings.map((r: any) => ({
-        raw: r,
-        tenant: user.tenant,
-        kind: "import" as const,
-        id: r.id,
-      })),
-    ),
-    listMeasurementRows(user, "measurement_links"),
+  let scopedBindings: any[] | null = null;
+  if (selection.context) {
+    const terms: string[] = [], args: string[] = [user.tenant];
+    for (const key of ["farmId", "campaignId", "turbineId", "bladeId", "positionId"] as const) if (selection.context[key]) {
+      terms.push(` AND JSON_UNQUOTE(JSON_EXTRACT(body,'$.context.${key}'))=?`); args.push(selection.context[key]!);
+    }
+    if (!terms.length) throw new HttpError(400, "请选择测量任务范围");
+    scopedBindings = (await rows<RecordItem>(`SELECT * FROM records WHERE kind='measurement_links' AND tenant=?${terms.join("")} LIMIT 5001`, args)).map(unpack);
+    if (scopedBindings.length > 5000) throw new HttpError(400, "测量范围超过 5000 条记录，请缩小范围");
+  }
+  const references = selection.references || scopedBindings?.map(b => b.reference);
+  if (selection.references && (selection.references.length > 5000 || selection.references.some(r => !r || !["capture", "task", "import"].includes(r.kind) || typeof r.id !== "string"))) throw new HttpError(400, "测量来源无效");
+  const selectedIds = references?.filter(r => r.kind === "capture").map(r => r.id);
+  const needsSourceKind = (kind: "task" | "import") => !selection.captureOnly && (!references || references.some(reference => reference.kind === kind));
+  const captureOptions: CapturePageOptions = { completed: true, tenantOnly: true, limit: selection.limit ?? 200, cursor: selection.cursor };
+  const selectedCaptures = async () => {
+    if (!selectedIds) return capturePage(user, captureOptions);
+    const collected = [];
+    for (let offset = 0; offset < selectedIds.length; offset += 500) collected.push(...(await capturePage(user, { completed: true, tenantOnly: true, limit: 500, ids: selectedIds.slice(offset, offset + 500) })).rows);
+    return { rows: collected, nextCursor: null };
+  };
+  const [tasks, captureResult, imports] = await Promise.all([
+    !needsSourceKind("task") ? [] : rows<RecordItem>("SELECT r.* FROM records r WHERE r.kind='tasks'" + s.sql + " ORDER BY updated_at DESC LIMIT 1000", s.args).then(rs => rs.map(r => ({ raw: unpack(r), tenant: r.tenant, kind: "task" as const, id: r.id }))),
+    selectedCaptures(),
+    !needsSourceKind("import") ? [] : rotationWorker(user, { action: "recordings" }).then(rs => rs.recordings.map((r: any) => ({ raw: r, tenant: user.tenant, kind: "import" as const, id: r.id }))),
   ]);
-  const importedCaptureIds = new Set(captures.map((r) => r.id));
-  return [...tasks, ...captures, ...imports]
-    .filter(
-      (r) =>
-        r.tenant === user.tenant &&
-        !isHealthDemo(r.raw) &&
-        !(r.kind === "import" && importedCaptureIds.has(r.raw.cloudCaptureId)),
-    )
-    .map((r) => {
-      const reference = { kind: r.kind, id: r.id },
-        key = sourceKey(user, reference),
-        link = bindings.find((b) => b.key === key);
-      return {
-        key,
-        reference,
-        name: r.raw.name || "未命名记录",
-        raw: r.raw,
-        measuredAt: healthTime(
-          r.raw.sourceSampleOrigin ??
-            r.raw.sourceMetadata?.sampleOrigin ??
-            r.raw.testTime ??
-            r.raw.sourceStartedAt ??
-            r.raw.sourceMetadata?.startedAt ??
-            r.raw.startedAt,
-        ),
-        tenant: r.tenant,
-        context: link?.context || null,
-        bindingRevision: link ? digest(JSON.stringify(link)) : null,
-      };
-    }) as MeasurementSource[];
+  const captures = captureResult.rows.map(r => ({ raw: r.body.recording, tenant: r.tenant, kind: "capture" as const, id: r.id }));
+  // An imported native capture is an implementation copy, even if its original
+  // capture is on another page. Never advertise it as a second user source.
+  const candidates = [...tasks, ...captures, ...imports].filter(r => r.tenant === user.tenant && !isHealthDemo(r.raw) &&
+    !(r.kind === "import" && r.raw.cloudCaptureId) && (!references || references.some(ref => ref.kind === r.kind && ref.id === r.id)));
+  const bindings = scopedBindings || await sourceBindings(user, candidates.map(r => sourceKey(user, { kind: r.kind, id: r.id })));
+  const sources = candidates.map(r => {
+    const reference = { kind: r.kind, id: r.id }, key = sourceKey(user, reference), link = bindings.find(b => b.key === key);
+    return { key, reference, name: r.raw.name || "未命名记录", raw: r.raw,
+      measuredAt: healthTime(r.raw.sourceSampleOrigin ?? r.raw.sourceMetadata?.sampleOrigin ?? r.raw.testTime ?? r.raw.sourceStartedAt ?? r.raw.sourceMetadata?.startedAt ?? r.raw.startedAt),
+      tenant: r.tenant, context: link?.context || null, bindingRevision: link ? digest(JSON.stringify(link)) : null };
+  }) as MeasurementSource[];
+  return Object.assign(sources, { nextCursor: captureResult.nextCursor });
+}
+export async function measurementLive(user: User, options: Pick<CapturePageOptions, "limit" | "cursor"> = {}) {
+  const [page, all] = await Promise.all([createCaptureService().page(user, { ...options, tenantOnly: true }), objects(user)]);
+  const bindings = await sourceBindings(user, page.captures.map(c => `capture:${c.id}`));
+  return { ...page, objects: all, captures: page.captures.map(c => {
+    const link = bindings.find(b => b.key === `capture:${c.id}`);
+    return { ...c, context: resolvedMeasurementContext(c.recording, all, link),
+      bindingRevision: link ? digest(JSON.stringify(link)) : null, identity: measurementIdentity(c.recording) };
+  }) };
 }
 export async function bindMeasurement(user: User, input: any) {
   requireEditor(user);
   const [all, sources] = await Promise.all([
     objects(user),
-    measurementSources(user),
+    measurementSources(user, { references: [input.reference] }),
   ]);
   const source = sources.find(
     (s) =>
@@ -392,10 +405,10 @@ export async function bindMeasurement(user: User, input: any) {
   return { context };
 }
 /** Reconcile known labels only on an explicit user action; never rewrite raw files. */
-export async function adoptSources(user: User) {
+export async function adoptSources(user: User, cursor?: string | null) {
   requireEditor(user);
   let all = await objects(user);
-  const sources = await measurementSources(user);
+  const sources = await measurementSources(user, { cursor, captureOnly: Boolean(cursor) });
   let linked = 0,
     skipped = 0;
   async function ensure(
@@ -419,7 +432,7 @@ export async function adoptSources(user: User) {
     return result!;
   }
   for (const s of sources) {
-    if (s.context) continue;
+    if (s.bindingRevision) continue;
     const metadata = s.raw.sourceMetadata || {};
     const pc = s.raw.pointCycle || metadata.pointCycle;
     const farmCode = s.raw.windFarm || metadata.windFarm;
@@ -482,7 +495,53 @@ export async function adoptSources(user: User) {
     );
     linked++;
   }
-  return { linked, skipped };
+  return { linked, skipped, nextCursor: sources.nextCursor };
+}
+/** Called only after an authenticated capture write. Existing links are immutable here. */
+export async function autoLinkCapture(user: User, captureId: string) {
+  requireEditor(user);
+  const connection = await pool().getConnection();
+  try {
+    await connection.beginTransaction();
+    // Serialize this owner's enrollment without affecting motion or sample I/O.
+    await connection.execute("SELECT id FROM users WHERE id=? FOR UPDATE", [user.id]);
+    const [found] = await connection.execute<any[]>("SELECT body FROM captures WHERE id=? AND owner_id=? AND tenant=?", [captureId, user.id, user.tenant]);
+    if (!found.length) throw new HttpError(404, "采集记录不存在或不属于当前账号");
+    const body = typeof found[0].body === "string" ? JSON.parse(found[0].body) : found[0].body, raw = body.recording;
+    const identity = measurementIdentity(raw), key = `capture:${captureId}`, linkId = "link-" + digest(user.tenant + "|" + key).slice(0, 48);
+    const [links] = await connection.execute<any[]>("SELECT id FROM records WHERE id=? AND kind='measurement_links' AND tenant=?", [linkId, user.tenant]);
+    if (links.length || Object.values(identity).some(v => !v || v.length > 100) || isHealthDemo(raw)) {
+      await connection.commit(); return { linked: false, reason: links.length ? "already_linked" : "incomplete_identity" };
+    }
+    const ensure = async (kind: string, code: string, parentId: string | null, extra: any = {}) => {
+      const id = "obj-" + digest(JSON.stringify([user.tenant, kind, parentId, code])).slice(0, 48);
+      const objectBody = { kind, code, name: code, parentId, active: true, ...extra };
+      await connection.execute("INSERT INTO records(id,kind,tenant,body,created_by) VALUES(?,'measurement_objects',?,?,?) ON DUPLICATE KEY UPDATE id=id", [id, user.tenant, JSON.stringify(objectBody), user.id]);
+      const [records] = await connection.execute<any[]>("SELECT * FROM records WHERE id=? AND kind='measurement_objects' AND tenant=? FOR UPDATE", [id, user.tenant]);
+      if (!records.length) throw new HttpError(409, "测量对象标识冲突");
+      const object = unpack(records[0]);
+      if (!object.active || object.kind !== kind || object.code !== code || object.parentId !== parentId) throw new HttpError(409, "测量对象已归档或归属发生变化，请手动关联");
+      return object;
+    };
+    const metadata = raw.sourceMetadata || {}, pc = raw.pointCycle || metadata.pointCycle;
+    const farm = await ensure("farm", identity.farmCode, null), turbine = await ensure("turbine", identity.turbineCode, farm.id),
+      blade = await ensure("blade", identity.bladeCode, turbine.id), position = await ensure("position", identity.positionCode, blade.id,
+        typeof pc.radiusM === "number" && Number.isFinite(pc.radiusM) && pc.radiusM >= 0 && pc.radiusM <= 1000 ? { radiusM: pc.radiusM } : {}),
+      campaign = await ensure("campaign", identity.campaignCode, farm.id, { name: String(raw.originalTaskName || metadata.originalTaskName || raw.name || identity.campaignCode).slice(0, 120), turbineIds: [turbine.id] });
+    if (!campaign.turbineIds?.includes(turbine.id)) {
+      const { id, revision, recordTenant, updatedAt, ownerId, ...campaignBody } = campaign;
+      const turbineIds = [...(campaign.turbineIds || []), turbine.id];
+      if (turbineIds.length > 500) throw new HttpError(409, "测量任务风机数量超过上限，请手动关联");
+      await connection.execute("UPDATE records SET body=? WHERE id=? AND tenant=?", [JSON.stringify({ ...campaignBody, turbineIds }), id, user.tenant]);
+    }
+    const context = { farmId: farm.id, turbineId: turbine.id, bladeId: blade.id, positionId: position.id, campaignId: campaign.id };
+    // INSERT-only: a concurrent manual binding always wins and is never rewritten.
+    const [inserted] = await connection.execute<any>("INSERT IGNORE INTO records(id,kind,tenant,body,created_by) VALUES(?,'measurement_links',?,?,?)",
+      [linkId, user.tenant, JSON.stringify({ name: raw.name, key, reference: { kind: "capture", id: captureId }, context, automatic: true }), user.id]);
+    await connection.commit();
+    return { linked: inserted.affectedRows === 1 };
+  } catch (error) { await connection.rollback(); throw error; }
+  finally { connection.release(); }
 }
 export async function prepareSource(user: User, s: MeasurementSource) {
   if (s.reference.kind === "import") return s.reference.id;

@@ -327,12 +327,25 @@ print(json.dumps(meta))
     }
     const parameters = { recordingIds: prepared, rpm: 1200, pointsPerRevolution: 256, maxOrder: 20, targetOrder: 1, maxRevolutions: 50, positions: [0.2, 0.6, 0.9], pointNames: ["P1", "P2", "P3"] };
     await api("rotation/analyze", { user: "operator", method: "POST", body: parameters, expected: 403 });
-    const result = await api("rotation/analyze", { user: "analyst", method: "POST", body: parameters });
-    assert.equal(result.modeShape.points.length, 3); assert.equal(result.orderSpectra.length, 3); assert.equal(result.revolutions, 50);
+    const rejected = await api("rotation/analyze", { user: "analyst", method: "POST", body: parameters, expected: 400 });
+    assert.match(rejected.error, /间断的叶片经过片段/);
+    check("Intermittent point records cannot enter legacy continuous-circle analysis");
+    // Keep the continuous-flow check, using only the genuinely continuous fixture records.
+    const continuousParameters = { ...parameters, recordingIds: prepared.slice(0, 2), positions: parameters.positions.slice(0, 2), pointNames: parameters.pointNames.slice(0, 2) };
+    const result = await api("rotation/analyze", { user: "analyst", method: "POST", body: continuousParameters });
+    assert.equal(result.modeShape.points.length, 2); assert.equal(result.orderSpectra.length, 2); assert.equal(result.revolutions, 50);
     assert.ok(result.sources.every(source => source.source === "simulation"));
     assert.ok(result.warnings.some(text => text.includes("模拟")));
-    report.rotation = { points: 3, revolutions: result.revolutions, samplesPerRevolution: 256, rpm: result.rpm, simulationProvenance: true };
-    check("Three independently simulated points prepare idempotently and complete real Python rotation analysis with simulation provenance");
+    report.rotation = { points: 2, revolutions: result.revolutions, samplesPerRevolution: 256, rpm: result.rpm, simulationProvenance: true };
+    check("Continuous simulation records prepare idempotently and complete Python rotation analysis without promoting intermittent records");
+    for (const captureId of fixture.captures) {
+      const archive = await api(`captures/${captureId}/archive-preview`, { user: "analyst" });
+      assert.equal(archive.origin, "archive");
+      assert.equal(archive.frame.recording.sampleRate, archive.frame.waveform.sampleRate);
+      assert.equal(archive.frame.recording.status, "complete");
+    }
+    await api(`captures/${id}/archive-preview`, { user: "stranger", expected: 404 });
+    check("Completed archives provide bounded same-clock previews without relying on a final live waveform");
     const owned = await api("captures"); assert.equal(owned.captures.length, 3);
     assert.equal((await service.recordings()).recordings.length, 3);
     report.passed = true;
