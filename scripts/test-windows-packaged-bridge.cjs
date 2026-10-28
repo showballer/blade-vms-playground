@@ -31,18 +31,18 @@ test('packaged bridge loads its own complete relative module graph, with source 
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
 
-test('missing packaged dependencies cannot fall back to available source modules', () => {
+for (const missing of ['field-turntable-port.cjs', 'field-recording-name.cjs']) test(`missing packaged ${missing} cannot fall back to available source modules`, () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'blade-missing-module-test-'));
   const requested = [];
   try {
     assert.throws(() => extractPackagedBridge({ archive: 'fixture-only', directory, sourceDirectory,
       asar: { extractFile(_archive, name) {
         requested.push(name);
-        if (name.endsWith('/field-turntable-port.cjs')) throw Error('packaged dependency missing');
+        if (name.endsWith(`/${missing}`)) throw Error('packaged dependency missing');
         return fs.readFileSync(path.join(sourceDirectory, path.basename(name)));
       } },
     }), /packaged dependency missing/);
-    assert.deepEqual(requested, ['electron/field-service.cjs', 'electron/field-turntable-port.cjs']);
+    assert.deepEqual(requested, MODULES.slice(0, MODULES.indexOf(missing) + 1).map(name => `electron/${name}`));
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
 

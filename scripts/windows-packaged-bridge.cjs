@@ -7,7 +7,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
 const MODULES = Object.freeze(['field-service.cjs', 'field-turntable-port.cjs', 'field-sdk.cjs',
-  'field-single-point.cjs', 'field-motion-trial.cjs', 'field-cloud-sync.cjs']);
+  'field-single-point.cjs', 'field-motion-trial.cjs', 'field-cloud-sync.cjs', 'field-recording-name.cjs']);
 const sha256 = value => createHash('sha256').update(value).digest('hex');
 
 function extractPackagedBridge({ archive, directory, sourceDirectory, asar = require('@electron/asar') }) {
