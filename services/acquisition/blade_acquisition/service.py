@@ -298,6 +298,7 @@ class AcquisitionController:
         with self.lock:
             return {"state": self.state, "error": self.error,
                     "pointCycleExecutionModes": ["continuous", "manual_segments"],
+                    "pointCycleSegmentedAutoMove": True,
                     "receiver": {"source": self.source, "simulation": copy.deepcopy(self.simulation),
                                  "unit": "m/s", "running": bool((self.thread and self.thread.is_alive()) or
                                                                 (self.capture_thread and self.capture_thread.is_alive()) or
@@ -1807,6 +1808,7 @@ class AcquisitionController:
                             **({"collectionId": cycle.collectionId} if cycle.collectionId else {}),
                             "sessionId": uuid.uuid4().hex, "mode": cycle.mode,
                             "executionMode": cycle.executionMode,
+                            **({"segmentedAutoMove": cycle.segmentedAutoMove} if cycle.executionMode == "manual_segments" else {}),
                             "segmentStepDeg": cycle.segmentStepDeg,
                             "totalStationCount": cycle.totalStationCount,
                             "nextWaitPoint": cycle.nextWaitPoint.model_dump() if cycle.nextWaitPoint else None,
@@ -2361,7 +2363,9 @@ class AcquisitionController:
                    ("origin_counts", "display_mode", "command_counts_per_rev", "encoder_bits")]
                   for axis in (1, 2)]
         if actual != self._cycle_point_reference(point):
-            raise RuntimeError("首个点位参考位或反馈计数单位已变化，请重新手动瞄准并校准")
+            raise RuntimeError("首个点位参考位或反馈计数单位已变化，请重新核对参考位并点击“移动到预设位置”"
+                               if cycle.executionMode == "manual_segments" else
+                               "首个点位参考位或反馈计数单位已变化，请重新手动瞄准并校准")
         configs = [TurntableConfig(port=cycle.port, axis=axis, protocol="position",
                                    targetAngleDeg=angle, speedRpm=cycle.speedRpm)
                    for axis, angle in ((1, point.axis1AngleDeg), (2, point.axis2AngleDeg))]
@@ -2374,7 +2378,9 @@ class AcquisitionController:
             if status.state not in (0, 6, 8) or status.fault not in (0, 1):
                 raise RuntimeError("控制器轨迹仍待执行、运行或存在故障，不能在首个点位原地开始采集")
         if not all(position_reached(checked, config) for config, checked in zip(configs, checked_pair)):
-            raise RuntimeError("首个点位瞄准位置已变化，请重新手动瞄准并校准")
+            raise RuntimeError("首个点位位置已变化，请先点击“移动到预设位置”后重新开始"
+                               if cycle.executionMode == "manual_segments" else
+                               "首个点位瞄准位置已变化，请重新手动瞄准并校准")
         observed = {str(axis): feedback["axes"][str(axis)]["output_angle_deg"] for axis in (1, 2)}
         previous = (self.point_cycle or {}).get("lastMove") or {}
         checks = list(previous.get("poseChecks", [])) if previous.get("motionCommanded") is False else []
@@ -2870,6 +2876,7 @@ class AcquisitionController:
                                              "azimuthDeg", "stationIndex", "stationCount")},
             sessionId=self.point_cycle["sessionId"], mode=cycle.mode, lapIndex=cycle_index,
             executionMode=cycle.executionMode, segmentStepDeg=cycle.segmentStepDeg,
+            **({"segmentedAutoMove": cycle.segmentedAutoMove} if cycle.executionMode == "manual_segments" else {}),
             totalStationCount=cycle.totalStationCount,
             segmentStationIds=[item.pointId for item in cycle.points] if cycle.executionMode == "manual_segments" else None,
             nextWaitPoint=cycle.nextWaitPoint.model_dump() if cycle.nextWaitPoint else None,
@@ -3385,20 +3392,27 @@ class AcquisitionController:
                     raise RuntimeError("分段采集接收线程未退出，未移动到下一等待点")
                 self._cycle_process("segment_daq_stopped")
                 waiting = cycle.nextWaitPoint
-                self._cycle_update("positioning", waitingPoint=None, movingToWaitPoint=True)
-                self._cycle_process("positioning_next_segment", point=waiting.name)
-                # There is deliberately no detector/DAQ during this move, even
-                # when early-arrival diagnostics were enabled for capture.
-                waiting_cycle = cycle.model_copy(update={"diagnosticDetectBeforeSettled": False})
-                reached, _, feedback = self._cycle_position_laser_on(
-                    request, motor, waiting_cycle, waiting,
-                    on_command=lambda: self._cycle_process("moving_next_segment", point=waiting.name))
-                if not reached:
-                    raise RuntimeError("本段采集已保存，但尚未确认到达下一等待点")
-                waiting_evidence = {**waiting.model_dump(), "confirmedAt": time.time(),
-                    "actualAngles": {str(axis): feedback["axes"][str(axis)]["output_angle_deg"] for axis in (1, 2)}}
-                self._cycle_update("ready", waitingPoint=waiting_evidence, movingToWaitPoint=False)
-                self._cycle_process("waiting_manual_start", point=waiting.name)
+                if cycle.segmentedAutoMove:
+                    self._cycle_update("positioning", waitingPoint=None, movingToWaitPoint=True)
+                    self._cycle_process("positioning_next_segment", point=waiting.name)
+                    # There is deliberately no detector/DAQ during this move,
+                    # even when early-arrival diagnostics were enabled.
+                    waiting_cycle = cycle.model_copy(update={"diagnosticDetectBeforeSettled": False})
+                    reached, _, feedback = self._cycle_position_laser_on(
+                        request, motor, waiting_cycle, waiting,
+                        on_command=lambda: self._cycle_process("moving_next_segment", point=waiting.name))
+                    if not reached:
+                        raise RuntimeError("本段采集已保存，但尚未确认到达下一等待点")
+                    waiting_evidence = {**waiting.model_dump(), "confirmedAt": time.time(),
+                        "actualAngles": {str(axis): feedback["axes"][str(axis)]["output_angle_deg"] for axis in (1, 2)}}
+                    self._cycle_update("ready", waitingPoint=waiting_evidence, movingToWaitPoint=False)
+                    self._cycle_process("waiting_manual_start", point=waiting.name)
+                else:
+                    # nextWaitPoint remains the planned cursor, not a claim that
+                    # the hardware has moved. Only explicit positioning may
+                    # produce waitingPoint/prepared-position evidence.
+                    self._cycle_update("ready", waitingPoint=None, movingToWaitPoint=False)
+                    self._cycle_process("waiting_manual_position", point=waiting.name)
             if cycle.returnToOrigin is not None:
                 origin = cycle.returnToOrigin
                 self._cycle_update("positioning", returningToOrigin=True)

@@ -31,15 +31,18 @@ export type MeasurementReference = {
 export type WindRow = {
   time: string;
   turbineCode: string;
-  windSpeed: number;
-  rpm: number;
+  windSpeed?: number;
+  rpm?: number;
   windDirection?: number;
   powerKw?: number;
+  temperatureC?: number;
 };
 export type ConditionSummary = {
   status: "matched" | "unmatched";
   datasetIds: string[];
   samples: number;
+  availableSamples?: number;
+  conflictingSamples?: number;
   windSpeed?: number;
   windRange?: [number, number];
   rpm?: number;
@@ -139,38 +142,49 @@ export function conditionWindow(
         )
         .map((r) => ({ ...r, datasetId: d.id })),
     );
-  const seen = new Set<string>();
-  const unique = selected.filter((r) => {
-    const key = r.time;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
+  // Files can carry separate channels with unequal time ranges. Join only exact
+  // timestamps; never extrapolate the shorter RPM series or replace absence by 0.
+  const merged = new Map<string, WindRow & { datasetIds: string[] }>();
+  const conflicts = new Set<string>();
+  for (const row of selected) {
+    const previous = merged.get(row.time);
+    if (previous && (["windSpeed", "rpm", "windDirection", "powerKw", "temperatureC"] as const).some(key =>
+      previous[key] != null && row[key] != null && previous[key] !== row[key])) conflicts.add(row.time);
+    merged.set(row.time, { ...previous, ...row, datasetIds: [...(previous?.datasetIds || []), row.datasetId] });
+  }
+  const unique = [...merged.values()].filter((r): r is WindRow & { windSpeed: number; rpm: number; datasetIds: string[] } =>
+    !conflicts.has(r.time) && typeof r.windSpeed === "number" && Number.isFinite(r.windSpeed) && typeof r.rpm === "number" && Number.isFinite(r.rpm));
   if (!unique.length)
     return {
       status: "unmatched",
       datasetIds: [],
       samples: 0,
+      availableSamples: merged.size,
+      conflictingSamples: conflicts.size,
       start: new Date(start).toISOString(),
       end: new Date(end).toISOString(),
     };
   const wind = unique.map((r) => r.windSpeed),
     rpm = unique.map((r) => r.rpm);
+  const range = (values: number[]): [number, number] => values.reduce<[number, number]>((bounds, value) =>
+    [Math.min(bounds[0], value), Math.max(bounds[1], value)], [Infinity, -Infinity]);
   return {
     status: "matched",
-    datasetIds: [...new Set(unique.map((r) => r.datasetId))],
+    datasetIds: [...new Set(unique.flatMap((r) => r.datasetIds))],
     samples: unique.length,
+    availableSamples: merged.size,
+    conflictingSamples: conflicts.size,
     windSpeed: wind.reduce((a, b) => a + b, 0) / wind.length,
-    windRange: [Math.min(...wind), Math.max(...wind)],
+    windRange: range(wind),
     rpm: rpm.reduce((a, b) => a + b, 0) / rpm.length,
-    rpmRange: [Math.min(...rpm), Math.max(...rpm)],
+    rpmRange: range(rpm),
     start: new Date(start).toISOString(),
     end: new Date(end).toISOString(),
   };
 }
 export function validateWindRows(input: any): WindRow[] {
-  if (!Array.isArray(input) || !input.length || input.length > 50000)
-    throw Error("每个数据集需要 1～50000 行");
+  if (!Array.isArray(input) || !input.length || input.length > 250000)
+    throw Error("每个数据集需要 1～250000 行");
   const seen = new Set<string>();
   return input
     .map((r, i) => {
@@ -192,9 +206,9 @@ export function validateWindRows(input: any): WindRow[] {
         ["rpm", 0, 10000],
         ["windDirection", 0, 360],
         ["powerKw", -100000, 100000],
+        ["temperatureC", -100, 100],
       ] as const) {
-        if (["windDirection", "powerKw"].includes(key) && r[key] == null)
-          continue;
+        if (r[key] == null) continue;
         if (
           typeof r[key] !== "number" ||
           !Number.isFinite(r[key]) ||
@@ -206,11 +220,14 @@ export function validateWindRows(input: any): WindRow[] {
       const row: WindRow = {
         time: new Date(r.time).toISOString(),
         turbineCode: r.turbineCode.trim(),
-        windSpeed: r.windSpeed,
-        rpm: r.rpm,
+        ...(r.windSpeed != null ? { windSpeed: r.windSpeed } : {}),
+        ...(r.rpm != null ? { rpm: r.rpm } : {}),
         ...(r.windDirection != null ? { windDirection: r.windDirection } : {}),
         ...(r.powerKw != null ? { powerKw: r.powerKw } : {}),
+        ...(r.temperatureC != null ? { temperatureC: r.temperatureC } : {}),
       };
+      if (!["windSpeed", "rpm", "windDirection", "powerKw", "temperatureC"].some(key => r[key] != null))
+        throw Error(`第 ${i + 1} 行缺少工况指标`);
       const key = row.turbineCode + "|" + row.time;
       if (seen.has(key)) throw Error(`第 ${i + 1} 行风机与时间重复`);
       seen.add(key);

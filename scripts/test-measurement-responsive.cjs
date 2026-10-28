@@ -1,7 +1,8 @@
 // Local real-data visual regression. Reads existing records; does not control devices.
 const {app,BrowserWindow}=require('electron'),fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
-const check3d=process.argv.includes('--3d');
-const root=path.resolve(__dirname,'..'),out=path.join(root,check3d?'artifacts/rotation-3d-20261027':'artifacts/rotation-responsive-20261027');
+const signedRms=process.argv.includes('--signed-rms');
+const check3d=process.argv.includes('--3d')||signedRms;
+const root=path.resolve(__dirname,'..'),out=path.join(root,signedRms?'artifacts/amplitude-sign-review-20261028/ui':check3d?'artifacts/rotation-3d-20261027':'artifacts/rotation-responsive-20261027');
 const before=process.argv.includes('--before');
 process.loadEnvFile(path.join(root,'apps/web/.env.local'));fs.mkdirSync(out,{recursive:true});
 app.setPath('userData',fs.mkdtempSync(path.join(out,'profile-')));app.on('window-all-closed',()=>{});
@@ -57,6 +58,22 @@ app.whenReady().then(async()=>{
     for(const p of ['P1','P2','P3','P4','P5'])assert(labels.includes(p),`3D missing ${p}`);
     const markers=()=>js(`Array.from(document.querySelectorAll('[data-response-point]')).map(e=>({id:e.getAttribute('data-response-point'),radius:Number(e.getAttribute('data-radius-m')),amplitude:Number(e.getAttribute('data-amplitude'))}))`);
     const initial=await markers();assert.equal(initial.length,5);
+    if(signedRms){
+     assert(await js(`!!document.querySelector('[data-response-zero-plane]')`));
+     assert.equal(await js(`document.querySelectorAll('[data-response-negative-point]').length`),5);
+     const mirror=await js(`Array.from(document.querySelectorAll('[data-response-negative-point]')).map(e=>({id:e.getAttribute('data-response-negative-point'),amplitude:Number(e.getAttribute('data-reference-amplitude'))}))`);
+     for(const p of initial)assert.equal(mirror.find(x=>x.id===p.id).amplitude,-p.amplitude);
+     assert(await js(`document.querySelector('.measurement-response-3d').textContent.includes('不是最大摆幅或真实运动边界')`));
+     await js(`document.querySelector('.measurement-response-reference-toggle input').click()`);await settle();
+     assert.equal(await js(`document.querySelectorAll('[data-response-negative-point]').length`),0);
+     assert.deepEqual(await markers(),initial,'Removing mirror must not change measured RMS');
+     await js(`document.querySelector('.measurement-response-reference-toggle input').click()`);await settle();
+     for(const point of result.synthesis.mergedPoints){
+      const values=point.segments.flatMap(s=>s.timeDomain.values).filter(v=>v!==null);
+      assert(values.some(v=>v<0)&&values.some(v=>v>0),'Actual valid waveform retains both signs: '+point.radialPointName);
+     }
+     checks.push({signedRms:{negativeReferenceOnly:true,zeroPlane:true,togglePreservesMeasurements:true,allFivePointsRetainSignedWaveforms:true}});
+    }
     const bands=result.synthesis.candidates.length?result.synthesis.candidates:result.synthesis.bandResponses;
     for(const p of initial){const value=bands[0].points.find(x=>x.radialPointId===p.id);assert.equal(p.amplitude,value.normalizedAmplitude);}
     if(bands.length>1){

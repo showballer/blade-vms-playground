@@ -92,7 +92,7 @@ check("新固件定位执行故障可识别，停稳且参考有效才允许清�
 check("静态入口不执行查询或故障恢复", () => {
   let calls = 0;
   const html = renderToStaticMarkup(<FieldTurntableHealth port="COM3" status={ready()} request={async <T,>() => { calls++; throw Error("No hardware"); }} onStatus={() => {}} onBusy={() => {}} />);
-  assert.ok(html.includes('aria-label="检查转盘状态"')); assert.equal(calls, 0);
+  assert.ok(html.includes('aria-label="打开转盘设置"')); assert.equal(calls, 0);
   assert.ok(!html.includes("一键恢复")); assert.ok(!html.includes("自动复位"));
 });
 check("恢复按故障分项，不允许无参考强清、运动中恢复或误用另一端口", () => {

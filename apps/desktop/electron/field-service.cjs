@@ -123,11 +123,13 @@ function pointCycleConfig(value) {
   const points = value.points.map(normalizePoint);
   if (value.executionMode !== undefined && !['continuous', 'manual_segments'].includes(value.executionMode))
     throw failure('无效分段采集执行方式', 400);
+  if (value.segmentedAutoMove !== undefined && typeof value.segmentedAutoMove !== 'boolean')
+    throw failure('自动移动设置必须为布尔值', 400);
   if (value.executionMode === 'manual_segments') {
     if (points.length === 2 && value.segmentStepDeg !== 90)
       throw failure('两点采集的圆周移动间隔固定为90°，请更新分段配置', 400);
     if (!automatic || value.cycles !== 1 || points.length > 2 || value.returnToOrigin !== undefined ||
-        value.startAtCurrentPose === true || value.motionLaserPolicy === 'off_during_motion' ||
+        value.motionLaserPolicy === 'off_during_motion' ||
         typeof value.segmentStepDeg !== 'number' || !Number.isFinite(value.segmentStepDeg) || value.segmentStepDeg < 22.5 || value.segmentStepDeg > 180 ||
         !Number.isInteger(value.totalStationCount) || value.totalStationCount !== 360 / value.segmentStepDeg ||
         !Array.isArray(value.segmentStations) || value.segmentStations.length !== value.totalStationCount)
@@ -144,7 +146,8 @@ function pointCycleConfig(value) {
         !same(next, stations[(start + points.length) % stations.length]))
       throw failure('本段点位或下一等待点与圆周计划不一致', 400);
     Object.assign(follow, { executionMode: 'manual_segments', segmentStepDeg: value.segmentStepDeg,
-      totalStationCount: value.totalStationCount, segmentStations: stations, nextWaitPoint: next });
+      totalStationCount: value.totalStationCount, segmentStations: stations, nextWaitPoint: next,
+      ...(value.segmentedAutoMove !== undefined ? { segmentedAutoMove: value.segmentedAutoMove } : {}) });
   } else if (['segmentStepDeg', 'totalStationCount', 'segmentStations', 'nextWaitPoint'].some(key => value[key] !== undefined)) {
     throw failure('仅分段采集可配置下一等待点', 400);
   }
@@ -575,6 +578,8 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
       const current = await http('status');
       if (!current.pointCycleExecutionModes?.includes('manual_segments'))
         throw failure('当前采集服务不支持分段采集，请更新桌面客户端及采集服务后重启', 409);
+      if (body.pointCycle.segmentedAutoMove === false && current.pointCycleSegmentedAutoMove !== true)
+        throw failure('当前采集服务不支持关闭自动移动，请更新桌面客户端及采集服务后重启', 409);
     }
     closeSocket();
     snapshotEpoch += 1;

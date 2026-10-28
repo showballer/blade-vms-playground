@@ -1,6 +1,6 @@
 "use client";
-import React, { memo, useEffect, useId, useRef, useState } from "react";
-import { Activity, AudioLines, ChevronRight, Crosshair, LoaderCircle, Pause, Play, Square } from "lucide-react";
+import React, { memo, useEffect, useRef, useState } from "react";
+import { ChevronRight, Crosshair, Pause, Play, Square } from "lucide-react";
 import { Button } from "./common";
 import { CustomSelect } from "./custom-select";
 import { FieldWaveChart, FieldWaveOptions, hasWave, waveBounds, waveLimit, type TimeMode, type VelocityUnit } from "./field-waveform";
@@ -21,6 +21,8 @@ type Props = {
   request: <T>(options: FieldRequestOptions) => Promise<T>;
   link?: { enabled: boolean; onEnabled: (value: boolean) => void; route: FieldCaptureRoute | null; errors: string[]; onConfigure: () => void;
     mode?: "manual" | "auto" | "segmented"; onMode?: (mode: "manual" | "auto" | "segmented") => void;
+    onSegmentAutoMove?: (value: boolean) => void;
+    startTargetDisabledReason?: string;
     onSelectTarget?: (key: string) => void; onStartTarget?: (key: string) => void; onConfigureTarget?: (key: string) => void;
     onPosition?: (key?: string) => void;
     onPositionStation?: (pointId: string) => void; positioningRoute?: FieldCaptureRoute | null; positionDisabledReason?: string;
@@ -35,23 +37,9 @@ export const FieldAcquisition = memo(function FieldAcquisition({ config, onConfi
   const [metadata, setMetadata] = useState<FieldSimulationInfo | null>(null);
   const [metadataError, setMetadataError] = useState("");
   const [metadataRevision, setMetadataRevision] = useState(0);
-  const [tab, setTab] = useState<"wave" | "analysis">("wave");
-  const [analysisVisited, setAnalysisVisited] = useState(false);
-  const selectTab = (next: "wave" | "analysis") => {
-    if (next === "analysis") setAnalysisVisited(true);
-    setTab(next);
-  };
   const [paused, setPaused] = useState(false);
   const frozen = useRef<FieldStatus | null>(null);
   const restoredRecording = useRef<string | undefined>(undefined);
-  const tabId = useId();
-  const tabButtons = useRef<Partial<Record<"wave" | "analysis", HTMLButtonElement>>>({});
-  const onTabKey = (event: React.KeyboardEvent<HTMLButtonElement>) => {
-    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
-    event.preventDefault();
-    const next = event.key === "Home" ? "wave" : event.key === "End" ? "analysis" : tab === "wave" ? "analysis" : "wave";
-    selectTab(next); tabButtons.current[next]?.focus();
-  };
   const [timeMode, setTimeMode] = useState<TimeMode>("relative");
   const [unit, setUnit] = useState<VelocityUnit>("mm/s");
   const [scale, setScale] = useState(0.5), [autoScale, setAutoScale] = useState(true);
@@ -89,13 +77,6 @@ export const FieldAcquisition = memo(function FieldAcquisition({ config, onConfi
     positioningPointId={link?.positioningRoute?.cycle?.points[0]?.pointId}
     positionDisabledReason={positioningError || link?.positionDisabledReason || (stopping ? "正在停止，请等待完成" : busy ? "操作进行中，请等待完成" : "")} /> : null;
   return <div className="field-capture-workspace">
-    <div className="field-capture-toolbar">
-      <div className="field-view-tabs" data-active={tab} role="tablist" aria-label="数据采集视图">
-        <button id={`${tabId}-wave-tab`} ref={element => { if (element) tabButtons.current.wave = element; }} type="button" role="tab" tabIndex={tab === "wave" ? 0 : -1} aria-selected={tab === "wave"} aria-controls={`${tabId}-wave-panel`} onKeyDown={onTabKey} onClick={() => selectTab("wave")}><Activity size={17} /><span>实时采集波形</span></button>
-        <button id={`${tabId}-analysis-tab`} ref={element => { if (element) tabButtons.current.analysis = element; }} type="button" role="tab" tabIndex={tab === "analysis" ? 0 : -1} aria-selected={tab === "analysis"} aria-controls={`${tabId}-analysis-panel`} onKeyDown={onTabKey} onClick={() => selectTab("analysis")}><AudioLines size={17} /><span>实时分析</span></button>
-      </div>
-      <div className="field-display-controls"><label>刷新<CustomSelect aria-label="刷新间隔" value={refreshMs} onChange={event => onRefresh(Number(event.target.value))}><option value={100}>100 ms</option><option value={250}>250 ms</option><option value={500}>500 ms</option><option value={1000}>1 秒</option></CustomSelect></label><Button variant="ghost" disabled={!hasWave(wave)} onClick={() => { if (paused) { setPaused(false); frozen.current = null; } else { frozen.current = status; setPaused(true); } }}>{paused ? <Play size={14} /> : <Pause size={14} />}{paused ? "恢复显示" : "暂停显示"}</Button></div>
-    </div>
     <section className="field-card field-capture-setup">
       <form onSubmit={event => { event.preventDefault(); if (active || busy || !canStart || autoLinked) return; source === "simulation" ? onSimulationStart?.(simulation) : onDeviceStart(); }}>
         <fieldset disabled={active || !!busy} className={`field-capture-inputs ${autoLinked ? "field-capture-inputs-by-point" : ""}`}>
@@ -109,13 +90,9 @@ export const FieldAcquisition = memo(function FieldAcquisition({ config, onConfi
         {!active && !autoLinked && (startError || linked && positioningError) && <p className="field-notice warning" role="status">{[...new Set([startError, linked ? positioningError : ""].filter(Boolean))].join("；")}</p>}
         {metadataError && source === "simulation" && <p className="field-error" role="alert">{metadataError}<Button type="button" disabled={active || !!busy} onClick={() => setMetadataRevision(value => value + 1)}>重新读取</Button></p>}
         {source === "device" && !status?.service.dllConfigured && <p className="field-capture-driver-note">请先在“设备与服务”中配置设备驱动。</p>}
-        <div className="field-task-row">
-          <details className="field-task-details"><summary>任务信息 <span>测量对象、风机编号与测点（可选）</span></summary><fieldset className="field-config-grid" disabled={active || !!busy}>{([["object", "测量对象"], ["turbine", "风机编号"], ["point", "测点名称"]] as const).map(([key, label]) => <label key={key}>{label}<input value={config[key]} maxLength={120} onChange={event => update(key, event.target.value)} placeholder={label} /></label>)}</fieldset></details>
-          <button type="button" className="field-text-button" onClick={onService}>设备与服务<ChevronRight size={14} /></button>
-        </div>
         {source === "device" && link && <section className="field-capture-link field-servo-ui" aria-label="转盘联动采集">
           <div className="field-capture-link-heading"><label className="field-turntable-toggle"><input type="checkbox" aria-label="联动转盘与测振仪" checked={linked} disabled={active || !!busy} onChange={event => link.onEnabled(event.target.checked)} />联动转盘与测振仪</label><Button type="button" variant="ghost" disabled={active || !!busy} onClick={link.onConfigure}>配置转盘点位<ChevronRight size={14} /></Button></div>
-          {linked && <><div className="field-link-mode" role="group" aria-label="联动采集模式">{([["manual", "手动点位"], ["auto", "自动跟随"], ["segmented", "分段采集"]] as const).map(([value, label]) => <button key={value} type="button" aria-pressed={linkMode === value} disabled={active || !!busy || !link.onMode} onClick={() => link.onMode?.(value)}>{label}</button>)}</div>
+          {linked && <><div className="field-link-mode" role="group" aria-label="联动采集模式">{([["segmented", "分段采集"], ["auto", "自动跟随"], ["manual", "手动点位"]] as const).map(([value, label]) => <button key={value} type="button" aria-pressed={linkMode === value} disabled={active || !!busy || !link.onMode} onClick={() => link.onMode?.(value)}>{label}</button>)}</div>
             {!autoLinked && <><p className="field-route-order"><strong>{link.route?.name || "尚未配置采集路线"}</strong>{link.route?.pointNames.length ? ` · ${link.route.pointNames.length} 个点位 · ${link.route.cycle?.cycles || "—"} 轮` : ""}</p>
             {!!link.route?.pointNames.length && <p className="field-subtext">{link.route.pointNames.join(" → ")}</p>}</>}
             {!autoLinked && link.errors.length > 0 && <div className="field-link-blockers" role="status"><strong>开始前还需完成</strong><ul>{link.errors.map(reason => <li key={reason}>{reason}</li>)}</ul></div>}
@@ -129,26 +106,21 @@ export const FieldAcquisition = memo(function FieldAcquisition({ config, onConfi
           <Button type="button" className="field-auto-capture-primary" variant={active || busy === "start" || stopping ? "danger" : "primary"} disabled={active || busy === "start" || stopping ? stopping : !!busy || !canStart} title={active ? undefined : startError || undefined} onClick={() => { if (active || busy === "start" || stopping) onStop(); else if (!busy && canStart) source === "simulation" ? onSimulationStart?.(simulation) : onDeviceStart(); }}>{active || busy === "start" || stopping ? <Square size={18} /> : <Play size={20} />}{active || busy === "start" || stopping ? "停止并保存" : "开始采集"}</Button>
         </div>
       </div>}
-      {autoLinked && link && <FieldAutoCaptureList motionPanel={motionPanel} segmented={linkMode === "segmented"} targets={link.route?.targets || []} selectedTargetKey={link.route?.selectedTargetKey} collectionId={link.collectionId} recordings={link.recordings} config={config} status={status} busy={busy} pollError={pollError} stopping={stopping} positionStopping={positionStopping} onCancelPosition={onCancelPosition} onSelect={link.onSelectTarget} onStart={link.onStartTarget} onPosition={link.onPosition} onConfigure={link.onConfigureTarget} onConfigureAll={link.onConfigure} onStop={onStop} />}
+      {autoLinked && link && <FieldAutoCaptureList motionPanel={motionPanel} segmented={linkMode === "segmented"} targets={link.route?.targets || []} selectedTargetKey={link.route?.selectedTargetKey} collectionId={link.collectionId} recordings={link.recordings} config={config} status={status} busy={busy} pollError={pollError} stopping={stopping} positionStopping={positionStopping} onCancelPosition={onCancelPosition} onSelect={link.onSelectTarget} onStart={link.onStartTarget} onPosition={link.onPosition} onConfigure={link.onConfigureTarget} onConfigureAll={link.onConfigure} onAutoMove={link.onSegmentAutoMove} startDisabledReason={link.startTargetDisabledReason} onStop={onStop} />}
     </section>
     {!autoLinked && motionPanel}
     <div className="field-acquisition-grid field-capture-grid">
       <section className="field-card field-capture-chart">
         {paused && <p className="field-notice warning">显示已暂停，采集和保存仍在继续。</p>}
-        <div id={`${tabId}-wave-panel`} role="tabpanel" tabIndex={0} aria-labelledby={`${tabId}-wave-tab`} hidden={tab !== "wave"}>
-          {tab === "wave" && <>
-            <div className="field-section-heading field-capture-wave-heading"><h2>振动速度</h2><label className="field-window-picker">显示窗口<CustomSelect aria-label="实时显示时间窗" value={windowMs} onChange={event => onWindow(Number(event.target.value))}>{[20, 100, 500, 1000].map(value => <option key={value} value={value}>{value} ms</option>)}</CustomSelect></label></div>
+            <div className="field-section-heading field-capture-wave-heading"><h2>振动速度</h2><div className="field-capture-wave-controls"><label className="field-window-picker">显示窗口<CustomSelect aria-label="实时显示时间窗" value={windowMs} onChange={event => onWindow(Number(event.target.value))}>{[20, 100, 500, 1000].map(value => <option key={value} value={value}>{value} ms</option>)}</CustomSelect></label>
+              <div className="field-display-controls"><label>刷新<CustomSelect aria-label="刷新间隔" value={refreshMs} onChange={event => onRefresh(Number(event.target.value))}><option value={100}>100 ms</option><option value={250}>250 ms</option><option value={500}>500 ms</option><option value={1000}>1 秒</option></CustomSelect></label><Button variant="ghost" disabled={!hasWave(wave)} onClick={() => { if (paused) { setPaused(false); frozen.current = null; } else { frozen.current = status; setPaused(true); } }}>{paused ? <Play size={14} /> : <Pause size={14} />}{paused ? "恢复显示" : "暂停显示"}</Button></div>
+            </div></div>
             {!hasWave(wave) && ["starting", "acquiring"].includes(status?.state || "") && !pollError ? <ChartLoading label="正在等待首批测振数据…" /> : <FieldWaveChart waveform={wave} unit={unit} timeMode={timeMode} yLimit={autoScale ? undefined : scale} />}
             <details className="field-chart-options"><summary>显示设置<span>{unit} · {autoScale ? "自动纵轴" : "固定纵轴"} · {timeMode === "relative" ? "相对时间" : "本机时间"}</span></summary><FieldWaveOptions timeMode={timeMode} onTime={setTimeMode} unit={unit} onUnit={setUnit} scale={autoScale ? waveLimit(wave) : scale} onScale={value => { setScale(value); setAutoScale(false); }} fit={() => setAutoScale(true)} /></details>
             <div className="field-rssi-heading"><h3>RSSI 回波强度</h3><span>信号质量</span></div><FieldWaveChart waveform={wave} kind="rssi" compact timeMode={timeMode} />
             <div className="field-chart-foot"><span>{(wave?.sourceSamples ?? wave?.values.length ?? 0).toLocaleString("zh-CN")} 个原始样本</span><span>窗口 {wave?.sampleRate && hasWave(wave) ? number((waveBounds(wave)[1] - waveBounds(wave)[0]) / wave.sampleRate * 1000) : "—"} ms</span><span>{wave?.representation === "envelope" ? "峰值包络" : "原始采样点"}</span><span>{actualSource === "simulation" || !wave && source === "simulation" ? "模拟数据" : "设备输入"}</span></div>
-          </>}
-        </div>
-        <div id={`${tabId}-analysis-panel`} role="tabpanel" tabIndex={0} aria-labelledby={`${tabId}-analysis-tab`} hidden={tab !== "analysis"}>
-          {analysisVisited && <FieldRealtimeAnalysis realtime={display?.realtime} paused={paused} active={tab === "analysis"} />}
-        </div>
       </section>
-
+      <FieldRealtimeAnalysis realtime={display?.realtime} paused={paused} />
     </div>
   </div>;
 });

@@ -34,7 +34,8 @@ if(!localStorage.getItem(autoFollowStorageKey)){
 window.__segmentedFixture={initial,calls:[],positions:[],routes:{},hardwareUsed:false,profiles:{1:{accel_ms:1500,decel_ms:1500,s_curve_ms:100},2:{accel_ms:1200,decel_ms:1300,s_curve_ms:50}}};
 function App(){
  const [status,setStatus]=useState(initial),[config,setConfig]=useState({name:'隔离分段测试',deviceIp:'198.51.100.90',hostIp:'198.51.100.10',object:'风机叶片',turbine:'T1',point:''});
- const [mode,setMode]=useState('segmented'),[key,setKey]=useState(''),[positioned,setPositioned]=useState();
+ const [mode,setMode]=useState('segmented'),[key,setKey]=useState(''),[positioned,setPositioned]=useState(),[autoMove,setAutoMove]=useState(true);
+ window.__segmentedFixture.setAutoMove=setAutoMove;
  window.__segmentedFixture.positionAt=angle=>{const route=window.__segmentedFixture.routes.segmented;const point=route.cycle.segmentStations.find(p=>p.azimuthDeg===angle);setPositioned({kind:'segmented',sequence:Date.now(),port:'COM3',generation:1,targetKey:route.selectedTargetKey,pointId:point.pointId,azimuthDeg:angle});};
  window.__segmentedFixture.inject=next=>setStatus(next);
  window.__segmentedFixture.select=next=>setKey(next);
@@ -43,6 +44,7 @@ function App(){
   const fixture=window.__segmentedFixture;fixture.calls.push(options);
   if(options.action==='turntablePorts')return {ports:[{port:'COM3',description:'隔离假设备'}]};
   if(options.action==='turntable'&&options.request.action==='probe')return structuredClone(initial);
+  if(options.action==='turntable'&&options.request.action==='health'){const next=structuredClone(initial);next.turntable.motionCapability.status={state:0,fault:0,session:0};next.turntable.health={readOnly:true,readAt:Date.now()/1000,axes:{'1':{alarmCode:0,limitFlags:0},'2':{alarmCode:0,limitFlags:0}},motionProfiles:structuredClone(fixture.profiles)};return next;}
   if(options.action==='turntable'&&['read_motion_profile','set_motion_profile'].includes(options.request.action)){
    const {axis,action,motionProfile,expectedMotionProfile}=options.request;
    if(fixture.holdProfile){fixture.holdProfile=false;await new Promise(resolve=>{fixture.releaseProfile=resolve;});}
@@ -57,7 +59,7 @@ function App(){
   throw Error('Unexpected request in isolated test');
  };
  useEffect(()=>{window.__segmentedFixture.ready=true;},[]);
- return <div className="field-app"><header className="field-header"><div className="field-brand">BladeVMS <small>分段采集界面验收 · 不连接设备</small></div></header><main className="field-content"><FieldTurntableWorkspace config={config} onConfig={setConfig} status={status} disabled={false} request={request} onStatus={setStatus} onService={()=>{}} onRecords={()=>{}} connectionPort="COM3" routeMode={mode} onRouteMode={setMode} autoTargetKey={key} onAutoTarget={setKey} onRoute={route=>{window.__segmentedFixture.routes={...window.__segmentedFixture.routes,[route.kind]:route};}} positionedStation={positioned} onAcquisition={()=>{}} /></main></div>;
+ return <div className="field-app"><header className="field-header"><div className="field-brand">BladeVMS <small>分段采集界面验收 · 不连接设备</small></div></header><main className="field-content"><FieldTurntableWorkspace config={config} onConfig={setConfig} status={status} disabled={false} request={request} onStatus={setStatus} onService={()=>{}} onRecords={()=>{}} connectionPort="COM3" routeMode={mode} onRouteMode={setMode} segmentedAutoMove={autoMove} autoTargetKey={key} onAutoTarget={setKey} onRoute={route=>{window.__segmentedFixture.routes={...window.__segmentedFixture.routes,[route.kind]:route};}} positionedStation={positioned} onAcquisition={()=>{}} /></main></div>;
 }
 createRoot(document.getElementById('root')).render(<App/>);
 `;
@@ -111,6 +113,10 @@ app.whenReady().then(async () => {
     await waitFor('window.__segmentedFixture?.ready&&window.__segmentedFixture.routes.auto?.cycle&&window.__segmentedFixture.routes.segmented?.cycle');
     await check('三个tab可操作且几何与五测点只由一个编辑器维护', async () => {
       assert.equal(await run('document.querySelectorAll("[aria-label=转盘作业方式] [role=tab]").length'), 3);
+      assert.deepEqual(await run('[...document.querySelectorAll("[aria-label=转盘作业方式] [role=tab]")].map(e=>e.textContent.trim())'), ['分段采集','自动跟随','手动控制']);
+      assert.equal(await run('!!document.querySelector(".field-measurement-settings input[aria-label=\\"叶片长度 · m\\"]")'), true);
+      assert.equal(await run('document.querySelectorAll(".field-auto-turntable-setup").length'), 0);
+      assert.equal(await run('document.querySelectorAll(".field-auto-follow > .field-card").length'), 3);
       const radii = await run('window.__segmentedFixture.routes.segmented.targets.map(t=>t.radiusM)');
       assert.deepEqual(radii, [.16, .30, .44, .58, .72]);
       await input('测点3半径', '.45');
@@ -180,6 +186,24 @@ app.whenReady().then(async () => {
       assert.equal(await run('window.__segmentedFixture.routes.auto.cycle.points.length'), 4);
       assert.equal(await run('window.__segmentedFixture.calls.every(c=>c.action==="turntablePorts"||c.action==="turntable"&&c.request.action==="probe")'), true);
     });
+    await check('关闭自动移动仍推进待定位角度，换径向测点不下发运动且各点游标独立', async () => {
+      await run('window.__segmentedFixture.setAutoMove(false)');
+      await waitFor('window.__segmentedFixture.routes.segmented.cycle.segmentedAutoMove===false');
+      const before = await run('window.__segmentedFixture.calls.length');
+      await run(`(()=>{const f=window.__segmentedFixture,route=f.routes.segmented.cycle;const next=structuredClone(f.initial);next.state='acquiring';next.receiver={running:true};next.pointCycle={...route,sessionId:'f'.repeat(32),state:'capturing',pointCount:1,point:1,cycle:1,totalRecords:1,completedRecords:0};f.inject(next);})()`);
+      await pause(60);
+      await run(`(()=>{const f=window.__segmentedFixture,route=f.routes.segmented.cycle;const next=structuredClone(f.initial);next.pointCycle={...route,sessionId:'f'.repeat(32),state:'complete',pointCount:1,point:1,cycle:1,totalRecords:1,completedRecords:1,processPhase:'waiting_manual_position',waitingPoint:null,movingToWaitPoint:false};f.inject(next);})()`);
+      await waitFor('window.__segmentedFixture.routes.segmented.cycle.points[0].azimuthDeg===120');
+      assert.equal(await run('JSON.parse(localStorage.getItem("blade-segmented-capture-v1")).autoMove'),false);
+      await run('window.__segmentedFixture.select(JSON.stringify(["blade-test","p2"]))');
+      await waitFor('window.__segmentedFixture.routes.segmented.selectedTargetKey===JSON.stringify(["blade-test","p2"])');
+      assert.equal(await run('window.__segmentedFixture.routes.segmented.cycle.points[0].azimuthDeg'),0);
+      assert.equal(await run('window.__segmentedFixture.calls.length'),before, 'Draft advancement and point changes never position hardware');
+      await run('window.__segmentedFixture.select(JSON.stringify(["blade-test","p1"]))');
+      await waitFor('window.__segmentedFixture.routes.segmented.cycle.points[0].azimuthDeg===120');
+      await run('window.__segmentedFixture.setAutoMove(true)');
+      await waitFor('window.__segmentedFixture.routes.segmented.cycle.segmentedAutoMove===true');
+    });
     await check('旧任务完成包与新任务/间隔隔离，未观察到运行的历史状态不推进', async () => {
       await run(`(()=>{const f=window.__segmentedFixture,route=f.routes.segmented.cycle;const next=structuredClone(f.initial);next.state='acquiring';next.receiver={running:true};next.pointCycle={...route,sessionId:'c'.repeat(32),state:'capturing',pointCount:route.points.length,point:1,cycle:1,totalRecords:route.points.length,completedRecords:0};f.oldActive=next;f.inject(next);})()`);
       await pause(60);
@@ -212,9 +236,14 @@ app.whenReady().then(async () => {
       assert.deepEqual(migrated.starts, {});
       assert.equal(await run('window.__segmentedFixture.calls.some(c=>c.action==="start"||c.request?.action==="recall")'), false);
     });
-    await check('分段速度与驱动快速预设在安装设置中统一配置，只在明确应用后写入', async () => {
+    await check('分段速度、判定与驱动快速预设集中在转盘设置，只在明确应用后写入', async () => {
       await run('window.__segmentedFixture.inject(structuredClone(window.__segmentedFixture.initial))');
       await tab('分段采集');
+      assert.equal(await run('document.querySelectorAll(".field-drive-profile").length'), 0);
+      await action('打开转盘设置');
+      await waitFor('!!document.querySelector("dialog[open] .field-drive-profile")');
+      assert.equal(await run('document.querySelector("dialog[open] h2").textContent'), '转盘设置');
+      for(const label of ['俯仰角校正系数','水平角校正系数','进入确认时间 · ms','离开确认时间 · ms','测试：未停稳时判定叶片'])assert.equal(await run('[...document.querySelectorAll("dialog[open] input")].some(e=>e.getAttribute("aria-label")==='+JSON.stringify(label)+')'),true);
       assert.equal(await run('document.querySelectorAll(".field-drive-profile").length'), 1);
       assert.equal(await run('!!document.querySelector(".field-auto-turntable-setup .field-drive-profile")'), true);
       assert.equal(await run(`!!document.querySelector('input[aria-label="换点加速度上限 · °/s²"]')`), false);
@@ -244,6 +273,8 @@ app.whenReady().then(async () => {
       assert.equal(await run(preset + '.disabled'), true);
       assert.equal(await run(`document.querySelector('input[aria-label="点位移动速度 · rpm"]').disabled`), true);
       assert.equal(await run(`document.querySelector('button[aria-label="应用水平轴驱动参数"]').disabled`), true);
+      await action('关闭弹窗');
+      assert.equal(await run('!!document.querySelector("dialog[open] .field-drive-profile")'), true, 'A pending drive write keeps its editor mounted and operation result observable');
       await run('window.__segmentedFixture.releaseProfile();delete window.__segmentedFixture.releaseProfile');
       await waitFor(`!document.querySelector('button[aria-label="应用水平轴驱动参数"]').disabled`);
       await action('应用水平轴驱动参数');
@@ -257,6 +288,12 @@ app.whenReady().then(async () => {
       assert.equal(await run('window.__segmentedFixture.routes.segmented.cycle.speedRpm'), 5);
       await run('document.querySelector(".field-auto-turntable-setup").scrollIntoView({block:"start"})');
       await screenshot('segmented-speed-drive-preset-1366.png');
+      await action('关闭弹窗');
+      await tab('手动控制');
+      await action('打开转盘设置');
+      await waitFor('!!document.querySelector("dialog[open] .field-drive-profile")');
+      assert.equal(await run('!!document.querySelector("dialog[open] .field-auto-turntable-setup")'),true);
+      await action('关闭弹窗');
     });
     finish();
   } catch (error) { finish(error); }

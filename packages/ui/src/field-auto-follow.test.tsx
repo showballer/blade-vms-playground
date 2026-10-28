@@ -38,6 +38,17 @@ check("生产入口包含手动、自动和分段三个标签，没有试运行�
   assert.ok(source.includes('source="device" config={config}'));
   assert.ok(source.includes("FieldBladeSummary"));
 });
+check("默认分段优先且测量、模式与设置按顺序排布", () => {
+  const html = renderToStaticMarkup(<FieldTurntableWorkspace {...props} />);
+  const tabs = [...html.matchAll(/role="tab"[^>]*>(.*?)<\/button>/g)].map(match => match[1].replace(/<[^>]*>/g, ""));
+  assert.deepEqual(tabs.slice(0, 3), ["分段采集", "自动跟随", "手动控制"]);
+  assert.match(html, /data-active="segmented"/);
+  assert.ok(html.indexOf("设置归零") < html.indexOf("测量设置"));
+  assert.ok(html.indexOf("测量设置") < html.indexOf('aria-label="转盘作业方式"'));
+  assert.ok(html.indexOf("分段采集配置") < html.indexOf('class="field-card field-turntable-settings-card"'));
+  const manual = renderToStaticMarkup(<FieldTurntableWorkspace {...props} routeMode="manual" />);
+  assert.ok(manual.includes('aria-label="打开转盘设置"'));
+});
 check("分段采集复用测量与五测点配置，提供单段点数、移动间隔和逐点定位", () => {
   const html = renderToStaticMarkup(<FieldTurntableWorkspace {...props} routeMode="segmented" onPositionTarget={() => {}} />);
   assert.match(html, /role="tab"[^>]*aria-selected="true"[^>]*>.*?分段采集/);
@@ -46,18 +57,18 @@ check("分段采集复用测量与五测点配置，提供单段点数、移动�
   assert.doesNotMatch(html, /aria-label="每个测点采集轮数"/);
   for (const removed of ["P1 圆周起点", "移动P1到预设位置", "当前分段路线", "不上传整圈预置路径", "最长点位间运动估算"]) assert.ok(!html.includes(removed), removed);
   assert.ok(!html.includes("任务完成后自动回到作业原点"));
-  assert.match(html, /aria-label="进入确认时间 · ms"[^>]*value="20"/);
-  assert.match(html, /aria-label="离开确认时间 · ms"[^>]*value="30"/);
-  assert.equal((html.match(/class="field-card field-drive-profile"/g) || []).length, 1, "Segmented mode has one drive-parameter editor inside installation settings");
-  assert.match(html, /class="field-auto-setup field-auto-turntable-setup" open=""/);
-  assert.match(html, /aria-label="点位移动速度 · rpm"/);
-  assert.ok(html.includes("填入快速预设"));
+  assert.doesNotMatch(html, /aria-label="进入确认时间 · ms"/);
+  assert.doesNotMatch(html, /aria-label="离开确认时间 · ms"/);
+  assert.equal((html.match(/class="field-card field-drive-profile"/g) || []).length, 0, "Drive parameters open only in the turntable settings dialog");
+  assert.ok(html.includes("转盘设置"));
+  assert.doesNotMatch(html, /aria-label="点位移动速度 · rpm"/);
+  assert.ok(!html.includes("填入快速预设"));
   const nativeStatus: FieldStatus = { ...ready, turntable: { ...ready.turntable!, motionCapability: { supported: true, probe: "confirmed", mode: "dual_axis_timed", pointMode: "drive_internal", protocol: "0x30-0x36", preloadedPoints: true, status: {} } } };
   const nativeHtml = renderToStaticMarkup(<FieldAutoFollow {...props} status={nativeStatus} connectionPort="COM3" routeMode="segmented" />);
-  assert.ok(nativeHtml.includes("加速时间 · PA40"));
+  assert.ok(!nativeHtml.includes("加速时间 · PA40"));
   assert.doesNotMatch(nativeHtml, /aria-label="旧轨迹加速度上限 · °\/s²"/);
   const busyHtml = renderToStaticMarkup(<FieldAutoFollow {...props} routeMode="segmented" disabled onPositionTarget={() => {}} />);
-  assert.match(busyHtml, /<input[^>]*aria-label="点位移动速度 · rpm"[^>]*disabled/);
+  assert.match(busyHtml, /<input[^>]*aria-label="设备至叶轮平面 · m"[^>]*disabled/);
 });
 check("默认30秒模型只生成输入，没有参考位与隐式开机请求", () => {
   const restored = readAutoFollowDraft(null);
@@ -68,14 +79,14 @@ check("默认30秒模型只生成输入，没有参考位与隐式开机请求",
   assert.ok(!html.includes("开始自动采集")); assert.ok(html.includes("前往数据采集"));
   assert.ok(!html.includes('class="field-card field-auto-anchor"')); assert.ok(html.includes("未校准时按尺寸计算"));
   assert.ok(html.includes("将测点放在旋转中心正下方并瞄准"));
-  assert.equal((html.match(/type="checkbox"/g) || []).length, 1);
-  assert.match(html, /aria-label="测试：未停稳时判定叶片"/);
+  assert.equal((html.match(/type="checkbox"/g) || []).length, 0);
+  assert.doesNotMatch(html, /aria-label="测试：未停稳时判定叶片"/);
   assert.doesNotMatch(html, /aria-label="测试：未停稳时判定叶片"[^>]*checked/);
   assert.ok(!html.includes("6→9"));
   assert.ok(html.includes("顺时针")); assert.ok(html.includes("逆时针"));
   assert.match(html, /aria-label="叶轮每圈时间 · s"[^>]*min="0"/);
-  assert.match(html, /aria-label="换点加速度上限 · °\/s²"[^>]*min="0.1"[^>]*max="120"/);
-  assert.match(html, /aria-label="运动中跟随误差上限 · °"[^>]*min="0.5"[^>]*max="10"/);
+  assert.doesNotMatch(html, /aria-label="换点加速度上限 · °\/s²"/);
+  assert.doesNotMatch(html, /aria-label="运动中跟随误差上限 · °"/);
   assert.ok(!html.includes("待校准")); assert.ok(!html.includes("设备与服务设置")); assert.ok(!html.includes("连续轨迹"));
   assert.ok(!html.includes("手动瞄准"));
 });
@@ -182,12 +193,12 @@ check("采集中锁定路线配置，点位页不再提供采集起停入口", (
   assert.ok(!html.includes("开始自动采集")); assert.ok(!/>停止并保存<\/button>/.test(html));
   assert.ok(!html.includes("field-capture-chart"));
 });
-check("当前测点单选且转盘安装参数默认独立折叠", () => {
+check("测量设置先于测点配置，转盘参数集中在设置弹窗", () => {
   const html = renderToStaticMarkup(<FieldAutoFollow {...props} />);
   assert.ok(html.includes('role="radiogroup"')); assert.ok(html.includes('aria-label="选择测点1"'));
   assert.ok(html.includes("本次采集测点")); assert.ok(html.includes("添加测点"));
   assert.ok(html.includes("叶片与测点")); assert.ok(html.includes("添加叶片"));
-  assert.ok(html.indexOf("测量与连接设置") < html.indexOf("叶片与测点"));
+  assert.ok(html.indexOf("测量设置") < html.indexOf("叶片与测点"));
   assert.ok(html.includes('aria-label="叶根预留 · %"')); assert.ok(html.includes('aria-label="叶尖预留 · %"'));
   assert.ok(!html.includes("叶根位置")); assert.ok(!html.includes("叶根距风机旋转中心"));
   assert.ok(html.includes("风机转轴中心到叶尖的距离"));
@@ -197,8 +208,8 @@ check("当前测点单选且转盘安装参数默认独立折叠", () => {
   assert.ok(html.includes('<output aria-label="风机旋转中心与激光高差">'));
   assert.ok(!html.includes('aria-label="风机旋转中心高于激光器 · m"'));
   assert.ok(html.includes('aria-label="配置叶片"')); assert.ok(html.includes('aria-label="目标叶片编号"'));
-  assert.ok(html.includes("两轴换点转速上限 · rpm"));
-  assert.match(html, /<details class="field-auto-setup field-auto-turntable-setup">/);
+  assert.ok(!html.includes("两轴换点转速上限 · rpm"));
+  assert.match(html, /class="field-card field-turntable-settings-card"/);
 });
 check("双轴能力须经当前串口探测确认，释放串口不抹去已确认能力", () => {
   const next = structuredClone(ready);
@@ -227,7 +238,7 @@ check("内部定位显示实际模式，速度沿用上限且不把轨迹加速�
   assert.ok(html.includes("运动可重叠"));
   assert.ok(!html.includes("两轴同时启动并按同一时长到位"));
   const auto = renderToStaticMarkup(<FieldAutoFollow {...props} status={next} connectionPort="COM3" />);
-  assert.match(auto, /aria-label="运动中行程误差上限 · °"[^>]*min="0.5"[^>]*max="10"/);
+  assert.doesNotMatch(auto, /aria-label="运动中行程误差上限 · °"/);
   assert.ok(!auto.includes('aria-label="换点加速度上限 · °/s²"'));
   assert.doesNotMatch(auto, /当前测点路线/);
 });

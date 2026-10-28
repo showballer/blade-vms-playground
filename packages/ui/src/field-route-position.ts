@@ -5,6 +5,8 @@ import { segmentedRouteAtAzimuth } from "./field-segmented-plan";
 export type FieldPositionedStation = {
   sequence: number; kind: "manual" | "segmented"; pointId: string;
   targetKey?: string; azimuthDeg?: number; port: string; generation?: number;
+  axis1AngleDeg?: number; axis2AngleDeg?: number;
+  referenceSignature?: string;
 };
 
 export function routeAtPositionedStation(route: FieldCaptureRoute, pointId: string): FieldCaptureRoute {

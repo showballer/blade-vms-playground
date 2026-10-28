@@ -125,7 +125,7 @@ export function FieldTurntableOriginControl({ port, status, disabled, origin, op
       // owner so the new connection can be inspected; do not certify motion or
       // rewrite the saved reference/origin from the new session.
       returnRun.current = null; setReturnPhase(null);
-      setReturnNotice("连接或服务已变化，请在转盘状态中重新检查；原点坐标已保留，未自动恢复运动。");
+      setReturnNotice("连接或服务已变化，请在转盘设置中重新检查；原点坐标已保留，未自动恢复运动。");
       onBusy(false);
     }
   }, [port, status?.service.generation, deviceIp, onBusy]);
@@ -367,7 +367,7 @@ export function FieldTurntableOriginControl({ port, status, disabled, origin, op
         onClick={() => void clearFailedOriginTrajectory()}>清除旧轨迹</Button>
     </div>}
     {motionError && <p className="field-error" role="alert">{motionError}</p>}
-    {returnPhase && <p className="field-notice" role="status">{returnPhase === "checking" ? "正在检查两轴参考位与运动范围…" : returnPhase === "stopping" ? "正在停止回原点并核查停稳…" : returnPhase === "unconfirmed" ? "停止尚未确认，请在转盘状态中检查或清除故障，也可重试停止；不会自动恢复运动。" : "正在返回公共光学原点，请等待两轴停稳。"}</p>}
+    {returnPhase && <p className="field-notice" role="status">{returnPhase === "checking" ? "正在检查两轴参考位与运动范围…" : returnPhase === "stopping" ? "正在停止回原点并核查停稳…" : returnPhase === "unconfirmed" ? "停止尚未确认，请在转盘设置中检查或清除故障，也可重试停止；不会自动恢复运动。" : "正在返回公共光学原点，请等待两轴停稳。"}</p>}
     {returnNotice && <p className="field-success" role="status">{returnNotice}</p>}
     {error && <p className="field-error" role="alert">{error}</p>}
   </section>;

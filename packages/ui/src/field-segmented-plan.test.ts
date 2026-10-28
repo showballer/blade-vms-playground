@@ -79,8 +79,12 @@ for (const patch of [{ pointsPerStart: 0 }, { pointsPerStart: 3 }, { startAzimut
 assert.deepEqual(readSegmentSettings(null, 120), { ...segmentedDefaults, stepDeg: 120 });
 assert.deepEqual(readSegmentSettings("broken", 120), { ...segmentedDefaults, stepDeg: 120 });
 assert.equal(readSegmentSettings('{"stepDeg":90,"startAzimuthDeg":270,"pointsPerStart":2}').startAzimuthDeg, 270);
-assert.deepEqual(readSegmentSettings('{"stepDeg":120,"startAzimuthDeg":120,"pointsPerStart":2}'), { pointsPerStart: 2, stepDeg: 90, startAzimuthDeg: 0 });
-assert.deepEqual(readSegmentSettings('{"stepDeg":120,"startAzimuthDeg":120,"pointsPerStart":1}'), { pointsPerStart: 1, stepDeg: 120, startAzimuthDeg: 120 });
+assert.deepEqual(readSegmentSettings('{"stepDeg":120,"startAzimuthDeg":120,"pointsPerStart":2}'), { pointsPerStart: 2, stepDeg: 90, startAzimuthDeg: 0, autoMove: true });
+assert.deepEqual(readSegmentSettings('{"stepDeg":120,"startAzimuthDeg":120,"pointsPerStart":1}'), { pointsPerStart: 1, stepDeg: 120, startAzimuthDeg: 120, autoMove: true });
 assert.throws(() => segmentedRouteAtAzimuth({ ...initialRoute, cycle: { ...initialRoute.cycle!, points: corrected.allPoints.slice(0, 2), segmentStepDeg: 120 } }, 0), /固定为90/);
 assert.ok(Number.isNaN(readSegmentSettings('{"stepDeg":"bad"}').stepDeg), "Malformed saved motion settings must not silently become a new route");
+assert.equal(readSegmentSettings('{"autoMove":false}').autoMove, false);
+assert.equal(readSegmentSettings('{"autoMove":"false"}').autoMove, true);
+assert.equal(planSegmentedFollow(draft, { ...segmentedDefaults, autoMove: false }, null, "drive_internal", port).pointCycle!.segmentedAutoMove, false);
+assert.equal(segmentedRouteAtAzimuth({ ...initialRoute, cycle: { ...initialRoute.cycle!, segmentedAutoMove: false } }, 90).cycle!.segmentedAutoMove, false);
 console.log("PASS segmented geometry, manual start boundaries, wraparound, wait pose, shared origin and invalid configuration");

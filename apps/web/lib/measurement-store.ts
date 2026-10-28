@@ -101,13 +101,14 @@ export async function saveWindDataset(user: User, body: Record<string, any>) {
       "SELECT * FROM records WHERE kind='wind_datasets' AND tenant=? AND JSON_UNQUOTE(JSON_EXTRACT(body,'$.farmId'))=?",
       [user.tenant, body.farmId],
     );
+    const fields = ["windSpeed", "rpm", "windDirection", "powerKw", "temperatureC"];
     const keys = new Set(
       (found as RecordItem[]).flatMap((d) =>
-        unpack(d).rows.map((r: any) => r.turbineCode + "|" + r.time),
+        unpack(d).rows.flatMap((r: any) => fields.filter(field => r[field] != null).map(field => `${r.turbineCode}|${r.time}|${field}`)),
       ),
     );
-    if (body.rows.some((r: any) => keys.has(r.turbineCode + "|" + r.time)))
-      throw new HttpError(409, "已有同风机、同时间的工况数据，不重复覆盖");
+    if (body.rows.some((r: any) => fields.some(field => r[field] != null && keys.has(`${r.turbineCode}|${r.time}|${field}`))))
+      throw new HttpError(409, "已有同风机、同时间、同指标的工况数据，不重复覆盖");
     await c.execute(
       "INSERT INTO records(id,kind,tenant,body,created_by) VALUES(?,?,?,?,?)",
       [id, "wind_datasets", user.tenant, JSON.stringify(body), user.id],
@@ -132,6 +133,16 @@ export async function saveWindDataset(user: User, body: Record<string, any>) {
   } finally {
     c.release();
   }
+}
+
+export async function windDatasetSummaries(user: User) {
+  // Sort small IDs first: files can contain 250k rows, even though the returned
+  // summary removes them. Sorting JSON expressions can exhaust MySQL's buffer.
+  const listed = await rows<RecordItem & { sort_created_at: Date | string }>(
+    "SELECT r.id,r.kind,r.tenant,JSON_SET(JSON_REMOVE(r.body,'$.rows'),'$.rowCount',JSON_LENGTH(JSON_EXTRACT(r.body,'$.rows'))) AS body,r.created_by,r.updated_at,recent.created_at AS sort_created_at FROM (SELECT id,created_at FROM records WHERE kind='wind_datasets' AND tenant=? ORDER BY created_at DESC,id DESC LIMIT 5000) AS recent INNER JOIN records r ON r.id=recent.id",
+    [user.tenant],
+  );
+  return listed.sort((a, b) => new Date(b.sort_created_at).getTime() - new Date(a.sort_created_at).getTime() || b.id.localeCompare(a.id)).map(unpack);
 }
 export async function objects(user: User): Promise<MeasurementObject[]> {
   return (await listMeasurementRows(user, "measurement_objects")).map(

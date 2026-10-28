@@ -55,7 +55,7 @@ check("分段采集显示本段角度和下一等待点，完成后仍可再次�
   const segment: FieldAutoCaptureTarget = { ...targets[0], stations: 2, cycles: 1,
     route: { kind: "segmented", name: "分段", pointNames: plan.points.map(point => point.name), cycle: plan.pointCycle!, errors: [], referenceMode: "read_at_start" } };
   const html = render({ segmented: true, targets: [segment], status: { ...ready, state: "idle", pointCycle: {
-    executionMode: "manual_segments", state: "complete", waitingPoint: { ...plan.nextStartPoint!, confirmedAt: 1, actualAngles: { "1": 10, "2": 0 } },
+    executionMode: "manual_segments", state: "complete", waitingPoint: { ...plan.nextStartPoint!, bladeId: "1", radialPointId: "P1", confirmedAt: 1, actualAngles: { "1": 10, "2": 0 } },
     cycles: 1, pointCount: 2, point: 2, cycle: 1, completedRecords: 2, totalRecords: 2, speedRpm: 5, dwellSeconds: 60,
   } } });
   assert.match(html, /本段圆周角度/);
@@ -106,15 +106,47 @@ check("停止失败后的stopping状态仍可重试，仅本次停止请求进�
   assert.match(stopButton(render({ status: stopping, stopping: true })), /disabled/);
 });
 
-check("多叶片测点分别分组，选择测点后共用唯一的采集按钮", () => {
+check("多叶片使用tab切换，仅显示当前叶片测点并共用唯一采集按钮", () => {
   const html = render();
   assert.ok(html.includes('aria-label="叶片 1 采集测点"'));
-  assert.ok(html.includes('aria-label="叶片 2 采集测点"'));
+  assert.ok(!html.includes('aria-label="叶片 2 采集测点"'));
+  assert.match(html, /role="tablist" aria-label="选择采集叶片"/);
+  assert.equal((html.match(/role="tab"/g) || []).length, 2);
+  assert.equal((html.match(/role="tabpanel"/g) || []).length, 1);
   assert.equal((html.match(/aria-label="开始采集叶片/g) || []).length, 1);
   assert.ok(html.includes("31 cm")); assert.ok(html.includes("4 个")); assert.ok(html.includes("2 轮"));
-  assert.equal((html.match(/aria-label="选择叶片/g) || []).length, 3);
+  assert.equal((html.match(/aria-label="选择叶片/g) || []).length, 2);
   assert.doesNotMatch(html, /field-auto-capture-row-actions/);
   assert.ok(startButton(html, "1", "P1")); assert.ok(!startButton(html, "1", "P1").includes("disabled"));
+  const secondBlade = render({ selectedTargetKey: targets[2].key });
+  assert.match(secondBlade, /aria-label="叶片 2 采集测点"/);
+  assert.doesNotMatch(secondBlade, /aria-label="叶片 1 采集测点"/);
+  assert.equal((secondBlade.match(/aria-label="选择叶片/g) || []).length, 1);
+  assert.ok(startButton(secondBlade, "2", "P1"));
+});
+check("自动移动仅在分段采集中显示，按路线配置并在任务运行时锁定", () => {
+  const target = { ...targets[0], route: { ...targets[0].route, cycle: { ...targets[0].route.cycle!, segmentedAutoMove: false } } };
+  const html = render({ segmented: true, targets: [target], onAutoMove: noop });
+  const toggle = (value: string) => value.match(/<input[^>]*aria-label="自动移动"[^>]*>/)?.[0] || "";
+  assert.ok(toggle(html)); assert.doesNotMatch(toggle(html), /checked|disabled/);
+  assert.match(toggle(render({ segmented: true, onAutoMove: noop })), /checked/);
+  assert.match(toggle(render({ segmented: true, onAutoMove: noop, busy: "preposition" })), /disabled/);
+  assert.doesNotMatch(render({ onAutoMove: noop }), /aria-label="自动移动"/);
+});
+check("待定位的下一角度仅属于原测点，切换测点不会沿用旧到位提示", () => {
+  const next = { ...targets[0].route.cycle!.points[1], bladeId: "1", radialPointId: "P1", azimuthDeg: 90 };
+  const finished: FieldStatus = { ...ready, pointCycle: { executionMode: "manual_segments", state: "complete", nextWaitPoint: next,
+    cycles: 1, pointCount: 1, point: 1, cycle: 1, completedRecords: 1, totalRecords: 1, speedRpm: 5, dwellSeconds: 60 } };
+  const message = "请先点击移动到预设位置，确认当前测点位置";
+  const pending = render({ segmented: true, status: finished, startDisabledReason: message });
+  assert.match(pending, /已保存 · 待定位至 90°/);
+  assert.match(startButton(pending, "1", "P1"), /disabled/);
+  assert.match(pending, new RegExp(message));
+  const otherPoint = render({ segmented: true, status: finished, selectedTargetKey: targets[1].key, startDisabledReason: message });
+  assert.doesNotMatch(otherPoint, /已保存 · 待定位至 90°/);
+  const arrived: FieldStatus = { ...finished, pointCycle: { ...finished.pointCycle!, waitingPoint: { ...next, confirmedAt: 1, actualAngles: { "1": 0, "2": 0 } } } };
+  assert.match(render({ segmented: true, status: arrived }), /已保存 · 等待于 90°/);
+  assert.doesNotMatch(render({ segmented: true, status: arrived, selectedTargetKey: targets[1].key }), /已保存 · 等待于 90°/);
 });
 check("缺失参数只阻止该行采集，配置入口不再要求光斑校准", () => {
   const missing = { ...targets[1], route: { ...targets[1].route, cycle: null, errors: ["请先填写当前测点参数"] } };
@@ -234,7 +266,10 @@ check("数据采集自动模式隐藏重复开始入口，保留普通与手动�
   const automatic = renderToStaticMarkup(<FieldAcquisition {...acquisitionProps} />);
   assert.ok(!automatic.includes('type="submit"'));
   assert.ok(!automatic.includes("另一个未校准测点不应阻塞当前行"));
-  for (const label of ["风机任务", "风机编号", "手动点位", "自动跟随", "叶片与测点", "实时采集波形", "实时分析"]) assert.ok(automatic.includes(label), label);
+  for (const label of ["风机任务", "手动点位", "自动跟随", "叶片与测点", "振动速度", "实时信号分析"]) assert.ok(automatic.includes(label), label);
+  for (const removed of ["任务信息", "测量对象、风机编号与测点（可选）", 'aria-label="数据采集视图"', 'class="field-view-tabs"']) assert.ok(!automatic.includes(removed), removed);
+  assert.ok(automatic.indexOf("field-realtime-analysis") > automatic.indexOf("field-capture-chart"), "实时分析固定在波形之后");
+  assert.ok(automatic.indexOf("分段采集") < automatic.indexOf("自动跟随") && automatic.indexOf("自动跟随") < automatic.indexOf("手动点位"));
   assert.ok(!automatic.includes("模拟"));
   for (const removed of ["本次记录", "叶片跟随流程", "field-capture-status", "field-capture-aside"]) assert.ok(!automatic.includes(removed), removed);
   const manual = renderToStaticMarkup(<FieldAcquisition {...acquisitionProps} link={{ ...acquisitionProps.link!, mode: "manual", route: { ...route, kind: "manual" } }} />);

@@ -61,7 +61,7 @@ POINT_LIST_FIELDS = (
     "identityVerified", "coverageKind", "completion", "passCompleteness", "completenessReason", "plannedStations", "nominalPeriodSeconds",
     "cycle", "pointIndex", "pointId", "pointName", "cycles", "dwellSeconds",
     "targetAxis1AngleDeg", "targetAxis2AngleDeg", "actualAngles", "recordedPort", "referenceSignature",
-    "executionMode", "segmentStepDeg", "totalStationCount", "segmentStationIds", "nextWaitPoint",
+    "executionMode", "segmentedAutoMove", "segmentStepDeg", "totalStationCount", "segmentStationIds", "nextWaitPoint",
 )
 
 

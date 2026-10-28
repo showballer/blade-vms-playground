@@ -3,15 +3,16 @@ import type { FieldMotionMode, FieldPointCyclePoint } from "./field-types";
 import type { FieldWorkOrigin } from "./field-turntable-origin";
 import type { FieldCaptureRoute } from "./field-capture-route";
 
-export type SegmentSettings = { pointsPerStart: 1 | 2; stepDeg: number; startAzimuthDeg: number };
+export type SegmentSettings = { pointsPerStart: 1 | 2; stepDeg: number; startAzimuthDeg: number; autoMove?: boolean };
 export const segmentedStorageKey = "blade-segmented-capture-v1";
 export const segmentedPairStepDeg = 90;
-export const segmentedDefaults: SegmentSettings = { pointsPerStart: 1, stepDeg: 90, startAzimuthDeg: 0 };
+export const segmentedDefaults: SegmentSettings = { pointsPerStart: 1, stepDeg: 90, startAzimuthDeg: 0, autoMove: true };
 export function readSegmentSettings(raw: string | null, fallbackStepDeg = 90): SegmentSettings {
   const result = { ...segmentedDefaults, stepDeg: fallbackStepDeg };
   try {
     const saved = JSON.parse(raw || "null");
     if (!saved || typeof saved !== "object" || Array.isArray(saved)) return result;
+    if (typeof saved.autoMove === "boolean") result.autoMove = saved.autoMove;
     for (const key of ["pointsPerStart", "stepDeg", "startAzimuthDeg"] as const) {
       if (Object.prototype.hasOwnProperty.call(saved, key))
         Object.assign(result, { [key]: typeof saved[key] === "number" ? saved[key] : NaN });
@@ -53,7 +54,7 @@ export function planSegmentedFollow(draft: AutoFollowDraft, segment: SegmentSett
   const { returnToOrigin: _returnToOrigin, ...cycle } = full.pointCycle;
   result.pointCycle = {
     ...cycle, points: result.points, cycles: 1, startAtCurrentPose: false,
-    executionMode: "manual_segments", nextWaitPoint: result.nextStartPoint,
+    executionMode: "manual_segments", nextWaitPoint: result.nextStartPoint, segmentedAutoMove: segment.autoMove !== false,
     segmentStepDeg: segment.stepDeg, totalStationCount: full.points.length, segmentStations: full.points,
     motionLaserPolicy: "continuous",
   };

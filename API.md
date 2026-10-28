@@ -316,9 +316,11 @@ PUT 请求为 `{revision,values:{rms,frequency,band,attentionRatio,warningRatio}
 | POST | `objects/default-points` | `{turbineId}`，仅为尚无叶片的风机生成 3×5 空位置。 |
 | POST | `objects/adopt` | 显式将元数据完整的历史来源映射到对象，不改原始文件；返回 linked/skipped。P1～P5 按明确点名匹配。 |
 | POST | `objects/link` | `{reference,context,revision}`，为一条来源绑定完整对象；初次 revision=null。 |
-| GET | `wind-datasets` | 工况数据集摘要与对象列表。 |
-| POST | `wind-datasets/preview` | `{filename,base64}`，CSV/XLSX ≤4 MB，预览解析，不入库。 |
-| POST | `wind-datasets` | `{name,farmId,rows}`；1～50000 行，按同风机同时间拒绝重复，包括并发导入。 |
+| GET | `wind-datasets` | 工况数据集摘要与对象列表，不返回完整 rows；含各指标数量和同时具有风速/转速的时间点数量。 |
+| POST | `wind-datasets/preview-file?filename=...` | CSV/XLSX 原始文件体，单文件≤16 MB、25万行；返回账号隔离 token、识别列、编码、总行数及前5行，暂不入库。 |
+| POST | `wind-datasets/import` | `{name,farmId,files:[{token,mapping}],timezoneOffset,units}`；1～8份文件按风机及相同时间合并，最多25万个时间点；确认单位和时区后保存。 |
+| POST | `wind-datasets/preview` | 兼容旧接口 `{filename,base64}`，CSV/XLSX ≤4 MB、5万行，预览解析，不入库。 |
+| POST | `wind-datasets` | 兼容直接传规范化 `{name,farmId,rows}`；1～250000行，按同风机、同时间、同指标拒绝重复，包括并发导入。 |
 | GET | `measurements` | 来源、绑定、对象、分析摘要、规则及 revision。摘要不带大曲线，目录上限 5000。 |
 | POST | `measurements/analyze` | `{reference,parameters,measuredAt?}` 或 `{references:[...],parameters}`；真实 Python Welch 分析并存档。 |
 | POST | `measurements/synthesis` | `{farmId,campaignId,turbineId,bladeId,positionIds?,includeDiagnostic?,minHz?,maxHz?}`；当前账号可见且已关联的同任务叶片记录，最多64条。多角度有效段合并显示，各段独立 Welch 后做同频带多测点幅值比较，不生成未知相位；诊断记录需显式选择。返回原始来源、缺测原因、时间映射及合成结果，不改原始记录。 |
@@ -346,12 +348,20 @@ PUT 请求为 `{revision,values:{rms,frequency,band,attentionRatio,warningRatio}
 - `windowSeconds`：0.001～30；`fadeFraction`：0～0.2，仅展示平滑；`detrend`：none/constant/linear；可选 `rssiThresholdPercent`：0～100。
 - 单条记录缺少实际时钟可显式提供含时区的 `measuredAt`；导入文件时间不被当作测量时间。多条合并要求每条保留实际测量时钟。
 - 合并最多16条，同完整归属和圆周角、相同采样率；≤800万原始样本、≤128连续有效段。重复、跨点位、诊断/失败/模拟输入拒绝。
-- Wind rows 结构：`{time:"2026-10-01T10:00:00+08:00",turbineCode:"WT-01",windSpeed:3.2,rpm:12,windDirection:180,powerKw:300}`；后两项可选，统一 m/s、rpm、deg、kW。时间必须带时区，风机编号需属于选定风场。
+- Wind rows 结构：`{time:"2026-10-01T10:00:00+08:00",turbineCode:"WT-01",windSpeed:3.2,rpm:12,windDirection:180,powerKw:300,temperatureC:-13.6}`；至少包含一个指标，统一 m/s、rpm、deg、kW、℃，缺失不补0。规范化时间必须带时区，风机编号需属于选定风场。只有同一时刻风速和转速都存在且无冲突时，才用于工况匹配；不同指标可分次导入补充，已有指标不自动覆盖。
 - 复核 `range` 为 `{startSeconds,endSeconds}`，指**压缩有效时间**，须落在 `[0,features.validSeconds]` 且结束大于开始。留空评价整条，不改原始数据。`referenceApproved=true` 另要求状态已确认、匹配工况与有效频率。
 - 结果含完整对象快照、来源列表、真实时间、圆周角、两轴目标角、半径、工况来源、有效样本区间/哈希、算法版本与参数、Welch 分辨率和峰值候选、判据依据/参考 ID、人工复核；未测/缺失字段保持空值。
 - HTTP 400：字段/层级/波形不合法；401：未认证；403：无权；404：来源或结果不存在；409：修订冲突/重复数据；429：真实分析进程繁忙；503/504：Python 环境/计算超时。
 
 算法口径与现场待验项见 [服务端整改实施与验收](docs/服务端整改实施与验收.md)。不跨原始间断执行 Welch 窗，展示平滑不进入定量计算；无共同相位的五点幅值分布不等同固有振型。内置算法通过现有受限 Python worker 执行，不自动调用登记的第三方地址。
+
+### 分文件风场工况导入（2026-10-28）
+
+- 预览自动识别 UTF-8/GB18030 中文表头；每份文件至少映射 `time`、`turbineCode` 和一个指标。风速、轮毂转速、发电机侧有功功率、外界温度可以分别上传。
+- `timezoneOffset` 为 `+08:00` 等明确偏移；原文件的无时区时间按此解释，已有时区的时间保留其实际时刻，统一存为 UTC。`units` 示例：`{"windSpeed":"m/s","rpm":"rpm","powerKw":"kW","temperatureC":"C"}`；映射到的每个指标都须确认单位，支持风速 km/h、转速 rps、功率 W/MW、温度 F 换算。
+- 同批文件精确匹配风机和时间，不插值、外推或按行号拼接；同指标重复即拒绝。保存来源文件名、哈希、列映射、原始单位和时区用于追溯。
+- token 只可由当前账号/课题组使用，24小时失效；失败可重新确认，成功删除临时源文件。临时区限制256 MB，上传读取超时180秒。原文件和合并完整行留在服务端，浏览器只收到小预览及保存摘要。
+- 三维响应显示的 `±RMS` 仅是正负尺度参考；接口中的 `displacementRmsM`、`normalizedAmplitude` 仍保持非负。镜像参考不表示实测负峰值、真实运动边界或相位恢复。
 
 ### 统一测量页面：原始波形与异常区间
 

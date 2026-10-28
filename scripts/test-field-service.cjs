@@ -10,7 +10,7 @@ const { EventEmitter } = require("node:events");
 const { createFieldService, windowsServiceEnvironment } = require("../apps/desktop/electron/field-service.cjs");
 
 const idle = () => ({ state: "idle", error: null, receiver: { connected: false }, recording: null,
-  pointCycleExecutionModes: ['continuous', 'manual_segments'] });
+  pointCycleExecutionModes: ['continuous', 'manual_segments'], pointCycleSegmentedAutoMove: true });
 const acquiring = () => ({ state: "acquiring", error: null, receiver: { connected: true }, recording: { id: "recording-1", state: "acquiring" } });
 const waveform = values => ({ sampleRate: 1000, unit: "m/s", values, rssi: [], overrange: [] });
 
@@ -61,7 +61,8 @@ test('segmented Start preserves one/two-point boundaries and waiting coordinates
 test('segmented malformed sequence and incompatible auto-stop policy are rejected before I/O', async t => {
   const f = fixture(t), cycle = segmentedCycle('COM7');
   for (const change of [{ executionMode: 'unknown' }, { executionMode: 'continuous' }, { cycles: 2 },
-    { points: cycle.segmentStations.slice(0, 3) }, { startAtCurrentPose: true }, { motionLaserPolicy: 'off_during_motion' },
+    { segmentedAutoMove: 'false' }, { segmentedAutoMove: 0 }, { segmentedAutoMove: null },
+    { points: cycle.segmentStations.slice(0, 3) }, { motionLaserPolicy: 'off_during_motion' },
     { nextWaitPoint: undefined }, { nextWaitPoint: cycle.segmentStations[3] }, { totalStationCount: 2 },
     { segmentStepDeg: 0 }, { segmentStations: cycle.segmentStations.slice().reverse() },
     { returnToOrigin: cycle.segmentStations[0] }, { points: [cycle.segmentStations[1], cycle.segmentStations[3]] }]) {
@@ -69,6 +70,25 @@ test('segmented malformed sequence and incompatible auto-stop policy are rejecte
     await assert.rejects(f.service.begin({ source: 'device', deviceIp: '192.168.106.90', hostIp: '192.168.106.10', name: 'Segment',
       object: '', turbine: '', point: '', confirmLaser: true, confirmMotion: true, pointCycle: { ...cycle, ...change } }), { status: 400 });
     assert.equal(f.requests.length, requests);
+  }
+});
+
+test('segmented automatic waiting movement is explicit and older services cannot ignore disabling it', async t => {
+  for (const port of ['COM7', '/dev/cu.usbserial-110', 'tcp://192.168.10.50:5000']) {
+    const f = fixture(t);
+    for (const segmentedAutoMove of [false, true]) {
+      await f.service.begin({ source: 'device', deviceIp: '192.168.106.90', hostIp: '192.168.106.10', name: 'Segment',
+        object: '', turbine: '', point: '', confirmLaser: true, confirmMotion: true,
+        pointCycle: { ...segmentedCycle(port), segmentedAutoMove, startAtCurrentPose: true } });
+      const body = JSON.parse(f.requests.filter(row => row.route === 'start').at(-1).options.body);
+      assert.equal(body.pointCycle.segmentedAutoMove, segmentedAutoMove);
+      assert.equal(body.pointCycle.startAtCurrentPose, true, 'explicit positioning is verified, never replayed on segment Start');
+    }
+    const old = fixture(t, { fetch: async () => response({ ...idle(), pointCycleSegmentedAutoMove: undefined }) });
+    await assert.rejects(old.service.begin({ source: 'device', deviceIp: '192.168.106.90', hostIp: '192.168.106.10', name: 'Segment',
+      object: '', turbine: '', point: '', confirmLaser: true, confirmMotion: true,
+      pointCycle: { ...segmentedCycle(port), segmentedAutoMove: false } }), { status: 409 });
+    assert.equal(old.requests.filter(row => row.route === 'start').length, 0);
   }
 });
 

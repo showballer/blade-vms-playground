@@ -493,7 +493,8 @@ check("同步设置明确仅自动上传新采集，未绑定时开关不可用"
   assert.match(local, /role="switch"[^>]*disabled=""/);
   assert.ok(local.includes("请先绑定 Web 账号"));
   const connected = renderToStaticMarkup(<FieldCloudSyncPanel account={unifiedAccount} status={{ enabled: true, connected: true, state: "ready", items: [{ recordingId: "one", name: "new capture", state: "uploading", progress: 45 }] }} busy={false} onAuto={() => {}} onRetry={() => {}} />);
-  assert.ok(connected.includes("历史记录可在本机记录中逐条上传"));
+  assert.ok(connected.includes("历史记录可在本机记录中上传"));
+  assert.ok(connected.includes("已排队记录仍会继续上传"));
   assert.ok(connected.includes("45%")); assert.ok(connected.includes("重试同步"));
 });
 console.log(`Field desktop presentation checks: ${checks} passed (static/pure only).`);

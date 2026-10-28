@@ -63,7 +63,11 @@ m.phase=(phase,point=1)=>{
   pointCount:route.points?.length||2,point,cycle:1,completedRecords:end?(route.points?.length||2):Math.max(0,point-1),totalRecords:route.points?.length||2,
   targetPointId:p?.pointId,currentPoint:p?.name,processPhase:phase==='moving'?'moving':phase==='capturing'?'waiting_blade':phase==='next'?'blade_present':phase,
   movingToWaitPoint:phase==='moving'};
- if(phase==='complete'&&route.executionMode==='manual_segments')m.server.pointCycle.waitingPoint={...route.nextWaitPoint,confirmedAt:Date.now()/1000,actualAngles:{'1':route.nextWaitPoint.axis1AngleDeg,'2':route.nextWaitPoint.axis2AngleDeg}};
+ if(phase==='complete'&&route.executionMode==='manual_segments'&&route.segmentedAutoMove!==false){
+  m.server.pointCycle.waitingPoint={...route.nextWaitPoint,confirmedAt:Date.now()/1000,actualAngles:{'1':route.nextWaitPoint.axis1AngleDeg,'2':route.nextWaitPoint.axis2AngleDeg}};
+  m.server.turntable.feedback.axes['1'].output_angle_deg=route.nextWaitPoint.axis1AngleDeg;
+  m.server.turntable.feedback.axes['2'].output_angle_deg=route.nextWaitPoint.axis2AngleDeg;
+ }
  if(!end&&phase!=='starting')m.server.recording={id:'b'.repeat(32),name:'采集按钮稳定性验收',source:'polytec_ivs500',status:'recording',samples:1200,sampleRate:250000,
   pointCycle:{...route,bladeId:'2',radialPointId:'p3',pointId:p?.pointId,pointName:p?.name}};
  if(!end&&phase!=='starting')m.server.waveform={sampleRate:250000,sampleStart:0,sampleStride:1,unit:'m/s',rssiUnit:'%',values:[0,.001],rssi:[20,30],overrange:[false,false],latest:{velocity:.001,rssi:30},sourceSamples:2};
@@ -93,15 +97,18 @@ app.whenReady().then(async()=>{try{
  win=new BrowserWindow({width:1366,height:900,show:false,webPreferences:{contextIsolation:true,nodeIntegration:false,backgroundThrottling:false}});
  win.webContents.on('console-message',event=>{if(event.level==='error'||event.level===3)report.rendererErrors.push(event.message)});
  win.webContents.session.webRequest.onBeforeRequest((d,cb)=>cb({cancel:!d.url.startsWith('file:')&&!d.url.startsWith('data:')}));
- for(const [width,height] of [[1366,900],[1024,800]])for(const mode of ['分段采集','自动跟随']){
+ for(const [width,height] of (process.env.CAPTURE_LAYOUT_FOCUS?[]:[[1366,900],[1024,800]]))for(const mode of ['分段采集','自动跟随']){
   currentCase=width+' '+mode;win.setSize(width,height);await win.loadFile(path.join(output,'index.html'));
   await wait('!!document.querySelector("input[aria-label=联动转盘与测振仪]")');
   await click('document.querySelector("input[aria-label=联动转盘与测振仪]")');
   await click(buttons+'.find(e=>e.textContent.trim()==='+JSON.stringify(mode)+')');
-  await wait(primary+'&&!('+primary+').disabled');
+  await wait(primary);
+  if(mode==='分段采集')assert.equal(await js('('+primary+').disabled'),true,'New radial target requires explicit positioning');
   assert.equal(await js('document.querySelectorAll(".field-auto-capture-point").length'),5);
   assert.equal(await js('document.querySelectorAll(".field-auto-capture-primary").length'),1);
   assert.equal(await js('!!document.querySelector(".field-capture-aside")'),false);
+  assert.equal(await js('!!document.querySelector(".field-sidebar")?.textContent.match(/信号处理|叶片片段分析/)'),false);
+  assert.equal(await js('!!document.querySelector("[aria-label=数据采集视图],.field-task-details")'),false);
   const second='document.querySelectorAll(".field-auto-capture-list tbody tr")[1]';
   await click('('+second+').querySelector("td")');
   assert.equal(await js('('+second+').dataset.selected'),'true','Clicking the radius cell selects P2');
@@ -110,6 +117,8 @@ app.whenReady().then(async()=>{try{
   assert.equal(await js('('+row+').dataset.selected'),'true','Clicking the state cell selects P3');
   assert.match(await js('document.querySelector(".field-auto-capture-current strong").textContent'),/P3/);
   assert.equal(await js('window.__layoutFixture.calls.some(c=>c.action==="start"||c.request?.action==="recall")'),false,'Selecting a row does not move or acquire');
+
+  if(mode==='分段采集'){await click('document.querySelector(".field-auto-capture-position")');await wait(primary+'&&!('+primary+').disabled');}
 
   await wait('!!document.querySelector(".field-sync-chip")');
   assert.match(await js('document.querySelector(".field-sync-chip").title'),/2 条近期已上传/);
@@ -143,12 +152,49 @@ app.whenReady().then(async()=>{try{
   await js('window.__layoutFixture.phase("cancelled");window.__layoutFixture.releaseStop()');await wait('!window.__layoutFixture.stopPending');await pause(250);
   // Explicit stop notices/error banners may change page flow; ensure recovery
   // is actionable, then start again to dismiss the transient notice normally.
-  assert.equal(await js('('+primary+').disabled'),false);
+  if(mode==='分段采集'){
+   assert.equal(await js('('+primary+').disabled'),true,'Cancelled segment needs an explicit position again');
+   await click('document.querySelector(".field-auto-capture-position")');await wait(primary+'&&!('+primary+').disabled');
+  }else assert.equal(await js('('+primary+').disabled'),false);
   await startHeld();await js('window.__layoutFixture.phase("idle");window.__layoutFixture.releaseStart()');await pause(300);
   await phase('error');assert.ok((await js('document.body.innerText')).includes('隔离测试：可见真实错误'));
-  await phase('idle');await stable(baseline,'recovered idle',measurements);assert.equal(await js('('+primary+').disabled'),false);
+  await phase('idle');
+  if(mode==='分段采集'){await click('document.querySelector(".field-auto-capture-position")');await wait(primary+'&&!('+primary+').disabled');}
+  await stable(baseline,'recovered idle',measurements);assert.equal(await js('('+primary+').disabled'),false);
   assert.equal(await js('document.documentElement.scrollWidth<=innerWidth+1'),true,'Only the point table may scroll horizontally');
   report.checks.push({name:currentCase,measurements});console.log('PASS '+currentCase+' fixed button across '+measurements.length+' states');
  }
+ currentCase='segmented automatic movement toggle and radial target boundary';
+ win.setSize(1366,900);await win.loadFile(path.join(output,'index.html'));
+ await wait('!!document.querySelector("input[aria-label=联动转盘与测振仪]")');
+ await click('document.querySelector("input[aria-label=联动转盘与测振仪]")');
+ await wait('!!document.querySelector("input[aria-label=自动移动]")');
+ await click('document.querySelector("input[aria-label=自动移动]")');
+ await wait('JSON.parse(localStorage.getItem("blade-segmented-capture-v1")).autoMove===false');
+ await click('document.querySelector(".field-auto-capture-position")');await wait(primary+'&&!('+primary+').disabled');
+ await startHeld();
+ assert.equal(await js('window.__layoutFixture.lastStart.segmentedAutoMove'),false);
+ assert.equal(await js('window.__layoutFixture.lastStart.startAtCurrentPose'),true,'Segment Start captures in place after explicit positioning');
+ await phase('capturing');await js('window.__layoutFixture.releaseStart()');await wait('!window.__layoutFixture.startPending');
+ const beforeComplete=await js('window.__layoutFixture.calls.filter(c=>c.request?.action==="recall").length');
+ await phase('complete',2);
+ await wait('document.querySelector(".field-auto-capture-current small").textContent.includes("待定位")');
+ await wait('('+row+').querySelectorAll("td")[1].textContent.includes("180°")');
+ assert.equal(await js('('+primary+').disabled'),true,'Planned next angle is not arrival permission');
+ assert.equal(await js('window.__layoutFixture.calls.filter(c=>c.request?.action==="recall").length'),beforeComplete,'Completion with auto movement off does not issue positioning');
+ await click('document.querySelector(".field-auto-capture-position")');await wait(primary+'&&!('+primary+').disabled');
+ const recalled=await js('window.__layoutFixture.calls.filter(c=>c.request?.action==="recall").at(-1).request');
+ const expected=await js('window.__layoutFixture.lastStart.nextWaitPoint');
+ assert(Math.abs(recalled.axis1AngleDeg-expected.axis1AngleDeg)<1e-6);assert(Math.abs(recalled.axis2AngleDeg-expected.axis2AngleDeg)<1e-6);
+ const afterPosition=await js('window.__layoutFixture.calls.filter(c=>c.request?.action==="recall").length');
+ await click('document.querySelector(".field-auto-capture-position")');await wait(primary+'&&!('+primary+').disabled');
+ assert.equal(await js('window.__layoutFixture.calls.filter(c=>c.request?.action==="recall").length'),afterPosition,'Repeated explicit positioning reuses a confirmed pose');
+ await click('document.querySelectorAll(".field-auto-capture-list tbody tr")[1].querySelector("td")');
+ await wait('document.querySelector(".field-auto-capture-current strong").textContent.includes("P2")');
+ assert.equal(await js('('+primary+').disabled'),true,'Changing radial target requires explicit positioning');
+ assert.equal(await js('window.__layoutFixture.calls.filter(c=>c.request?.action==="recall").length'),afterPosition,'Selecting another radial target never moves');
+ assert.equal(await js('document.querySelectorAll(".field-auto-capture-list tbody tr")[1].querySelectorAll("td")[1].textContent.includes("0°")'),true,'New radial target has an independent angle cursor');
+ await shot('segmented-auto-move-off-next-angle.png');
+ report.checks.push({name:currentCase,passed:true});console.log('PASS '+currentCase);
  assert.deepEqual(report.rendererErrors,[]);finish();
-}catch(e){finish(e)}});
+}catch(e){try{fs.writeFileSync(path.join(output,'failure-debug.json'),JSON.stringify(await js('({phase:window.__layoutFixture.server.pointCycle,lastStart:window.__layoutFixture.lastStart,segments:JSON.parse(localStorage.getItem("blade-segmented-capture-v1")),visible:document.querySelector(".field-auto-capture-list")?.innerText})'),null,2));}catch{}finish(e)}});

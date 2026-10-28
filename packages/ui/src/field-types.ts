@@ -57,6 +57,7 @@ export type FieldPlannedStation = { pointId: string; bladeId: string; radialPoin
   name?: string; axis1AngleDeg?: number; axis2AngleDeg?: number; rootRadiusM?: number; bladeLengthM?: number; distanceFromRootM?: number };
 export type FieldSegmentExecution = {
   executionMode?: "continuous" | "manual_segments";
+  segmentedAutoMove?: boolean;
   segmentStepDeg?: number; totalStationCount?: number;
   segmentStationIds?: string[];
 };

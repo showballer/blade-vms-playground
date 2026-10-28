@@ -79,7 +79,7 @@ export function turntableHealthReport(status: FieldStatus | null, port: string) 
     errors: [trajectory?.error1_deg, trajectory?.error2_deg].map(value => finite(value) ? `${value.toFixed(3)}°` : "未读取") };
 }
 
-type Props = { port: string; status: FieldStatus | null; disabled?: boolean; pollUnavailable?: boolean;
+type Props = { settings?: React.ReactNode; settingsBusy?: boolean; port: string; status: FieldStatus | null; disabled?: boolean; pollUnavailable?: boolean;
   onConnectionChange?: (endpoint: string) => void;
   request: <T>(options: FieldRequestOptions) => Promise<T>; onStatus: (status: FieldStatus) => void; onBusy: (busy: boolean) => void };
 export function turntableRecoveryOptions(status: FieldStatus | null, port: string, readFailed = false) {
@@ -111,7 +111,7 @@ export function turntableRecoveryOptions(status: FieldStatus | null, port: strin
           finite(drive?.alarmCode) && drive.alarmCode > 0 };
     }) };
 }
-export function FieldTurntableHealth({ port, status, disabled = false, pollUnavailable = false, request, onStatus, onBusy, onConnectionChange }: Props) {
+export function FieldTurntableHealth({ port, status, disabled = false, pollUnavailable = false, request, onStatus, onBusy, onConnectionChange, settings, settingsBusy = false }: Props) {
   const [open, setOpen] = useState(false), [checking, setChecking] = useState(false), [error, setError] = useState(""), [notice, setNotice] = useState("");
   const [homingPending, setHomingPending] = useState(false);
   const [connectionPending, setConnectionPending] = useState(false);
@@ -149,12 +149,12 @@ export function FieldTurntableHealth({ port, status, disabled = false, pollUnava
       if (alive.current) setChecking(false);
     }
   }
-  const close = () => { setOpen(false); sequence.current++; };
+  const close = () => { if (settingsBusy) return; setOpen(false); sequence.current++; };
   return <div className="field-servo-ui field-health-control">
-    <Button type="button" aria-label="检查转盘状态" disabled={checking || homingPending || connectionPending} onClick={() => { setOpen(true); void inspect(); }}>
-      <Activity size={15} />转盘状态{report.tone === "red" && <span className="field-health-alert-dot" aria-label="存在转盘异常" />}
+    <Button type="button" aria-label="打开转盘设置" disabled={checking || homingPending || connectionPending} onClick={() => { setOpen(true); void inspect(); }}>
+      <Activity size={15} />配置与检查{report.tone === "red" && <span className="field-health-alert-dot" aria-label="存在转盘异常" />}
     </Button>
-    {open && <Dialog title="转盘状态检查" onClose={close} wide><div className="field-turntable-health field-servo-ui" role="region" aria-label="转盘状态详情" tabIndex={0}>
+    {open && <Dialog title="转盘设置" onClose={close} wide><div className="field-turntable-health field-servo-ui" role="region" aria-label="转盘设置详情" tabIndex={0}>
       <div className="field-health-heading"><div><span className={`field-badge ${pollUnavailable ? "" : error ? "amber" : report.tone === "neutral" ? "" : report.tone}`}>{pollUnavailable ? "状态连接不可用" : error ? "本次检查失败" : checking ? "正在读取…" : report.label}</span><p className="field-subtext">{port || "未选择串口"} · {finite(report.readAt) ? `上次完整检查 ${new Date(report.readAt * 1000).toLocaleTimeString("zh-CN", { hour12: false })}` : "尚无完整检查"}</p></div>
         <Button type="button" disabled={checking || blocked} onClick={() => void inspect()} aria-label="重新检查转盘状态">{checking ? <LoaderCircle size={15} className="spin" /> : <RefreshCw size={15} />}重新检查</Button></div>
       {error && <p className="field-error" role="alert">{error}。下方保留的反馈不代表本次读取成功。</p>}
@@ -164,6 +164,7 @@ export function FieldTurntableHealth({ port, status, disabled = false, pollUnava
         request={request} onStatus={onStatus} onBusy={setConnectionPending} onConnectionChange={onConnectionChange} />}
       <FieldMechanicalHome port={port} status={status} disabled={disabled || pollUnavailable || checking || connectionPending}
         request={request} onStatus={onStatus} onBusy={setHomingPending} />
+      {settings}
       <div className="field-health-axes">{report.axes.map(axis => <section className="field-health-axis" key={axis.axis}><h3>{axis.name}</h3><dl>
         <div><dt>当前角度</dt><dd>{axis.angle}</dd></div><div><dt>电机转速</dt><dd>{axis.rpm}</dd></div>
         <div><dt>角度参考</dt><dd>{axis.reference}</dd></div><div><dt>停止反馈</dt><dd>{axis.stop}</dd></div>

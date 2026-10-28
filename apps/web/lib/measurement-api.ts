@@ -7,7 +7,7 @@ import {
   type RecordItem,
   type User,
 } from "./db";
-import { limitedBody, rotationWorker } from "./rotation";
+import { limitedBody, rotationWorker, windUploadPreview, withWindImport } from "./rotation";
 import {
   adoptSources,
   filterMeasurementAccess,
@@ -25,6 +25,7 @@ import {
   saveMeasurementRow,
   saveObject,
   saveWindDataset,
+  windDatasetSummaries,
   validContext,
   type MeasurementSource,
 } from "./measurement-store";
@@ -447,11 +448,30 @@ export async function measurementEndpoint(
   if (resource === "wind-datasets") {
     if (path.length === 1 && method === "GET")
       return {
-        datasets: (await listMeasurementRows(user, "wind_datasets")).map(
-          ({ rows, ...r }) => ({ ...r, rowCount: rows.length }),
-        ),
+        datasets: await windDatasetSummaries(user),
         objects: await objects(user),
       };
+    if (path.length === 2 && action === "preview-file" && method === "POST") {
+      requireAnalyst(user);
+      return windUploadPreview(user, req);
+    }
+    if (path.length === 2 && action === "import" && method === "POST") {
+      requireAnalyst(user);
+      const b = await input(req), all = await objects(user);
+      if (!all.some(o => o.id === b.farmId && o.kind === "farm" && o.active)) throw new HttpError(400, "请选择风场");
+      const name = string(b.name, "数据集名称");
+      return withWindImport(user, { files: b.files, timezoneOffset: b.timezoneOffset, units: b.units }, async (inputRows, summary) => {
+        const windRows = validation(() => validateWindRows(inputRows));
+        const registered = new Set(all.filter(o => o.kind === "turbine" && o.active && o.parentId === b.farmId).map(o => o.code));
+        const unknown = [...new Set(windRows.filter(r => !registered.has(r.turbineCode)).map(r => r.turbineCode))];
+        if (unknown.length) throw new HttpError(400, `风机 ${unknown.slice(0, 5).join("、")} 未在该风场登记，请先维护对象`);
+        const { resultToken: _, ...importSummary } = summary;
+        const d = await saveWindDataset(user, { ...importSummary, name, farmId: b.farmId, rows: windRows,
+          units: { windSpeed: "m/s", rpm: "rpm", windDirection: "deg", powerKw: "kW", temperatureC: "°C" },
+          importedAt: new Date().toISOString() });
+        return { id: d.id, count: windRows.length, ...importSummary };
+      });
+    }
     if (path.length === 2 && action === "preview" && method === "POST") {
       requireAnalyst(user);
       const b = await input(req);
@@ -490,7 +510,10 @@ export async function measurementEndpoint(
           rpm: "rpm",
           windDirection: "deg",
           powerKw: "kW",
+          temperatureC: "°C",
         },
+        metricCounts: Object.fromEntries(["windSpeed", "rpm", "windDirection", "powerKw", "temperatureC"].map(key => [key, windRows.filter(row => row[key as keyof typeof row] != null).length])),
+        matchedRowCount: windRows.filter(row => row.windSpeed != null && row.rpm != null).length,
         start: windRows[0].time,
         end: windRows[windRows.length - 1].time,
         importedAt: new Date().toISOString(),

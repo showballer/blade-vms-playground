@@ -100,7 +100,7 @@ export function createWorkOrigin(status: FieldStatus, port: string): FieldWorkOr
   if (status.turntable.state !== "checked" || stopUnknown(status)) throw new Error("两轴停止状态未确认，请重新读取反馈");
   const trajectory = status.turntable.motionCapability?.status;
   if (trajectory?.state === 2 && trajectory.fault === 0)
-    throw new Error("控制器保留待执行轨迹，请在“转盘状态”中点击“取消待执行轨迹”后重试");
+    throw new Error("控制器保留待执行轨迹，请在“转盘设置”中点击“取消待执行轨迹”后重试");
   if (trajectory?.state === 7 && trajectory.fault === 7)
     throw new Error("上次定位触发跟随误差保护，请先清除旧轨迹。原点坐标已保留，无需重新设置归零");
   if (trajectory && (!Number.isInteger(trajectory.state) || ![0, 6, 8].includes(Number(trajectory.state)) ||

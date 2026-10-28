@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, open, unlink } from "node:fs/promises";
+import { mkdir, open, readFile, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 import { HttpError, type User } from "./db";
 import { readRotationCatalog } from "./rotation-catalog";
@@ -138,17 +138,63 @@ export async function rotationUpload(user: Pick<User, "id" | "tenant">, request:
   });
 }
 
-export async function limitedBody(request: Request, limit: number): Promise<Buffer> {
+export async function limitedBody(request: Request, limit: number, timeoutMs?: number): Promise<Buffer> {
   if (Number(request.headers.get("content-length") || 0) > limit) throw new HttpError(413, "请求参数过大。");
   const reader = request.body?.getReader();
   if (!reader) throw new HttpError(400, "请求内容不能为空。");
   const chunks: Uint8Array[] = []; let length = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    length += value.byteLength;
-    if (length > limit) { await reader.cancel(); throw new HttpError(413, "请求参数过大。"); }
-    chunks.push(value);
-  }
+  let timedOut = false;
+  const timer = timeoutMs ? setTimeout(() => { timedOut = true; void reader.cancel("上传超时"); }, timeoutMs) : undefined;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (timedOut) throw new HttpError(504, "上传超时，请检查网络后重试。");
+      if (done) break;
+      length += value.byteLength;
+      if (length > limit) { await reader.cancel(); throw new HttpError(413, "请求参数过大。"); }
+      chunks.push(value);
+    }
+  } finally { if (timer) clearTimeout(timer); }
   return Buffer.concat(chunks);
+}
+
+/** Large SCADA files stay server-side; the browser receives only headers and five rows. */
+export async function windUploadPreview(user: Pick<User, "id" | "tenant">, request: Request) {
+  const filename = path.basename(new URL(request.url).searchParams.get("filename") || "");
+  if (!/\.(xlsx|csv)$/i.test(filename) || filename.length > 200) throw new HttpError(400, "请选择 CSV 或 XLSX 工况文件。");
+  return withWorker(user, async (service, python, data) => {
+    const inputFile = path.join(data, `.wind-upload-${randomUUID()}`);
+    const file = await open(inputFile, "wx", 0o600);
+    try {
+      const body = await limitedBody(request, 16 * 1024 * 1024, 180_000);
+      if (!body.length) throw new HttpError(400, "上传文件不能为空。");
+      await file.writeFile(body);
+      await file.close();
+      return await runWorker(service, python, data, { action: "wind-stage", filename, inputFile });
+    } finally {
+      await file.close().catch(() => undefined);
+      await unlink(inputFile).catch(() => undefined);
+    }
+  });
+}
+
+export async function withWindImport<T>(user: Pick<User, "id" | "tenant">, payload: Record<string, unknown>, save: (rows: unknown[], summary: any) => Promise<T>) {
+  return withWorker(user, async (service, python, data) => {
+    const summary = await runWorker(service, python, data, { ...payload, action: "wind-merge" });
+    if (!/^[0-9a-f]{32}$/.test(summary.resultToken || "")) throw new HttpError(500, "工况合并结果无效。");
+    const result = path.join(data, "wind-imports", `${summary.resultToken}.merged.json`);
+    try {
+      if ((await stat(result)).size > 64 * 1024 * 1024) throw new HttpError(413, "工况结果过大，请按日期拆分。");
+      const rows = JSON.parse(await readFile(result, "utf8"));
+      if (!Array.isArray(rows) || rows.length !== summary.rowCount) throw new HttpError(500, "工况合并结果行数不一致。");
+      const saved = await save(rows, summary);
+      for (const file of Array.isArray(payload.files) ? payload.files : []) {
+        if (/^[0-9a-f]{32}$/.test(file.token || "")) {
+          await unlink(path.join(data, "wind-imports", `${file.token}.source`)).catch(() => undefined);
+          await unlink(path.join(data, "wind-imports", `${file.token}.json`)).catch(() => undefined);
+        }
+      }
+      return saved;
+    } finally { await unlink(result).catch(() => undefined); }
+  });
 }

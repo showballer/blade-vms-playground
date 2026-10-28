@@ -30,6 +30,13 @@ def segmented_config(count=1, start=0, step=90, **overrides):
 
 
 class ManualSegmentConfigTests(unittest.TestCase):
+    def test_automatic_waiting_move_defaults_to_legacy_behavior_and_requires_boolean(self):
+        self.assertTrue(PointCycleConfig(**segmented_config()).segmentedAutoMove)
+        self.assertFalse(PointCycleConfig(**segmented_config(segmentedAutoMove=False)).segmentedAutoMove)
+        for invalid in (0, 1, 'false', 'true', None):
+            with self.subTest(value=invalid), self.assertRaises(ValueError):
+                PointCycleConfig(**segmented_config(segmentedAutoMove=invalid))
+
     def test_two_points_require_90_degrees_but_single_point_keeps_all_intervals(self):
         for step in (180, 120, 60, 45, 30, 22.5):
             with self.subTest(step=step):
@@ -71,7 +78,7 @@ class ManualSegmentConfigTests(unittest.TestCase):
 
 class ManualSegmentLifecycleTests(unittest.TestCase):
     def run_segment(self, filename, *, count=1, start=0, fail_wait=False, repeat=False, no_pass=False,
-                    cancel=False, stop_failure=False, disk_failure=False):
+                    cancel=False, stop_failure=False, disk_failure=False, auto_move=None, hold_start=False, initial_offset=0):
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         root = Path(folder.name)
@@ -91,7 +98,7 @@ class ManualSegmentLifecycleTests(unittest.TestCase):
         # A reused adapter must never accidentally dispatch a previous bank.
         motor._blade_preloaded_route = {'stale':True}
         first = segmented_config(count, start)['points'][0]
-        motor.angles.update({1:first['axis1AngleDeg'], 2:first['axis2AngleDeg']})
+        motor.angles.update({1:first['axis1AngleDeg'] + initial_offset, 2:first['axis2AngleDeg']})
         controller = create_app(Settings(TOKEN, 8765, root), lambda _:receiver,
                                 lambda *a, **k: motor).state.controller
         self.assertEqual(controller.status()['pointCycleExecutionModes'], ['continuous', 'manual_segments'])
@@ -146,11 +153,14 @@ class ManualSegmentLifecycleTests(unittest.TestCase):
                 # the first segment. No duplicate positioning command is allowed.
                 sdk.submitted = 0
                 config = segmented_config(count, (start + count*index) % 4)
+                if auto_move is not None:
+                    config['segmentedAutoMove'] = auto_move
+                config['startAtCurrentPose'] = hold_start
                 controller.start(StartRequest(**START, confirmMotion=True, pointCycle=config))
                 controller.thread.join(5)
                 self.assertFalse(controller.thread.is_alive(), controller.status())
                 sessions.append(controller.status()['pointCycle']['sessionId'])
-                if fail_wait or no_pass or cancel or stop_failure or disk_failure:
+                if fail_wait or no_pass or cancel or stop_failure or disk_failure or initial_offset:
                     break
                 self.assertEqual(controller.status()['pointCycle']['state'], 'complete', controller.status())
             preload.assert_not_called()
@@ -197,6 +207,54 @@ class ManualSegmentLifecycleTests(unittest.TestCase):
         self.assertEqual(len(gates),4)
         self.assertEqual(controller.status()['pointCycle']['waitingPoint']['azimuthDeg'],180)
         self.assertEqual(sdk.events.count('start'),2)
+
+    def test_disabling_auto_move_keeps_next_cursor_without_motion_or_false_arrival(self):
+        for filename in ('fixture.dylib', 'fixture.dll'):
+            for count in (1, 2):
+                with self.subTest(filename=filename, count=count):
+                    controller,sdk,motor,records,moves,gates,_ = self.run_segment(filename, count=count, auto_move=False)
+                    pc = controller.status()['pointCycle']
+                    self.assertEqual(pc['state'], 'complete')
+                    self.assertFalse(pc['segmentedAutoMove'])
+                    self.assertIsNone(pc['waitingPoint'], 'a planned next angle is not hardware arrival evidence')
+                    self.assertFalse(pc['movingToWaitPoint'])
+                    self.assertEqual(pc['nextWaitPoint']['azimuthDeg'], count * 90)
+                    self.assertEqual(len(moves), count - 1, 'only the two-point segment interior moves automatically')
+                    self.assertTrue(all(move['daqActive'] and not move['waiting'] for move in moves))
+                    last = segmented_config(count)['points'][-1]
+                    self.assertEqual(motor.angles, {1: last['axis1AngleDeg'], 2: last['axis2AngleDeg']})
+                    self.assertEqual(len(gates), count)
+                    self.assertFalse(sdk.active)
+                    self.assertEqual(controller.laser_observation['state'], 'on')
+                    phases = [event['phase'] for event in pc['processEvents']]
+                    self.assertIn('waiting_manual_position', phases)
+                    self.assertNotIn('moving_next_segment', phases)
+                    for record in records:
+                        self.assertEqual(record['status'], 'complete')
+                        self.assertFalse(record['pointCycle']['segmentedAutoMove'])
+                        self.assertFalse(recording_summary(record)['pointCycle']['segmentedAutoMove'])
+
+    def test_explicitly_positioned_segment_starts_without_replaying_first_move(self):
+        for filename in ('fixture.dylib', 'fixture.dll'):
+            for count in (1, 2):
+                with self.subTest(filename=filename, count=count):
+                    controller,sdk,_,records,moves,gates,_ = self.run_segment(filename, count=count, auto_move=False, hold_start=True)
+                    self.assertEqual(controller.status()['pointCycle']['state'], 'complete')
+                    self.assertEqual(len(moves), count - 1)
+                    self.assertEqual(len(gates), count)
+                    self.assertEqual(len(records), count)
+                    self.assertFalse(sdk.active)
+
+    def test_position_changed_after_preposition_is_rejected_without_a_corrective_move(self):
+        for filename in ('fixture.dylib', 'fixture.dll'):
+            with self.subTest(filename=filename):
+                controller,_,_,records,moves,gates,_ = self.run_segment(filename, auto_move=False, hold_start=True, initial_offset=2)
+                pc = controller.status()['pointCycle']
+                self.assertEqual(pc['state'], 'error')
+                self.assertIn('移动到预设位置', pc['error'])
+                self.assertEqual(moves, [])
+                self.assertEqual(gates, [])
+                self.assertEqual(records, [])
 
     def test_waiting_move_failure_preserves_captured_record_and_never_reports_ready(self):
         controller,_,_,records,moves,gates,_ = self.run_segment('fixture.dylib', fail_wait=True)

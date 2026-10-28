@@ -136,10 +136,11 @@ export function MeasurementSynthesisResult({ result, expectedPoints = [] }: { re
             normalizedAmplitude: value?.normalizedAmplitude ?? null,
             displacementRmsM: value?.displacementRmsM ?? null };
         })} />
-        <div className="measurement-response-curve"><h3>测点幅值曲线</h3>
+        <div className="measurement-response-curve"><h3>测点 RMS 大小 · 非负值</h3>
         <Chart height={measurementChartHeight} label="叶根到叶尖多测点振幅合成" option={{
           animation: false, tooltip: { trigger: "axis", confine: true },
           ...measurementZoomAxes("距风机中心 / m", normalized ? "归一化幅值" : "频带位移 RMS / μm"),
+          yAxis: { ...measurementZoomAxes("", normalized ? "归一化 RMS" : "频带位移 RMS / μm").yAxis, min: 0 },
           series: [{ type: "line", showSymbol: true, symbolSize: 8, connectNulls: false,
             data: displayPoints.map(p => {
               const value = candidate.points.find(c => c.radialPointId === p.id);
@@ -156,7 +157,7 @@ export function MeasurementSynthesisResult({ result, expectedPoints = [] }: { re
         </Table>
       </> : <div className="measurement-plot-empty">{synthesis.reason || "有效测点或共同频带证据不足，暂不能形成多测点响应。"}</div>}
       {synthesis.reason && candidate && <p className="hint">{synthesis.reason}</p>}
-      <p className="hint">这是实测频带幅值分布。不同测点不是同步采集，空间相位未知，因此不生成假定相位的振动动画。</p>
+      <p className="hint">原始速度的正负表示沿激光方向的运动方向；RMS 表示频带振动大小，不能当作位移极值。不同测点分次采集、空间相位未知，无法据此还原整片的上下振动。</p>
       {!!candidate?.warnings.length && <details className="measurement-advanced"><summary>频带证据与限制</summary><ul>{candidate.warnings.map((w, i) => <li key={i}>{w}</li>)}</ul></details>}
     </Card>
     <Card title="单测点多角度合成" tools={point && <Select label="查看测点" value={point.radialPointId} onChange={setPointId}
@@ -165,21 +166,22 @@ export function MeasurementSynthesisResult({ result, expectedPoints = [] }: { re
         {displayPoints.map(p => <tr key={p.id}><td>{p.name}</td><td>{numberText(p.radiusM)}</td><td>{[...new Set(p.merged?.segments.map(s => s.azimuthDeg) || [])].sort((a, b) => a - b).map(a => `${a}°`).join("、") || "缺测"}</td><td>{numberText(p.merged?.durationSeconds)}</td><td>{p.merged?.segments.length ?? 0}</td></tr>)}
       </Table>
       {point && <div className="measurement-charts">
-        <Card title={`${point.radialPointName} · 多角度有效波形`}>
+        <Card title={`${point.radialPointName} · 多角度有效波形（有符号速度）`}>
           <Chart height={measurementChartHeight} label="多角度有效片段合成波形" option={{
             animation: false, tooltip: { trigger: "axis", confine: true },
             ...measurementZoomAxes("压缩有效时间 / s", "速度 / mm/s"),
-            series: point.segments.map(segment => {
+            series: point.segments.map((segment, index) => {
               const curve = segment.plotTimeDomain || segment.timeDomain;
               return { name: `${segment.azimuthDeg}°`, type: "line", showSymbol: false, connectNulls: false,
                 data: curve.seconds.map((s, i) => [segment.compressedStartSeconds + s - segment.originalStartSeconds,
                   curve.values[i] == null ? null : curve.values[i]! * 1000]),
                 markLine: { silent: true, symbol: "none", label: { formatter: `${segment.azimuthDeg}°` },
-                  lineStyle: { type: "dotted", color: "#94a3b8" }, data: [{ xAxis: segment.compressedStartSeconds }] },
+                  lineStyle: { type: "dotted", color: "#94a3b8" }, data: [{ xAxis: segment.compressedStartSeconds },
+                    ...(index === 0 ? [{ yAxis: 0, label: { formatter: "速度零线", position: "insideEndTop" }, lineStyle: { color: "#64748b", type: "dashed" } }] : [])] },
               };
             }),
           }} />
-          <p className="hint">合并所选圆周角的有效片段，去除无效等待时间；片段之间不连线。</p>
+          <p className="hint">保留速度正负值；合并所选圆周角的有效片段、去除无效等待时间，片段之间不连线。光束方向的正负不等同于画面上的上下方向。</p>
         </Card>
         <Card title={`${point.radialPointName} · 独立片段 Welch 频谱`}>
           {point.independentSpectrum ? <Chart height={measurementChartHeight} label="合成测点独立片段 Welch 频谱" option={{

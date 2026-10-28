@@ -245,6 +245,9 @@ class PointCycleConfig(BaseModel):
     # The full ring remains metadata; it is never uploaded to the controller.
     segmentStations: list[PointCyclePoint] | None = Field(default=None, min_length=1, max_length=16)
     nextWaitPoint: PointCyclePoint | None = None
+    # Older clients always positioned the following waiting point. New clients
+    # may leave the motor at the last captured point until explicit recall.
+    segmentedAutoMove: StrictBool = True
     segmentStepDeg: float | None = Field(default=None, gt=0, le=360, allow_inf_nan=False)
     totalStationCount: StrictInt | None = Field(default=None, ge=1, le=16)
     diagnosticDrivePosition: StrictBool = False

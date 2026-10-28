@@ -48,6 +48,7 @@ export function MeasurementResponse3D({ points, bandHz, frequencyHz }: {
   frequencyHz?: number;
 }) {
   const [yaw, setYaw] = useState(-25), [elevation, setElevation] = useState(30), [gain, setGain] = useState(.18);
+  const [showNegativeReference, setShowNegativeReference] = useState(true);
   const located = useMemo(() => points.filter((p): p is LocatedPoint => finiteRadius(p.radiusM)).sort((a, b) => a.radiusM - b.radiusM), [points]);
   const intervals = useMemo(() => responseEnvelopeIntervals(points), [points]);
   const extent = Math.max(0, ...located.map(p => p.radiusM));
@@ -64,7 +65,7 @@ export function MeasurementResponse3D({ points, bandHz, frequencyHz }: {
   };
   // Fit display geometry only. The metre coordinates and measured RMS values
   // are never changed by perspective, gain or the drawing extent.
-  const corners = [0, 1].flatMap(x => [-.14, .14].flatMap(y => [0, gain * amplitudeExtent].map(z => rawProject(x, y, z))));
+  const corners = [0, 1].flatMap(x => [-.14, .14].flatMap(y => [showNegativeReference ? -gain * amplitudeExtent : 0, gain * amplitudeExtent].map(z => rawProject(x, y, z))));
   const minU = Math.min(...corners.map(p => p[0])), maxU = Math.max(...corners.map(p => p[0]));
   const minV = Math.min(...corners.map(p => p[1])), maxV = Math.max(...corners.map(p => p[1]));
   const scale = Math.min(850, 820 / Math.max(.01, maxU - minU), 280 / Math.max(.01, maxV - minV));
@@ -77,7 +78,9 @@ export function MeasurementResponse3D({ points, bandHz, frequencyHz }: {
     project(a, -width(a), va), project(a, width(a), va),
     project(b, width(b), vb), project(b, -width(b), vb),
   ].map(p => p.join(",")).join(" ");
-  const mesh = intervals.flatMap(({ from, to }, index) => {
+  // The negative face is only a mirrored RMS scale reference. A PSD/RMS has no
+  // phase or sign, so neither face is a measured instant, peak, or motion bound.
+  const mesh = (direction: 1 | -1) => intervals.flatMap(({ from, to }, index) => {
     const subdivisions = Math.max(2, Math.ceil(80 * (to.radiusM - from.radiusM) / scaleRadius));
     return Array.from({ length: subdivisions }, (_, i) => {
       const t = i / subdivisions, u = (i + 1) / subdivisions;
@@ -85,30 +88,49 @@ export function MeasurementResponse3D({ points, bandHz, frequencyHz }: {
       const va = from.normalizedAmplitude! * (1 - t) + to.normalizedAmplitude! * t;
       const vb = from.normalizedAmplitude! * (1 - u) + to.normalizedAmplitude! * u;
       const color = `hsl(${220 - 210 * Math.min(1, (va + vb) / 2 / amplitudeExtent)} 76% 49%)`;
-      return <polygon key={`${index}-${i}`} data-response-interval={`${from.id}:${to.id}`} points={polygon(a, b, va, vb)} fill={color} stroke={color} strokeWidth={.5} />;
+      return <polygon key={`${direction}-${index}-${i}`} data-response-interval={direction === 1 ? `${from.id}:${to.id}` : undefined}
+        data-reference-interval={direction === -1 ? `${from.id}:${to.id}` : undefined}
+        points={polygon(a, b, direction * va, direction * vb)} fill={color} stroke={color} strokeWidth={.5} />;
     });
   });
   const origin = project(0, .13, 0), outer = project(extent, .13, 0);
   const label = bandHz ? `${fmt(bandHz[0])}–${fmt(bandHz[1])} Hz` : finiteAmplitude(frequencyHz) ? `${fmt(frequencyHz)} Hz` : "当前频带";
   return <section className="measurement-response-3d" aria-label="三维幅值分布">
-    <div className="measurement-response-3d-heading"><div><h3>三维幅值分布</h3><span>{label} · 静态响应包络</span></div>
+    <div className="measurement-response-3d-heading"><div><h3>三维幅值分布</h3><span>{label} · {showNegativeReference ? "零位与 ±RMS 参考" : "RMS 大小"}</span></div>
       <Button type="button" variant="ghost" onClick={() => { setYaw(-25); setElevation(30); setGain(.18); }}>复位视图</Button>
     </div>
     {extent > 0 && valid.length > 0 ? <>
       <div className="measurement-response-3d-canvas">
         <div className="measurement-response-3d-projection">
-          <svg viewBox="0 0 1000 420" role="img" aria-label="真实测点频带幅值三维分布，非相位振型">
-            <title>三维幅值分布：实测点之间线性插值，灰色区域无有效覆盖；没有推算相位或叶尖。</title>
-            <polygon points={polygon(0, extent, 0, 0)} fill="#e7edf4" stroke="#a2b1c4" strokeDasharray="5 4" />
-            {mesh}
+          <svg viewBox="0 0 1000 420" role="img" aria-label={showNegativeReference ? "真实测点 RMS 幅值与正负尺度参考，非实测振动轨迹" : "真实测点 RMS 大小，非实测振动轨迹"}>
+            <title>{(showNegativeReference ? "实测 RMS 大小保持非负；负向面为镜像参考，不是负振幅、实测极值或瞬时姿态。" : "实测 RMS 大小保持非负，不是实测极值或瞬时姿态。") + "灰色面为示意零位，没有推算相位或叶尖。"}</title>
+            {showNegativeReference && <g className="measurement-response-negative" data-response-negative-reference="rms-mirror">{mesh(-1)}</g>}
+            <polygon data-response-zero-plane="true" points={polygon(0, extent, 0, 0)} fill="#e7edf4" fillOpacity={.85} stroke="#72859d" strokeDasharray="5 4" />
+            {mesh(1)}
             <line x1={origin[0]} y1={origin[1]} x2={outer[0]} y2={outer[1]} stroke="#93a5bc" strokeWidth="1.5" />
             {located.map(p => {
               const known = finiteAmplitude(p.normalizedAmplitude), pos = project(p.radiusM, 0, known ? p.normalizedAmplitude! : 0);
-              return <circle key={p.id} data-response-point={p.id} data-radius-m={p.radiusM} data-amplitude={known ? p.normalizedAmplitude : "missing"}
+              const zero = project(p.radiusM, 0, 0), negative = project(p.radiusM, 0, known ? -p.normalizedAmplitude! : 0);
+              return <g key={p.id}>
+                {known && showNegativeReference && <>
+                  <line x1={pos[0]} y1={pos[1]} x2={negative[0]} y2={negative[1]} stroke="#7893b3" strokeDasharray="3 4" />
+                  <circle data-response-negative-point={p.id} data-reference-amplitude={-p.normalizedAmplitude!}
+                    cx={negative[0]} cy={negative[1]} r={4} fill="#fff" stroke="#7893b3" strokeWidth={1.5}>
+                    <title>{`${p.name} · −RMS 镜像参考，不是实测负峰值`}</title>
+                  </circle>
+                  <circle cx={zero[0]} cy={zero[1]} r={2.5} fill="#72859d" />
+                </>}
+                <circle data-response-point={p.id} data-radius-m={p.radiusM} data-amplitude={known ? p.normalizedAmplitude : "missing"}
                 cx={pos[0]} cy={pos[1]} r={6} fill={known ? "#174775" : "#fff"} stroke={known ? "#fff" : "#7b8ca4"} strokeWidth={2}>
                 <title>{`${p.name} · 距中心 ${fmt(p.radiusM)} m · ${known ? `归一化幅值 ${fmt(p.normalizedAmplitude!)}${finiteAmplitude(p.displacementRmsM) ? ` · 位移 RMS ${fmt(p.displacementRmsM * 1e6)} μm` : ""}` : "缺测"}`}</title>
-              </circle>;
+              </circle></g>;
             })}
+            <g className="measurement-response-scale-labels" aria-hidden="true">
+              {(showNegativeReference ? [1, 0, -1] : [1, 0]).map(sign => {
+                const pos = project(extent, -.12, sign * amplitudeExtent);
+                return <text key={sign} x={Math.min(900, pos[0] + 42)} y={pos[1] + 4}>{sign === 0 ? "零位参考" : sign === 1 ? "+RMS" : "−RMS 参考"}</text>;
+              })}
+            </g>
           </svg>
           <div className="measurement-response-3d-labels" aria-hidden="true">{located.map(p => {
             const known = finiteAmplitude(p.normalizedAmplitude), pos = project(p.radiusM, 0, known ? p.normalizedAmplitude! : 0);
@@ -117,7 +139,8 @@ export function MeasurementResponse3D({ points, bandHz, frequencyHz }: {
         </div>
       </div>
       <div className="measurement-response-3d-axis"><span>0 = 风机中心</span><span>距中心 / m</span><span>最远测点 {fmt(extent)} m（非叶尖）</span></div>
-      <div className="measurement-response-3d-legend"><span>0</span><i aria-hidden="true" /><span>{fmt(amplitudeExtent)}</span><span>归一化幅值</span><small>灰色：参考 / 无有效覆盖</small></div>
+      <div className="measurement-response-3d-legend"><span>0</span><i aria-hidden="true" /><span>{fmt(amplitudeExtent)}</span><span>归一化 RMS 大小</span><small>灰面：零位参考</small></div>
+      <label className="measurement-response-reference-toggle"><input type="checkbox" checked={showNegativeReference} onChange={e => setShowNegativeReference(e.target.checked)} />显示负向尺度参考（非实测负峰值）</label>
     </> : <div className="measurement-response-3d-empty">缺少有效测点或位置，暂不能绘制三维分布。</div>}
     {unknown.length > 0 && <p className="measurement-response-3d-note">{unknown.map(p => p.name).join("、")} 的位置未知，仅显示已知测点，不做面插值。</p>}
     {duplicate && <p className="measurement-response-3d-note">存在重复半径，相关区间不做面插值。</p>}
@@ -126,6 +149,6 @@ export function MeasurementResponse3D({ points, bandHz, frequencyHz }: {
       <label>俯仰 <output>{elevation}°</output><input aria-label="三维幅值俯仰视角" type="range" min={10} max={70} step={1} value={elevation} onChange={e => setElevation(Number(e.target.value))} /></label>
       <label>显示变形 <output>{Math.round(gain * 100)}%</output><input aria-label="三维幅值显示变形" type="range" min={.02} max={.3} step={.01} value={gain} onChange={e => setGain(Number(e.target.value))} /></label>
     </div></details>
-    <p className="measurement-response-3d-note">外形仅示意。显示变形只改变画面比例；测点间插值，不补根部或叶尖，不代表实测相位振型。</p>
+    <p className="measurement-response-3d-note">RMS 表示振动大小，始终非负。上下参考面仅为 ±RMS 尺度，不是最大摆幅或真实运动边界；灰面不代表测得的平衡姿态。外形仅示意，测点间插值，不补根部或叶尖。</p>
   </section>;
 }

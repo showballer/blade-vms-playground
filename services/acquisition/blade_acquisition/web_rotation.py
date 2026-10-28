@@ -683,7 +683,7 @@ def import_file(store: RecordingStore, payload: dict):
 
 def dispatch(root: Path, payload: dict):
     action = payload.get("action")
-    if action not in ("recordings", "import", "rotation", "blade-passes", "capture-validate", "capture-waveform", "capture-import", "measurement-analysis", "measurement-waveform", "wind-preview"):
+    if action not in ("recordings", "import", "rotation", "blade-passes", "capture-validate", "capture-waveform", "capture-import", "measurement-analysis", "measurement-waveform", "wind-preview", "wind-stage", "wind-merge"):
         raise ValueError("不支持的 Web 分析操作。")
     if action.startswith("capture-"):
         from .native_capture import validate_capture, capture_waveform, import_capture
@@ -696,6 +696,9 @@ def dispatch(root: Path, payload: dict):
     if action == "wind-preview":
         from .wind_import import preview
         return preview(payload)
+    if action in ("wind-stage", "wind-merge"):
+        from .wind_import import stage_preview, merge_staged
+        return stage_preview(root, payload) if action == "wind-stage" else merge_staged(root, payload)
     if action == "measurement-waveform":
         from .waveform import WaveformReader
         record_id=payload.get("recordingId")

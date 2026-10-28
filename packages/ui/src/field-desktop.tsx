@@ -9,7 +9,6 @@ import { Button } from "./common";
 import { FieldRecordingDialog } from "./field-recording-dialog";
 import { FieldDevicePanel } from "./field-device";
 import { FieldHeaderLaser } from "./field-header-laser";
-import { FieldTurntableHealth } from "./field-turntable-health";
 import { isTurntablePort, readSavedTurntableConnection, turntableConnectionKey } from "./field-turntable-port";
 import { FieldAnalysis } from "./field-analysis";
 import { WebBladePasses } from "./web-blade-passes";
@@ -17,7 +16,9 @@ import type { BladePassRecording, BladePassResult } from "./web-blade-passes-dat
 import { FieldAcquisition, FieldCaptureStatusTags } from "./field-acquisition";
 import { FieldTurntableWorkspace, autoFollowCollection, autoFollowCollectionContext } from "./field-auto-follow";
 import { autoFollowStorageKey, readAutoFollowSurvey } from "./field-auto-follow-config";
-import { segmentedRouteAtAzimuth } from "./field-segmented-plan";
+import { segmentedRouteAtAzimuth, readSegmentSettings, segmentedStorageKey } from "./field-segmented-plan";
+import { segmentedStartPositionError, withSegmentedAutoMove } from "./field-segmented-start";
+import { turntableReferenceSignature } from "./field-turntable-points";
 import { positioningRouteContext, replacePositionedTarget, routeAtPositionedStation, type FieldPositionedStation } from "./field-route-position";
 import { captureRouteRequestBlockers, prepareCaptureStartRoute, type FieldCaptureRoute } from "./field-capture-route";
 import { moveToCapturePreset, presetPositionRequestError } from "./field-preset-position";
@@ -31,6 +32,9 @@ import {
   type FieldStatus, type FieldDeviceSettings, type FieldRssiCalibrationResult,
   type FieldSyncStatus,
 } from "./field-types";
+
+// Temporarily hide entry points while retaining their navigation and page logic.
+const showRecordAnalysisMenus = false;
 
 function fieldBridge(): FieldRequest | undefined {
   if (typeof window === "undefined") return undefined;
@@ -206,11 +210,17 @@ export function FieldDesktopApp() {
     try { localStorage.setItem(turntableConnectionKey, JSON.stringify({ version: 1, endpoint })); } catch { /* Remain usable for this session. */ }
   }, []);
   const [linkEnabled, setLinkEnabled] = useState(false);
-  const [routeMode, setRouteMode] = useState<"manual" | "auto" | "segmented">("manual");
+  const [routeMode, setRouteMode] = useState<"manual" | "auto" | "segmented">("segmented");
+  const [segmentedAutoMove, setSegmentedAutoMove] = useState(() => {
+    try { return readSegmentSettings(localStorage.getItem(segmentedStorageKey)).autoMove !== false; } catch { return true; }
+  });
   const [autoTargetKey, setAutoTargetKey] = useState<string>();
   const [autoCollection, setAutoCollection] = useState({ collectionId: "", collectionContext: "" });
   const [routes, setRoutes] = useState<Partial<Record<"manual" | "auto" | "segmented", FieldCaptureRoute>>>({});
-  const onRoute = useCallback((route: FieldCaptureRoute) => setRoutes(previous => JSON.stringify(previous[route.kind]) === JSON.stringify(route) ? previous : { ...previous, [route.kind]: route }), []);
+  const onRoute = useCallback((route: FieldCaptureRoute) => {
+    const next = withSegmentedAutoMove(route, segmentedAutoMove);
+    setRoutes(previous => JSON.stringify(previous[route.kind]) === JSON.stringify(next) ? previous : { ...previous, [route.kind]: next });
+  }, [segmentedAutoMove]);
   const currentRoute = routes[routeMode] || null;
   const routeErrors = captureRouteRequestBlockers(currentRoute, status);
   const captureAttempt = useRef(0);
@@ -230,7 +240,6 @@ export function FieldDesktopApp() {
   const [busy, setBusy] = useState("");
   const headerLaserBusyChanged = useCallback((value: boolean) => setBusy(previous => value ? previous || "laser" : previous === "laser" ? "" : previous), []);
   const deviceBusyChanged = useCallback((value: boolean) => setBusy(previous => value ? previous || "device" : previous === "device" ? "" : previous), []);
-  const turntableHealthBusyChanged = useCallback((value: boolean) => setBusy(previous => value ? previous || "turntable-health" : previous === "turntable-health" ? "" : previous), []);
   const [error, setError] = useState("");
   const [pollError, setPollError] = useState("");
   const [statusPollUnavailable, setStatusPollUnavailable] = useState(false);
@@ -433,8 +442,10 @@ export function FieldDesktopApp() {
     const run = new AbortController(), epoch = generation.current;
     presetRun.current = run; setPresetStopping(false); setPresetRoute(route);
     void operate("preposition", async () => {
+      let positionedStatus = status;
       const result = await moveToCapturePreset(structuredClone(route), status, fieldCall, {
-        signal: run.signal, current: () => mounted.current && epoch === generation.current, onStatus: setStatus,
+        signal: run.signal, current: () => mounted.current && epoch === generation.current,
+        onStatus: next => { positionedStatus = next; setStatus(next); },
       });
       if (!mounted.current || epoch !== generation.current) return;
       if (result === "complete" && sourceRoute && (route.kind === "manual" || route.kind === "segmented")) {
@@ -446,7 +457,9 @@ export function FieldDesktopApp() {
         const first = route.cycle!.points[0];
         setRoutes(previous => ({ ...previous, [route.kind]: replacePositionedTarget(previous[route.kind] || route, route, target?.key) }));
         setPositionedStation({ sequence: ++positionSequence.current, kind: route.kind, pointId: first.pointId!,
-          targetKey: target?.key, azimuthDeg: first.azimuthDeg, port: route.cycle!.port, generation: status.service.generation });
+          targetKey: target?.key, azimuthDeg: first.azimuthDeg, axis1AngleDeg: first.axis1AngleDeg, axis2AngleDeg: first.axis2AngleDeg,
+          referenceSignature: turntableReferenceSignature(positionedStatus.turntable?.feedback?.axes) || undefined,
+          port: route.cycle!.port, generation: status.service.generation });
       }
       setNotice(result === "complete" ? "已到预设位置并停稳，尚未采集。点击“开始采集”即可；位置未变化时不会重复移动。" : "已取消预定位，未开始采集。");
     }).finally(() => { if (presetRun.current === run) presetRun.current = null; if (mounted.current) { setPresetStopping(false); setPresetRoute(null); } });
@@ -468,10 +481,12 @@ export function FieldDesktopApp() {
       route = target.route;
       capture = { ...capture, turbine: capture.turbine.trim() || capture.name.trim(), point: `叶片 ${target.bladeId} · ${target.pointName}` };
     }
-    const invalid = validateFieldConfig(capture) || (linkEnabled ? captureRouteRequestBlockers(route, status)[0] : "");
+    const invalid = validateFieldConfig(capture) || (linkEnabled ? captureRouteRequestBlockers(route, status)[0] ||
+      segmentedStartPositionError(route, status, positionedStation, targetKey) : "");
     if (invalid) { setError(invalid); return; }
     setError("");
     const selection = { config: capture, ...(linkEnabled && route ? { route: structuredClone(route), targetKey } : {}) };
+    if (route?.kind === "segmented") setPositionedStation(undefined);
     captureStarting.current = true;
     void operate("start", async () => {
       const attempt = ++captureAttempt.current, epoch = generation.current;
@@ -490,6 +505,9 @@ export function FieldDesktopApp() {
         if (attempt !== captureAttempt.current || epoch !== generation.current) return;
         if (prepared.probed) setStatus(prepared.status);
         pointCycle = structuredClone(prepared.route.cycle!);
+        // Explicit segment positioning is required above. Start verifies the
+        // current pose and captures here; it must never implicitly move a radial target.
+        if (route.kind === "segmented") pointCycle.startAtCurrentPose = true;
         if (pointCycle.mode === "automatic_stations") {
           const saved = readAutoFollowSurvey(localStorage.getItem(autoFollowStorageKey));
           const collection = autoFollowCollection(saved, autoFollowCollectionContext(normalized));
@@ -509,6 +527,14 @@ export function FieldDesktopApp() {
     }).finally(() => { captureStarting.current = false; });
   }
   const active = fieldIsActive(status);
+  const selectedSegmentedTarget = currentRoute?.targets?.find(item => item.key === (autoTargetKey || currentRoute.selectedTargetKey));
+  const segmentStartError = linkEnabled && routeMode === "segmented"
+    ? segmentedStartPositionError(selectedSegmentedTarget?.route || currentRoute, status, positionedStation, selectedSegmentedTarget?.key) : "";
+  function updateSegmentedAutoMove(value: boolean) {
+    if (active || busy || stoppingCapture || turntableOperationBusy) return;
+    setSegmentedAutoMove(value);
+    setRoutes(previous => previous.segmented ? { ...previous, segmented: withSegmentedAutoMove(previous.segmented, value) } : previous);
+  }
   const captureError = status?.state === "error" ? status.error || status.pointCycle?.error || status.recording?.error || "" : "";
   const accountLocked = active || turntableOperationBusy || stoppingCapture || Boolean(status?.deviceBusy || status?.turntableBusy);
   const unifiedAccount = account?.mode === "unified";
@@ -523,7 +549,7 @@ export function FieldDesktopApp() {
     }} /> : session.mustChangePassword || changingPassword ? <main className="field-password-shell"><FieldPasswordPanel mandatory={session.mustChangePassword} account={account} busy={Boolean(busy)} error={error} onSave={savePassword} onCancel={() => { if (session.mustChangePassword) void logout(); else { setChangingPassword(false); setError(""); } }} /></main> : <>
       <header className="field-header"><div className="field-brand"><div className="field-brand-icon"><Activity size={19} /></div><span>BladeVMS <small>现场采集工作台</small></span></div><div className="field-header-right"><FieldHeaderLaser deviceIp={config.deviceIp} status={status} disabled={Boolean(busy) || turntableOperationBusy || stoppingCapture} pollUnavailable={statusPollUnavailable} request={fieldCall} onBusy={headerLaserBusyChanged} /><span className={`field-account-header ${account?.offline ? "offline" : ""}`} title={unifiedAccount ? `已绑定 ${account.serverUrl || "Web"}；离线有效期至 ${fieldAccountTime(account.offlineUntil)}` : "原始记录保存在本机"}><ShieldCheck size={13} />{unifiedAccount ? account.offline ? "统一账号 · 离线验证" : "统一账号" : "本机账号"}</span><span className="field-header-user"><span className="field-avatar">{(session.user.name || session.user.username).slice(0, 1).toUpperCase()}</span>{session.user.name || session.user.username}</span><Button variant="ghost" disabled={Boolean(busy) || accountLocked} onClick={openPassword} aria-label={unifiedAccount ? "修改统一密码" : "修改本机密码"}><LockKeyhole size={15} /></Button><Button variant="ghost" disabled={Boolean(busy) || active} onClick={() => void logout()} title={active ? "请先停止并保存采集" : "退出账号"}><LogOut size={15} />退出</Button></div></header>
       {screen !== "acquisition" && <>{captureControls}{positionControls}</>}
-      <div className="field-workspace"><aside className="field-sidebar"><p>现场作业</p><button disabled={turntableOperationBusy} className={screen === "acquisition" ? "active" : ""} onClick={() => setScreen("acquisition")}><Activity size={17} />数据采集</button><button disabled={turntableOperationBusy} className={screen === "turntable" ? "active" : ""} onClick={() => { setTurntableVisited(true); setScreen("turntable"); }}><Settings size={17} />转盘点位</button><button disabled={turntableOperationBusy} className={screen === "recordings" ? "active" : ""} onClick={() => { setScreen("recordings"); void operate("recordings", refreshRecordings); }}><HardDrive size={17} />本机记录</button><button disabled={turntableOperationBusy} className={screen === "service" ? "active" : ""} onClick={() => setScreen("service")}><Settings size={17} />设备与服务</button><p>记录分析</p><button disabled={turntableOperationBusy} className={screen === "analysis" ? "active" : ""} onClick={() => setScreen("analysis")}><AudioLines size={17} />信号处理</button><button disabled={turntableOperationBusy} className={screen === "blade-passes" ? "active" : ""} onClick={() => setScreen("blade-passes")}><Layers3 size={17} />叶片片段分析</button></aside>
+      <div className="field-workspace"><aside className="field-sidebar"><p>现场作业</p><button disabled={turntableOperationBusy} className={screen === "acquisition" ? "active" : ""} onClick={() => setScreen("acquisition")}><Activity size={17} />数据采集</button><button disabled={turntableOperationBusy} className={screen === "turntable" ? "active" : ""} onClick={() => { setTurntableVisited(true); setScreen("turntable"); }}><Settings size={17} />转盘点位</button><button disabled={turntableOperationBusy} className={screen === "recordings" ? "active" : ""} onClick={() => { setScreen("recordings"); void operate("recordings", refreshRecordings); }}><HardDrive size={17} />本机记录</button><button disabled={turntableOperationBusy} className={screen === "service" ? "active" : ""} onClick={() => setScreen("service")}><Settings size={17} />设备与服务</button>{showRecordAnalysisMenus && <><p>记录分析</p><button disabled={turntableOperationBusy} className={screen === "analysis" ? "active" : ""} onClick={() => setScreen("analysis")}><AudioLines size={17} />信号处理</button><button disabled={turntableOperationBusy} className={screen === "blade-passes" ? "active" : ""} onClick={() => setScreen("blade-passes")}><Layers3 size={17} />叶片片段分析</button></>}</aside>
         <main className="field-content" ref={contentRef}>
           <div className={`field-page-heading${screen === "acquisition" ? " field-acquisition-heading" : ""}`}>
             <div className={screen === "turntable" ? "field-turntable-heading field-servo-ui" : screen === "acquisition" ? "field-acquisition-title" : undefined}>
@@ -531,7 +557,6 @@ export function FieldDesktopApp() {
                 {screen === "acquisition" && <span className={`field-badge field-acquisition-state ${active ? "green" : status?.state === "error" ? "red" : ""}`} title={notice || undefined} role="status"><span className="field-status-dot" />{stoppingCapture ? "正在停止" : busy === "preposition" ? "正在定位" : busy === "start" ? "正在启动" : status ? stateLabels[status.state] : "读取状态中"}</span>}
               </div>
               {screen === "acquisition" && <FieldCaptureStatusTags status={status} />}
-              {screen === "turntable" && <FieldTurntableHealth onConnectionChange={changeTurntableConnection} port={turntablePort} status={status} disabled={Boolean(busy) && busy !== "turntable-health" || turntableOperationBusy} pollUnavailable={statusPollUnavailable} request={fieldCall} onStatus={setStatus} onBusy={turntableHealthBusyChanged} />}
             </div>
             <div className="field-page-tools">{screen === "acquisition" ? unifiedAccount && syncStatus && <button type="button" className={`field-sync-chip ${syncStatus.state === "error" ? "is-error" : ""}`} onClick={() => setScreen("service")} title={`${syncStatus.enabled ? "自动同步已开启" : "自动同步已关闭"}；${syncStatus.items.filter(item => item.state === "synced").length} 条近期已上传 / ${syncStatus.items.filter(item => item.state !== "synced").length} 条待完成。点击查看同步设置`}><span className="field-status-dot" />Web 同步 · {syncStatus.state === "syncing" ? "同步中" : syncStatus.state === "ready" ? "已连接" : syncStatus.state === "error" ? "异常" : "未连接"}</button>
               : <span className={`field-badge ${status?.state === "acquiring" ? "green" : status?.state === "error" ? "red" : ""}`}><span className="field-status-dot" />{status ? stateLabels[status.state] : "读取状态中"}</span>}</div>
@@ -545,12 +570,12 @@ export function FieldDesktopApp() {
           {status?.indexWarning && <div className="field-notice warning field-global-message" role="status"><AlertTriangle size={17} /><span>本机索引提示：{status.indexWarning}</span></div>}
           {screen === "analysis" && <FieldAnalysis request={fieldCall} onError={handleError} />}
           {screen === "blade-passes" && <WebBladePasses canAnalyze refreshKey={0} preferredIds={[]} onError={handleError} localData={localBladeData} />}
-          <div hidden={screen !== "turntable"}>{turntableVisited && <FieldTurntableWorkspace connectionPort={turntableConnection || undefined} pollUnavailable={statusPollUnavailable} visible={screen === "turntable"} onPortChange={setTurntablePort} onOperationBusy={setTurntableOperationBusy} config={config} onConfig={setConfig} status={status} disabled={Boolean(busy)} request={fieldCall} onStatus={setStatus} onService={() => setScreen("service")} onRecords={() => { setScreen("recordings"); void operate("recordings", refreshRecordings); }}
+          <div hidden={screen !== "turntable"}>{turntableVisited && <FieldTurntableWorkspace onConnectionChange={changeTurntableConnection} segmentedAutoMove={segmentedAutoMove} connectionPort={turntableConnection || undefined} pollUnavailable={statusPollUnavailable} visible={screen === "turntable"} onPortChange={setTurntablePort} onOperationBusy={setTurntableOperationBusy} config={config} onConfig={setConfig} status={status} disabled={Boolean(busy)} request={fieldCall} onStatus={setStatus} onService={() => setScreen("service")} onRecords={() => { setScreen("recordings"); void operate("recordings", refreshRecordings); }}
             routeMode={routeMode} onRouteMode={setRouteMode} autoTargetKey={autoTargetKey} onAutoTarget={setAutoTargetKey} onRoute={onRoute} positionedStation={positionedStation} onPositionTarget={(key, angle) => requestPresetPosition(key, angle, true)} onAcquisition={() => { setLinkEnabled(true); setScreen("acquisition"); }} />}</div>
           {screen === "acquisition" && <FieldAcquisition source="device" config={config} onConfig={setConfig} status={status} busy={busy} pollError={pollError} stopping={stoppingCapture} positionStopping={presetStopping} onCancelPosition={cancelPresetPosition}
             windowMs={windowMs} onWindow={setWindowMs} refreshMs={refreshMs} onRefresh={setRefreshMs} request={fieldCall}
             link={{ enabled: linkEnabled, onEnabled: value => { setLinkEnabled(value); if (value) setTurntableVisited(true); }, route: currentRoute, errors: routeErrors,
-              mode: routeMode, onMode: value => { setRouteMode(value); setTurntableVisited(true); },
+              mode: routeMode, onSegmentAutoMove: updateSegmentedAutoMove, startTargetDisabledReason: segmentStartError, onMode: value => { setRouteMode(value); setTurntableVisited(true); },
               onSelectTarget: setAutoTargetKey, onStartTarget: key => requestCapture(key), onPosition: key => requestPresetPosition(key),
               onPositionStation: pointId => requestPresetPosition(undefined, undefined, false, pointId), positioningRoute: presetRoute,
               positionDisabledReason: turntableOperationBusy ? "转盘操作进行中，请等待完成" : "",
