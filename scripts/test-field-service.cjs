@@ -335,6 +335,20 @@ test('laser monitor reads bypass active-capture prechecks and forward only a rea
     await assert.rejects(f.service.device({ deviceIp: status.deviceIp, action, confirmLaser: true }), { status: 409 });
   assert.equal(f.requests.filter(request => request.route === 'device').length, 1);
 });
+
+test('record analysis uses its independent background endpoint during acquisition without device requests', async t => {
+  const f = fixture(t, { fetch: ({ route }) => response(route === 'record-analysis' ? { state: 'queued', jobId: 'offline-job' } : acquiring()) });
+  await f.service.start();
+  f.requests.length = 0;
+  const request = { action: 'start', recordingIds: ['a'.repeat(32)], scope: 'diagnostic', profile: 'LOS_DIAGNOSTIC' };
+  assert.deepEqual(await f.service.recordAnalysis(request), { state: 'queued', jobId: 'offline-job' });
+  assert.equal(f.requests.length, 1);
+  assert.equal(f.requests[0].route, 'record-analysis');
+  assert.deepEqual(JSON.parse(f.requests[0].options.body), request);
+  const count = f.requests.length;
+  await assert.rejects(f.service.recordAnalysis({ action: 'result', jobId: '../raw' }), { status: 400 });
+  assert.equal(f.requests.length, count);
+});
 const response = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, text: async () => JSON.stringify(data) });
 
 test('multi-point analysis has a bounded 8 MiB response budget while ordinary reads retain 2 MB', async t => {

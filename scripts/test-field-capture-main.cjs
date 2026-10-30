@@ -54,6 +54,7 @@ async function harness(t, hooks = {}) {
       await hooks.device?.(request);
       return { deviceIp: request.deviceIp, state: 'unknown', readAt: null, source: 'unavailable', busy: true };
     },
+    async recordAnalysis(request) { return hooks.recordAnalysis?.(request) || { state: 'queued' }; },
     async stop() {
       if (snapshot.recording) recording(parseInt(snapshot.recording.id, 16), 'complete');
       snapshot = { service: { state: 'ready' }, state: 'idle', receiver: { running: false },
@@ -103,6 +104,20 @@ test('actual main sends a one-second cloud preview even without the acquisition 
   await harness(t, { cloudSync: options => { cloud = options; }, frame: window => { selectedWindow = window; } });
   await cloud.getLive();
   assert.equal(selectedWindow, 1000, 'cloud preview must not use the 2048-sample no-argument frame');
+});
+
+test('new analysis jobs cannot queue behind or postpone capture stop in the actual main', async t => {
+  let finish, received;
+  const pending = new Promise(resolve => { finish = resolve; });
+  const h = await harness(t, { recordAnalysis: async request => { received = request; return pending; } });
+  const request = { action: 'start', recordingIds: ['a'.repeat(32)], scope: 'diagnostic', profile: 'LOS_DIAGNOSTIC' };
+  const analysis = h.invoke({ action: 'recordAnalysis', request });
+  await waitFor(() => received);
+  const stopped = h.invoke({ action: 'stop' });
+  await stopped;
+  assert.equal(received, request);
+  finish({ state: 'queued', jobId: 'job-1' });
+  assert.deepEqual(await analysis, { state: 'queued', jobId: 'job-1' });
 });
 
 test('actual main enrolls a cycle before first writer exists; background follows points and stop flushes all records', async t => {

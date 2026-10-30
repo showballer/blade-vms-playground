@@ -6,6 +6,34 @@ import type {
   MeasurementContext,
   MeasurementObject,
 } from "./measurement-domain";
+const contextStorage = "blade.measurement-context.v2";
+export function readMeasurementContext(): Partial<MeasurementContext> {
+  if (typeof window === "undefined") return {};
+  try { return JSON.parse(sessionStorage.getItem(contextStorage) || "{}"); } catch { return {}; }
+}
+export function publishMeasurementContext(value: Partial<MeasurementContext>) {
+  try { sessionStorage.setItem(contextStorage, JSON.stringify(value)); } catch { /* State remains usable without storage. */ }
+  window.dispatchEvent(new Event("blade-measurement-context"));
+}
+export function useMeasurementContext(): [Partial<MeasurementContext>, (value: Partial<MeasurementContext>) => void] {
+  const [value, setValue] = useState<Partial<MeasurementContext>>({});
+  useEffect(() => {
+    const update = () => setValue(readMeasurementContext());
+    update(); window.addEventListener("blade-measurement-context", update);
+    return () => window.removeEventListener("blade-measurement-context", update);
+  }, []);
+  return [value, next => { setValue(next); publishMeasurementContext(next); }];
+}
+export function openMeasurementWorkspace(screen: "blade" | "modal" | "health" | "wind" | "report", context: Partial<MeasurementContext>) {
+  publishMeasurementContext(context); window.location.hash = screen;
+}
+export function rememberProcessingResult(context:Partial<MeasurementContext>,id:string){
+ try{sessionStorage.setItem('blade.processing-result.v1',JSON.stringify({context,id}));}catch{}
+}
+export function selectedProcessingResult(context:Partial<MeasurementContext>):string|undefined{
+ if(typeof window==='undefined')return;try{const v=JSON.parse(sessionStorage.getItem('blade.processing-result.v1')||'null');return v&&['farmId','campaignId','turbineId'].every(k=>v.context?.[k]===context[k as keyof MeasurementContext])?v.id:undefined;}catch{return;}
+}
+
 export type Catalog = {
   objects: MeasurementObject[];
   sources: any[];
@@ -120,17 +148,17 @@ export function ObjectFilters({
 }) {
   const fields = [
     "farm",
+    ...(campaign ? ["campaign"] : []),
     "turbine",
     ...(blade ? ["blade"] : []),
     ...(blade && position ? ["position"] : []),
-    ...(campaign ? ["campaign"] : []),
   ] as const;
   const labels: Record<string, string> = {
     farm: "风场",
     turbine: "风机",
     blade: "叶片",
     position: "点位",
-    campaign: "测量任务 / 批次",
+    campaign: "测量批次",
   };
   return (
     <div className="measurement-filters">

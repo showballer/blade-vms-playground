@@ -42,7 +42,8 @@ export function interpolateResponseEnvelope(points: Response3DPoint[], radiusM: 
   return from.normalizedAmplitude! * (1 - t) + to.normalizedAmplitude! * t;
 }
 
-export function MeasurementResponse3D({ points, bandHz, frequencyHz }: {
+export function MeasurementResponse3D({ points, bandHz, frequencyHz, metricLabel = "RMS" }: {
+  metricLabel?: string;
   points: Response3DPoint[];
   bandHz?: readonly [number, number];
   frequencyHz?: number;
@@ -94,16 +95,16 @@ export function MeasurementResponse3D({ points, bandHz, frequencyHz }: {
     });
   });
   const origin = project(0, .13, 0), outer = project(extent, .13, 0);
-  const label = bandHz ? `${fmt(bandHz[0])}–${fmt(bandHz[1])} Hz` : finiteAmplitude(frequencyHz) ? `${fmt(frequencyHz)} Hz` : "当前频带";
+  const label = bandHz ? `${fmt(bandHz[0])}–${fmt(bandHz[1])} Hz` : finiteAmplitude(frequencyHz) ? `${fmt(frequencyHz)} Hz` : metricLabel === "RMS" ? "当前频带" : "共同角度等权统计";
   return <section className="measurement-response-3d" aria-label="三维幅值分布">
-    <div className="measurement-response-3d-heading"><div><h3>三维幅值分布</h3><span>{label} · {showNegativeReference ? "零位与 ±RMS 参考" : "RMS 大小"}</span></div>
+    <div className="measurement-response-3d-heading"><div><h3>三维幅值分布</h3><span>{label} · {showNegativeReference ? `零位与 ±${metricLabel} 参考` : `${metricLabel} 大小`}</span></div>
       <Button type="button" variant="ghost" onClick={() => { setYaw(-25); setElevation(30); setGain(.18); }}>复位视图</Button>
     </div>
     {extent > 0 && valid.length > 0 ? <>
       <div className="measurement-response-3d-canvas">
         <div className="measurement-response-3d-projection">
-          <svg viewBox="0 0 1000 420" role="img" aria-label={showNegativeReference ? "真实测点 RMS 幅值与正负尺度参考，非实测振动轨迹" : "真实测点 RMS 大小，非实测振动轨迹"}>
-            <title>{(showNegativeReference ? "实测 RMS 大小保持非负；负向面为镜像参考，不是负振幅、实测极值或瞬时姿态。" : "实测 RMS 大小保持非负，不是实测极值或瞬时姿态。") + "灰色面为示意零位，没有推算相位或叶尖。"}</title>
+          <svg viewBox="0 0 1000 420" role="img" aria-label={showNegativeReference ? `真实测点 ${metricLabel} 幅值与正负尺度参考，非实测振动轨迹` : `真实测点 ${metricLabel} 大小，非实测振动轨迹`}>
+            <title>{(showNegativeReference ? `实测 ${metricLabel} 大小保持非负；负向面为镜像参考，不是负振幅、实测极值或瞬时姿态。` : `实测 ${metricLabel} 大小保持非负，不是实测极值或瞬时姿态。`) + "灰色面为示意零位，没有推算相位或叶尖。"}</title>
             {showNegativeReference && <g className="measurement-response-negative" data-response-negative-reference="rms-mirror">{mesh(-1)}</g>}
             <polygon data-response-zero-plane="true" points={polygon(0, extent, 0, 0)} fill="#e7edf4" fillOpacity={.85} stroke="#72859d" strokeDasharray="5 4" />
             {mesh(1)}
@@ -116,7 +117,7 @@ export function MeasurementResponse3D({ points, bandHz, frequencyHz }: {
                   <line x1={pos[0]} y1={pos[1]} x2={negative[0]} y2={negative[1]} stroke="#7893b3" strokeDasharray="3 4" />
                   <circle data-response-negative-point={p.id} data-reference-amplitude={-p.normalizedAmplitude!}
                     cx={negative[0]} cy={negative[1]} r={4} fill="#fff" stroke="#7893b3" strokeWidth={1.5}>
-                    <title>{`${p.name} · −RMS 镜像参考，不是实测负峰值`}</title>
+                    <title>{`${p.name} · −${metricLabel} 镜像参考，不是实测负峰值`}</title>
                   </circle>
                   <circle cx={zero[0]} cy={zero[1]} r={2.5} fill="#72859d" />
                 </>}
@@ -128,7 +129,7 @@ export function MeasurementResponse3D({ points, bandHz, frequencyHz }: {
             <g className="measurement-response-scale-labels" aria-hidden="true">
               {(showNegativeReference ? [1, 0, -1] : [1, 0]).map(sign => {
                 const pos = project(extent, -.12, sign * amplitudeExtent);
-                return <text key={sign} x={Math.min(900, pos[0] + 42)} y={pos[1] + 4}>{sign === 0 ? "零位参考" : sign === 1 ? "+RMS" : "−RMS 参考"}</text>;
+                return <text key={sign} x={Math.min(900, pos[0] + 42)} y={pos[1] + 4}>{sign === 0 ? "零位参考" : sign === 1 ? `+${metricLabel}` : `−${metricLabel} 参考`}</text>;
               })}
             </g>
           </svg>
@@ -139,7 +140,7 @@ export function MeasurementResponse3D({ points, bandHz, frequencyHz }: {
         </div>
       </div>
       <div className="measurement-response-3d-axis"><span>0 = 风机中心</span><span>距中心 / m</span><span>最远测点 {fmt(extent)} m（非叶尖）</span></div>
-      <div className="measurement-response-3d-legend"><span>0</span><i aria-hidden="true" /><span>{fmt(amplitudeExtent)}</span><span>归一化 RMS 大小</span><small>灰面：零位参考</small></div>
+      <div className="measurement-response-3d-legend"><span>0</span><i aria-hidden="true" /><span>{fmt(amplitudeExtent)}</span><span>归一化 {metricLabel} 大小</span><small>灰面：零位参考</small></div>
       <label className="measurement-response-reference-toggle"><input type="checkbox" checked={showNegativeReference} onChange={e => setShowNegativeReference(e.target.checked)} />显示负向尺度参考（非实测负峰值）</label>
     </> : <div className="measurement-response-3d-empty">缺少有效测点或位置，暂不能绘制三维分布。</div>}
     {unknown.length > 0 && <p className="measurement-response-3d-note">{unknown.map(p => p.name).join("、")} 的位置未知，仅显示已知测点，不做面插值。</p>}

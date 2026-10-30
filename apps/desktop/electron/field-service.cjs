@@ -352,7 +352,7 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     if (!port || !secret || !child) throw failure('本机采集服务尚未就绪');
     const requestGeneration = generation, requestChild = child;
     const response = await fetchImpl(`http://127.0.0.1:${port}/api/field/${route}`, {
-      method, redirect: 'error', signal: AbortSignal.any([childAbort.signal, AbortSignal.timeout(route.endsWith('/upload-copy') ? 1800000 : route.endsWith('/analysis') || route === 'rotation' || route === 'blade-passes' || route.endsWith('/waveform') || route.includes('/waveform?') ? 120000 :
+      method, redirect: 'error', signal: AbortSignal.any([childAbort.signal, AbortSignal.timeout(route.endsWith('/upload-copy') ? 1800000 : route.endsWith('/analysis') || route === 'rotation' || route === 'blade-passes' || route === 'record-analysis' || route.endsWith('/waveform') || route.includes('/waveform?') ? 120000 :
         route === 'device' || route === 'rssi-calibration' ? 90000 : route === 'stop' || route === 'turntable' || route === 'single-point' && body?.action === 'cancel' ? Math.max(75000, requestTimeoutMs) : requestTimeoutMs)]),
       headers: { Authorization: `Bearer ${secret}`, 'Content-Type': 'application/json' },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -361,7 +361,7 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     if (requestGeneration !== generation || requestChild !== child) throw failure('采集服务已变化，请刷新状态后重试', 409);
     // A blade result can contain 64 bounded raw/valid previews plus per-point
     // spectra. Match the analysis worker's 8 MiB budget; ordinary polling stays small.
-    const responseLimit = route === 'blade-passes' ? 8 * 1024 * 1024 : 2_000_000;
+    const responseLimit = ['blade-passes', 'record-analysis'].includes(route) ? 8 * 1024 * 1024 : 2_000_000;
     if (Buffer.byteLength(content, 'utf8') > responseLimit) throw failure('采集服务响应超过安全大小限制');
     let data;
     try { data = JSON.parse(content); } catch { throw failure('采集服务返回了无效响应'); }
@@ -858,6 +858,12 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     await ready();
     return http('blade-passes', 'POST', parameters);
   }
-  return { start, status, frame, begin, stop, recordings, simulation, exportRecording, exportTask, prepareUpload, waveform, analysis, rotation, bladePasses, device, rssiCalibration, turntable, turntablePorts, singlePoint, motionTrial, shutdown, serviceInfo };
+  async function recordAnalysis(request) {
+    const { recordAnalysisRequest } = require('./field-record-analysis.cjs');
+    recordAnalysisRequest(request);
+    await ready();
+    return http('record-analysis', 'POST', request);
+  }
+  return { start, status, frame, begin, stop, recordings, simulation, exportRecording, exportTask, prepareUpload, waveform, analysis, rotation, bladePasses, recordAnalysis, device, rssiCalibration, turntable, turntablePorts, singlePoint, motionTrial, shutdown, serviceInfo };
 }
 module.exports = { createFieldService, windowsServiceEnvironment, posixServiceEnvironment, failure };

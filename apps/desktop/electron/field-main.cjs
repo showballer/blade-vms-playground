@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, dialog, shell, screen } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
+const { randomBytes } = require('node:crypto');
 const { pathToFileURL } = require('node:url');
 const { createLocalAuth } = require('./local-auth.cjs');
 const { createUnifiedAuth } = require('./unified-auth.cjs');
@@ -11,6 +12,7 @@ const { createFieldCloudSync } = require('./field-cloud-sync.cjs');
 const { createCaptureTracker } = require('./field-capture-tracker.cjs');
 const { sdkExtension, isSdkFile } = require('./field-sdk.cjs');
 const { singlePointRequest } = require('./field-single-point.cjs');
+const { recordAnalysisRequest, recordAnalysisExportFile } = require('./field-record-analysis.cjs');
 
 let win, auth, service, cloudSync, captureTracker, config = {}, quitting = false, closing = false;
 let settingsFile, dataDir, entryUrl;
@@ -176,6 +178,23 @@ async function dispatch(options) {
     case 'analysis': return service.analysis(options.id, options.parameters);
     case 'rotation': return service.rotation(options.parameters);
     case 'bladePasses': return service.bladePasses(options.parameters);
+    case 'recordAnalysis': {
+      const request = recordAnalysisRequest(options.request);
+      const result = await service.recordAnalysis(request);
+      if (request.action !== 'export') return result;
+      const source = await recordAnalysisExportFile(dataDir, request.jobId, result);
+      const selected = await dialog.showSaveDialog(win, { title: '导出记录分析', defaultPath: result.fileName });
+      if (selected.canceled || !selected.filePath) return { canceled: true };
+      const parent = await fs.promises.realpath(path.dirname(selected.filePath));
+      const originals = path.join(await fs.promises.realpath(dataDir), 'recordings');
+      if (parent === originals || parent.startsWith(originals + path.sep)) throw failure('分析结果请另存到原始记录目录以外', 400);
+      const temporary = `${selected.filePath}.${randomBytes(8).toString('hex')}.tmp`;
+      try {
+        await fs.promises.copyFile(source, temporary, fs.constants.COPYFILE_EXCL);
+        await fs.promises.rename(temporary, selected.filePath);
+      } finally { await fs.promises.unlink(temporary).catch(() => {}); }
+      return { saved: true, fileName: path.basename(selected.filePath) };
+    }
     case 'device': return service.device(options.request);
     case 'rssiCalibration': return service.rssiCalibration(options.request);
     case 'configureService': return chooseProgram('executable');
@@ -291,7 +310,7 @@ else {
         // device operation owns the SDK. The service returns its owner's cache
         // in that case and never opens a competing connection.
         const directLaserRead = options?.action === 'device' && options.request?.action === 'laser_read';
-        const result = directSinglePoint || directLaserRead || ['session', 'accountInfo', 'status', 'frame', 'recordings', 'simulation', 'recording', 'waveform', 'analysis', 'rotation', 'bladePasses', 'syncStatus'].includes(options?.action)
+        const result = directSinglePoint || directLaserRead || ['session', 'accountInfo', 'status', 'frame', 'recordings', 'simulation', 'recording', 'waveform', 'analysis', 'rotation', 'bladePasses', 'recordAnalysis', 'syncStatus'].includes(options?.action)
           ? await execute() : await serial(execute);
         return { status: 200, data: result };
       } catch (error) { return { status: error.status || 500, data: { error: error.message || '本机操作失败' } }; }

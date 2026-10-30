@@ -3569,11 +3569,14 @@ class AcquisitionController:
 
 def create_app(settings: Settings, receiver_factory=PolytecReceiver, motor_factory=DEFAULT_MOTOR_FACTORY) -> FastAPI:
     controller = AcquisitionController(settings, receiver_factory, motor_factory)
+    from .record_analysis.manager import RecordAnalysisManager
+    record_analysis = RecordAnalysisManager(settings.data_dir)
 
     @asynccontextmanager
     async def lifespan(_app):
         # Idle by default: importing/starting the service never loads the SDK or touches a device.
         yield
+        record_analysis.close()
         try:
             await asyncio.to_thread(controller.stop)
         except HTTPException:
@@ -3582,6 +3585,7 @@ def create_app(settings: Settings, receiver_factory=PolytecReceiver, motor_facto
     app = FastAPI(title="BladeVMS Field Acquisition", version="1.0.0", lifespan=lifespan,
                   docs_url=None, redoc_url=None, openapi_url=None)
     app.state.controller = controller
+    app.state.record_analysis = record_analysis
     analysis_lock = threading.Lock()
     allowed_origins = {f"http://127.0.0.1:{settings.port}", f"http://localhost:{settings.port}"}
     allowed_hosts = {f"127.0.0.1:{settings.port}", f"localhost:{settings.port}"}
@@ -3604,6 +3608,20 @@ def create_app(settings: Settings, receiver_factory=PolytecReceiver, motor_facto
     @app.get("/api/field/status")
     def status():
         return controller.status()
+
+    @app.post("/api/field/record-analysis")
+    def record_analysis_request(parameters: dict):
+        # Independent worker/cache: never acquire the DAQ, device or turntable locks.
+        try:
+            return record_analysis.handle(parameters)
+        except (KeyError, FileNotFoundError) as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except BlockingIOError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(500, f"记录分析文件访问失败：{exc}") from exc
 
     @app.get("/api/field/simulation")
     def simulation():

@@ -1,3 +1,4 @@
+import {matchSegmentConditions} from "./measurement-conditions";
 /** Shared contracts for real measurements. Object IDs never replace raw provenance. */
 export type ObjectKind = "farm" | "turbine" | "blade" | "position" | "campaign";
 export type MeasurementObject = {
@@ -130,58 +131,9 @@ export function conditionWindow(
   start: number,
   end: number,
 ): ConditionSummary {
-  const selected = rows
-    .filter((d) => d.farmId === farmId)
-    .flatMap((d) =>
-      d.rows
-        .filter(
-          (r) =>
-            r.turbineCode === turbineCode &&
-            Date.parse(r.time) >= start &&
-            Date.parse(r.time) <= end,
-        )
-        .map((r) => ({ ...r, datasetId: d.id })),
-    );
-  // Files can carry separate channels with unequal time ranges. Join only exact
-  // timestamps; never extrapolate the shorter RPM series or replace absence by 0.
-  const merged = new Map<string, WindRow & { datasetIds: string[] }>();
-  const conflicts = new Set<string>();
-  for (const row of selected) {
-    const previous = merged.get(row.time);
-    if (previous && (["windSpeed", "rpm", "windDirection", "powerKw", "temperatureC"] as const).some(key =>
-      previous[key] != null && row[key] != null && previous[key] !== row[key])) conflicts.add(row.time);
-    merged.set(row.time, { ...previous, ...row, datasetIds: [...(previous?.datasetIds || []), row.datasetId] });
-  }
-  const unique = [...merged.values()].filter((r): r is WindRow & { windSpeed: number; rpm: number; datasetIds: string[] } =>
-    !conflicts.has(r.time) && typeof r.windSpeed === "number" && Number.isFinite(r.windSpeed) && typeof r.rpm === "number" && Number.isFinite(r.rpm));
-  if (!unique.length)
-    return {
-      status: "unmatched",
-      datasetIds: [],
-      samples: 0,
-      availableSamples: merged.size,
-      conflictingSamples: conflicts.size,
-      start: new Date(start).toISOString(),
-      end: new Date(end).toISOString(),
-    };
-  const wind = unique.map((r) => r.windSpeed),
-    rpm = unique.map((r) => r.rpm);
-  const range = (values: number[]): [number, number] => values.reduce<[number, number]>((bounds, value) =>
-    [Math.min(bounds[0], value), Math.max(bounds[1], value)], [Infinity, -Infinity]);
-  return {
-    status: "matched",
-    datasetIds: [...new Set(unique.flatMap((r) => r.datasetIds))],
-    samples: unique.length,
-    availableSamples: merged.size,
-    conflictingSamples: conflicts.size,
-    windSpeed: wind.reduce((a, b) => a + b, 0) / wind.length,
-    windRange: range(wind),
-    rpm: rpm.reduce((a, b) => a + b, 0) / rpm.length,
-    rpmRange: range(rpm),
-    start: new Date(start).toISOString(),
-    end: new Date(end).toISOString(),
-  };
+  return matchSegmentConditions(rows,farmId,turbineCode,[{start,end}]);
 }
+
 export function validateWindRows(input: any): WindRow[] {
   if (!Array.isArray(input) || !input.length || input.length > 250000)
     throw Error("每个数据集需要 1～250000 行");
@@ -306,9 +258,13 @@ export function assessMeasurement(
     frequencyShiftPercent: null,
     amplitudeRatio: null,
   });
-  const frequency = current.features?.peaks?.[0]?.frequencyHz,
+  const track=current.features?.frequencyTrack;
+  if((current.features?.peaks?.length||0)>1&&!(typeof track?.id==="string"&&track.validated===true))return unavailable("存在多个响应峰，尚无经核验的同一候选跟踪；不比较最高峰换峰");
+  const selectedPeak=(r:any)=>track?r.features?.peaks?.find((p:any)=>p.candidateId===track.id):r.features?.peaks?.length===1?r.features.peaks[0]:null;
+  const frequency = selectedPeak(current)?.frequencyHz,
     amplitude = current.features?.metrics?.rmsVelocityMps;
   const condition = current.condition;
+  if (condition?.healthEligible === false) return unavailable("时间语义或工况匹配资格不足");
   if (isDiagnosticMeasurement(current))
     return { ...unavailable("诊断记录可查看波形和频谱，不能用于健康结论或正常参考"), label: "诊断数据" };
   if (!current.context || !condition || condition.status !== "matched")
@@ -325,6 +281,7 @@ export function assessMeasurement(
   const bin = (v: number, step: number) => Math.floor(v / step);
   const comparable = (r: any) =>
     !isDiagnosticMeasurement(r) &&
+    (!track || r.features?.frequencyTrack?.id===track.id && r.features?.frequencyTrack?.validated===true) &&
     same(r) &&
     r.features?.algorithmVersion === current.features?.algorithmVersion &&
     r.features?.parameters?.detrend === current.features?.parameters?.detrend &&
@@ -350,14 +307,14 @@ export function assessMeasurement(
     ).values(),
   ].filter(
     (r: any) =>
-      r.features.peaks?.[0]?.frequencyHz > 0 &&
+      selectedPeak(r)?.frequencyHz > 0 &&
       r.features.metrics.rmsVelocityMps > 0,
   ) as any[];
   if (refs.length < rules.minCampaigns)
     return unavailable(
       `同工况已复核参考仅 ${refs.length} 个批次，至少需要 ${rules.minCampaigns} 个`,
     );
-  const fs = refs.map((r) => r.features.peaks[0].frequencyHz),
+  const fs = refs.map((r) => selectedPeak(r).frequencyHz),
     mean = fs.reduce((a, b) => a + b, 0) / fs.length,
     sd = Math.sqrt(
       fs.reduce((s, f) => s + (f - mean) ** 2, 0) / (fs.length - 1),
@@ -366,10 +323,11 @@ export function assessMeasurement(
     refs.reduce((s, r) => s + r.features.metrics.rmsVelocityMps, 0) /
     refs.length;
   const test = (r: any) => {
-    const f = r.features.peaks?.[0]?.frequencyHz;
+    const f = selectedPeak(r)?.frequencyHz;
     const df = Math.max(
       r.features.spectrum?.resolutionHz || 0,
-      ...refs.map((x) => x.features.spectrum?.resolutionHz || 0),
+      selectedPeak(r)?.uncertaintyHz || 0,
+      ...refs.map((x) => Math.max(x.features.spectrum?.resolutionHz || 0,selectedPeak(x)?.uncertaintyHz || 0)),
     );
     return (
       f > 0 &&

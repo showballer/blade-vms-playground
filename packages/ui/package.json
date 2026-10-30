@@ -20,7 +20,8 @@
     "./modal-data": "./src/modal-data.ts",
     "./signal-input": "./src/signal-input.ts",
     "./report-details": "./src/report-details.ts",
-    "./measurement-domain": "./src/measurement-domain.ts"
+    "./measurement-domain": "./src/measurement-domain.ts",
+    "./measurement-conditions": "./src/measurement-conditions.ts"
   },
   "dependencies": {
     "react": "19.2.8",

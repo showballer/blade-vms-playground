@@ -1,0 +1,18 @@
+{
+  "source": "用户提供：归档(1)/风机信号处理参考实现/src/blade_signal",
+  "referenceVersion": "0.1.0",
+  "sourceModified": false,
+  "filesSha256": {
+    "__init__.py": "030e51d340b60047d1d491a290cb5cef23ad7a014dc33575dcebaa73752860a3",
+    "__main__.py": "935a1c1166b0c1ea35a82256345000bf2c73ded718d77773bc27a71ecce28f7d",
+    "aggregate.py": "dc5222bff483867ee2e62207182466430455a88f1913d5d9e82e6192b42d1ee8",
+    "cli.py": "e1a15d6592369cd9c35aa2e65ed45327fb841abaf378eb627fb5f6a72f3bc313",
+    "dsp.py": "aa19bea698e7a050ed47d2c439beec49bc2866fd5859597a90bc35e02c3c0b94",
+    "geometry.py": "47d8c4bdfecfb6899f35d4a4ad14dc3a1777e487ae795da73830243c6cea0ae1",
+    "io.py": "32ad4d1b3a6302b44433abcc7dd587db11f54c6af1bbcd88bf55d3f842009a40",
+    "models.py": "0d0e09a9954c26d834fefc38661b9d3fa7e9eb9678fea0cf0ec719610d8690a6",
+    "pipeline.py": "d745f4d82517794807017fa4bcde9a36ab1e9e860c04914546a28fcf07aecd6f",
+    "quality.py": "5d719383b9bf4e65f890b93d3e08cd15580ad73698b17c79c97e405d0c69aae2",
+    "stitch.py": "faa6575cf395c13db051a8c8e199c21cd1f60a7df4c040b58ecaa123441fa3cf"
+  }
+}

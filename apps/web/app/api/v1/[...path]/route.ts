@@ -379,7 +379,7 @@ async function handle(req: Request, ctx: Context) {
     }
     const user = await auth(req);
     if(resource==="measurements"&&kind==="report-download"&&path.length===3&&method==="GET") {const file=await measurementReportDocx(user,id);return new NextResponse(new Uint8Array(file.buffer),{headers:{"Content-Type":"application/vnd.openxmlformats-officedocument.wordprocessingml.document","Content-Disposition":`attachment; filename="measurement-report.docx"; filename*=UTF-8''${encodeURIComponent(file.filename)}`,"Cache-Control":"no-store"}});}
-    if (["objects","wind-datasets","measurements"].includes(resource)) return json(await measurementEndpoint(user,req,path));
+    if (["objects","wind-datasets","measurements"].includes(resource)) {const result=await measurementEndpoint(user,req,path);return result instanceof Response?result:json(result);}
     if (resource === "account") {
       if (path.length !== 2 || kind !== "password" || method !== "POST") throw new HttpError(405, "账号操作路径或方法无效");
       const b = await body(req);

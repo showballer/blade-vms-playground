@@ -1,3 +1,7 @@
+import {createBladeReport} from "./measurement-blade-report";
+import {bladeHealthEndpoint} from "./measurement-blade-health";
+import {validateWindTimeSemantics,matchSegmentConditions,windDatasetRevisionInput} from "@blade/ui/measurement-conditions";
+import {processingEndpoint,processingResult} from "./measurement-processing";
 import {
   audit,
   digest,
@@ -34,7 +38,6 @@ import {
 import {
   assessMeasurement,
   responseDistribution,
-  conditionWindow,
   contextNames,
   isDiagnosticMeasurement,
   initialDamageRules,
@@ -259,13 +262,9 @@ async function analyze(user: User, b: any) {
   // Read conditions after the potentially long waveform worker. A deleted
   // dataset must not survive in an earlier request snapshot for a new result.
   const datasets = await listMeasurementRows(user, "wind_datasets");
-  const condition = conditionWindow(
-    datasets as any,
-    context.farmId,
-    turbine.code,
-    measuredAt,
-    measurementEnd,
-  );
+  const validTimeSegments=(features.ranges||[]).flatMap((range:any)=>{const i=recordingIds.indexOf(range.recordingId);return i<0?[]:[{start:times[i]+range.startSeconds*1000,end:times[i]+range.endSeconds*1000}];});
+  const actualSegments=chosen.length===1?(features.ranges||[]).map((range:any)=>({start:times[0]+range.startSeconds*1000,end:times[0]+range.endSeconds*1000})):validTimeSegments;
+  const condition=matchSegmentConditions(datasets,context.farmId,turbine.code,actualSegments);
   const result: any = {
     name: s.name,
     sourceKey:
@@ -282,6 +281,7 @@ async function analyze(user: User, b: any) {
     reference: s.reference,
     references: chosen.map((s) => s.reference),
     measurementEnd,
+    validTimeSegments:actualSegments,
     context,
     objectsSnapshot: all.filter((o) => Object.values(context).includes(o.id)),
     measuredAt,
@@ -409,6 +409,13 @@ export async function measurementEndpoint(
   const [resource, action, id] = path,
     method = req.method,
     url = new URL(req.url);
+  if (resource === "measurements" && action === "processing" && method === "POST") return processingEndpoint(user,await input(req));
+  if(resource==="measurements"&&action==="blade-report"&&method==="POST")return createBladeReport(user,await input(req));
+  if(resource==="measurements"&&action==="blade-review"&&method==="POST"){
+    requireAnalyst(user);const b=await input(req),p=await processingResult(user,b.processingResultId);if(!p.report.records.some((r:any)=>r.recording_id===b.recordingId))throw new HttpError(400,"复核记录不属于该处理版本");
+    const r=await saveMeasurementRow(user,"measurement_reviews",{name:"叶片记录人工复核",context:p.context,sourceKeys:p.sourceKeys,references:p.references,processingResultId:p.id,recordingId:b.recordingId,note:string(b.note,"复核说明",2000),status:"已复核",reviewer:user.name,reviewedAt:new Date().toISOString(),referenceApproved:false});await audit(user,"保存叶片证据复核",r.id);return {review:r};
+  }
+  if (resource === "measurements" && action === "blade-health" && method === "POST") return bladeHealthEndpoint(user,await input(req));
   if (resource === "objects") {
     if (path.length === 1 && method === "GET")
       return { objects: await objects(user) };
@@ -450,11 +457,18 @@ export async function measurementEndpoint(
     }
   }
   if (resource === "wind-datasets") {
-    if (path.length === 1 && method === "GET")
-      return {
-        datasets: await windDatasetSummaries(user),
-        objects: await objects(user),
-      };
+    if (path.length === 1 && method === "GET") {
+      const [datasets,all,evaluations]=await Promise.all([windDatasetSummaries(user),objects(user),listMeasurementRows(user,"measurement_blade_assessments")]);
+      const latest=[...new Map(evaluations.sort((a,b)=>Date.parse(a.evaluatedAt)-Date.parse(b.evaluatedAt)).map(e=>[JSON.stringify([e.context?.campaignId,e.bladeId]),e])).values()];
+      return {objects:all,datasets:datasets.map(d=>{const linked=latest.filter(e=>e.conditions?.some((c:any)=>c.condition.datasetIds.includes(d.id)));return {...d,associationSummary:{campaigns:new Set(linked.map(e=>e.context.campaignId)).size,segments:linked.reduce((n,e)=>n+e.conditions.filter((c:any)=>c.condition.datasetIds.includes(d.id)).flatMap((c:any)=>c.sourceTimes).length,0),basis:"saved_assessment_snapshot"}};})};
+    }
+    if(path.length===3&&id==="timing"&&method==="PUT"){
+      requireAnalyst(user);const b=await input(req);const d=(await listMeasurementRows(user,"wind_datasets")).find(r=>r.id===action);if(!d)throw new HttpError(404,"数据集不存在");
+      const sem=validation(()=>validateWindTimeSemantics(b.timeSemantics));
+      const {id:_,ownerId,recordTenant,updatedAt,...body}=d;
+      await replaceMeasurementRow(user,"wind_datasets",d.id,{...body,timeSemantics:sem,timingUpdatedAt:new Date().toISOString()},digest(JSON.stringify(d)),"校正工况时间口径");
+      return {saved:true,assessmentReassociationRequired:true};
+    }
     if (path.length === 3 && id === "rows" && method === "GET") {
       const integer = (key: string, fallback: number) => {
         const values = url.searchParams.getAll(key);
@@ -493,7 +507,7 @@ export async function measurementEndpoint(
         const unknown = [...new Set(windRows.filter(r => !registered.has(r.turbineCode)).map(r => r.turbineCode))];
         if (unknown.length) throw new HttpError(400, `风机 ${unknown.slice(0, 5).join("、")} 未在该风场登记，请先维护对象`);
         const { resultToken: _, ...importSummary } = summary;
-        const d = await saveWindDataset(user, { ...importSummary, name, farmId: b.farmId, rows: windRows,
+        const d = await saveWindDataset(user, { ...importSummary, name, farmId: b.farmId, rows: windRows,timeSemantics:validation(()=>validateWindTimeSemantics({...b.timeSemantics,timezone:b.timezoneOffset||"+08:00"})),
           units: { windSpeed: "m/s", rpm: "rpm", windDirection: "deg", powerKw: "kW", temperatureC: "°C" },
           importedAt: new Date().toISOString() });
         return { id: d.id, count: windRows.length, ...importSummary };
@@ -532,6 +546,7 @@ export async function measurementEndpoint(
         name: string(b.name, "数据集名称"),
         farmId: b.farmId,
         rows: windRows,
+        timeSemantics:validation(()=>validateWindTimeSemantics(b.timeSemantics)),
         units: {
           windSpeed: "m/s",
           rpm: "rpm",
@@ -705,8 +720,14 @@ export async function measurementEndpoint(
         review,
         ...copy
       } = { ...r, ...unpack(stored) };
+      const currentDatasets=await listMeasurementRows(user,"wind_datasets"),currentObjects=await objects(user);
+      const turbine=currentObjects.find(o=>o.id===r.context?.turbineId);
+      const spans=(r.validTimeSegments||[]).length?r.validTimeSegments:(r.features?.ranges||[]).flatMap((range:any)=>{const originals=r.features?.provenance?.sources||[];const provenance=originals.find((p:any)=>p.recordingId===range.recordingId)?.provenance||r.features?.provenance;const value=provenance?.originalSampleOrigin;const base=typeof value==='number'?value*(value<1e11?1000:1):Date.parse(value);return Number.isFinite(base)?[{start:base+range.startSeconds*1000,end:base+range.endSeconds*1000}]:[];});
+      copy.validTimeSegments=spans;
+      copy.condition=matchSegmentConditions(currentDatasets,r.context.farmId,turbine?.code||"",spans);
+      copy.conditionRevision=digest(JSON.stringify(currentDatasets.map(d=>[d.id,d.importedAt,d.timeSemantics])));
       copy.assessment = assessMeasurement(
-        r,
+        {...r,condition:copy.condition},
         history,
         (await measurementRules(user)).rules,
       );
@@ -793,7 +814,8 @@ export async function measurementEndpoint(
             (!turbine || r.turbineId === turbine),
         );
         const offset = Math.max(0, Number(url.searchParams.get("offset")) || 0);
-        return { reports: rs.slice(offset, offset + 20), total: rs.length };
+        const wind=await windDatasetSummaries(user);
+        return { reports: rs.slice(offset, offset + 20).map(r=>({...r,staleEvaluation:r.windRevision&&r.context?.farmId?digest(JSON.stringify(windDatasetRevisionInput(wind,r.context.farmId)))!==r.windRevision:false})), total: rs.length };
       }
       if (method === "POST") {
         requireAnalyst(user);

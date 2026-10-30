@@ -16,6 +16,8 @@ import {
   MeasurementStatus,
   numberText,
   ObjectFilters,
+  useMeasurementContext,
+  openMeasurementWorkspace,
   PageControls,
   RiskTag,
   timeText,
@@ -397,6 +399,19 @@ export function MeasurementDetail({
     </div>
   );
 }
+function RawPassEvidence({raw}:{raw:any}){
+ const wave=raw.waveform||raw,fs=wave.sampleRate,base=wave.rangeStart??wave.sampleStart??0;
+ const velocity:number[][]=[],rssi:number[][]=[];
+ if(wave.envelope?.length){for(const b of wave.envelope){velocity.push([b.start/fs*1000,b.min],[b.end/fs*1000,b.max]);if(Number.isFinite(b.rssiMin))rssi.push([b.start/fs*1000,b.rssiMin],[b.end/fs*1000,b.rssiMax]);}}
+ else (wave.values||[]).forEach((v:number,i:number)=>{const x=(base+i*(wave.sampleStride||1))/fs*1000;velocity.push([x,v]);if(Number.isFinite(wave.rssi?.[i]))rssi.push([x,wave.rssi[i]]);});
+ const q=raw.passQuality,m=q?.mapping,valid=q?.boundaryValid&&Number.isFinite(m?.local_start)&&Number.isFinite(m?.local_end_exclusive);
+ const marks=valid?[[{xAxis:m.local_start/fs*1000},{xAxis:m.local_end_exclusive/fs*1000}]]:[];
+ return <Card title="原始速度、RSSI 与经过质量"><div className="measurement-summary"><RiskTag assessment={{status:"review",label:valid?"边界完整":"待复核"}}/><strong>{valid?'进入至离开边界完整（分析资格另行核验）':'经过边界缺失或越界，保留原始记录'}</strong><span>原始 UTC {typeof wave.sampleOrigin==='number'?new Date(wave.sampleOrigin*1000).toISOString():'未知'}</span><span>{fs?.toLocaleString()} Hz</span></div>
+ {!valid&&<p className="measurement-diagnostic-note">{q?.reasonCodes?.join('、')} · {q?.message||'缺少完整映射'}；不裁剪边界、不填补缺测。</p>}
+ <Chart height={500} label="原始速度与RSSI联动时间轴" option={{animation:false,tooltip:{trigger:'axis'},axisPointer:{link:[{xAxisIndex:'all'}]},legend:{data:['原始速度','RSSI']},grid:[{left:80,right:40,top:55,height:190},{left:80,right:40,top:305,height:105}],xAxis:[{type:'value',name:'原始时间 / ms',gridIndex:0},{type:'value',name:'原始时间 / ms',gridIndex:1}],yAxis:[{type:'value',name:'m/s',gridIndex:0},{type:'value',name:'RSSI / %',gridIndex:1}],dataZoom:[{type:'inside',xAxisIndex:[0,1]},{type:'slider',xAxisIndex:[0,1],bottom:20,height:24}],series:[{type:'line',name:'原始速度',showSymbol:false,data:velocity,markArea:{silent:true,itemStyle:{color:'rgba(37,116,200,.09)'},data:marks}},{type:'line',name:'RSSI',showSymbol:false,xAxisIndex:1,yAxisIndex:1,data:rssi,lineStyle:{color:'#0c997e'},markArea:{silent:true,itemStyle:{color:'rgba(37,116,200,.09)'},data:marks}}]}}/>
+ <p className="hint">保留移动与等待的原始时间。显示采用区间最小／最大包络；缩放仅改变预览。原始标记与全量文件保持不变。</p></Card>;
+}
+
 export function MeasurementAnalysis({
   canWrite,
   refreshKey = 0,
@@ -410,9 +425,10 @@ export function MeasurementAnalysis({
 }) {
   const { data, loading, error, setError, reload, loadMore, loadingMore, hasMoreSources } =
     useMeasurements(refreshKey);
-  const [context, setContext] = useState<Partial<MeasurementContext>>({}),
-    [selected, setSelected] = useState(""),
-    [view, setView] = useState("analysis"),
+  const [context, setContext] = useMeasurementContext();
+  const
+    [selected, setSelected] = useState(() => typeof window === "undefined" ? "" : sessionStorage.getItem("blade.measurement-source.v1") || ""),
+    [view, setView] = useState("raw"),
     [library, setLibrary] = useState(false),
     [query, setQuery] = useState(""),
     [page, setPage] = useState(0),
@@ -522,7 +538,7 @@ export function MeasurementAnalysis({
     setRaw(null);
     setComparison([]);
     setLibrary(false);
-    setView(s.context ? "analysis" : "raw");
+    setView("raw");
     setBatchSummary(null);
   }
   useEffect(() => {
@@ -566,7 +582,7 @@ export function MeasurementAnalysis({
     work
       .then((r) => {
         if (g === requestId.current) {
-          if (view === "raw") setRaw(r.waveform || r);
+          if (view === "raw") setRaw(r);
           else setDetail(r.result);
         }
       })
@@ -755,11 +771,10 @@ export function MeasurementAnalysis({
         onReload={() => void reload()}
       />
       <div className="measurement-view-tabs" aria-label="查看方式">
+        <Button disabled={!context.campaignId || !context.turbineId} onClick={() => openMeasurementWorkspace("modal",context)}>去模态识别处理</Button>
         {[
-          { id: "analysis", label: "有效波形与频谱" },
-          { id: "synthesis", label: "振幅合成" },
           { id: "live", label: "实时预览" },
-          { id: "raw", label: "原始记录" },
+          { id: "raw", label: "原始波形与经过质量" },
         ].map((v) => (
           <button
             type="button"
@@ -801,6 +816,7 @@ export function MeasurementAnalysis({
                     setStart("");
                   }}
                 />
+                {view === "analysis" && <>
                 <Button
                   variant="primary"
                   disabled={!canWrite || busy || !source.context || (diagnostic && !includeDiagnostic)}
@@ -810,8 +826,9 @@ export function MeasurementAnalysis({
                 </Button>
                 <Button disabled={!canWrite || busy || !bladeSources.length || bladeSources.length > 64}
                   onClick={() => void analyzeBlade()}>分析当前叶片（{bladeSources.length} 条）</Button>
+                </>}
               </div>
-              {hasDiagnosticSources && <label className="measurement-diagnostic-note inline-field">
+              {false && hasDiagnosticSources && <label className="measurement-diagnostic-note inline-field">
                 <input type="checkbox" aria-label="纳入诊断数据分析" checked={includeDiagnostic} disabled={busy}
                   onChange={e => setIncludeDiagnostic(e.target.checked)} />
                 纳入诊断数据分析（不进入健康判定或正常参考）
@@ -821,7 +838,7 @@ export function MeasurementAnalysis({
                 <strong>已完成 {batchSummary.completed} 条，未纳入 {batchSummary.failures.length} 条</strong>
                 {batchSummary.failures.length > 0 && <details open><summary>查看未纳入原因</summary><ul>{batchSummary.failures.map((message, i) => <li key={i}>{message}</li>)}</ul></details>}
               </div>}
-              <details className="measurement-advanced">
+              {view === "analysis" && <details className="measurement-advanced">
                 <summary>高级分析设置</summary>
                 <div className="measurement-filters">
                   <label>
@@ -913,7 +930,7 @@ export function MeasurementAnalysis({
                     {Math.min(matching.length, 16)} 条）
                   </label>
                 )}
-              </details>
+              </details>}
               {view === "analysis" && results.length > 1 && (
                 <Select
                   label="已保存分析版本"
@@ -981,12 +998,8 @@ export function MeasurementAnalysis({
               )}
             </div>
           ) : view === "raw" && raw ? (
-            <Card title="原始记录波形">
-              <FieldWaveChart waveform={raw.waveform || raw} />
-              <p className="hint">
-                保留移动过程与无效区间；图表按显示分辨率预览，未改写原始文件。
-              </p>
-            </Card>
+            <RawPassEvidence raw={raw}/>
+
           ) : view === "analysis" && detail ? (
             <>
               <MeasurementDetail

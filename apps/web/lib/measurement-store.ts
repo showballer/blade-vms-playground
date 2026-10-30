@@ -6,6 +6,8 @@ export const measurementKinds = [
   "measurement_rules",
   "measurement_modal",
   "measurement_reports",
+  "measurement_processing",
+  "measurement_blade_assessments",
   "wind_datasets",
 ] as const;
 import { randomUUID } from "node:crypto";
@@ -57,6 +59,8 @@ export async function listMeasurementRows(user: User, kind: string) {
     "measurement_results",
     "measurement_reports",
     "measurement_modal",
+    "measurement_processing",
+    "measurement_blade_assessments",
   ].includes(kind)
     ? filterMeasurementAccess(user, listed)
     : listed;

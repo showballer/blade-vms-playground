@@ -12,6 +12,7 @@ import "../../../packages/ui/src/field-auto-capture-list.css";
 import "../../../packages/ui/src/field-auto-follow.css";
 import "../../../packages/ui/src/field-blade-summary.css";
 import "../../../packages/ui/src/web-blade-passes.css";
+import "../../../packages/ui/src/field-record-analysis.css";
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <FieldDesktopApp />

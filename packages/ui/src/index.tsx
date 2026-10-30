@@ -104,6 +104,11 @@ export function BladeApp({ platform }: { platform: "web" | "desktop" }) {
       setScreen(h);
   }, [refresh, platform]);
   useEffect(() => {
+    if(platform!=="web")return;
+    const onHash=()=>{const id=window.location.hash.slice(1);if(nav.some(n=>n.platform==="web"&&n.id===id)||id==="alerts"){setNavigationTaskId(undefined);setScreen(id);}};
+    window.addEventListener("hashchange",onHash);return()=>window.removeEventListener("hashchange",onHash);
+  },[platform]);
+  useEffect(() => {
     const t = setInterval(
       () =>
         setNow(

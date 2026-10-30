@@ -1,5 +1,5 @@
 "use client";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import { api, saveBlob } from "./api";
 import { Button, Card, Dialog, Table } from "./common";
 import {
@@ -10,17 +10,22 @@ import {
   RiskTag,
   timeText,
   useMeasurements,
+  useMeasurementContext,
+  selectedProcessingResult,
 } from "./measurement-common";
 import { isDiagnosticMeasurement, type MeasurementContext } from "./measurement-domain";
 export function MeasurementReports({ canWrite }: { canWrite: boolean }) {
   const { data, loading, error, setError, reload } = useMeasurements();
-  const [filter, setFilter] = useState<Partial<MeasurementContext>>({}),
+  const [filter, setFilter] = useMeasurementContext();
+  const
     [reports, setReports] = useState<any[]>([]),
     [page, setPage] = useState(0),
     [total, setTotal] = useState(0),
     [busy, setBusy] = useState(false),
     [selected, setSelected] = useState<any>(null);
+  const generation=useRef(0);
   async function load() {
+    const request=++generation.current;
     setBusy(true);
     try {
       const q = new URLSearchParams({
@@ -29,12 +34,11 @@ export function MeasurementReports({ canWrite }: { canWrite: boolean }) {
         turbineId: filter.turbineId || "",
       });
       const r = await api<any>("measurements/reports?" + q);
-      setReports(r.reports);
-      setTotal(r.total);
+      if(request===generation.current){setReports(r.reports);setTotal(r.total);}
     } catch (e) {
       setError((e as Error).message);
     } finally {
-      setBusy(false);
+      if(request===generation.current)setBusy(false);
     }
   }
   useEffect(() => {
@@ -81,8 +85,9 @@ export function MeasurementReports({ canWrite }: { canWrite: boolean }) {
             setBusy(true);
             setError("");
             try {
-              const r = await api<any>("measurements/reports", "POST", {
+              const r = await api<any>("measurements/blade-report", "POST", {
                 campaignId: filter.campaignId,
+                processingResultId:selectedProcessingResult(filter),
                 turbineId: filter.turbineId || null,
               });
               setSelected(r.report);
@@ -94,7 +99,7 @@ export function MeasurementReports({ canWrite }: { canWrite: boolean }) {
             }
           }}
         >
-          生成真实工况报告
+          生成逐叶片报告
         </Button>
         <MeasurementStatus
           loading={loading || busy}
@@ -105,7 +110,7 @@ export function MeasurementReports({ canWrite }: { canWrite: boolean }) {
           }}
         />
         <p className="hint">
-          未选风机则包含该批次已分析的全部风机；缺少测量或工况的数据会注明，不补造健康结论。
+          请选择批次与风机。报告保存三片叶片的覆盖、处理及评价版本；未测和缺项明确列出。
         </p>
       </Card>
       <Card title="已保存报告">
@@ -113,9 +118,9 @@ export function MeasurementReports({ canWrite }: { canWrite: boolean }) {
           {reports.map((r) => (
             <tr key={r.id}>
               <td>{r.reportNumber}</td>
-              <td>{r.name}</td>
+              <td>{r.name}{r.staleEvaluation&&<small>工况已更新，原报告快照保留</small>}</td>
               <td>{timeText(r.createdAt)}</td>
-              <td>{r.rows.length}{r.coverage && <small>来源 {r.coverage.analyzedSources}/{r.coverage.registeredSources} 条已分析</small>}</td>
+              <td>{r.processingSnapshots?.reduce((n:number,s:any)=>n+s.records.length,0)??r.rows.length}{r.coverage && <small>来源 {r.coverage.analyzedSources}/{r.coverage.registeredSources} 条已分析</small>}</td>
               <td>
                 <Button onClick={() => setSelected(r)}>查看</Button>
                 <Button disabled={busy} onClick={() => void docx(r)}>
@@ -134,7 +139,9 @@ export function MeasurementReports({ canWrite }: { canWrite: boolean }) {
               {selected.reportNumber} · {timeText(selected.createdAt)} ·{" "}
               {selected.author}
             </p>
-            <p>{selected.conclusion}</p>
+            <p>{selected.conclusion}</p>{selected.staleEvaluation&&<p className="measurement-diagnostic-note">工况已更新。本报告保持生成时的快照；需要当前结论时请更新评价并生成新报告。</p>}
+            {selected.bladeAssessments&&<Table headers={["叶片","结论","可分析 / 采到","处理 / 评价版本","主要依据"]}>{selected.bladeAssessments.map((b:any)=><tr key={b.bladeId||b.name}><td>{b.name}</td><td>{b.label}</td><td>{b.coverage?`${b.coverage.analyzable} / ${b.coverage.observed}`:"未测"}</td><td>{b.processingResultId?.slice(0,8)||"—"} / {b.assessmentId?.slice(0,8)||"—"}</td><td>{b.reasons?.join("；")}</td></tr>)}</Table>}
+            {selected.snapshotHash&&<p className="hint">快照校验 {selected.snapshotHash} · 生成后不随工况或处理版本修改</p>}
             {selected.coverage && <p className={selected.coverage.complete ? "hint" : "measurement-diagnostic-note"}>
               来源覆盖：已关联 {selected.coverage.registeredSources} 条 · 已分析 {selected.coverage.analyzedSources} 条 · 未纳入 {selected.coverage.unanalyzedSources} 条。
               {!selected.coverage.complete && " 存在缺失观测，不能视为完整一圈。"}

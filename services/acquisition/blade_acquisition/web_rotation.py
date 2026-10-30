@@ -683,8 +683,11 @@ def import_file(store: RecordingStore, payload: dict):
 
 def dispatch(root: Path, payload: dict):
     action = payload.get("action")
-    if action not in ("recordings", "import", "rotation", "blade-passes", "capture-validate", "capture-waveform", "capture-import", "measurement-analysis", "measurement-waveform", "wind-preview", "wind-stage", "wind-merge"):
+    if action not in ("recordings", "import", "rotation", "blade-passes", "capture-validate", "capture-waveform", "capture-import", "measurement-analysis", "measurement-waveform", "wind-preview", "wind-stage", "wind-merge", "signal-workspace"):
         raise ValueError("不支持的 Web 分析操作。")
+    if action == "signal-workspace":
+        from .web_signal import dispatch as signal_dispatch
+        return signal_dispatch(root,payload)
     if action.startswith("capture-"):
         from .native_capture import validate_capture, capture_waveform, import_capture
         if action == "capture-validate":
@@ -703,7 +706,19 @@ def dispatch(root: Path, payload: dict):
         from .waveform import WaveformReader
         record_id=payload.get("recordingId")
         store.directory(record_id) # validate identifier before reading
-        return WaveformReader(store).read(record_id, 0, None)
+        result=WaveformReader(store).read(record_id, 0, None)
+        from .web_signal import normalized_manifest
+        from .record_analysis.manager import candidate_mapping
+        from .record_analysis.reference.quality import candidate_window
+        from types import SimpleNamespace
+        manifest=result['recording']
+        try:
+            m=normalized_manifest(manifest,record_id,manifest['samples'],manifest['sampleRate'])
+            mapping=candidate_mapping(m);candidate_window(SimpleNamespace(manifest=m,velocity_m_s=range(manifest['samples'])))
+            result['passQuality']={'boundaryValid':True,'mapping':mapping,'reasonCodes':[],'sourceQualityPreserved':True}
+        except (ValueError,KeyError,TypeError) as exc:
+            result['passQuality']={'boundaryValid':False,'mapping':candidate_mapping(m) if 'm' in locals() else None,'reasonCodes':[getattr(exc,'code','CLOCK_REFERENCE_MISSING')],'message':str(exc)}
+        return result
     if action == "measurement-analysis":
         from .measurement_analysis import analyze_measurements
         return analyze_measurements(store, payload.get("parameters"))

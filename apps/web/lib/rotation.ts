@@ -13,6 +13,7 @@ const listings = readState.bladeRotationListings ??= new Map<string, Promise<any
 const listingKey = (user: Pick<User, "id" | "tenant">) => JSON.stringify([user.tenant, user.id, process.env.BLADE_ANALYSIS_DATA_DIR || ""]);
 const accountKey = (user: Pick<User, "id" | "tenant">) => createHash("sha256").update(`${user.tenant}\0${user.id}`).digest("hex");
 const accountData = (root: string, user: Pick<User, "id" | "tenant">) => path.join(/* turbopackIgnore: true */ process.env.BLADE_ANALYSIS_DATA_DIR || path.join(/* turbopackIgnore: true */ root, ".data/web-rotation"), accountKey(user));
+export const rotationDataDirectory = (user: Pick<User, "id" | "tenant">) => accountData(projectRoot(), user);
 export const rotationFileLimit = 128 * 1024 * 1024;
 function projectRoot() {
   // Python and user data are runtime installations, not JavaScript bundle assets.

@@ -7,7 +7,7 @@ root = Path(SPECPATH)
 a = Analysis(
     [str(root / "launch_service.py")], pathex=[str(root)], binaries=[],
     datas=[(str(root / "blade_acquisition" / "resources" / "rotation_from_static.json.gz"), "blade_acquisition/resources")],
-    hiddenimports=collect_submodules("uvicorn") + collect_submodules("websockets") +
+    hiddenimports=collect_submodules("uvicorn") + collect_submodules("websockets") + collect_submodules("blade_acquisition.record_analysis") +
         ["blade_acquisition.analysis", "blade_acquisition.rotation", "blade_acquisition.simulation",
          "blade_acquisition.csv_export", "blade_acquisition.task_export", "blade_acquisition.upload_sampling", "blade_acquisition.drive_position", "serial", "serial.tools.list_ports", "numpy", "scipy"] +
         (["serial.win32", "serial.serialwin32"] if sys.platform == "win32" else ["serial.serialposix"]),

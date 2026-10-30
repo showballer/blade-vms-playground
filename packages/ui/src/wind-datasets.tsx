@@ -2,7 +2,8 @@
 import React, { useEffect, useState } from "react";
 import { api } from "./api";
 import { Button, Card, Dialog, Select, Table } from "./common";
-import { MeasurementStatus, PageControls, timeText } from "./measurement-common";
+import { MeasurementStatus, PageControls, timeText, useMeasurementContext, openMeasurementWorkspace } from "./measurement-common";
+import {validateWindTimeSemantics,type WindTimeSemantics} from "./measurement-conditions";
 import type { MeasurementObject } from "./measurement-domain";
 
 const columns: Record<string, string> = {
@@ -31,6 +32,22 @@ const metricLabels = [
 ] as const;
 const beijingTime = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit",
   day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" });
+
+function TimeSemanticsFields({value,onChange}:{value:WindTimeSemantics;onChange:(v:WindTimeSemantics)=>void}){
+ const set=(key:string,next:any)=>onChange({...value,[key]:next});
+ return <div className="measurement-filters wind-time-semantics">
+ <Select label="时间统计口径" value={value.timeBasis} onChange={v=>set('timeBasis',v)} options={[{value:'unknown',label:'待确认'},{value:'instantaneous',label:'瞬时值'},{value:'interval_mean',label:'区间均值'}]}/>
+ {value.timeBasis==='interval_mean'&&<><label>统计周期 · 秒<input type="number" min={.001} max={86400} value={value.intervalSeconds} onChange={e=>set('intervalSeconds',Number(e.target.value))}/></label><Select label="时间戳表示" value={value.timestampPosition} onChange={v=>set('timestampPosition',v)} options={[{value:'start',label:'区间开始'},{value:'center',label:'区间中心'},{value:'end',label:'区间结束'}]}/></>}
+ <Select label="转速物理含义" value={value.rpmMeaning} onChange={v=>set('rpmMeaning',v)} options={[{value:'unknown',label:'待确认'},{value:'rotor',label:'叶轮／主轴转速'}]}/>
+ <label>允许邻近时间差 · ms<input type="number" min={0} max={3600000} value={value.maxGapMs} onChange={e=>set('maxGapMs',Number(e.target.value))}/></label>
+ <label>时钟校正 · ms<input type="number" value={value.clockOffsetMs} onChange={e=>set('clockOffsetMs',Number(e.target.value))}/></label>
+ <label>时间与偏差确认依据<input maxLength={500} value={value.basis} onChange={e=>set('basis',e.target.value)}/></label>
+ </div>;
+}
+function DatasetTiming({dataset,onClose,onSaved}:{dataset:SavedDataset;onClose:()=>void;onSaved:()=>void}){
+ const [value,setValue]=useState(()=>validateWindTimeSemantics((dataset as any).timeSemantics)),[busy,setBusy]=useState(false),[error,setError]=useState('');
+ return <Dialog title="工况时间语义" onClose={onClose}><TimeSemanticsFields value={value} onChange={setValue}/><p className="hint">0 ms 只取有效段内的观测；区间均值仅为背景工况。修改将使既有评价待重算，旧报告不变。</p>{error&&<p className="error">{error}</p>}<Button disabled={busy} onClick={async()=>{setBusy(true);try{validateWindTimeSemantics(value);await api(`wind-datasets/${dataset.id}/timing`,'PUT',{timeSemantics:value});onSaved();onClose();}catch(e){setError((e as Error).message);}finally{setBusy(false);}}}>保存时间口径</Button></Dialog>;
+}
 
 function DatasetPreview({ dataset, onClose }: { dataset: SavedDataset; onClose: () => void }) {
   const [position, setPosition] = useState<{ offset: number; at?: string }>({ offset: 0 }), [limit, setLimit] = useState(50), [retry, setRetry] = useState(0),
@@ -106,9 +123,11 @@ function DeleteDataset({ dataset, onClose, onDeleted }: { dataset: SavedDataset;
 export function WindDatasets({ canWrite }: { canWrite: boolean }) {
   const [all, setAll] = useState<MeasurementObject[]>([]), [datasets, setDatasets] = useState<SavedDataset[]>([]),
     [farm, setFarm] = useState(""), [name, setName] = useState(""), [previews, setPreviews] = useState<Preview[]>([]),
+    [timing,setTiming]=useState<WindTimeSemantics>(()=>validateWindTimeSemantics({})),[timingDataset,setTimingDataset]=useState<SavedDataset|null>(null),
     [units, setUnits] = useState<Record<string, string>>({}), [timezoneOffset, setTimezoneOffset] = useState("+08:00"),
     [busy, setBusy] = useState(false), [error, setError] = useState(""), [page, setPage] = useState(0), [message, setMessage] = useState(""),
     [previewDataset, setPreviewDataset] = useState<SavedDataset | null>(null), [deleteDataset, setDeleteDataset] = useState<SavedDataset | null>(null);
+  const [measurementContext]=useMeasurementContext();
   async function load() {
     setBusy(true);
     try {
@@ -147,12 +166,12 @@ export function WindDatasets({ canWrite }: { canWrite: boolean }) {
     setBusy(true); setError(""); setMessage("正在合并并保存工况数据…");
     try {
       const r = await api<any>("wind-datasets/import", "POST", {
-        name, farmId: farm, timezoneOffset, units,
+        name, farmId: farm, timezoneOffset, units,timeSemantics:timing,
         files: previews.map(p => ({ token: p.token, mapping: p.mapping })),
       });
       setPreviews([]); setUnits({}); setName("");
       await load();
-      setMessage(`已保存 ${r.count.toLocaleString()} 个风机时间点，其中 ${r.matchedRowCount.toLocaleString()} 个同时有风速和转速。缺失指标保持缺失。`);
+      setMessage(`已保存 ${r.count.toLocaleString()} 个风机时间点，其中 ${r.matchedRowCount.toLocaleString()} 个同时有风速和转速。缺失指标保持缺失。请到健康监测重新关联工况并更新评价。`);
     } catch (e) { setError((e as Error).message); setMessage(""); }
     finally { setBusy(false); }
   }
@@ -169,7 +188,7 @@ export function WindDatasets({ canWrite }: { canWrite: boolean }) {
       </div>
       <p className="hint">CSV 列：名称、时间、风速、发电机有功功率、主轴转速、舱外温度、风向。每份最多 16 MB / 25 万行，兼容原有分指标文件。</p>
       <MeasurementStatus loading={busy} error={error} onReload={() => void load()} />
-      {message && <p role="status">{message}</p>}
+      {message && <p role="status">{message} <Button onClick={()=>openMeasurementWorkspace("health",measurementContext.farmId===farm?measurementContext:{farmId:farm})}>前往健康监测</Button></p>}
       {!!previews.length && <div className="stack">
         <Table headers={["已选文件", "数据行", "已识别指标", ""]}>
           {previews.map(p => <tr key={p.token}><td>{p.filename}<small className="hint"> · {p.encoding}{p.sourceFormat === "turbine-minute-v1" ? " · 标准七列格式" : ""}</small></td><td>{p.rowCount.toLocaleString()}</td>
@@ -183,6 +202,7 @@ export function WindDatasets({ canWrite }: { canWrite: boolean }) {
           {metrics.map(key => <Select key={key} label={`${columns[key]}原始单位`} value={units[key] || ""} disabled={busy}
             onChange={value => setUnits(current => ({ ...current, [key]: value }))} options={[{ value: "", label: "请选择单位" }, ...unitOptions[key]]} />)}
         </div>
+        <TimeSemanticsFields value={timing} onChange={setTiming}/>
         <p className="hint">标准格式预填 m/s、kW、rpm、℃、°，导入前可调整。时间默认按北京时间解释。</p>
         {metrics.includes("windDirection") && <p className="hint">风向保留原始正负角度，方向基准待确认。</p>}
         {!mappingsValid && <p className="error">每份文件需要时间、风机编号与至少一个指标，列映射不能重复。</p>}
@@ -202,14 +222,16 @@ export function WindDatasets({ canWrite }: { canWrite: boolean }) {
       <Table headers={["数据集", "风场", "时间范围", "时间点数", "风速与转速同时存在", "操作"]}>
         {shown.slice(page * 20, (page + 1) * 20).map(d => <tr key={d.id}><td>{d.name}
           {d.metricCounts && <small className="hint" style={{ display: "block" }}>{Object.keys(unitOptions).filter(key => (d.metricCounts?.[key] || 0) > 0).map(key => `${columns[key]} ${d.metricCounts?.[key].toLocaleString()}`).join(" · ")}</small>}
+          <small className="hint">时间口径：{(d as any).timeSemantics?.timeBasis==='interval_mean'?`${(d as any).timeSemantics.intervalSeconds}秒区间均值`:(d as any).timeSemantics?.timeBasis==='instantaneous'?'瞬时值':'待确认'} · 已保存评价关联 {(d as any).associationSummary?.campaigns||0} 批次 / {(d as any).associationSummary?.segments||0} 段</small>
         </td><td>{all.find(o => o.id === d.farmId)?.name}</td><td>{timeText(d.start)} ～ {timeText(d.end)}</td><td>{d.rowCount.toLocaleString()}</td><td>{(d.matchedRowCount ?? d.rowCount).toLocaleString()}
           {d.matchedStart && <small className="hint" style={{ display: "block" }}>{timeText(d.matchedStart)} ～ {timeText(d.matchedEnd)}</small>}</td>
-          <td><div className="wind-dataset-actions"><Button disabled={busy} onClick={() => setPreviewDataset(d)}>预览</Button>
+          <td><div className="wind-dataset-actions">{canWrite&&<Button disabled={busy} onClick={()=>setTimingDataset(d)}>时间口径</Button>}<Button disabled={busy} onClick={() => setPreviewDataset(d)}>预览</Button>
             {canWrite && <Button variant="danger" disabled={busy} onClick={() => setDeleteDataset(d)}>删除</Button>}</div></td></tr>)}
       </Table>
       {!shown.length && !busy && <p className="hint">尚无工况数据；波形与频谱分析可以继续，工况异常判定暂不出结论。</p>}
       <PageControls page={page} total={shown.length} onChange={setPage} />
     </Card>
+    {timingDataset&&<DatasetTiming dataset={timingDataset} onClose={()=>setTimingDataset(null)} onSaved={()=>void load()}/>}
     {previewDataset && <DatasetPreview key={previewDataset.id} dataset={previewDataset} onClose={() => setPreviewDataset(null)} />}
     {deleteDataset && <DeleteDataset key={deleteDataset.id} dataset={deleteDataset} onClose={() => setDeleteDataset(null)} onDeleted={() => {
       setDatasets(current => current.filter(d => d.id !== deleteDataset.id));
