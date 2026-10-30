@@ -41,7 +41,7 @@ async function withWorker<T>(user: Pick<User, "id" | "tenant">, operation: (serv
   } finally { workers.active--; workers.users.delete(key); }
 }
 
-function runWorker(service: string, python: string, data: string, payload: Record<string, unknown>): Promise<any> {
+function runWorker(service: string, python: string, data: string, payload: Record<string, unknown>, abortSignal?: AbortSignal): Promise<any> {
     return new Promise((resolve, reject) => {
       const child = spawn(/* turbopackIgnore: true */ python, ["-m", "blade_acquisition.web_rotation", data], {
         cwd: service, shell: false, windowsHide: true,
@@ -51,6 +51,9 @@ function runWorker(service: string, python: string, data: string, payload: Recor
       let output = "", bytes = 0, settled = false;
       let stopping: Error | undefined;
       const timeout = setTimeout(() => stop(new HttpError(504, "导入或分析超过 180 秒，请缩小文件或分析区间后重试。")), 180_000);
+      const abort = () => stop(new HttpError(499, "分析已取消"));
+      abortSignal?.addEventListener("abort", abort, { once: true });
+      if (abortSignal?.aborted) abort();
       function stop(error: Error) {
         if (settled || stopping) return;
         stopping = error;
@@ -60,13 +63,13 @@ function runWorker(service: string, python: string, data: string, payload: Recor
       }
       function finish(error?: Error, value?: unknown) {
         if (settled) return;
-        settled = true; clearTimeout(timeout);
+        settled = true; clearTimeout(timeout); abortSignal?.removeEventListener("abort", abort);
         if (error) reject(error); else resolve(value);
       }
       child.stdout.setEncoding("utf8");
       child.stdout.on("data", (chunk: string) => {
         bytes += Buffer.byteLength(chunk);
-        if (bytes > 8 * 1024 * 1024) stop(new HttpError(413, "分析结果过大，请减少测点或每转重采样点数。"));
+        if (bytes > 64 * 1024 * 1024) stop(new HttpError(413, "分析结果过大，请减少测点或每转重采样点数。"));
         else if (!stopping) output += chunk;
       });
       // Drain diagnostics, but never return environment paths or raw tracebacks to a browser.
@@ -87,7 +90,10 @@ function runWorker(service: string, python: string, data: string, payload: Recor
     });
 }
 
-export async function rotationWorker(user: Pick<User, "id" | "tenant">, payload: Record<string, unknown>): Promise<any> {
+const analysisQueues=globalThis as typeof globalThis & {bladeAnalysisWorkerQueues?:Map<string,Promise<any>>};
+const analysisQueue=analysisQueues.bladeAnalysisWorkerQueues??=new Map();
+const analysisQueueCounts=new Map<string,number>();
+export async function rotationWorker(user: Pick<User, "id" | "tenant">, payload: Record<string, unknown>, abortSignal?: AbortSignal): Promise<any> {
   // The overview and historical-record panel may read the same catalog together.
   // Share only an in-flight read, never mutations, analysis jobs or cached results.
   if (payload.action === "recordings" && Object.keys(payload).length === 1) {
@@ -99,7 +105,12 @@ export async function rotationWorker(user: Pick<User, "id" | "tenant">, payload:
     try { return await pending; }
     finally { if (listings.get(key) === pending) listings.delete(key); }
   }
-  return withWorker(user, (service, python, data) => runWorker(service, python, data, payload));
+  if(['signal-workspace','formal-modal'].includes(String(payload.action))){
+    const key=accountKey(user);if((analysisQueueCounts.get(key)||0)>=32)throw new HttpError(429,'Too many pending analysis operations');analysisQueueCounts.set(key,(analysisQueueCounts.get(key)||0)+1);const prior=analysisQueue.get(key)||Promise.resolve();
+    const pending=prior.catch(()=>{}).then(()=>{if(abortSignal?.aborted)throw new HttpError(499,'Analysis cancelled before execution');return withWorker(user,(service,python,data)=>runWorker(service,python,data,payload,abortSignal));});
+    analysisQueue.set(key,pending);void pending.finally(()=>{analysisQueueCounts.set(key,Math.max(0,(analysisQueueCounts.get(key)||1)-1));if(analysisQueue.get(key)===pending)analysisQueue.delete(key);}).catch(()=>{});return pending;
+  }
+  return withWorker(user, (service, python, data) => runWorker(service, python, data, payload, abortSignal));
 }
 
 export async function rotationUpload(user: Pick<User, "id" | "tenant">, request: Request) {

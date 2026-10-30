@@ -21,7 +21,9 @@
     "./signal-input": "./src/signal-input.ts",
     "./report-details": "./src/report-details.ts",
     "./measurement-domain": "./src/measurement-domain.ts",
-    "./measurement-conditions": "./src/measurement-conditions.ts"
+    "./measurement-conditions": "./src/measurement-conditions.ts",
+    "./response-health-policy": "./src/response-health-policy.ts",
+    "./modal-result-comparison": "./src/modal-result-comparison.ts"
   },
   "dependencies": {
     "react": "19.2.8",

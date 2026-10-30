@@ -6,12 +6,14 @@ import {Chart} from './charts';
 import {ObjectFilters,MeasurementStatus,useMeasurements,useMeasurementContext,openMeasurementWorkspace,numberText,timeText,selectedProcessingResult} from './measurement-common';
 import {SavedBladeWaveforms,BladeResponseMatrix} from "./measurement-health-response";
 import {MeasurementResponse3D} from './measurement-response-3d';
-import {FieldRecordAnalysis,type RecordAnalysisBridge} from './field-record-analysis';
+import {DesktopAnalysisWorkspace} from './field-analysis-workspace';
+import type {RecordAnalysisBridge} from './field-record-analysis';
+import {HealthRuleEditor} from './unified-health-rule-editor';
 import type {ContextProps} from './common';
 
 export function MeasurementHealth(props:ContextProps){
  const {data,loading,error,setError}=useMeasurements();const [filter,setFilter]=useMeasurementContext();
- const [activeSlot,setActiveSlot]=useState('');
+ const [activeSlot,setActiveSlot]=useState('');const [ruleOpen,setRuleOpen]=useState(false);
  const [workspace,setWorkspace]=useState<any>(null),[busy,setBusy]=useState(false),[tab,setTab]=useState('response'),[details,setDetails]=useState<any>(null),[review,setReview]=useState<any>(null),[note,setNote]=useState('');
  const scope={farmId:filter.farmId,campaignId:filter.campaignId,turbineId:filter.turbineId},key=JSON.stringify(scope);const processingResultId=selectedProcessingResult(scope),canWrite=props.canWrite;const latestScope=useRef(key);latestScope.current=key;
  useEffect(()=>{if(!filter.farmId){const s=data.sources.find(s=>s.context?.farmId);if(s)setFilter(s.context);}},[data.sources,filter.farmId]);
@@ -29,7 +31,7 @@ export function MeasurementHealth(props:ContextProps){
   if(c.action==='export')throw Error('请前往模态识别导出分析包');
   return api<T>('measurements/processing','POST',{request:{...c,jobId:details.id}});
  };
- return <div className="stack measurement-workspace blade-health-v2"><header className="measurement-heading"><div><h1>健康监测</h1><p>按风机查看每片叶片的响应、工况和证据。</p></div><div className="measurement-heading-actions"><Button disabled={busy||!scope.turbineId} onClick={()=>void refresh(false)}>刷新</Button><Button variant="primary" disabled={!canWrite||busy||!scope.turbineId} onClick={()=>void refresh(true)}>重新关联工况与更新评价</Button></div></header>
+ return <div className="stack measurement-workspace blade-health-v2"><header className="measurement-heading"><div><h1>健康监测</h1><p>按风机查看每片叶片的响应、工况和证据。</p></div><div className="measurement-heading-actions"><Button disabled={busy||!scope.turbineId} onClick={()=>void refresh(false)}>刷新</Button><Button disabled={!canWrite||!blade?.bladeId} onClick={()=>setRuleOpen(true)}>预警规则</Button><Button variant="primary" disabled={!canWrite||busy||!scope.turbineId} onClick={()=>void refresh(true)}>重新关联工况与更新评价</Button></div></header>
   <Card title="测量范围"><ObjectFilters objects={data.objects} value={filter} onChange={setFilter} blade={false} position={false}/><MeasurementStatus loading={loading||busy} error={error} onReload={()=>void refresh(false)}/></Card>
   {!workspace&&!busy&&<Card><p>请选择风场、批次与风机。</p></Card>}
   {workspace&&<><div className="blade-health-slots">{workspace.blades.map((b:any)=><button className={`blade-health-slot ${b===blade?'active':''}`} key={b.bladeId||b.name} onClick={()=>{setActiveSlot(b.bladeId||b.name);if(b.bladeId)setFilter({...filter,bladeId:b.bladeId,positionId:''});}}><strong>{/^[1-3]$/.test(b.name)?`叶片 ${b.name}`:b.name}</strong><Tag tone={b.status==='unmeasured'?'gray':'amber'}>{b.label}</Tag><span>{b.coverage?`可分析 ${b.coverage.analyzable} / 采到 ${b.coverage.observed} · 待复核 ${b.coverage.review}`:'本批次无数据'}</span></button>)}</div>
@@ -46,13 +48,14 @@ export function MeasurementHealth(props:ContextProps){
     </Table></Card></>}
     {tab==='evidence'&&<><Card title="证据分类"><p>数据质量事件与真实局部振动异常分开记录；整叶片损伤需要独立证据复核。</p><Table headers={['测点 / 角度','质量状态','原始标记','操作']}>
       {blade.records.map((r:any)=><tr key={r.id}><td>{r.point} / {r.azimuthDeg}°</td><td>{r.quality?.analysis_eligible?'可分析':'待复核'} · {r.issues?.join('、')}</td><td>{r.sourceQuality?.diagnostic_only?'历史诊断标记保留':'见来源'}{r.review&&<small>{r.review.status} · {r.review.reviewer} · {r.review.note}</small>}</td><td><Button onClick={()=>void openProcessing()}>查看证据</Button><Button disabled={!canWrite} onClick={()=>{setReview(r);setNote('');}}>记录人工复核</Button></td></tr>)}
-    </Table></Card><Card title="专项结构损伤判定"><p>尚无满足工况、参考批次、实体核验及已验收算法的判定输入。本批次结论为证据不足，不输出损伤概率或确诊。</p><p>建议：复核缺项；补充同期工况、正常参考与现场巡检证据。</p></Card></>}
+    </Table></Card><Card title="专项结构损伤判定"><p>专项损伤算法尚未接入。接口状态：algorithm_not_connected。当前可查看数据质量及有依据的响应变化预警。</p><p>建议：复核缺项；补充同期工况、正常参考与现场巡检证据。</p><Button disabled title="algorithm_not_connected">专项损伤检测（待接入）</Button></Card></>}
     {tab==='history'&&<Card title="独立批次与评价版本"><Table headers={['评价时间','批次','处理版本','结论','可分析 / 采到']}>
       {workspace.history.filter((r:any)=>r.context.bladeId===blade.bladeId).map((r:any)=><tr key={r.id}><td>{timeText(r.evaluatedAt)}</td><td>{data.objects.find(o=>o.id===r.context.campaignId)?.name||r.context.campaignId}</td><td>{r.processingResultId.slice(0,8)}</td><td>{r.label}</td><td>{r.coverage.analyzable} / {r.coverage.observed}</td></tr>)}
     </Table>{!workspace.history.length&&<p>暂无已保存评价。同源重算不增加独立测量批次数。</p>}</Card>}
    </>}
   </>}
-  {details&&<Dialog title="同版本只读处理结果" wide onClose={()=>setDetails(null)}><FieldRecordAnalysis key={details.id} mode="web" readOnly request={readOnly} onAcquisition={()=>openMeasurementWorkspace('blade',filter)}/></Dialog>}
+  {details&&<Dialog title="同版本只读处理结果" wide onClose={()=>setDetails(null)}><DesktopAnalysisWorkspace key={details.id} initialBladeId={data.objects.find(o=>o.id===blade?.bladeId)?.code} platform="web" purpose="synthesis" readOnly request={readOnly} onNavigate={(_p,r)=>{if(r?.recording_id)sessionStorage.setItem('blade.analysis.focus.record.v22',r.recording_id);if(r?.processingJobId)sessionStorage.setItem('blade.analysis.focus.version.v22',JSON.stringify({scope:{farmId:filter.farmId,campaignId:filter.campaignId,turbineId:filter.turbineId,bladeId:blade?.bladeId},jobId:r.processingJobId}));openMeasurementWorkspace('blade',filter);}}/></Dialog>}
+  {ruleOpen&&<HealthRuleEditor choices={workspace?.referenceChoices||[]} context={{...scope,bladeId:blade?.bladeId}} onClose={()=>setRuleOpen(false)} onSaved={()=>void refresh()} onError={setError}/>}
   {review&&<Dialog title="人工复核记录" onClose={()=>setReview(null)}><p>{review.point} / {review.azimuthDeg}° · 原始质量及数据保持不变</p><label>复核说明<textarea value={note} onChange={e=>setNote(e.target.value)} maxLength={2000}/></label><Button disabled={!note.trim()||busy} onClick={async()=>{setBusy(true);try{await api('measurements/blade-review','POST',{processingResultId:blade.processingResultId,recordingId:review.id,note});setReview(null);await refresh();}catch(e){setError((e as Error).message);}finally{setBusy(false);}}}>保存复核</Button></Dialog>}
  </div>;
 }

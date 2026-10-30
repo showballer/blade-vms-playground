@@ -8,13 +8,14 @@ const { createUnifiedAuth } = require('./unified-auth.cjs');
 const { createFieldService, failure } = require('./field-service.cjs');
 const { initialWindowBounds } = require('./field-window.cjs');
 const { installBundledRecordings } = require('./field-bundled-recordings.cjs');
+const { createAnalysisSync } = require('./field-analysis-sync.cjs');
 const { createFieldCloudSync } = require('./field-cloud-sync.cjs');
 const { createCaptureTracker } = require('./field-capture-tracker.cjs');
 const { sdkExtension, isSdkFile } = require('./field-sdk.cjs');
 const { singlePointRequest } = require('./field-single-point.cjs');
 const { recordAnalysisRequest, recordAnalysisExportFile } = require('./field-record-analysis.cjs');
 
-let win, auth, service, cloudSync, captureTracker, config = {}, quitting = false, closing = false;
+let win, auth, service, analysisSync, cloudSync, captureTracker, config = {}, quitting = false, closing = false;
 let settingsFile, dataDir, entryUrl;
 let mutation = Promise.resolve();
 const singlePointRuns = new Map();
@@ -180,6 +181,9 @@ async function dispatch(options) {
     case 'bladePasses': return service.bladePasses(options.parameters);
     case 'recordAnalysis': {
       const request = recordAnalysisRequest(options.request);
+      if(request.action==='sync')return analysisSync.enqueue(request.jobId);
+      if(request.action==='sync_status')return analysisSync.status();
+      if (['review','publish'].includes(request.action)) request.actor = auth.requireSession().username;
       const result = await service.recordAnalysis(request);
       if (request.action !== 'export') return result;
       const source = await recordAnalysisExportFile(dataDir, request.jobId, result);
@@ -240,7 +244,7 @@ async function closeSafely() {
       }
       try { await captureTracker?.flush(await service.status()); } catch { /* Preserve shutdown even if queue persistence failed. */ }
       captureTracker?.dispose(); await captureTracker?.settled();
-      cloudSync?.dispose(); auth?.logout(); quitting = true; app.quit();
+      analysisSync?.dispose(); cloudSync?.dispose(); auth?.logout(); quitting = true; app.quit();
     });
   } catch {
     await dialog.showMessageBox(win, { type: 'error', buttons: ['返回检查'],
@@ -281,6 +285,7 @@ else {
       // Send the same bounded one-second view used by the desktop. The service's
       // no-argument frame is only the last 2048 raw samples (8 ms at 250 kHz).
       cloudSync = createFieldCloudSync({ file: path.join(userData, 'blade-cloud-sync.json'), dataDir: path.join(dataDir, 'recordings'), auth, getLive: () => service.frame(1000), prepareUpload: (id, rate) => service.prepareUpload(id, rate) });
+      analysisSync = createAnalysisSync({file:path.join(userData,'blade-analysis-sync.json'),auth,enroll:id=>cloudSync.uploadRecording(id),prepare:async jobId=>{const result=await service.recordAnalysis({action:'package',jobId});await recordAnalysisExportFile(dataDir,jobId,result);return result;}});
       captureTracker = createCaptureTracker({ file: path.join(userData, 'blade-capture-runs.json'),
         dataDir: path.join(dataDir, 'recordings'), auth, sync: cloudSync, getSnapshot: () => service.status() });
     } catch {

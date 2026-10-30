@@ -48,7 +48,8 @@ export const Chart = memo(function Chart({
   active?: boolean;
   loading?: boolean;
 }) {
-  const [rendering, setRendering] = useState(true);
+  const [rendering, setRendering] = useState(true), [renderError, setRenderError] = useState("");
+  const payload = useRef(updateMode === "replace" ? JSON.stringify(option) : "");
   const ref = useRef<HTMLDivElement>(null),
     chart = useRef<echarts.EChartsType | undefined>(undefined),
     schedule = useRef<(() => void) | undefined>(undefined),
@@ -58,7 +59,7 @@ export const Chart = memo(function Chart({
     if (!ref.current) return;
     const element = ref.current;
     let c: echarts.EChartsType | undefined;
-    let frame = 0, resized = true, previouslyActive = false;
+    let frame = 0, resized = true, previouslyActive = false, drawing = false;
     let applied: typeof latest.current | undefined;
     const canDraw = () => latest.current.active && element.clientWidth > 0 && element.clientHeight > 0;
     const flush = () => {
@@ -69,16 +70,20 @@ export const Chart = memo(function Chart({
       if (!c) {
         c = echarts.init(element, undefined, { renderer });
         chart.current = c;
+        c.on("finished", () => { if (drawing) { drawing = false; setRendering(false); } });
         resized = false;
       } else if (resized) { c.resize(); resized = false; }
       const current = latest.current;
       if (!applied || applied.option !== current.option || applied.updateMode !== current.updateMode) {
-        c.setOption(current.option, { notMerge: current.updateMode === "replace", lazyUpdate: false,
-          ...(current.updateMode === "merge" ? { replaceMerge: ["series"] } : {}) });
+        drawing = true;
+        try {
+          c.setOption(current.option, { notMerge: current.updateMode === "replace", lazyUpdate: false,
+            ...(current.updateMode === "merge" ? { replaceMerge: ["series"] } : {}) });
+          setRenderError("");
+        } catch (error) { drawing = false; setRendering(false); setRenderError("图表绘制失败：" + (error as Error).message); }
         applied = current;
       }
       if (renderer === "svg") element.querySelector("svg")?.setAttribute("viewBox", `0 0 ${c.getWidth()} ${c.getHeight()}`);
-      setRendering(false);
     };
     const queue = () => {
       if (!canDraw()) { resized = true; return; }
@@ -113,6 +118,9 @@ export const Chart = memo(function Chart({
     };
   }, [renderer]);
   useEffect(() => {
+    // Live windows keep flowing without an overlay on every frame. Static data
+    // replacements remain busy until ECharts reports its completed render.
+    if (updateMode === "replace") { const next = JSON.stringify(option); if (payload.current !== next) { payload.current = next; setRendering(true); } }
     schedule.current?.();
   }, [option, updateMode, renderer, active]);
   return (
@@ -124,6 +132,7 @@ export const Chart = memo(function Chart({
       style={{ height: "100%", width: "100%" }}
     />
     {(loading || rendering) && <div style={{ position: "absolute", inset: 0 }}><ChartLoading height={height} /></div>}
+    {renderError && <div role="alert" style={{ position: "absolute", inset: 0 }}>{renderError}</div>}
     </div>
   );
 });

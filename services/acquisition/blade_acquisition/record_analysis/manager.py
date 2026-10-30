@@ -16,6 +16,7 @@ from ..storage import atomic_json
 from . import ALGORITHM_VERSION
 from .adapter import ID, catalog, load_raw, record_files, source_fingerprint, source_quality
 from .quality import assess_record
+from .plan import contract,LIMITS,VERSION as PLAN_VERSION,digest as plan_digest
 from .presentation import raw_plot, segment_summary, segment_plot, aggregate_plot, plot_indices, spectrum_plot
 from .reference import analyze_recording, aggregate_points, build_point_preview, JoinConfig
 from .reference.cli import config_from_dict, json_safe, write_preview_csv
@@ -104,7 +105,7 @@ class RecordAnalysisManager:
         self.executor.shutdown(wait=False,cancel_futures=True)
 
     def catalog(self):
-        value=catalog(self.recordings);value["algorithmVersion"]=ALGORITHM_VERSION
+        value=catalog(self.recordings);value["algorithmVersion"]=ALGORITHM_VERSION;value["processingContract"]=contract()
         with self.lock:value["jobs"]=[self._public(j) for j in self.jobs.values()][-100:]
         return value
 
@@ -124,7 +125,7 @@ class RecordAnalysisManager:
     @staticmethod
     def _public(state):
         return {k:state.get(k) for k in ("jobId","taskId","scope","profile","status","completed","total","error",
-            "createdAt","finishedAt","cacheHit","algorithmVersion","cacheKey")}
+            "createdAt","finishedAt","cacheHit","algorithmVersion","cacheKey","recordingIds","publishedAt")} | {"workspacePurpose":(state.get("workspace") or {}).get("purpose")}
 
     def _update(self,job_id,**values):
         with self.lock:
@@ -136,7 +137,7 @@ class RecordAnalysisManager:
         task=next((t for t in tasks if t["id"]==body.get("taskId")),None)
         if task is None:raise KeyError("saved task not found")
         ids=body.get("recordingIds",task["recordingIds"])
-        if not isinstance(ids,list) or not ids or len(ids)>200 or any(not isinstance(x,str) for x in ids) or len(ids)!=len(set(ids)):
+        if not isinstance(ids,list) or not ids or len(ids)>LIMITS["recordsPerJob"] or any(not isinstance(x,str) for x in ids) or len(ids)!=len(set(ids)):
             raise SignalError("INVALID_RECORDING_SELECTION","select 1..200 distinct saved records")
         if any(r not in task["recordingIds"] for r in ids):raise SignalError("TASK_SCOPE_MISMATCH","records must belong to the selected business task")
         scope=body.get("scope","analysis");profile=body.get("profile","LOS_DIAGNOSTIC")
@@ -161,8 +162,12 @@ class RecordAnalysisManager:
         with self.lock:
             if sum(j["status"] in ("queued","running") for j in self.jobs.values())>=2:raise BlockingIOError("已有记录分析任务在运行，请等待完成。")
         fingerprints=[source_fingerprint(self.recordings,r) for r in ids]
+        from .reviews import current as current_review
+        quality_reviews={r:v for r in task['recordingIds'] if (v:=current_review(self,r)) is not None} if workspace else {}
+        policy_sources=[source_fingerprint(self.recordings,r) for r in task['recordingIds']] if workspace else fingerprints
+        if sum(f['bytes'] for x in policy_sources for f in x['files'] if f['name'].startswith('chunk-'))>LIMITS['samplesPerJob']*29:raise SignalError('ANALYSIS_SIZE_UNSUPPORTED','Selected sources exceed the shared memory budget; split the batch')
         request={"taskId":task["id"],"recordingIds":ids,"scope":scope,"profile":profile,"config":asdict(config),"reviewWindows":review,
-                 "algorithmVersion":ALGORITHM_VERSION,"sources":fingerprints,**({"workspace":workspace} if workspace else {})}
+                 "algorithmVersion":ALGORITHM_VERSION,"processingContract":contract(),"sources":fingerprints,"policySources":policy_sources,"qualityReviews":quality_reviews,**({"workspace":workspace} if workspace else {})}
         key=hashlib.sha256(json.dumps(request,sort_keys=True,ensure_ascii=False,allow_nan=False).encode()).hexdigest()
         with self.lock:
             cached=next((j for j in self.jobs.values() if j.get("cacheKey")==key and j["status"]=="complete"),None)
@@ -221,7 +226,7 @@ class RecordAnalysisManager:
             workspace=state.get('workspace');auto_plan=None
             if workspace:
                 from .workspace import policy
-                auto_plan=policy(self.load_recording,task['recordingIds'],workspace['algorithmOptions'],config)
+                auto_plan=policy(self.load_recording,task['recordingIds'],workspace['algorithmOptions'],config,state.get('qualityReviews'))
             for i,recording_id in enumerate(state["recordingIds"]):
                 if event.is_set():raise InterruptedError("ANALYSIS_CANCELLED")
                 try:
@@ -244,7 +249,7 @@ class RecordAnalysisManager:
                     window=state["reviewWindows"].get(recording_id)
                     if workspace:
                         from .workspace import analyze as workspace_analyze
-                        bundle=workspace_analyze(raw,config,workspace['algorithmOptions'],auto_plan,(window['start'],window['end']) if window else None)
+                        bundle=workspace_analyze(raw,config,workspace['algorithmOptions'],auto_plan,(window['start'],window['end']) if window else None,(state.get('qualityReviews') or {}).get(recording_id))
                     else:bundle=analyze_recording(raw,config=config,explicit_window=(window["start"],window["end"]) if window else None)
                     bundle["source_quality"]=quality
                     assessment=assess_record(raw.manifest,bundle,reviewed=bool(window))
@@ -270,6 +275,8 @@ class RecordAnalysisManager:
                     if window:bundle["review_window"]={**window,"source":"explicit_diagnostic_review"}
                     bundles.append(bundle)
                     summary=json_safe(bundle);summary.update(metadata)
+                    from .plan import angle
+                    summary['object']['original_azimuth_deg']=summary['object']['azimuth_deg'];summary['object']['azimuth_deg']=angle(summary['object']['azimuth_deg'],[],0)['normalized']
                     dump(directory/(recording_id+"-analysis.json"),summary)
                     summary["segments"]=[segment_summary(s) for s in bundle["segments"]]
                     summary["effective_seconds"]=sum(s.features.get("observation_seconds",0) for s in bundle["segments"])
@@ -279,7 +286,7 @@ class RecordAnalysisManager:
                     summaries.append({"recording_id":recording_id,"status":"blocked","issues":[getattr(exc,"code","RAW_READ_FAILED")],"message":str(exc),"segments":[],"representative":None})
                 finally:self._update(job_id,completed=i+1)
             if event.is_set():raise InterruptedError("ANALYSIS_CANCELLED")
-            aggregates=[];aggregate_issues=[]
+            aggregates=[];aggregate_issues=[];capture_aliases=[]
             # Isolate missing identities, but reject conflicting duplicate captures in their group.
             groupings={}
             for b in bundles:
@@ -290,23 +297,50 @@ class RecordAnalysisManager:
                 groupings.setdefault(key,[]).append(b)
             for key,group in groupings.items():
                 try:
+                    seen={};unique=[]
+                    for b in group:
+                        rep=next(s for s in b['segments'] if s.result_id==b['representative']);capture=rep.parameters['capture_key']
+                        if capture in seen:
+                            old=seen[capture];a=old.analysis_input();v=rep.analysis_input()
+                            if old.layer==rep.layer and old.parameters['config']==rep.parameters['config'] and old.parameters['object']==rep.parameters['object'] and a.source_start==v.source_start and np.array_equal(a.time_s,v.time_s) and np.array_equal(a.values_m_s,v.values_m_s,equal_nan=True):
+                                capture_aliases.append({'captureKey':capture,'usedResultId':old.result_id,'duplicateResultId':rep.result_id,'reason':'same_physical_capture_equal_real_arrays'});continue
+                            raise SignalError('DUPLICATE_CAPTURE_REQUIRES_SELECTION','Conflicting revisions of a physical capture require explicit selection')
+                        seen[capture]=rep;unique.append(b)
+                    group[:]=unique
                     values=aggregate_points(group)
                     for value in values:
                         value.update({k:group[0][k] for k in ("geometryComparisonKey","geometryComparisonKnown","geometryComparisonSnapshot")})
                     aggregates.extend(values)
                 except SignalError as exc:aggregate_issues.append({"object":list(key),"reasonCode":exc.code,"message":str(exc)})
+            comparison_aggregates=[]
+            comparison_domains={}
+            for key,group in groupings.items():
+                representative=next((v for v in group[0]['segments'] if v.result_id==group[0]['representative']),None)
+                if representative is not None:comparison_domains.setdefault((*key[:3],representative.layer,representative.basis),[]).append((key,group))
+            for domain,items in comparison_domains.items():
+                by_point={}
+                for key,group in items:
+                    by_point.setdefault(key[3],set()).update(s.parameters['object']['azimuth_deg'] for b in group for s in b['segments'] if s.result_id==b['representative'])
+                planned={p.get('radialPointName') for p in task.get('plannedPoints',[]) if str(p.get('bladeId'))==str(domain[2])}
+                common=set.intersection(*by_point.values()) if by_point and planned<=set(by_point) else set()
+                for key,group in items:
+                    subset=[b for b in group if any(s.result_id==b['representative'] and s.parameters['object']['azimuth_deg'] in common for s in b['segments'])]
+                    try:
+                        for value in aggregate_points(subset):value.update(commonAngles=sorted(common),comparisonMeaning='common_observed_angles_only');comparison_aggregates.append(value)
+                    except SignalError:pass
             for group in aggregates:self._repeats(group,bundles)
             coverage=self._coverage(task,summaries)
             report={"jobId":job_id,"taskId":task["id"],"taskName":task["name"],"scope":state["scope"],"profile":state["profile"],
                 "algorithmVersion":ALGORITHM_VERSION,"config":asdict(config),"records":summaries,**({"workspace":{**workspace,"automaticPlan":auto_plan}} if workspace else {}),
-                "aggregates":[aggregate_plot(g) for g in aggregates],"aggregateIssues":aggregate_issues,"coverage":coverage,
+                "aggregates":[aggregate_plot(g) for g in aggregates],"comparisonAggregates":[aggregate_plot(g) for g in comparison_aggregates],"aggregateIssues":aggregate_issues,"captureAliases":capture_aliases,"coverage":coverage,
                 "stages":self._stages(),"continuity":"discontinuous_segments","chartAvailability":self._availability(summaries,aggregates),
-                "sourceFingerprints":state["sources"],"phaseAvailable":False,"healthConclusionAvailable":False,
+                "sourceFingerprints":state["sources"],"policySources":state.get("policySources",state["sources"]),"processingContract":contract(),"qualityReviews":state.get("qualityReviews",{}),"phaseAvailable":False,"healthConclusionAvailable":False,
                 "qualityPolicy":{"version":"per_record_v1","sourceFlagsPreserved":True,"healthAssessment":"not_performed"},
                 "warnings":["不同方位为独立实测片段；不存在同步相位或连续整圈振动。","视线残差仍含未分离运动与测量误差，不等于叶片纯振动。"]}
             # Detect source mutation before publishing a supposedly immutable result version.
             if [source_fingerprint(self.recordings,r) for r in state["recordingIds"]]!=state["sources"]:
                 raise SignalError("SOURCE_CHANGED_DURING_ANALYSIS","source recording changed; rerun from the new snapshot")
+            if workspace and [source_fingerprint(self.recordings,r) for r in task['recordingIds']]!=state['policySources']:raise SignalError('SOURCE_CHANGED_DURING_ANALYSIS','Policy source set changed')
             dump(directory/"result.json",report)
             self._update(job_id,status="complete",finishedAt=time.time())
         except InterruptedError as exc:self._update(job_id,status="cancelled",error=str(exc),finishedAt=time.time())
@@ -325,7 +359,7 @@ class RecordAnalysisManager:
         for p in task["plannedPoints"]:
             key=(str(p.get("bladeId")),p.get("radialPointName"),p.get("radiusM"))
             point=points.setdefault(key,{"bladeId":p.get("bladeId"),"pointName":p.get("radialPointName"),"radiusM":p.get("radiusM"),"plannedAzimuths":[],"observedAzimuths":[],"usableAzimuths":[]})
-            if isinstance(p.get("azimuthDeg"),(int,float)) and p["azimuthDeg"] not in point["plannedAzimuths"]:point["plannedAzimuths"].append(p["azimuthDeg"])
+            if isinstance(p.get("azimuthDeg"),(int,float)) and p["azimuthDeg"] not in point["plannedAzimuths"]:point["plannedAzimuths"].append(p["azimuthDeg"]%360)
         for r in records:
             o=r.get("object",{});key=(str(o.get("blade")),o.get("point"),o.get("radius_from_hub_m"))
             p=points.setdefault(key,{"bladeId":o.get("blade"),"pointName":o.get("point"),"radiusM":o.get("radius_from_hub_m"),"plannedAzimuths":[],"observedAzimuths":[],"usableAzimuths":[]})
@@ -489,36 +523,50 @@ class RecordAnalysisManager:
                 for k in ("time_s","envelope_m_s","filtered_velocity_m_s"):data[k]=data[k][i]
                 data["spectrum"]=spectrum_plot(data["spectrum"])
             elif kind=="kinematics":
-                data=bandlimited_kinematics(real,**p);i=plot_indices(data["displacement_m"],data["acceleration_m_s2"])
+                evidence=p.get("edge_policy_source")
+                if result.parameters.get("desktop_workspace") and (not isinstance(evidence,str) or not evidence.strip()):raise SignalError("DERIVATION_POLICY_REQUIRED","Declare and verify a finite-window edge policy")
+                args={k:v for k,v in p.items() if k!="edge_policy_source"}
+                data=bandlimited_kinematics(real,**args);i=plot_indices(data["displacement_m"],data["acceleration_m_s2"])
                 for k in ("time_s","displacement_m","acceleration_m_s2"):data[k]=data[k][i]
             else:raise SignalError("INVALID_ANALYSIS_KIND","unknown extension")
             return json_safe({"available":True,"kind":kind,"resultId":result.result_id,"layer":result.layer,"basis":result.basis,"data":data,"parameters":p},include_arrays=True)
         except (SignalError,TypeError) as exc:return {"available":False,"kind":kind,"resultId":result.result_id,"reasonCode":getattr(exc,"code","ANALYSIS_PARAMETERS_REQUIRED"),"message":str(exc)}
 
     def _point_band(self,body):
-        ids=body.get("resultIds");p=body.get("parameters",{})
-        if not isinstance(ids,list) or not ids or len(ids)>200 or len(ids)!=len(set(ids)) or set(p)!={"band_hz"}:raise SignalError("INVALID_CONFIG","point band needs distinct result IDs and one explicit shared band_hz")
-        report=self.result({"jobId":body["jobId"]})
-        allowed={r["representative"] for r in report["records"] if r.get("representative")
-                 and (report["scope"]=="diagnostic" or r.get("quality_assessment",{}).get("analysis_eligible"))}
-        if not set(ids)<=allowed:raise SignalError("REPRESENTATIVE_REQUIRED","point comparison uses only one longest eligible representative per pass")
+        ids=body.get('resultIds');p=body.get('parameters',{})
+        if not isinstance(ids,list) or not ids or len(ids)>LIMITS['recordsPerJob'] or len(ids)!=len(set(ids)) or set(p)!={'band_hz'}:raise SignalError('INVALID_CONFIG','Select distinct real representatives and one declared band')
+        report=self.result({'jobId':body['jobId']})
+        plan=(report.get('workspace') or {}).get('automaticPlan',{})
+        saved=plan.get('automaticBandHz',(report.get('workspace') or {}).get('algorithmOptions',{}).get('targetBandHz'))
+        if report.get('workspace') and saved!=p['band_hz']:raise SignalError('TARGET_BAND_NOT_CONFIGURED','Declare target band and its source in a new processing plan')
+        allowed={r['representative'] for r in report['records'] if r.get('representative') and (report['scope']=='diagnostic' or r.get('quality_assessment',{}).get('analysis_eligible'))}
+        if not set(ids)<=allowed:raise SignalError('REPRESENTATIVE_REQUIRED','Only eligible real representatives are accepted')
         groups={}
         for rid in ids:
-            r=self._load_segment(body["jobId"],rid);o=r.parameters["object"]
-            key=(o["wind_farm"],o["turbine"],o["blade"],o["point"],o["radius_from_hub_m"],r.layer,r.basis,r.parameters["result_set"],r.parameters.get("geometryComparisonKey"))
-            group=groups.setdefault(key,{"object":o,"layer":r.layer,"basis":r.basis,"geometryComparisonKey":r.parameters.get("geometryComparisonKey"),"azimuths":{},"excluded":[]})
+            r=self._load_segment(body['jobId'],rid);o=r.parameters['object'];key=(o['wind_farm'],o['turbine'],o['blade'],o['point'],o['radius_from_hub_m'],r.layer,r.basis,r.parameters.get('geometryComparisonKey'))
+            group=groups.setdefault(key,{'object':o,'layer':r.layer,'basis':r.basis,'azimuths':{},'excluded':[]})
             try:
                 if r.parameters.get('desktop_workspace'):
                     from .workspace import window_spectra
-                    s=window_spectra(r.analysis_input(),r.parameters['desktop_workspace']['algorithmOptions']['window'],r.parameters['config'].get('welch_window_seconds'),tuple(p['band_hz']))
-                else:s=spectra(r.analysis_input(),welch_window_seconds=r.parameters["config"].get("welch_window_seconds"),band_hz=tuple(p["band_hz"]))
-                group["azimuths"].setdefault(o["azimuth_deg"],[]).append({"resultId":rid,"band_rms_m_s":s["band_rms_m_s"],"evaluated_bin_centers_hz":s["evaluated_bin_centers_hz"]})
-            except (SignalError,ValueError,TypeError) as exc:group["excluded"].append({"resultId":rid,"reasonCode":getattr(exc,"code","INVALID_CONFIG"),"message":str(exc)})
+                    spec=window_spectra(r.analysis_input(),r.parameters['desktop_workspace']['algorithmOptions']['window'],r.parameters['config'].get('welch_window_seconds'),tuple(p['band_hz']))
+                else:spec=spectra(r.analysis_input(),welch_window_seconds=r.parameters['config'].get('welch_window_seconds'),band_hz=tuple(p['band_hz']))
+                if 'grid' in group and not np.array_equal(group['grid'],spec['psd_frequency_hz']):raise SignalError('SPECTRAL_PROFILE_MISMATCH','Physical frequency grids are incompatible')
+                group['grid']=spec['psd_frequency_hz']
+                group['azimuths'].setdefault(o['azimuth_deg'],[]).append({'resultId':rid,'band_power':spec['band_mean_square_m2_s2'],'bin_centers':spec['evaluated_bin_centers_hz'],'delta_hz':spec['psd_grid_spacing_hz']})
+            except (SignalError,ValueError,TypeError) as exc:group['excluded'].append({'resultId':rid,'reasonCode':getattr(exc,'code','INVALID_CONFIG'),'message':str(exc)})
+        # Intersection is scoped to one blade and compatible physical direction.
+        common={}
+        for key,g in groups.items():
+            domain=(key[0],key[1],key[2],g['layer'],g['basis']);angles=set(g['azimuths'])
+            common[domain]=common[domain]&angles if domain in common else angles
         points=[]
-        for g in groups.values():
-            angles=[{"azimuth_deg":a,"mean_band_rms_m_s":float(np.mean([r["band_rms_m_s"] for r in rs])),"records":rs} for a,rs in sorted(g.pop("azimuths").items())]
-            points.append({**g,"azimuth_results":angles,"mean_azimuth_band_rms_m_s":float(np.mean([a["mean_band_rms_m_s"] for a in angles])) if angles else None})
-        return {"available":any(p["azimuth_results"] for p in points),"kind":"point_band","band_hz":p["band_hz"],"points":points,"interpretation":"two_level_mean_segment_band_RMS_not_mode_shape"}
+        for key,g in groups.items():
+            g.pop('grid',None)
+            participating=common[(key[0],key[1],key[2],g['layer'],g['basis'])]
+            angles=[{'azimuth_deg':a,'mean_band_power_m2_s2':float(np.mean([v['band_power'] for v in rs])),'mean_band_rms_m_s':float(np.sqrt(np.mean([v['band_power'] for v in rs]))),'records':rs} for a,rs in sorted(g.pop('azimuths').items()) if a in participating]
+            power=float(np.mean([v['mean_band_power_m2_s2'] for v in angles])) if angles else None
+            points.append({**g,'azimuth_results':angles,'mean_band_power_m2_s2':power,'mean_azimuth_band_rms_m_s':float(np.sqrt(power)) if power is not None else None,'weighting':'equal_capture_then_equal_common_azimuth_power','participatingAzimuths':sorted(participating),'reason':None if angles else 'NO_COMMON_AZIMUTH'})
+        return {'available':any(p['azimuth_results'] for p in points),'kind':'point_band','band_hz':p['band_hz'],'points':points,'interpretation':'sqrt(integrated_equal_azimuth_mean_PSD)','targetBandSource':plan.get('targetBandSource'),'bandMode':plan.get('bandMode','custom'),'bandMeaning':plan.get('bandMeaning'),'resolvedBandHz':plan.get('resolvedBandHz'),'frequencyResolutionHz':plan.get('frequencyResolutionHz')}
 
     def export(self,body):
         strict_keys(body,{"jobId","kind","previewId"})
@@ -563,6 +611,24 @@ class RecordAnalysisManager:
     def handle(self,body):
         if not isinstance(body,dict):raise SignalError("INVALID_REQUEST","request must be an object")
         action=body.get("action")
+        if action=='contract':strict_keys(body,set());return contract()
+        if action=='review':
+            from .reviews import save
+            return save(self,body)
+        if action=='review_history':
+            strict_keys(body,{'recordingId'})
+            from .reviews import history
+            return {'history':history(self,body.get('recordingId'))}
+        if action=="publish":
+            strict_keys(body,{"jobId","actor"});saved=self.result({"jobId":body.get("jobId")})
+            if not saved.get("workspace") or saved.get("processingContract")!=contract():raise SignalError("LEGACY_RESULT_READONLY","Recalculate this historical plan before publishing")
+            if not isinstance(body.get("actor"),str) or not body["actor"].strip():raise SignalError("REVIEW_ACTOR_REQUIRED","Authenticated actor required")
+            self._update(body["jobId"],publishedAt=time.time(),publishedBy=body["actor"])
+            return {"published":True,"jobId":body["jobId"]}
+        if action=="package":
+            strict_keys(body,{"jobId"})
+            from .packages import create
+            return create(self,body.get("jobId"))
         if action=="catalog":strict_keys(body,set());return self.catalog()
         if action=="inspect":return self.inspect(body)
         if action=="start":return self.start(body)

@@ -683,8 +683,11 @@ def import_file(store: RecordingStore, payload: dict):
 
 def dispatch(root: Path, payload: dict):
     action = payload.get("action")
-    if action not in ("recordings", "import", "rotation", "blade-passes", "capture-validate", "capture-waveform", "capture-import", "measurement-analysis", "measurement-waveform", "wind-preview", "wind-stage", "wind-merge", "signal-workspace"):
+    if action not in ("recordings", "import", "rotation", "blade-passes", "capture-validate", "capture-waveform", "capture-import", "measurement-analysis", "measurement-waveform", "wind-preview", "wind-stage", "wind-merge", "signal-workspace", "formal-modal"):
         raise ValueError("不支持的 Web 分析操作。")
+    if action == "formal-modal":
+        from .record_analysis.modal_store import dispatch as modal_dispatch
+        return modal_dispatch(root,payload)
     if action == "signal-workspace":
         from .web_signal import dispatch as signal_dispatch
         return signal_dispatch(root,payload)

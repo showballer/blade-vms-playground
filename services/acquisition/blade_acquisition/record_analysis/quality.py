@@ -31,9 +31,10 @@ def assess_record(manifest, bundle, *, reviewed=False):
     # Unknown RSSI and source-level diagnostic flags never erase real continuous data.
     # The numerical pipeline still enforces window bounds, source clocks and hard masks.
     eligible = bool(representative) and not reasons
+    if not representative and any(s.status.get('quality_state')=='review' for s in bundle.get('segments',[])):reasons.append('BOUNDARY_QUALITY_REVIEW_REQUIRED')
     return {
         "policy_version": "per_record_v1",
-        "status": "analyzable" if eligible else "review" if representative else "blocked",
+        "status": "analyzable" if eligible else "review" if representative or any(s.status.get("quality_state")=="review" for s in bundle.get("segments",[])) else "blocked",
         "analysis_eligible": eligible,
         "reason_codes": list(dict.fromkeys(reasons)),
         "warning_codes": list(dict.fromkeys(warnings)),

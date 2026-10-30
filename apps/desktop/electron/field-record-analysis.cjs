@@ -3,7 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const actions = new Set(['catalog', 'start', 'status', 'result', 'preview', 'extended', 'export', 'cancel', 'inspect']);
+const actions = new Set(['catalog', 'start', 'status', 'result', 'preview', 'extended', 'export', 'cancel', 'inspect','contract','review','review_history','package','sync','sync_status','publish']);
 function invalid(message) { return Object.assign(new Error(message), { status: 400 }); }
 
 function recordAnalysisRequest(request) {
@@ -12,14 +12,14 @@ function recordAnalysisRequest(request) {
   // Files are resolved by the local service from recording/job IDs only.
   if (['path', 'file', 'directory', 'outputPath', 'dataDir'].some(key => key in request))
     throw invalid('记录分析仅接受已保存的记录编号');
-  if(request.action==='inspect'){if(typeof request.recordingId!=='string'||!/^[0-9a-f]{32}$/.test(request.recordingId))throw invalid('请选择有效原始记录');return request;}
+  if(['inspect','review_history'].includes(request.action)){if(typeof request.recordingId!=='string'||!/^[0-9a-f]{32}$/.test(request.recordingId))throw invalid('请选择有效原始记录');return request;}
   if (request.action === 'start') {
-    if (!Array.isArray(request.recordingIds) || request.recordingIds.length < 1 || request.recordingIds.length > 1000 ||
+    if (!Array.isArray(request.recordingIds) || request.recordingIds.length < 1 || request.recordingIds.length > 200 ||
         request.recordingIds.some(id => typeof id !== 'string' || !/^[0-9a-f]{32}$/.test(id)) ||
         new Set(request.recordingIds).size !== request.recordingIds.length ||
         !['analysis', 'formal', 'diagnostic'].includes(request.scope) || !['LOS_DIAGNOSTIC', 'RAW_REVIEW'].includes(request.profile))
       throw invalid('请选择有效的任务记录、结果集合和分析配置');
-  } else if (request.action !== 'catalog' &&
+  } else if (!['catalog','contract','sync_status'].includes(request.action) &&
       (typeof request.jobId !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(request.jobId))) {
     throw invalid('记录分析任务编号无效');
   }

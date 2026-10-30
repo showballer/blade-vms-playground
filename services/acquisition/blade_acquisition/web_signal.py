@@ -4,6 +4,7 @@ import copy,hashlib,json,time
 from dataclasses import replace
 from pathlib import Path
 from .record_analysis.manager import RecordAnalysisManager,geometry_comparison
+from .record_analysis.plan import contract,LIMITS
 from .record_analysis.adapter import load_raw,source_fingerprint,ID
 from .sample_clock import continuous_sample_window
 
@@ -34,6 +35,7 @@ def normalized_manifest(manifest, recording_id, count, sample_rate_hz, binding=N
         m['windFarm']=binding['windFarm'];m['turbine']=binding['turbine']
         pc['bladeId']=binding['bladeId'];pc['radialPointName']=binding['pointName']
         m['applicationBinding']={**binding,'originalPointCycle':original}
+        if binding.get('entityIds'):m['entityIds']=binding['entityIds']
     return m
 
 
@@ -52,19 +54,7 @@ class WebSignalManager(RecordAnalysisManager):
     def load_recording(self,rid):
         return normalized_record(self.recordings,rid,self.bindings.get(rid))
     def compare_geometry(self,bundle,manifest):
-        value=geometry_comparison(bundle,manifest)
-        # Per-station D and angle are physical inputs, not object identity. LOS
-        # results remain descriptive; axial results retain explicit assumptions.
-        cfg=bundle['segments'][0].parameters['config'] if bundle.get('segments') else {}
-        source=((manifest.get('turntable') or {}).get('config') or {}).get('geometry') or {}
-        key={'coordinateConvention':cfg.get('allow_upright_geometry_assumption'),
-             'sign':cfg.get('instrument_sign'),'projection':cfg.get('projection'),
-             'rotationDirection':source.get('rotationDirection'),'axis1Sign':source.get('axis1Sign'),'axis2Sign':source.get('axis2Sign'),
-             'pitchScale':source.get('pitchAngleScale'),'yawScale':source.get('yawAngleScale'),
-             'binding':(manifest.get('applicationBinding') or {}).get('compositionMode')}
-        value['geometryComparisonKey']=hashlib.sha256(json.dumps(key,sort_keys=True).encode()).hexdigest()
-        value['geometryComparisonSnapshot']['perStationGeometryRetained']=True
-        return value
+        return geometry_comparison(bundle,manifest)
 
 
 def common_response(report, task):
@@ -91,22 +81,32 @@ def common_response(report, task):
 
 def dispatch(root:Path,payload:dict):
     operation=payload.get('operation');params=payload.get('parameters') or {}
+    package_id=params.pop('packageSha256',None)
+    if package_id is not None:
+        if not isinstance(package_id,str) or len(package_id)!=64 or any(c not in '0123456789abcdef' for c in package_id):raise ValueError('Invalid package identifier')
+        root=root/'analysis-packages'/package_id
+        if root.is_symlink() or not (root/'verification.json').is_file():raise ValueError('Verified package unavailable')
+    if operation=='verify-package':
+        from .record_analysis.packages import verify
+        name=params.get('uploadId')
+        if not isinstance(name,str) or not ID.fullmatch(name):raise ValueError('Invalid upload identifier')
+        return verify(root,root/'analysis-package-uploads'/(name+'.zip'),params.get('allowedIds',[]),params.get('serverSources'))
     if operation=='fingerprints':
         ids=params.get('recordingIds')
-        if not isinstance(ids,list) or not 1<=len(ids)<=64 or any(not isinstance(i,str) or not ID.fullmatch(i) for i in ids):raise ValueError('Invalid source selection')
+        if not isinstance(ids,list) or not 1<=len(ids)<=LIMITS['recordsPerJob'] or any(not isinstance(i,str) or not ID.fullmatch(i) for i in ids):raise ValueError('Invalid source selection')
         return {'sources':[source_fingerprint(root/'recordings',i) for i in ids]}
-    if operation=='capabilities':return {'formalModalAvailable':False,'methods':[],
-        'reasons':['未配置经过验证的正式模态算法','需要符合所选方法的同步相位、激励或参考数据'],
+    if operation=='capabilities':return {'processingContract':contract(),'formalModalAvailable':True,'methods':['decay','frf','ssi_cov'],
+        'reasons':['方法按真实输入资格分别开放；软件验证不替代现场适用性'],
         'signalProfiles':['LOS_DIAGNOSTIC','RAW_REVIEW'],'derivedPackageProfiles':[],
         'phaseRecoveryAvailable':False,'healthCertificationAvailable':False}
     if operation=='process':
         ids=params.get('recordingIds');bindings=params.get('bindings');task=params.get('task')
-        if not isinstance(ids,list) or not 1<=len(ids)<=64 or len(set(ids))!=len(ids) or any(not isinstance(i,str) or not ID.fullmatch(i) for i in ids):raise ValueError('请选择1～64份已授权原始记录')
-        if not isinstance(bindings,dict) or set(bindings)!=set(ids) or not isinstance(task,dict) or task.get('recordingIds')!=ids:raise ValueError('来源绑定清单不完整')
+        if not isinstance(ids,list) or not 1<=len(ids)<=LIMITS['recordsPerJob'] or len(set(ids))!=len(ids) or any(not isinstance(i,str) or not ID.fullmatch(i) for i in ids):raise ValueError('请选择1～200份已授权原始记录')
+        if not isinstance(bindings,dict) or not set(ids)<=set(bindings) or not isinstance(task,dict) or not set(ids)<=set(task.get('recordingIds',[])):raise ValueError('来源绑定清单不完整')
         manager=WebSignalManager(root,task,bindings)
         try:
             job=manager.start({'taskId':task['id'],'recordingIds':ids,'scope':params.get('scope','analysis'),
-                'profile':params.get('profile','LOS_DIAGNOSTIC'),'config':params.get('config',{})})
+                'profile':params.get('profile','LOS_DIAGNOSTIC'),'config':params.get('config',{}),'workspace':params.get('workspace') or {'purpose':'synthesis','algorithmOptions':{}}})
             until=time.monotonic()+150
             while manager.status(job['jobId'])['status'] in ('queued','running'):
                 if time.monotonic()>until:raise ValueError('处理超时，请缩小来源范围')
@@ -116,10 +116,10 @@ def dispatch(root:Path,payload:dict):
             result['webBindingSnapshot']=bindings
             result['commonResponse']=common_response(result,task)
             result['processingSource']='Web重算'
-            result['formalModal']={'available':False,'reason':'缺少已验证算法及符合方法要求的输入'}
+            result['formalModal']={'available':True,'inputQualified':False,'reason':'按方法导入连续、同步且有标定证据的模态输入'}
             return result
         finally:manager.close()
-    if operation not in ('result','extended','preview','export','waveforms'):raise ValueError('不支持的信号分析动作')
+    if operation not in ('result','extended','preview','export','waveforms','inspect','review','review_history','contract'):raise ValueError('不支持的信号分析动作')
     manager=WebSignalManager(root)
     try:
         if operation=='waveforms':
@@ -129,8 +129,9 @@ def dispatch(root:Path,payload:dict):
                 detail=manager.result({'jobId':params['jobId'],'recordingId':record['recording_id'],'segmentId':record['representative']})['detail']
                 for segment in detail['segments']:
                     curves.append({'recordingId':record['recording_id'],'object':record['object'],'resultId':segment['result_id'],
-                        'time_s':segment['time_s'],'velocity_m_s':segment['layers'].get('los_residual',[]),
-                        'source_start':segment['source_start'],'source_end':segment['source_end'],'layer':'los_residual'})
+                        'time_s':segment['time_s'],'velocity_m_s':segment['layers'].get(segment['layer'],[]),
+                        'source_start':segment['source_start'],'source_end':segment['source_end'],'layer':segment['layer']})
             return {'jobId':params['jobId'],'curves':curves,'synthetic':False,'continuity':'discontinuous_segments','phaseAvailable':False}
+        if operation in ('review','review_history','contract'):return manager.handle({'action':operation,**params})
         return getattr(manager,operation)(params)
     finally:manager.close()

@@ -1,5 +1,5 @@
 "use client";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { Button, Card, Dialog, Select, Table } from "./common";
 import { MeasurementStatus, PageControls, timeText, useMeasurementContext, openMeasurementWorkspace } from "./measurement-common";
@@ -121,6 +121,7 @@ function DeleteDataset({ dataset, onClose, onDeleted }: { dataset: SavedDataset;
 }
 
 export function WindDatasets({ canWrite }: { canWrite: boolean }) {
+  const fileInput = useRef<HTMLInputElement>(null);
   const [all, setAll] = useState<MeasurementObject[]>([]), [datasets, setDatasets] = useState<SavedDataset[]>([]),
     [farm, setFarm] = useState(""), [name, setName] = useState(""), [previews, setPreviews] = useState<Preview[]>([]),
     [timing,setTiming]=useState<WindTimeSemantics>(()=>validateWindTimeSemantics({})),[timingDataset,setTimingDataset]=useState<SavedDataset|null>(null),
@@ -180,11 +181,10 @@ export function WindDatasets({ canWrite }: { canWrite: boolean }) {
   return <div className="stack measurement-workspace">
     <header><h1>风场数据集</h1><p>按风机名称与时间导入工况数据。</p></header>
     <Card title="导入工况文件">
-      <div className="measurement-filters">
+      <div className="measurement-filters wind-import-controls">
         <Select label="风场" value={farm} options={all.filter(o => o.kind === "farm" && o.active).map(o => ({ value: o.id, label: o.name }))}
           disabled={busy} onChange={v => { setFarm(v); setPage(0); }} />
-        <label>CSV / XLSX · 可多选<input aria-label="风场数据文件" type="file" accept=".csv,.xlsx" multiple disabled={!canWrite || busy}
-          onChange={e => { const files = Array.from(e.target.files || []); if (files.length) void upload(files); e.target.value = ""; }} /></label>
+        <div className="wind-file-picker"><span className="wind-file-label">工况文件</span><div className="wind-file-actions"><Button type="button" disabled={!canWrite || busy} onClick={() => fileInput.current?.click()}>{busy ? "处理中…" : "选择 CSV / XLSX"}</Button><span className="hint">{previews.length ? "已读取 " + previews.length + " 个文件" : "支持多选"}</span></div><input ref={fileInput} hidden aria-label="风场数据文件" type="file" accept=".csv,.xlsx" multiple disabled={!canWrite || busy} onChange={e => { const files = Array.from(e.target.files || []); if (files.length) void upload(files); e.target.value = ""; }} /></div>
       </div>
       <p className="hint">CSV 列：名称、时间、风速、发电机有功功率、主轴转速、舱外温度、风向。每份最多 16 MB / 25 万行，兼容原有分指标文件。</p>
       <MeasurementStatus loading={busy} error={error} onReload={() => void load()} />

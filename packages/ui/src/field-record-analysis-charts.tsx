@@ -10,20 +10,21 @@ export type AnalysisSeries = { name: string; data: (number | null)[][]; color?: 
 export function lineOption(series: AnalysisSeries[], xName: string, yName: string, options: { log?: boolean; categories?: string[]; area?: AnalysisJson[] } = {}) {
   return {
     animation: false, color: analysisColors, tooltip: { trigger: "axis", confine: true, valueFormatter: (value: unknown) => valueText(value, 6) },
-    legend: { top: 0, left: 0, right: 12, type: "scroll", textStyle: { color: "#52627a", fontSize: 11 } },
-    grid: { left: 66, right: 30, top: 44, bottom: 80, containLabel: false },
+    legend: { top: 0, left: 8, right: 8, height: 20, type: "scroll", itemGap: 12, pageIconSize: 10, pageButtonItemGap: 4, pageTextStyle: { fontSize: 10 }, textStyle: { color: "#52627a", fontSize: 11 } },
+    grid: { left: 66, right: 30, top: 72, bottom: 80, containLabel: false },
     xAxis: { type: options.categories ? "category" : "value", data: options.categories, name: xName, nameLocation: "middle", nameGap: 30, nameTextStyle: { fontSize: 11 }, axisLabel: { hideOverlap: true, fontSize: 10 }, splitLine: { show: !options.categories, lineStyle: { color: "#edf1f6" } } },
-    yAxis: { type: options.log ? "log" : "value", name: yName, nameTextStyle: { fontSize: 11 }, scale: !series.some(item => item.type === "bar"), ...(!options.log && series.some(item => item.type === "bar") ? { min: 0 } : {}), axisLabel: { fontSize: 10 }, splitLine: { lineStyle: { color: "#edf1f6" } } },
+    yAxis: { type: options.log ? "log" : "value", name: yName, nameGap: 16, nameTextStyle: { fontSize: 11, align: "left" }, scale: !series.some(item => item.type === "bar"), ...(!options.log && series.some(item => item.type === "bar") ? { min: 0 } : {}), axisLabel: { fontSize: 10 }, splitLine: { lineStyle: { color: "#edf1f6" } } },
     dataZoom: [{ type: "inside", filterMode: "none" }, { type: "slider", height: 19, bottom: 10, filterMode: "none", borderColor: "#dce4ef", textStyle: { fontSize: 10 } }],
     series: series.map((item, index) => ({ type: item.type || "line", name: item.name, data: item.data, showSymbol: item.type === "bar" || item.data.length <= 25,
       symbolSize: 6, connectNulls: false, lineStyle: { width: 1.5, type: item.dashed ? "dashed" : "solid", color: item.color || analysisColors[index % analysisColors.length] },
       itemStyle: { color: item.color || analysisColors[index % analysisColors.length] }, emphasis: { focus: "series" },
-      ...(index === 0 && options.area?.length ? { markArea: { silent: true, itemStyle: { color: "rgba(37,99,235,.09)" }, data: options.area } } : {}) })),
+      ...(index === 0 && options.area?.length ? { markArea: { silent: true, label: { show: false }, emphasis: { label: { show: false } }, itemStyle: { color: "rgba(37,99,235,.09)" }, data: options.area } } : {}) })),
   };
 }
 export function AnalysisPlot({ option, label, onPick, plotRef, height = 290 }: { option: AnalysisJson; label: string; onPick?: (value: any) => void; plotRef?: React.MutableRefObject<echarts.ECharts | null>; height?: number }) {
   const root = useRef<HTMLDivElement>(null), chart = useRef<echarts.ECharts | null>(null), pick = useRef(onPick);
-  const [rendering, setRendering] = useState(true); pick.current = onPick;
+  const [rendering, setRendering] = useState(true), [renderError, setRenderError] = useState("");
+  const renderedPayload = useRef(""); pick.current = onPick;
   useEffect(() => {
     if (!root.current) return;
     const instance = echarts.init(root.current, undefined, { renderer: "canvas" }); chart.current = instance;
@@ -32,11 +33,26 @@ export function AnalysisPlot({ option, label, onPick, plotRef, height = 290 }: {
     instance.on("click", params => pick.current?.(params));
     return () => { resize.disconnect(); instance.dispose(); chart.current = null; if (plotRef) plotRef.current = null; };
   }, []);
-  useEffect(() => { chart.current?.setOption(option, { notMerge: true }); setRendering(false); }, [option]);
-  return <div className="fra-plot-wrap" style={{ height }}><div ref={root} className="fra-plot" role="img" aria-label={label} />{rendering && <div className="fra-plot-loading"><LoaderCircle size={18} className="spin" />正在绘图</div>}</div>;
+  useEffect(() => {
+    const instance = chart.current; if (!instance) return;
+    let stale = false, applying = false;
+    const payload = JSON.stringify(option);
+    if (renderedPayload.current !== payload) setRendering(true);
+    setRenderError("");
+    const finished = () => { if (!stale && applying) { renderedPayload.current = payload; setRendering(false); } };
+    instance.on("finished", finished);
+    const frame = requestAnimationFrame(() => {
+      if (stale) return;
+      applying = true;
+      try { instance.setOption(option, { notMerge: true, lazyUpdate: true }); }
+      catch (error) { if (!stale) { setRendering(false); setRenderError("图表绘制失败：" + (error as Error).message); } }
+    });
+    return () => { stale = true; cancelAnimationFrame(frame); instance.off("finished", finished); };
+  }, [option]);
+  return <div className="fra-plot-wrap" style={{ height }} aria-busy={rendering}><div ref={root} className="fra-plot" role="img" aria-label={label} />{rendering && <div className="fra-plot-loading" role="status"><LoaderCircle size={18} className="spin" />正在绘制图表…</div>}{renderError && <div className="fra-plot-loading" role="alert">{renderError}</div>}</div>;
 }
-export function AnalysisCard({ id, title, subtitle, option, reason, children, context, wide = false, loading = false, onPick, expandOnPlotClick = false }: {
-  id: string; title?: string; subtitle?: string; option?: AnalysisJson | null; reason?: string; children?: React.ReactNode;
+export function AnalysisCard({ id, title, subtitle, option, reason, children, headerActions, context, wide = false, loading = false, onPick, expandOnPlotClick = false }: {
+  id: string; title?: string; subtitle?: string; option?: AnalysisJson | null; reason?: string; children?: React.ReactNode; headerActions?: React.ReactNode;
   context: string; wide?: boolean; loading?: boolean; expandOnPlotClick?: boolean; onPick?: (value: any) => void;
 }) {
   const [full, setFull] = useState(false), chart = useRef<echarts.ECharts | null>(null);
@@ -54,7 +70,7 @@ export function AnalysisCard({ id, title, subtitle, option, reason, children, co
     anchor.download = `${id}_${name}_${context.replace(/[\\/:*?"<>|]/g, "_")}.png`; anchor.click();
   }
   return <section className={`fra-card${wide ? " fra-wide" : ""}`} data-analysis-card={id}>
-    <div className="fra-card-heading"><div><span className="fra-chart-code">{id}</span><h3>{name}</h3>{subtitle && <p>{subtitle}</p>}</div>{tagged && <div className="fra-card-tools"><Button type="button" variant="ghost" aria-label={`复位${id}视图`} onClick={() => chart.current?.dispatchAction({ type: "dataZoom", start: 0, end: 100 })}><RotateCcw size={13} /></Button><Button type="button" variant="ghost" aria-label={`全屏查看${id}`} onClick={openFull}><Expand size={13} /></Button><Button type="button" variant="ghost" aria-label={`导出${id}图片`} onClick={save}><Download size={13} /></Button></div>}</div>
+    <div className="fra-card-heading"><div className="fra-card-title"><span className="fra-chart-code">{id}</span><h3>{name}</h3>{subtitle && <p>{subtitle}</p>}</div>{tagged && !loading && <div className="fra-card-tools"><Button type="button" variant="ghost" aria-label={`复位${id}视图`} onClick={() => chart.current?.dispatchAction({ type: "dataZoom", start: 0, end: 100 })}><RotateCcw size={13} /></Button><Button type="button" variant="ghost" aria-label={`全屏查看${id}`} onClick={openFull}><Expand size={13} /></Button><Button type="button" variant="ghost" aria-label={`导出${id}图片`} onClick={save}><Download size={13} /></Button></div>}{headerActions&&!loading&&<div className="fra-card-header-actions">{headerActions}</div>}</div>
     {loading ? <div className="fra-card-empty" role="status"><LoaderCircle size={20} className="spin" /><span>正在读取真实分析结果…</span></div> : tagged ? <div onClick={expandOnPlotClick?openFull:undefined}><AnalysisPlot option={tagged} label={`${id} ${name}`} plotRef={chart} onPick={onPick} /></div> : reason ? <div className="fra-card-empty"><span className="fra-empty-symbol">—</span><p>{reason}</p></div> : null}
     {children}<div className="fra-card-provenance">{context}</div>
     {full && <Dialog title={`${id} · ${name}`} wide onClose={() => setFull(false)}><div className="fra-full-chart">{tagged && <AnalysisPlot option={fullOption||tagged} label={`${id} ${name}全屏`} height={520} onPick={onPick} />}<p>{context}</p></div></Dialog>}
@@ -62,6 +78,9 @@ export function AnalysisCard({ id, title, subtitle, option, reason, children, co
 }
 export function AnalysisEmpty({ title, message, children }: { title: string; message?: string; children?: React.ReactNode }) {
   return <div className="fra-empty-state"><span className="fra-empty-symbol">◇</span><strong>{title}</strong>{message && <p>{message}</p>}{children}</div>;
+}
+export function AnalysisLoading({ label = "正在加载分析数据…" }: { label?: string }) {
+  return <div className="fra-empty-state" role="status" aria-busy="true"><LoaderCircle size={22} className="spin" aria-hidden="true" /><strong>{label}</strong></div>;
 }
 export function AnalysisStats({ items }: { items: { label: string; value: unknown; unit?: string; note?: string }[] }) {
   return <div className="fra-stats">{items.map(item => <div key={item.label}><span>{item.label}</span><strong>{typeof item.value === "string" ? item.value : valueText(item.value)}{item.unit && <small>{item.unit}</small>}</strong>{item.note && <small>{item.note}</small>}</div>)}</div>;

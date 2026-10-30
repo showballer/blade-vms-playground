@@ -1,3 +1,5 @@
+import {analysisPackageEndpoint} from './measurement-packages';
+import {formalModalEndpoint} from './measurement-formal-modal';
 import {createBladeReport} from "./measurement-blade-report";
 import {bladeHealthEndpoint} from "./measurement-blade-health";
 import {validateWindTimeSemantics,matchSegmentConditions,windDatasetRevisionInput} from "@blade/ui/measurement-conditions";
@@ -409,6 +411,8 @@ export async function measurementEndpoint(
   const [resource, action, id] = path,
     method = req.method,
     url = new URL(req.url);
+  if(resource === "measurements" && action === "analysis-packages" && method === "POST") return analysisPackageEndpoint(user,req);
+  if(resource === "measurements" && action === "formal-modal" && method === "POST") return formalModalEndpoint(user,JSON.parse((await limitedBody(req,20*1024*1024)).toString()));
   if (resource === "measurements" && action === "processing" && method === "POST") return processingEndpoint(user,await input(req));
   if(resource==="measurements"&&action==="blade-report"&&method==="POST")return createBladeReport(user,await input(req));
   if(resource==="measurements"&&action==="blade-review"&&method==="POST"){

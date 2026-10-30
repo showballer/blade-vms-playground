@@ -4,7 +4,7 @@ Automatic choices are numerical/resource policies, never inferred modal bands.
 """
 from __future__ import annotations
 from dataclasses import replace,asdict
-import hashlib,json,math
+import hashlib,json,math,copy
 import numpy as np
 from scipy import signal
 from .reference.models import FilterSpec,require_real
@@ -14,12 +14,37 @@ from .reference import analyze_recording
 from .reference.dsp import spectra
 from .reference.cli import json_safe
 
-VERSION='desktop-workspace-1.4.0'
-DEFAULT={'detrend':'linear','filterKind':'none','lowHz':None,'highHz':None,'filterOrder':4,'window':'hann'}
+from .plan import VERSION,DEFAULT,LIMITS,PREVIEW_BAND,contract,identities,angle
+from .boundaries import assess as assess_boundaries
 
 def options(value):
  if not isinstance(value,dict) or set(value)-set(DEFAULT):raise SignalError('INVALID_CONFIG','Unsupported desktop algorithm options')
- out={**DEFAULT,**value}
+ out={**copy.deepcopy(DEFAULT),**value}
+ if 'targetBandMode' not in value and value.get('targetBandHz') is not None:out['targetBandMode']='custom'
+ if out['targetBandMode'] not in ('preview','custom','none'):raise SignalError('INVALID_CONFIG','Unknown response band mode')
+ if out['targetBandMode']!='custom':out['targetBandHz']=None;out['targetBandSource']=None
+ elif out.get('targetBandSource') is None or isinstance(out['targetBandSource'],str) and not out['targetBandSource'].strip():out['targetBandSource']='user_selected_response_band; modal_qualification_not_asserted'
+ geometry=out['geometry']
+ if not isinstance(geometry,dict) or set(geometry)-set(DEFAULT['geometry']):raise SignalError('INVALID_CONFIG','Unknown geometry fields')
+ out['geometry']={**DEFAULT['geometry'],**geometry};geometry=out['geometry']
+ if geometry['direction'] not in ('los','axial_equivalent') or type(geometry['uprightAssumption']) is not bool:raise SignalError('INVALID_CONFIG','Explicit geometry direction and assumption required')
+ if geometry['direction']=='axial_equivalent':
+  if geometry['observationModel']!='fixed_spatial_los' or geometry['axialDominanceDeclared'] is not True:raise SignalError('TIME_GEOMETRY_UNVERIFIED','Declare a fixed spatial observation and dominant axial direction; tracked material points require aligned time-varying geometry')
+  if geometry['instrumentSign'] not in (-1,1) or isinstance(geometry['instrumentSign'],bool) or not isinstance(geometry['signSource'],str) or not geometry['signSource'].strip():raise SignalError('INSTRUMENT_SIGN_UNVERIFIED','Axial interpretation requires a calibrated instrument sign source')
+  if geometry['distanceMeaning']!='axial' and geometry['uprightAssumption']:raise SignalError('GEOMETRY_CONVENTION_REQUIRED','Simplified geometry requires a declared axial distance')
+  for k in ('minAbsProjection','maxProjectionGain'):
+   if isinstance(geometry[k],bool) or not isinstance(geometry[k],(int,float)) or not math.isfinite(geometry[k]) or geometry[k]<=0:raise SignalError('PROJECTION_LIMITS_UNCONFIGURED','Projection thresholds must be supplied')
+  if geometry['minAbsProjection']>1 or geometry['maxProjectionGain']<1:raise SignalError('INVALID_CONFIG','Invalid projection thresholds')
+ override=geometry['inputOverrides']
+ if override is not None and (not isinstance(override,dict) or set(override)!={'values','source','reason'} or not isinstance(override['values'],dict) or not all(isinstance(override[k],str) and override[k].strip() for k in ('source','reason'))):raise SignalError('INVALID_CONFIG','Geometry correction requires values, source and reason')
+ overrides=geometry['recordOverrides']
+ if not isinstance(overrides,dict) or len(overrides)>LIMITS['recordsPerJob']:raise SignalError('INVALID_CONFIG','Invalid per-record geometry corrections')
+ allowed={'horizontal_distance_m','hub_height_delta_m','hub_height_m','laser_height_m','radius_from_hub_m','azimuth_deg','lateral_offset_m','laser_position_world_m','hub_position_world_m','shaft_axis_world','blade_length_m','root_radius_m'}
+ for rid,correction in overrides.items():
+  if not isinstance(rid,str) or len(rid)!=32 or any(c not in '0123456789abcdef' for c in rid) or not isinstance(correction,dict) or set(correction)!={'values','source','reason'} or not isinstance(correction['values'],dict) or set(correction['values'])-allowed or not all(isinstance(correction[k],str) and correction[k].strip() for k in ('source','reason')):raise SignalError('INVALID_CONFIG','Per-record correction needs recording ID, supported geometry, source and reason')
+ if override and set(override['values'])-allowed:raise SignalError('INVALID_CONFIG','Unknown geometry correction fields')
+ band=out['targetBandHz']
+ if out['targetBandMode']=='custom' and (not isinstance(band,list) or len(band)!=2 or any(isinstance(v,bool) or not isinstance(v,(float,int)) or not math.isfinite(v) for v in band) or not 0<=band[0]<band[1] or not isinstance(out['targetBandSource'],str) or not out['targetBandSource'].strip()):raise SignalError('INVALID_CONFIG','Custom response band requires ordered frequencies')
  if out['detrend'] not in ('none','constant','linear') or out['filterKind'] not in ('none','lowpass','highpass','bandpass') or out['window'] not in ('hann','hamming','blackman','boxcar'):raise SignalError('INVALID_CONFIG','Unknown detrend, filter or window')
  if type(out['filterOrder']) is not int or not 1<=out['filterOrder']<=12:raise SignalError('INVALID_CONFIG','Filter order must be an integer from 1 to 12')
  for key in ('lowHz','highHz'):
@@ -66,20 +91,29 @@ def quality_record(raw):
   events.append({'code':code,'source_start':lo,'source_end':hi,'excluded':bool(lost),'basis':'verified_saved_loss_rule' if lost else 'candidate_only_samples_retained'})
  return replace(raw,overrange=mask),events
 
-def policy(load,ids,settings,base):
+def policy(load,ids,settings,base,reviews=None):
  durations=[];rates=[];details=[]
  for rid in ids:
   try:
    raw,_=quality_record(load(rid));spec=filter_spec(settings,raw.sample_rate_hz)
-   segs,_=extract_segments(raw,base);guard=int(round((spec.edge_guard_seconds or 0)*raw.sample_rate_hz))
-   n=min((len(s.values_m_s)-2*guard for s in segs if len(s.values_m_s)>2*guard+3),default=0)
+   quality=assess_boundaries(raw,base,(reviews or {}).get(rid));guard=int(round((spec.edge_guard_seconds or 0)*raw.sample_rate_hz))
+   n=min((r['end']-r['start']-2*guard for r in quality['ranges'] if r['state'] in ('auto_pass','reviewed_pass') and r['end']-r['start']>2*guard+3),default=0)
    if n:durations.append(n/raw.sample_rate_hz);rates.append(raw.sample_rate_hz)
    details.append({'recordingId':rid,'sampleRateHz':raw.sample_rate_hz,'minimumUsableSamples':n,'filterGuardSamplesEachSide':guard})
   except (OSError,ValueError,TypeError) as exc:details.append({'recordingId':rid,'reason':str(exc)})
- if not durations:return {'version':VERSION,'sharedWelchSeconds':None,'automaticBandHz':None,'records':details}
+ if not durations:return {'version':VERSION,'sharedWelchSeconds':None,'automaticBandHz':None,'targetBandReason':'NO_ELIGIBLE_OBSERVATION','bandMode':settings['targetBandMode'],'records':details}
  seconds=min(durations)/2;fs=min(rates);count=max(2,2**int(math.floor(math.log2(max(2,min(32768,seconds*fs))))))
  seconds=count/fs
- return {'version':VERSION,'sharedWelchSeconds':seconds,'automaticBandHz':[1/seconds,min(rates)/2] if 1/seconds<min(rates)/2 else None,'records':details,'bandMeaning':'resolved_non_DC_to_common_Nyquist_not_a_modal_or_carrier_band'}
+ nyquist=fs/2;mode=settings['targetBandMode'];band=settings['targetBandHz'];source=settings['targetBandSource'];reason=None
+ if mode=='preview':band=[min(PREVIEW_BAND['preferredHz'][0],nyquist*.1),min(PREVIEW_BAND['preferredHz'][1],nyquist)];source=PREVIEW_BAND['version']
+ elif mode=='none':reason='BAND_DISABLED'
+ if band and band[1]>nyquist:reason='BAND_ABOVE_NYQUIST'
+ resolution=1/seconds;resolved=None
+ if band and not reason:
+  first=max(1 if mode=='preview' else 0,int(math.ceil(band[0]/resolution-1e-10)));last=min(int(math.floor(band[1]/resolution+1e-10)),count//2)
+  if first>last:reason='NO_RESOLVED_FREQUENCY_BINS'
+  else:resolved=[first*resolution,last*resolution]
+ return {'version':VERSION,'sharedWelchSeconds':seconds,'automaticBandHz':band if not reason else None,'requestedBandHz':band,'targetBandSource':source,'targetBandReason':reason,'records':details,'bandMode':mode,'bandMeaning':'descriptive_response_only_not_identified_modal_band','minimumSampleRateHz':fs,'nyquistHz':nyquist,'frequencyResolutionHz':resolution,'resolvedBandHz':resolved}
 
 def window_spectra(real,window,welch_seconds,band=None):
  real=require_real(real)
@@ -96,26 +130,46 @@ def window_spectra(real,window,welch_seconds,band=None):
   power=float(p[selected].sum()*fs/count);out.update(band_hz=list(band),band_mean_square_m2_s2=power,band_rms_m_s=math.sqrt(max(0,power)),band_integration='rectangular_selected_frequency_bins',evaluated_bin_centers_hz=[float(f[selected][0]),float(f[selected][-1])])
  return out
 
-def analyze(raw,base,settings,plan,window=None):
+def analyze(raw,base,settings,plan,window=None,review=None):
  original=raw;raw,events=quality_record(raw)
  spec=filter_spec(settings,raw.sample_rate_hz)
- config=replace(base,background=settings['detrend'],filter=spec,welch_window_seconds=plan['sharedWelchSeconds'])
- bundle=analyze_recording(raw,config=config,explicit_window=window)
+ g=settings['geometry'];config=replace(base,background=settings['detrend'],filter=spec,welch_window_seconds=plan['sharedWelchSeconds'],core_window_seconds=None,allow_upright_geometry_assumption=g['uprightAssumption'],projection=g['direction'],min_abs_projection=g['minAbsProjection'],max_projection_gain=g['maxProjectionGain'],instrument_sign=g['instrumentSign'])
+ correction=g.get('recordOverrides',{}).get(raw.recording_id) or g.get('inputOverrides')
+ override=(correction or {}).get('values')
+ try:quality=assess_boundaries(raw,config,review)
+ except (ValueError,TypeError):quality=None
+ if window is not None:raise SignalError('INVALID_CONFIG','Fixed legacy windows cannot be used with the unified plan; use a versioned quality review')
+ if quality is None:bundle=analyze_recording(raw,override,config=config)
+ else:
+  bundle=analyze_recording(raw,override,config=config,explicit_window=tuple(quality['candidateRange']));bundle['segments']=[];bundle['quality_events']=quality['events'];bundle['edgeAssessment']=quality
+  for r in quality['ranges']:
+   if r['state']=='excluded':continue
+   part=analyze_recording(raw,override,config=config,explicit_window=(r['start'],r['end']))
+   for seg in part['segments']:
+    seg.status.update(quality_state=r['state'],summary_eligible=r['state'] in ('auto_pass','reviewed_pass'))
+    seg.parameters['quality_revision']=quality['version'];seg.parameters['edge_assessment']={'candidateRange':quality['candidateRange'],'ranges':quality['ranges'],'rule':quality['rule'],'reviewRevision':quality['reviewRevision']}
+   bundle['segments'].extend(part['segments']);bundle['issues']=list(dict.fromkeys(bundle['issues']+part['issues']))
  bundle['quality_events'].extend(events)
  for s in bundle['segments']:
   if s.status.get('analysis_state')!='ready':continue
   try:s.spectrum=window_spectra(s.analysis_input(),settings['window'],config.welch_window_seconds)
   except SignalError as exc:s.spectrum={};s.status.update(spectrum_state='blocked',spectrum_message=str(exc));s.status['issues'].append(exc.code)
+  pc=original.manifest.get('pointCycle') or {};planned=[v.get('azimuthDeg') for v in pc.get('plannedStations',[]) if isinstance(v,dict) and isinstance(v.get('azimuthDeg'),(int,float))]
+  mapping=angle(pc.get('azimuthDeg'),planned,pc.get('azimuthToleranceDeg',0))
+  s.parameters['angle_mapping']=mapping;s.parameters['entity_ids']=identities(original.manifest)
+  if mapping['mapped'] is None:s.status['summary_eligible']=False;s.status['issues'].append('AZIMUTH_PLAN_CONFLICT')
+  else:s.parameters['object']['azimuth_deg']=mapping['mapped']
+  s.parameters['geometry_correction']=correction
   n=len(s.analysis_input().values_m_s);stft=max(2,2**int(math.floor(math.log2(max(2,min(n//4,4096))))))
   s.parameters['desktop_workspace']={'version':VERSION,'algorithmOptions':settings,'automatic':{'sourceRange':[s.segment.source_start,s.segment.source_end],'analysisRange':[s.analysis_start,s.analysis_end],'fftSamples':n,'zeroPaddingSamples':0,'stftWindowSamples':stft,'stftWindowSeconds':stft/raw.sample_rate_hz,'welchWindowSeconds':config.welch_window_seconds,'analysisBandHz':plan['automaticBandHz'],'filterEdgeGuardSeconds':spec.edge_guard_seconds or 0,'window':settings['window']},'rawSourceHash':original.source_hash}
   s.result_id=hashlib.sha256(json.dumps({'referenceId':s.result_id,'desktopOptions':settings,'automatic':s.parameters['desktop_workspace']},sort_keys=True).encode()).hexdigest()
- bundle['representative']=max((s for s in bundle['segments'] if s.status.get('analysis_state')=='ready'),key=lambda s:len(s.analysis_input().values_m_s),default=None)
+ bundle['representative']=max((s for s in bundle['segments'] if s.status.get('analysis_state')=='ready' and s.status.get('summary_eligible',True)),key=lambda s:(len(s.analysis_input().values_m_s),-s.segment.source_start),default=None)
  if bundle['representative'] is not None:bundle['representative']=bundle['representative'].result_id
  return bundle
 
 def comparison(bundle,m,original):
- key={'frame':{k:(bundle.get('measurement_inputs') or {}).get(k) for k in ('shaft_axis_world','laser_position_world_m','hub_position_world_m')},'calibration':{k:((m.get('turntable') or {}).get('config') or {}).get('geometry',{}).get(k) for k in ('rotationDirection','axis1Sign','axis2Sign','pitchAngleScale','yawAngleScale')},'referenceSignature':(m.get('pointCycle') or {}).get('referenceSignature'),'model':(bundle.get('geometry') or {}).get('model'),'assumptions':(bundle.get('geometry') or {}).get('assumptions')}
- original['geometryComparisonKey']=hashlib.sha256(json.dumps(key,sort_keys=True).encode()).hexdigest();original['geometryComparisonSnapshot']['perRecordGeometryRetained']=True
+ original['geometryComparisonKey']=hashlib.sha256(json.dumps({'snapshot':original['geometryComparisonSnapshot'],'entities':identities(m)},sort_keys=True).encode()).hexdigest()
+ original['geometryComparisonSnapshot']['perRecordGeometryRetained']=True
  return original
 
 def auto_stft(result):

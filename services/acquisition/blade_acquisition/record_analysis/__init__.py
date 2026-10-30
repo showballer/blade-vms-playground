@@ -1,2 +1,2 @@
 """Independent, read-only post-acquisition analysis (never a motion/DAQ controller)."""
-ALGORITHM_VERSION = "desktop-record-analysis-1.1.0"
+ALGORITHM_VERSION = "unified-record-analysis-2.2.0"

@@ -1,6 +1,18 @@
 import {finite,array,type AnalysisTask,type AnalysisCatalogRecord,type AnalysisJson} from './field-record-analysis-data';
-export type DesktopAlgorithmOptions={detrend:'none'|'constant'|'linear';filterKind:'none'|'lowpass'|'highpass'|'bandpass';lowHz:number|null;highHz:number|null;filterOrder:number;window:'hann'|'hamming'|'blackman'|'boxcar'};
-export const desktopAlgorithmDefaults:DesktopAlgorithmOptions={detrend:'linear',filterKind:'none',lowHz:null,highHz:null,filterOrder:4,window:'hann'};
+export type DesktopAlgorithmOptions={detrend:'none'|'constant'|'linear';filterKind:'none'|'lowpass'|'highpass'|'bandpass';lowHz:number|null;highHz:number|null;filterOrder:number;window:'hann'|'hamming'|'blackman'|'boxcar';geometry?:{direction:'los'|'axial_equivalent';uprightAssumption:boolean;minAbsProjection:number|null;maxProjectionGain:number|null;distanceMeaning:string;inputOverrides:any;recordOverrides?:Record<string,any>;observationModel?:string;axialDominanceDeclared?:boolean;instrumentSign?:number|null;signSource?:string|null};targetBandMode?:'preview'|'custom'|'none';targetBandHz?:number[]|null;targetBandSource?:string|null};
+export const desktopAlgorithmDefaults:DesktopAlgorithmOptions={detrend:'linear',filterKind:'none',lowHz:null,highHz:null,filterOrder:4,window:'hann',targetBandMode:'preview',targetBandHz:null,targetBandSource:null};
+export function normalizedAlgorithmOptions(saved:Partial<DesktopAlgorithmOptions>):DesktopAlgorithmOptions{
+ const mode=saved.targetBandMode||(saved.targetBandHz?'custom':'preview');
+ return {...desktopAlgorithmDefaults,...saved,targetBandMode:mode,...(mode!=='custom'?{targetBandHz:null,targetBandSource:null}:{targetBandSource:saved.targetBandSource||'用户指定的响应统计频带；非已确认模态频带'})};
+}
+export function previewBandForRates(rates:number[]){
+ const known=rates.filter(v=>Number.isFinite(v)&&v>0);if(!known.length)return null;
+ const nyquist=Math.min(...known)/2;return {band:[Math.min(100,nyquist*.1),Math.min(20000,nyquist)],nyquist};
+}
+export function responseBandMessage(plan:AnalysisJson){
+ const reasons:Record<string,string>={BAND_DISABLED:'已关闭频带统计，原始波形和频谱仍可查看',NO_ELIGIBLE_OBSERVATION:'没有通过质量检查的连续段，请先查看原始记录与复核原因',BAND_ABOVE_NYQUIST:'指定频带超过采样率允许的上限，请缩小范围或使用宽频预览',NO_RESOLVED_FREQUENCY_BINS:'当前有效时长与谱窗不能分辨此频带，请扩大范围或采集更长的连续数据',TARGET_BAND_NOT_CONFIGURED:'此历史版本未配置频带；返回当前配置可使用宽频预览'};
+ return reasons[plan?.targetBandReason]||'共同频带内无可比实测结果';
+}
 export type RecordFilters={taskName:string;windFarm:string;turbine:string;bladeId:string};
 export const emptyRecordFilters:RecordFilters={taskName:'',windFarm:'',turbine:'',bladeId:''};
 const taskName=(task:AnalysisTask)=>task.name||'未填写任务';
@@ -37,9 +49,11 @@ export function workspaceStftOption(stft:AnalysisJson|null):AnalysisJson|null{
 }
 export function desktopRecordLabel(task:AnalysisTask,record:AnalysisCatalogRecord){
  const known=(v:unknown,fallback:string)=>v===undefined||v===null||v===''?fallback:String(v);
- return [known(task.name,'未填写任务'),known(task.turbine,'未填写风机'),'叶片'+known(record.bladeId,'未知'),known(typeof record.pointName==='string'&&/^\d+\s*(点|个样本|samples)$/.test(record.pointName)?null:record.pointName,'未填写测点'),finite(record.azimuthDeg)?record.azimuthDeg+'°':'未知角度'].join('－');
+ return [known(task.name,'未填写任务'),known(task.windFarm,'未填写风场'),known(task.turbine,'未填写风机'),'叶片'+known(record.bladeId,'未知'),known(typeof record.pointName==='string'&&/^\d+\s*(点|个样本|samples)$/.test(record.pointName)?null:record.pointName,'未填写测点'),finite(record.azimuthDeg)?record.azimuthDeg+'°':'未知角度'].join('－');
 }
 export function algorithmError(o:DesktopAlgorithmOptions,records:(AnalysisCatalogRecord&{sampleRate?:number})[]){
+ if((o.targetBandMode==='custom'||!o.targetBandMode&&o.targetBandHz)&&(!o.targetBandHz||!o.targetBandHz.every(Number.isFinite)||!(o.targetBandHz[0]>=0&&o.targetBandHz[1]>o.targetBandHz[0])))return '请填写有效频带：下限不小于0，上限大于下限';
+ if(o.geometry?.direction==='axial_equivalent'&&(!(Number(o.geometry.minAbsProjection)>0)||!(Number(o.geometry.maxProjectionGain)>=1)))return '轴向换算需明确投影门槛和几何假设';
  if(!Number.isInteger(o.filterOrder)||o.filterOrder<1||o.filterOrder>12)return '滤波阶数应为1～12的整数';
  const needLow=['highpass','bandpass'].includes(o.filterKind),needHigh=['lowpass','bandpass'].includes(o.filterKind);
  if(needLow&&!(typeof o.lowHz==='number'&&o.lowHz>0)||needHigh&&!(typeof o.highHz==='number'&&o.highHz>0))return '请填写大于0的截止频率';
