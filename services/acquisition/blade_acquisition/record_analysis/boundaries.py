@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 from .plan import EDGE,digest
 from .reference.quality import candidate_window,extract_segments,runs
+from .pass_edges import exit_transitions
 
 def assess(raw,config,review=None):
  start,end=candidate_window(raw);segments,hard=extract_segments(raw,config);events=list(hard);ranges=[];statistics=[]
@@ -11,6 +12,11 @@ def assess(raw,config,review=None):
  for seg in segments:
   y=seg.values_m_s;fs=seg.sample_rate_hz;w=max(4,int(round(EDGE['windowSeconds']*fs)));persist=max(2,int(np.ceil(EDGE['persistenceSeconds']*fs/w)))
   count=len(y)//w;lo,hi=seg.source_start,seg.source_end;cuts={lo,hi};states=[]
+  # Saved pass events are clock-validated by candidate_window. Outside samples
+  # support edge classification only; they never extend the analysis range.
+  contextual=exit_transitions(raw,config,lo,hi) if target_events and hi==end else []
+  for event in contextual:
+   a,bound=event['source_start'],event['source_end'];cuts.update((a,bound));states.append((a,bound,'review'));events.append(event)
   if count>=2*persist+2:
    b=y[:count*w].reshape(count,w);med=np.median(b,axis=1);mad=np.median(abs(b-med[:,None]),axis=1)*1.4826
    d=abs(np.diff(med));noise=max(float(np.median(mad)),float(np.finfo(float).eps*max(1.,np.max(abs(y)))))
@@ -25,6 +31,7 @@ def assess(raw,config,review=None):
     left_flat=np.ptp(before)<shift*.2;right_flat=np.ptp(after)<shift*.2
     if not (left_flat and right_flat):continue
     refine_start=max(0,(int(j)-1)*w);refine_end=min(len(y),(int(j)+1)*w)
+    if any(lo+refine_start<e['transitionRange'][1] and lo+refine_end>e['transitionRange'][0] for e in contextual):continue
     # Refine the persistent level change, not the largest single derivative:
     # a later real impulse can have a sharper edge than the platform switch.
     local=y[refine_start:refine_end]

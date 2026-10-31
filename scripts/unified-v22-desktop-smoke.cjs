@@ -234,6 +234,17 @@ app.on('browser-window-created', (_event, win) => {
       await wait("!!document.querySelector('[data-analysis-card=SYN-WAVE-P1] .fra-card-provenance')",'point preview states');
       const synthesis=await waitPayload(p=>p.command.action==='result'&&!p.command.recordingId&&p.result.workspace?.purpose==='synthesis');assert(synthesis.coverage.analyzableCount>0&&synthesis.coverage.analyzableCount<20);assert(synthesis.coverage.reviewCount>=1);assert.equal(synthesis.records.length,20);assert.equal(synthesis.aggregates.length,5);const p390=synthesis.records.find(r=>r.object.point==='P3'&&r.object.azimuth_deg===90),p390Rep=p390.segments.find(s=>s.result_id===p390.representative);assert(p390Rep.features.half_peak_to_peak_m_s<.005,'P3/90 platform must not leak into quantitative amplitude');check('P3/90 persistent platform is retained as review and excluded from the representative');
       const g=synthesis.aggregates.find(g=>g.point==='P1');assert(g.azimuth_count>=1&&g.azimuth_count<4);assert(Math.abs(g.mean_half_peak_to_peak_m_s-g.azimuth_results.reduce((s,a)=>s+a.mean_half_peak_to_peak_m_s,0)/g.azimuth_count)<1e-12);
+      assert.equal(synthesis.processingContract.version,'unified-analysis-2.2.3');
+      for(const [point,angle,endMs] of [['P3',0,50],['P3',180,36],['P3',270,48],['P4',0,22],['P4',180,12],['P5',0,6],['P5',180,8],['P5',270,8]]){
+        const r=synthesis.records.find(r=>r.object.point===point&&r.object.azimuth_deg===angle),s=r.segments.find(s=>s.result_id===r.representative);
+        assert(s,`${point}/${angle} must retain its actual pre-transition segment`);
+        assert(Math.abs(s.features.observation_seconds*1000-endMs)<.01,`${point}/${angle}: use full stable segment, not the platform change or background tail`);
+        assert(r.quality_events.some(e=>e.code==='PASS_EXIT_CONTEXT_REVIEW'&&!e.excluded));
+      }
+      const p590=synthesis.records.find(r=>r.object.point==='P5'&&r.object.azimuth_deg===90);
+      assert.equal(p590.representative,null);assert.equal(p590.quality_assessment.analysis_eligible,false);
+      assert(p590.segments.length>0,'P5/90 diagnostic samples remain available');
+      check('P3/P4/P5 transition cores are source-bound; P5/90 background stays review, not low vibration');
       const ids=await js("[...document.querySelectorAll('.desktop-analysis-workspace>section>h2')].map(e=>e.textContent)");assert(ids.includes('同点多角度拼接波形')&&ids.includes('各测点 Welch 功率谱'));
       assert.equal(await js("document.querySelectorAll('[data-analysis-card^=SYN-WAVE-]').length"),5);assert.equal(await js("document.querySelectorAll('[data-analysis-card^=SYN-PSD-]').length"),5);
       assert.equal(await js("document.querySelectorAll('[data-analysis-card=SIG-RAW]').length"),0);check('Synthesis shows five waveforms then five Welch charts, one band and one absolute average-amplitude chart; no raw/phase duplication');
@@ -249,6 +260,12 @@ app.on('browser-window-created', (_event, win) => {
       }
       report.chartHeaderLayout=headerLayout;await js('window.__restoreAnalysisLabels()');check('Preview export is in the header; title/tools align; chart legend and units occupy separate rows');
       await shot('03-blade-synthesis.png');
+      for(const point of ['P3','P4','P5']){
+        await js(`document.querySelector('[data-analysis-card=SYN-WAVE-${point}]').scrollIntoView({block:'center'})`);
+        await clickSelector(`[data-analysis-card=SYN-WAVE-${point}] .fra-plot`);
+        await wait("!!document.querySelector('.fra-full-chart canvas')",'large corrected point '+point);
+        await shot(`15-${point}-corrected.png`);await clickSelector('dialog[open] button[aria-label=关闭弹窗]');
+      }
       assert.equal(await js("document.querySelectorAll('.dra-response-coverage .dra-coverage-open').length"),5);
       assert(!await js("!!document.querySelector('dialog[open]')"),'Source details open only on request');
       assert.equal(await js("[...document.querySelectorAll('.dra-response-coverage button')].filter(b=>b.getClientRects().length).length"),5,'Coverage overview must show only one text detail action per point');

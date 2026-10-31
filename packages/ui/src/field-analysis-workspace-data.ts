@@ -62,10 +62,33 @@ export function algorithmError(o:DesktopAlgorithmOptions,records:(AnalysisCatalo
  if(needLow&&o.lowHz!>=max||needHigh&&o.highHz!>=max)return `截止频率必须小于所选记录的Nyquist上限 ${max} Hz`;
  return '';
 }
+export function workspaceAzimuthColor(angle:number,planned:number[]){
+ const palette=['#2563eb','#059669','#dc4d65','#9333ea','#0891b2'];
+ const order=planned.length?planned:[0,90,180,270];
+ return palette[Math.max(0,order.indexOf(angle))%palette.length];
+}
 export function workspacePointSeries(report:AnalysisJson,details:Record<string,AnalysisJson>,point:string,bladeId:string){
+ const records=array(report.records).filter(r=>String(r.object?.blade)===bladeId&&r.object?.point===point);
+ const coverage=array(report.coverage?.points).find(p=>String(p.bladeId)===bladeId&&p.pointName===point);
+ const planned=[...new Set([...array<number>(coverage?.plannedAzimuths),...records.map(r=>r.object.azimuth_deg).filter(finite)])].sort((a,b)=>a-b);
+ const cores=new Map<number,number[][]>();
+ for(const r of records){
+  const angle=r.object.azimuth_deg;if(!r.quality_assessment?.analysis_eligible||!finite(angle)||cores.has(angle))continue;
+  const s=array(details[r.recording_id]?.segments).find(s=>s.result_id===r.representative);if(!s)continue;
+  const lo=s.analysis_source_start??s.source_start,hi=s.analysis_source_end??s.source_end,indices=array<number>(s.source_indices),y=array<number>(s.layers?.[s.layer]),times=array<number>(s.time_s);
+  const pairs=times.flatMap((t,i)=>indices[i]>=lo&&indices[i]<hi?[[t,y[i]*1000]]:[]);
+  if(pairs.length)cores.set(angle,pairs);
+ }
+ if(!cores.size)return [];
+ // Display spacing only: missing angles have null values, never synthetic
+ // samples or an inferred physical duration. Unfitted real cores stay apart.
+ const total=[...cores.values()].reduce((sum,pairs)=>sum+pairs.at(-1)![0]-pairs[0][0],0),gap=Math.max(total*.08,.000001);
  let elapsed=0;const series:any[]=[];
- const records=array(report.records).filter(r=>String(r.object?.blade)===bladeId&&r.object?.point===point&&r.quality_assessment?.analysis_eligible).sort((a,b)=>(a.object.azimuth_deg??0)-(b.object.azimuth_deg??0));
- const seen=new Set<number>();
- for(const r of records){if(seen.has(r.object.azimuth_deg))continue;seen.add(r.object.azimuth_deg);const s=array(details[r.recording_id]?.segments).find(s=>s.result_id===r.representative);if(!s)continue;const lo=s.analysis_source_start??s.source_start,hi=s.analysis_source_end??s.source_end,indices=array<number>(s.source_indices),y=array<number>(s.layers?.[s.layer]),times=array<number>(s.time_s);const sourceLo=lo,sourceHi=hi;const pairs=times.flatMap((t,i)=>indices[i]>=sourceLo&&indices[i]<sourceHi?[[elapsed+t-times[0],y[i]*1000]]:[]);if(!pairs.length)continue;const origin=pairs[0][0];const data=pairs.map(([x,y])=>[x-origin+elapsed,y]);elapsed=data.at(-1)![0];series.push({name:r.object.azimuth_deg+'°',data});}
+ for(const angle of planned){
+  const pairs=cores.get(angle),color=workspaceAzimuthColor(angle,planned);
+  if(!pairs){series.push({name:`${angle}° 待复核／缺失`,data:[[elapsed,null],[elapsed+gap,null]],color:'#94a3b8',dashed:true,displayOnlyGap:true});elapsed+=gap;continue;}
+  const data=pairs.map(([x,y])=>[elapsed+x-pairs[0][0],y]);
+  series.push({name:angle+'°',data,color});elapsed=data.at(-1)![0]+gap/4;
+ }
  return series;
 }

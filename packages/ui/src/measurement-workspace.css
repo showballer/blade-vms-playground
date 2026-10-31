@@ -188,6 +188,13 @@
   align-items: center;
   gap: 20px;
 }
+
+.measurement-heading-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
 .measurement-actions {
   display: flex;
   gap: 10px;

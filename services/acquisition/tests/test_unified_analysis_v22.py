@@ -1,6 +1,7 @@
 from pathlib import Path
 import tempfile,unittest,time,json
 import numpy as np
+from dataclasses import replace
 from test_record_analysis_manager import write_record
 from blade_acquisition.record_analysis.adapter import load_raw
 from blade_acquisition.record_analysis.plan import contract,angle,DEFAULT
@@ -43,6 +44,37 @@ class UnifiedPlanTests(unittest.TestCase):
   self.values(lambda t:.001*np.sin(2*np.pi*23*t)+np.where(t>1,.2,0));r=self.run_job();before=(self.records/self.rid/'chunk-00000000.bin').read_bytes();v=self.manager.handle({'action':'review','jobId':r['jobId'],'recordingId':self.rid,'intervals':[{'start':100,'end':3900,'decision':'include'}],'reason':'Validated stable pre-step target interval','evidence':'test witness','actor':'tester','parentRevision':None})
   new=self.run_job();self.assertNotEqual(r['jobId'],new['jobId']);self.assertTrue(new['records'][0]['quality_assessment']['analysis_eligible']);self.assertEqual((self.records/self.rid/'chunk-00000000.bin').read_bytes(),before)
   self.manager.handle({'action':'review','jobId':new['jobId'],'recordingId':self.rid,'intervals':[],'reason':'Undo validation','actor':'tester','operation':'undo','parentRevision':v['review']['id']});undone=self.run_job();self.assertFalse(undone['records'][0]['quality_assessment']['analysis_eligible'])
+ def pass_raw(self,fn,fs=4000.,start=.5,end=.6):
+  raw=load_raw(self.records,self.rid);t=np.arange(int(fs*.7))/fs;m=json.loads(json.dumps(raw.manifest));pc=m['pointCycle'];pc['continuousSession']['sampleStart']=0;pc['handoff'].update(entryConfirmedSampleIndex=round(start*fs),exitSampleIndex=round(end*fs),passCompleteness='confirmed')
+  return replace(raw,sample_rate_hz=fs,time_s=t,velocity_m_s=fn(t),rssi_percent=np.full(len(t),np.nan),overrange=np.zeros(len(t)),manifest=m)
+ def test_pass_ramps_spanning_detection_windows_are_reviewed_before_fit(self):
+  for fs in (4000.,250000.):
+   for direction in (-1,1):
+    for width in (.0015,.006,.012):
+     with self.subTest(fs=fs,direction=direction,width=width):
+      start=.5803;y=lambda t:direction*.16*(1-np.clip((t-start)/width,0,1))+.0001*np.sin(2*np.pi*230*t)
+      raw=self.pass_raw(y,fs=fs);before=raw.velocity_m_s.copy();q=assess(raw,AnalysisConfig());events=[e for e in q['events'] if e['code']=='PASS_EXIT_CONTEXT_REVIEW'];self.assertTrue(events)
+      self.assertTrue(all(not e['excluded'] for e in events));accepted=[r for r in q['ranges'] if r['state']=='auto_pass'];self.assertTrue(accepted)
+      self.assertLessEqual(max(r['end'] for r in accepted),round(start*fs));self.assertGreater(max(r['end'] for r in accepted)/fs,.57)
+      self.assertEqual(sum(r['end']-r['start'] for r in q['ranges']),round(.1*fs));np.testing.assert_array_equal(raw.velocity_m_s,before)
+ def test_short_pass_does_not_choose_quiet_post_exit_tail(self):
+  raw=self.pass_raw(lambda t:.26*(t<.5098)+.00005*np.sin(2*np.pi*230*t),start=.5,end=.52)
+  q=assess(raw,AnalysisConfig());accepted=[r for r in q['ranges'] if r['state']=='auto_pass'];self.assertTrue(accepted);self.assertTrue(all(r['end']<=round(.5098*raw.sample_rate_hz) for r in accepted))
+  # The confirmed-entry event itself was late. Never silently extend it left
+  # to recover a different interval or certify an empty background as vibration.
+  raw=self.pass_raw(lambda t:.26*(t<.498)+.00005*np.sin(2*np.pi*230*t),start=.5,end=.51);q=assess(raw,AnalysisConfig())
+  self.assertEqual(q['ranges'],[{'start':2000,'end':2040,'state':'review'}])
+ def test_pass_context_does_not_delete_impacts_decay_or_quiet_motion(self):
+  for fn in (lambda t:.1*np.exp(-t)*np.sin(2*np.pi*230*t)+np.where(abs(t-.59)<.0002,8,0),lambda t:np.full(len(t),.03)+.0001*np.sin(2*np.pi*230*t),lambda t:.2*(t-.5)+.0001*np.sin(2*np.pi*230*t)):
+   q=assess(self.pass_raw(fn),AnalysisConfig());self.assertFalse(any(e['code']=='PASS_EXIT_CONTEXT_REVIEW' for e in q['events']))
+ def test_outside_context_never_crosses_gaps_or_invalid_samples(self):
+  raw=self.pass_raw(lambda t:.16*(t<.495)+.0001*np.sin(2*np.pi*230*t),start=.5,end=.51)
+  self.assertTrue(any(e['code']=='PASS_EXIT_CONTEXT_REVIEW' for e in assess(raw,AnalysisConfig())['events']))
+  for kind in ('gap','invalid'):
+   t=raw.time_s.copy();bad=raw.overrange.copy()
+   if kind=='gap':t[2000:]+=.001
+   else:bad[1999]=1
+   q=assess(replace(raw,time_s=t,overrange=bad),AnalysisConfig());self.assertFalse(any(e['code']=='PASS_EXIT_CONTEXT_REVIEW' for e in q['events']))
  def test_normalize_angle_without_nearest_guess(self):
   self.assertEqual(angle(360,[0,90],0)['mapped'],0);self.assertEqual(angle(-90,[],0)['normalized'],270);self.assertEqual(angle(2,[0,4],3)['status'],'conflict');self.assertEqual(angle(46,[0,90],1)['status'],'outside_plan')
  def test_default_contract_has_no_fake_target_band(self):

@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { DesktopAnalysisWorkspace } from "./field-analysis-workspace";
 import { lineOption } from "./field-record-analysis-charts";
 import { ResponseBandFields, ResponseCoverage } from "./unified-analysis-controls";
-import { normalizedAlgorithmOptions,previewBandForRates,responseBandMessage } from "./field-analysis-workspace-data";
+import { normalizedAlgorithmOptions,previewBandForRates,responseBandMessage,workspaceAzimuthColor } from "./field-analysis-workspace-data";
 import { modalInputReason } from "./formal-modal-workspace";
 import { desktopAlgorithmDefaults, desktopRecordLabel, algorithmError, workspacePointSeries, emptyRecordFilters, recordFilterChoices, changeRecordFilter, workspaceStftOption } from "./field-analysis-workspace-data";
 import type { AnalysisTask } from "./field-record-analysis-data";
@@ -73,6 +73,21 @@ const series = workspacePointSeries({ records: [{ recording_id: "record", repres
 assert.equal(series.length, 1);
 assert.deepEqual(series[0].data.map((v: number[]) => v[1]), [1, -1, 2]);
 assert.equal(series[0].data[0][0], 0);
+
+// A review-only angle keeps an explicit empty display slot; remaining angles
+// retain their color and exact real values rather than appearing connected.
+const planned=[0,90,180,270];
+const gapReport={coverage:{points:[{bladeId:'2',pointName:'P5',plannedAzimuths:planned}]},records:planned.map(angle=>({recording_id:String(angle),representative:String(angle),object:{blade:'2',point:'P5',azimuth_deg:angle},quality_assessment:{analysis_eligible:angle!==90}}))};
+const gapDetails=Object.fromEntries(planned.map(angle=>[angle,{segments:[{result_id:String(angle),analysis_source_start:0,analysis_source_end:3,source_indices:[0,1,2],time_s:[.2,.201,.202],layer:'los_residual',layers:{los_residual:[.001,-.001,.002]}}]}]));
+const gapSeries=workspacePointSeries(gapReport,gapDetails,'P5','2');
+assert.equal(gapSeries.length,4);
+assert.equal(gapSeries[1].displayOnlyGap,true);
+assert.ok(gapSeries[1].data.every((pair:any[])=>pair[1]===null));
+assert.ok(gapSeries[2].data[0][0]>gapSeries[0].data.at(-1)[0]);
+assert.ok(gapSeries[3].data[0][0]>gapSeries[2].data.at(-1)[0]);
+for(const i of [0,2,3]){assert.deepEqual(gapSeries[i].data.map((pair:any[])=>pair[1]),[1,-1,2]);assert.equal(gapSeries[i].color,workspaceAzimuthColor(planned[i],planned));}
+assert.equal(workspaceAzimuthColor(270,planned),'#9333ea');
+assert.deepEqual(workspacePointSeries(gapReport,{},'P5','2'),[]);
 
 let calls = 0;
 const request = async () => { calls++; throw Error("SSR must not read hardware or start analysis"); };
