@@ -3,7 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const actions = new Set(['catalog', 'start', 'status', 'result', 'preview', 'extended', 'export', 'cancel', 'inspect','contract','review','review_history','package','sync','sync_status','publish']);
+const actions = new Set(['import_select','import_commit','catalog', 'start', 'status', 'result', 'preview', 'extended', 'export', 'cancel', 'inspect','contract','review','review_history','package','sync','sync_status','publish']);
 function invalid(message) { return Object.assign(new Error(message), { status: 400 }); }
 
 function recordAnalysisRequest(request) {
@@ -12,6 +12,8 @@ function recordAnalysisRequest(request) {
   // Files are resolved by the local service from recording/job IDs only.
   if (['path', 'file', 'directory', 'outputPath', 'dataDir'].some(key => key in request))
     throw invalid('记录分析仅接受已保存的记录编号');
+  if(request.action==='import_select'){if(!['folder','zip'].includes(request.kind))throw invalid('请选择文件夹或ZIP');return request;}
+  if(request.action==='import_commit'){if(typeof request.token!=='string'||!/^[0-9a-f]{32}$/.test(request.token)||!Array.isArray(request.files)||request.files.length>200)throw invalid('导入预览无效');return request;}
   if(['inspect','review_history'].includes(request.action)){if(typeof request.recordingId!=='string'||!/^[0-9a-f]{32}$/.test(request.recordingId))throw invalid('请选择有效原始记录');return request;}
   if (request.action === 'start') {
     if (!Array.isArray(request.recordingIds) || request.recordingIds.length < 1 || request.recordingIds.length > 200 ||

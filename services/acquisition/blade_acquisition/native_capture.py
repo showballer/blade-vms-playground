@@ -19,6 +19,7 @@ from .waveform import WaveformReader
 CHUNK = re.compile(r"chunk-[0-9]{8}\.bin$")
 CAPTURE = re.compile(r"[a-f0-9]{32}$")
 TELEMETRY = "turntable.jsonl"
+SPLIT_SOURCE = "split-source.csv.gz"
 SAMPLES = np.dtype([("index", "<u8"), ("raw", "<i4"), ("value", "<f8"),
                     ("rssiRaw", "<i4"), ("rssi", "<f4"), ("flags", "u1")])
 assert SAMPLES.itemsize == RECORD.size
@@ -108,8 +109,11 @@ def validate_capture(value):
     if manifest.get("status") != "complete" or manifest.get("unit") != "m/s" or manifest.get("format") != "BLADEV01/<QidifB":
         raise ValueError("原始采集记录尚未完整保存或格式无效。")
     source = manifest.get("source")
-    if source not in ("simulation", "polytec_ivs500") or (source == "simulation" and not isinstance(manifest.get("simulation"), dict)):
+    if source not in ("simulation", "polytec_ivs500", "split_segment_import") or (source == "simulation" and not isinstance(manifest.get("simulation"), dict)):
         raise ValueError("数据来源或模拟标记无效。")
+    outdoor = source == "split_segment_import"
+    if outdoor and (manifest.get('measurementMode') != 'outdoor' or (manifest.get('outdoorSegment') or {}).get('rawFile') != SPLIT_SOURCE):
+        raise ValueError('户外分段来源信息缺失。')
     rate, origin = manifest.get("sampleRate"), manifest.get("sampleOrigin")
     if not isinstance(rate, (int, float)) or isinstance(rate, bool) or not math.isfinite(rate) or rate <= 0:
         raise ValueError("原始采样率无效。")
@@ -119,7 +123,7 @@ def validate_capture(value):
     names, chunks = set(), []
     for item in files:
         name = item.get("name", "")
-        if name in names or not (CHUNK.fullmatch(name) or name in ("unpaired-rssi.bin", TELEMETRY)):
+        if name in names or not (CHUNK.fullmatch(name) or name in ("unpaired-rssi.bin", TELEMETRY, SPLIT_SOURCE)):
             raise ValueError("原始文件名重复或无效。")
         names.add(name)
         file = directory / name
@@ -150,7 +154,7 @@ def validate_capture(value):
                 samples = np.frombuffer(block, dtype=SAMPLES)
                 flags = samples["flags"]
                 if (not np.array_equal(samples["index"], np.arange(count, count + len(samples), dtype=np.uint64)) or
-                        not np.isfinite(samples["value"]).all() or np.any(flags & 252) or
+                        (not outdoor and not np.isfinite(samples["value"]).all()) or np.any(flags & 252) or
                         not np.isfinite(samples["rssi"][flags & 2 != 0]).all() or
                         np.any(((flags & 2) != 0) & (samples["index"] % rssi_stride != 0))):
                     raise ValueError("原始样本序号、数值或状态无效。")
@@ -181,6 +185,22 @@ def validate_capture(value):
             raise ValueError(f"{key} 与原始数据不一致。")
     if count < 1:
         raise ValueError("不能上传空采集记录。")
+    if outdoor:
+        if SPLIT_SOURCE not in names:
+            raise ValueError('户外分段原始 CSV 缺失。')
+        from .record_analysis.outdoor_import import parse
+        head, original, _ = parse((directory / SPLIT_SOURCE).read_bytes(), SPLIT_SOURCE)
+        if head['samples'] != count or head['sampleRate'] != rate:
+            raise ValueError('户外分段原始 CSV 与采集清单不一致。')
+        offset = 0
+        for file in chunks:
+            data = np.fromfile(file, dtype=SAMPLES, offset=HEADER.size)
+            raw = original[offset:offset+len(data)]
+            if not (np.array_equal(data['value'], raw[:,3], equal_nan=True) and
+                    np.array_equal(data['rssi'], raw[:,4].astype(np.float32), equal_nan=True) and
+                    np.array_equal(data['flags'] & 1 != 0, ~np.isfinite(raw[:,5]) | (raw[:,5] != 0))):
+                raise ValueError('户外分段原始 CSV 与上传波形不一致。')
+            offset += len(data)
     validate_telemetry(directory, manifest, files)
     return manifest
 
@@ -248,7 +268,7 @@ def import_capture(store: RecordingStore, value):
         transfer = read_json(source / "transfer.json")
         for item in transfer["files"]:
             name = item["name"]
-            if not (CHUNK.fullmatch(name) or name in ("unpaired-rssi.bin", TELEMETRY)):
+            if not (CHUNK.fullmatch(name) or name in ("unpaired-rssi.bin", TELEMETRY, SPLIT_SOURCE)):
                 raise ValueError("原始文件名无效。")
             original = source / name
             if original.is_symlink() or not original.is_file() or original.stat().st_size != item["bytes"]:

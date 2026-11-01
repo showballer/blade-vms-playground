@@ -29,7 +29,7 @@ def save(manager,body):
   if not prior:raise SignalError('INVALID_REVIEW','No review to undo')
   previous=current(manager,rid,prior.get('parentRevision')) if prior.get('parentRevision') else None;intervals=previous['intervals'] if previous else []
  if not isinstance(intervals,list) or len(intervals)>100:raise SignalError('INVALID_REVIEW','Invalid review intervals')
- start,end=candidate_window(raw)
+ start,end=(0,len(raw.time_s)) if report.get('measurementMode')=='outdoor' else candidate_window(raw)
  for item in intervals:
   if not isinstance(item,dict) or set(item)!={'start','end','decision'} or item['decision'] not in ('include','exclude') or any(type(item[k]) is not int for k in ('start','end')) or not start<=item['start']<item['end']<=end:raise SignalError('INVALID_REVIEW','Review intervals must stay within the validated candidate clock')
  value={'id':uuid.uuid4().hex,'recordingId':rid,'parentRevision':parent,'sourceHash':raw.source_hash,'processingParent':body['jobId'],'actor':body['actor'],'at':time.time(),'reason':body['reason'].strip(),'evidence':body.get('evidence'),'intervals':intervals,'operation':body.get('operation','review')}

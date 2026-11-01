@@ -12,7 +12,7 @@ from .sample_clock import continuous_sample_window
 def normalized_manifest(manifest, recording_id, count, sample_rate_hz, binding=None):
     m=copy.deepcopy(manifest)
     metadata=m.get('sourceMetadata') or {}
-    for key in ('pointCycle','turntable','windFarm','turbine'):
+    for key in ('pointCycle','turntable','windFarm','turbine','measurementMode','outdoorSegment','importSource'):
         if key not in m and key in metadata:m[key]=copy.deepcopy(metadata[key])
     pc=m.get('pointCycle') or {};m['pointCycle']=pc
     original=copy.deepcopy(pc)
@@ -69,9 +69,10 @@ def common_response(report, task):
                 candidates[name]=items[0] if len(items)==1 else None
             sets=[set(a['azimuth_deg'] for a in g.get('azimuth_results',[])) if g else set() for g in candidates.values()]
             angles=sorted(set.intersection(*sets)) if sets else []
+            outdoor=report.get('measurementMode')=='outdoor'
             points=[]
             for name,radius in sorted(planned.items()):
-                g=candidates[name]; values=[a for a in g.get('azimuth_results',[]) if a['azimuth_deg'] in angles] if g else []
+                g=candidates[name]; values=[a for a in g.get('azimuth_results',[]) if outdoor or a['azimuth_deg'] in angles] if g else []
                 points.append({'point':name,'radiusM':radius,'mean_half_peak_to_peak_m_s':sum(a['mean_half_peak_to_peak_m_s'] for a in values)/len(values) if values else None,
                     'mean_segment_rms_m_s':sum(a['mean_segment_rms_m_s'] for a in values)/len(values) if values else None,
                     'resultIds':[rid for a in values for rid in a.get('result_ids',[])]})
@@ -131,7 +132,17 @@ def dispatch(root:Path,payload:dict):
                     curves.append({'recordingId':record['recording_id'],'object':record['object'],'resultId':segment['result_id'],
                         'time_s':segment['time_s'],'velocity_m_s':segment['layers'].get(segment['layer'],[]),
                         'source_start':segment['source_start'],'source_end':segment['source_end'],'layer':segment['layer']})
-            return {'jobId':params['jobId'],'curves':curves,'synthetic':False,'continuity':'discontinuous_segments','phaseAvailable':False}
+            points=[]
+            for p in report.get('coverage',{}).get('points',[]):
+                records=[r for r in report['records'] if str(r.get('object',{}).get('blade'))==str(p['bladeId']) and r.get('object',{}).get('point')==p['pointName'] and r.get('quality_assessment',{}).get('analysis_eligible') and r.get('representative')]
+                representatives={r['object']['azimuth_deg']:r['representative'] for r in sorted(records,key=lambda r:r.get('started_at') or 0)}
+                angles=sorted(representatives);saved={'bladeId':p['bladeId'],'pointName':p['pointName'],'preview':None}
+                if len(angles)>=2 and set(p.get('plannedAzimuths',[]))<=set(angles):
+                    try:saved['preview']=manager.preview({'jobId':params['jobId'],'resultIds':[representatives[a] for a in angles],'expectedAzimuths':angles,'automatic':True})
+                    except (ValueError,TypeError) as exc:saved['reason']=str(exc)
+                else:saved['reason']='缺少可用角度，保留独立片段'
+                points.append(saved)
+            return {'jobId':params['jobId'],'curves':curves,'points':points,'synthetic':any(p['preview'] for p in points),'continuity':'discontinuous_segments','phaseAvailable':False}
         if operation in ('review','review_history','contract'):return manager.handle({'action':operation,**params})
         return getattr(manager,operation)(params)
     finally:manager.close()

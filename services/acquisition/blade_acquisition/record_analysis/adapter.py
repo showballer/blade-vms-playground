@@ -36,10 +36,17 @@ def record_files(root: Path, recording_id: str):
     return manifest, raw_manifest, chunks
 
 
+def auxiliary_files(root, recording_id, manifest):
+    if (manifest.get('outdoorSegment') or {}).get('rawFile') != 'split-source.csv.gz':return []
+    path=root/recording_id/'split-source.csv.gz'
+    if path.is_symlink() or not path.is_file() or path.stat().st_size>256*1024*1024:raise SignalError('SOURCE_FILE_INVALID','原始户外分段文件缺失或无效')
+    return [path]
+
+
 def source_fingerprint(root: Path, recording_id: str) -> dict:
     manifest, raw_manifest, paths = record_files(root, recording_id)
     files = [{"name":"manifest.json", "sha256":hashlib.sha256(raw_manifest).hexdigest(), "bytes":len(raw_manifest)}]
-    for path in paths:
+    for path in [*paths,*auxiliary_files(root,recording_id,manifest)]:
         digest = hashlib.sha256()
         with path.open("rb") as stream:
             while data := stream.read(1024*1024): digest.update(data)
@@ -85,6 +92,14 @@ def load_raw(root: Path, recording_id: str) -> RawRecording:
         if not np.array_equal(indices,np.arange(offset,end)): issues.append("SOURCE_SAMPLE_CLOCK_GAP")
         offset=end
     if offset!=count: raise SignalError("SAMPLE_COUNT_CONFLICT", "manifest and raw sample count differ")
+    for path in auxiliary_files(root,recording_id,manifest):
+        from .outdoor_import import parse
+        blob=path.read_bytes();digest.update(blob)
+        header,values,_=parse(blob,path.name)
+        if header['sampleRate']!=rate or len(values)!=count or not np.array_equal(values[:,3],v,equal_nan=True) or not np.allclose(values[:,4],r,rtol=1e-6,atol=1e-7,equal_nan=True) or not np.array_equal((~np.isfinite(values[:,5])|(values[:,5]!=0)).astype(float),over):
+            raise SignalError('SOURCE_FILE_CONFLICT','户外原始分段与本机波形不一致')
+        # Retain original CSV precision, flags and local/source clocks.
+        t=values[:,0];v=values[:,3];r=values[:,4];over=values[:,5]
     return RawRecording(recording_id,float(rate),t,v,r,over,manifest,digest.hexdigest(),
                         f"native:{recording_id}",tuple(sorted(set(issues))))
 
@@ -125,7 +140,7 @@ def catalog(root: Path):
             identity=task_key(m)
             task_id=hashlib.sha256(identity.encode()).hexdigest()[:32]
             task=tasks.setdefault(task_id,{"id":task_id,"name":m.get("name") or m["id"],"windFarm":m.get("windFarm"),
-                "turbine":m.get("turbine"),"object":m.get("object"),"taskKey":identity,"collectionId":pc.get("collectionId"),"recordingIds":[],"records":[],"plannedPoints":[]})
+                "measurementMode":m.get("measurementMode","indoor"),"turbine":m.get("turbine"),"object":m.get("object"),"taskKey":identity,"collectionId":pc.get("collectionId"),"recordingIds":[],"records":[],"plannedPoints":[]})
             try: inputs=read_measurement_inputs(m).snapshot()
             except SignalError as exc: inputs={"error":str(exc)}
             task["recordingIds"].append(m["id"])
@@ -134,7 +149,7 @@ def catalog(root: Path):
                 "azimuthDeg":pc.get("azimuthDeg"),"createdAt":m.get("startedAt"),"endedAt":m.get("endedAt"),
                 "samples":m.get("samples"),"sampleRate":m.get("sampleRate"),"status":m.get("status"),
                 "sourceQuality":source_quality(m),"measurementInputs":inputs,
-                "importSource":m.get("importSource"),"mergedTask":m.get("mergedTask")})
+                "measurementMode":m.get("measurementMode","indoor"),"importSource":m.get("importSource"),"mergedTask":m.get("mergedTask")})
             for p in pc.get("plannedStations",[]):
                 item={k:p.get(k) for k in ("bladeId","radialPointId","radialPointName","radiusM","azimuthDeg","bladeLengthM")}
                 if item not in task["plannedPoints"]: task["plannedPoints"].append(item)

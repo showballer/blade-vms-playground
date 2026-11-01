@@ -7,7 +7,7 @@ const path = require('node:path');
 const { createHash, randomUUID } = require('node:crypto');
 const { normalizeRecordingName } = require('./field-recording-name.cjs');
 const ID = /^[a-f0-9]{32}$/;
-const FILE = /^(?:chunk-[0-9]{8}\.bin|unpaired-rssi\.bin|turntable\.jsonl)$/;
+const FILE = /^(?:chunk-[0-9]{8}\.bin|unpaired-rssi\.bin|turntable\.jsonl|split-source\.csv\.gz)$/;
 const SHA = /^[a-f0-9]{64}$/;
 const BLOCK = 4 * 1024 * 1024;
 const MAX_PENDING = 1800, MAX_HISTORY = 200, MAX_QUEUE_BYTES = 9 * 1024 * 1024;
@@ -167,7 +167,7 @@ function createFieldCloudSync({ file, dataDir, auth, getLive, prepareUpload, fet
     }
     let directory = safeDirectory(item.recordingId);
     // Freeze the rate before the first plan so retry/restart cannot mix chunks.
-    if (item.uploadSampleRate === undefined) { item.uploadSampleRate = saved.uploadSampleRate; persist(); }
+    if (item.uploadSampleRate === undefined) { item.uploadSampleRate = recording.measurementMode==='outdoor' ? null : saved.uploadSampleRate; persist(); }
     if (item.uploadSampleRate && recording.sampleRate > item.uploadSampleRate) {
       if (typeof prepareUpload !== 'function') throw fail('当前采集服务不支持上传降采样，请升级或选择原始采样率。', 422);
       const prepared = await prepareUpload(item.recordingId, item.uploadSampleRate);

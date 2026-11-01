@@ -16,6 +16,7 @@ function worker(user:Pick<User,'id'|'tenant'>,operation:string,parameters:any={}
   queues.set(key,pending);void pending.finally(()=>{if(queues.get(key)===pending)queues.delete(key);}).catch(()=>{});
   return pending;
 }
+const modeOf=(s:any)=>s.raw.measurementMode||s.raw.sourceMetadata?.measurementMode||'indoor';
 const pcOf=(s:any)=>s.raw.pointCycle||s.raw.sourceMetadata?.pointCycle||{};
 const wid=(s:any)=>s.reference.kind==='capture'?digest('cloud-capture:'+s.reference.id).slice(0,32):s.reference.id;
 const labels=(v:unknown)=>String(v??'').replace(/^叶片\s*/,'').trim();
@@ -26,7 +27,7 @@ async function selection(user:User,context:any) {
   if(!farm||!turbine||!campaign||turbine.parentId!==farm.id||campaign.parentId!==farm.id||campaign.turbineIds?.length&&!campaign.turbineIds.includes(turbine.id))throw new HttpError(400,'请选择同一风场、批次与风机');
   const chosen=sources.filter(s=>s.context&&s.bindingRevision&&s.reference.kind!=='task'&&Object.entries(context).every(([k,v])=>!v||s.context?.[k as keyof typeof s.context]===v));
   if(chosen.length>MAX_RECORDS)throw new HttpError(400,'单次处理最多200条来源，请缩小叶片范围');
-  const keys=new Set<string>(),unique=chosen.filter(s=>{const k=s.raw.sourceRecordingId||s.raw.sourceLocalId||s.raw.sourceSha256||s.key;if(keys.has(k))return false;keys.add(k);return true;});
+  const keys=new Set<string>(),unique=chosen.filter(s=>{const k=modeOf(s)==='outdoor'?JSON.stringify([pcOf(s).collectionId,pcOf(s).bladeId,pcOf(s).radialPointName,pcOf(s).azimuthDeg,s.raw.sourceLocalId||s.raw.sourceMetadata?.id||s.raw.id||s.key]):s.raw.sourceRecordingId||s.raw.sourceLocalId||s.raw.sourceSha256||s.key;if(keys.has(k))return false;keys.add(k);return true;});
   const groups=[...new Set(unique.map(s=>JSON.stringify([pcOf(s).collectionId||s.key,pcOf(s).bladeId,s.raw.windFarm||s.raw.sourceMetadata?.windFarm,s.raw.turbine||s.raw.sourceMetadata?.turbine])))];
   const bindings:Record<string,any>={};
   for(const s of unique){
@@ -38,7 +39,7 @@ async function selection(user:User,context:any) {
     bindings[wid(s)]={windFarm:farm.code,turbine:turbine.code,bladeId:blade.code,pointName:point.code,sourceKey:s.key,bindingRevision:s.bindingRevision,sourceTask:pc.collectionId||null,sourceRecordingId:s.raw.sourceRecordingId||s.reference.id,context:s.context,entityIds:{farmId:farm.id,turbineId:turbine.id,bladeId:blade.id,positionId:point.id,batchId:campaign.id}};
   }
   const taskId=digest(JSON.stringify([context.farmId,context.campaignId,context.turbineId,context.bladeId||''])).slice(0,32);
-  const task={id:taskId,name:campaign.name,windFarm:farm.code,turbine:turbine.code,recordingIds:unique.map(wid),plannedPoints:unique.flatMap(s=>pcOf(s).plannedStations||[]),records:unique.map(s=>({id:wid(s),bladeId:bindings[wid(s)].bladeId,pointName:bindings[wid(s)].pointName,radiusM:pcOf(s).radiusM??null,azimuthDeg:pcOf(s).azimuthDeg??null,createdAt:s.measuredAt,samples:s.raw.samples,sampleRate:s.raw.sampleRate,context:s.context,sourceKey:s.key,reference:s.reference,sourceQuality:{diagnostic_only:s.raw.diagnosticOnly,valid_measurement:s.raw.validMeasurement,identity_verified:pcOf(s).identityVerified},measurementInputs:{horizontal_distance_m:(s.raw.turntable||s.raw.sourceMetadata?.turntable)?.config?.geometry?.distanceM??null,hub_height_delta_m:(s.raw.turntable||s.raw.sourceMetadata?.turntable)?.config?.geometry?.hubHeightDeltaM??null,radius_from_hub_m:pcOf(s).radiusM??null,azimuth_deg:pcOf(s).azimuthDeg??null,blade_length_m:pcOf(s).bladeLengthM??null}}))};
+  const task={measurementMode:unique.length&&unique.every(s=>modeOf(s)==='outdoor')?'outdoor':'indoor',id:taskId,name:campaign.name,windFarm:farm.code,turbine:turbine.code,recordingIds:unique.map(wid),plannedPoints:unique.flatMap(s=>pcOf(s).plannedStations||[]),records:unique.map(s=>({id:wid(s),bladeId:bindings[wid(s)].bladeId,pointName:bindings[wid(s)].pointName,radiusM:pcOf(s).radiusM??null,azimuthDeg:pcOf(s).azimuthDeg??null,createdAt:s.measuredAt,samples:s.raw.samples,sampleRate:s.raw.sampleRate,context:s.context,sourceKey:s.key,reference:s.reference,sourceQuality:{diagnostic_only:s.raw.diagnosticOnly,valid_measurement:s.raw.validMeasurement,identity_verified:pcOf(s).identityVerified},measurementInputs:{horizontal_distance_m:(s.raw.turntable||s.raw.sourceMetadata?.turntable)?.config?.geometry?.distanceM??null,hub_height_delta_m:(s.raw.turntable||s.raw.sourceMetadata?.turntable)?.config?.geometry?.hubHeightDeltaM??null,radius_from_hub_m:pcOf(s).radiusM??null,azimuth_deg:pcOf(s).azimuthDeg??null,blade_length_m:pcOf(s).bladeLengthM??null}}))};
   return {all,chosen:unique,task,bindings,groups,context:{...context}};
 }
 async function stored(user:User,id:string){

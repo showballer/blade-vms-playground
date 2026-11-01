@@ -14,11 +14,12 @@ def assess_record(manifest, bundle, *, reviewed=False):
     representative = bundle.get("representative")
     if not representative:
         reasons.extend(bundle.get("issues") or ["NO_ELIGIBLE_SEGMENT"])
-    if True in early:
+    outdoor = manifest.get('measurementMode') == 'outdoor'
+    if True in early and not outdoor:
         reasons.append("PASS_DURING_MOTION")
-    if completeness is not None and completeness != "confirmed":
+    if completeness is not None and completeness != "confirmed" and not outdoor:
         reasons.append("PASS_INCOMPLETE")
-    if manifest.get("source") == "simulation" or manifest.get("simulation"):
+    if (manifest.get("source") == "simulation" or manifest.get("simulation")) and not outdoor:
         reasons.append("SIMULATION_SOURCE")
     if reviewed:
         reasons.append("MANUAL_WINDOW_REVIEW")
@@ -36,6 +37,8 @@ def assess_record(manifest, bundle, *, reviewed=False):
         "policy_version": "per_record_v1",
         "status": "analyzable" if eligible else "review" if representative or any(s.status.get("quality_state")=="review" for s in bundle.get("segments",[])) else "blocked",
         "analysis_eligible": eligible,
+        "display_eligible": eligible,
+        "measurement_mode": "outdoor" if outdoor else "indoor",
         "reason_codes": list(dict.fromkeys(reasons)),
         "warning_codes": list(dict.fromkeys(warnings)),
         "motion_state": "during_motion" if True in early else "after_stop" if False in early else "unknown",

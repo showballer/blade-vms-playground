@@ -15,11 +15,12 @@ from .reference.dsp import spectra
 from .reference.cli import json_safe
 
 from .plan import VERSION,DEFAULT,LIMITS,PREVIEW_BAND,contract,identities,angle
-from .boundaries import assess as assess_boundaries
+from .modes import assess as assess_boundaries, with_mode, selected, capture_key
 
 def options(value):
  if not isinstance(value,dict) or set(value)-set(DEFAULT):raise SignalError('INVALID_CONFIG','Unsupported desktop algorithm options')
  out={**copy.deepcopy(DEFAULT),**value}
+ selected(out['measurementMode'])
  if 'targetBandMode' not in value and value.get('targetBandHz') is not None:out['targetBandMode']='custom'
  if out['targetBandMode'] not in ('preview','custom','none'):raise SignalError('INVALID_CONFIG','Unknown response band mode')
  if out['targetBandMode']!='custom':out['targetBandHz']=None;out['targetBandSource']=None
@@ -68,7 +69,7 @@ def filter_spec(settings,fs):
 
 def quality_record(raw):
  """Do not reject normal zero crossings or large genuine impacts by amplitude."""
- try:start,end=candidate_window(raw)
+ try:start,end=(0,len(raw.time_s)) if raw.manifest.get('measurementMode')=='outdoor' else candidate_window(raw)
  except (ValueError,TypeError):return raw,[]
  m=raw.manifest;mask=np.asarray(raw.overrange).copy();events=[]
  intervals=m.get('qualityIntervals') or []
@@ -95,7 +96,7 @@ def policy(load,ids,settings,base,reviews=None):
  durations=[];rates=[];details=[]
  for rid in ids:
   try:
-   raw,_=quality_record(load(rid));spec=filter_spec(settings,raw.sample_rate_hz)
+   raw,_=quality_record(with_mode(load(rid),settings['measurementMode']));spec=filter_spec(settings,raw.sample_rate_hz)
    quality=assess_boundaries(raw,base,(reviews or {}).get(rid));guard=int(round((spec.edge_guard_seconds or 0)*raw.sample_rate_hz))
    n=min((r['end']-r['start']-2*guard for r in quality['ranges'] if r['state'] in ('auto_pass','reviewed_pass') and r['end']-r['start']>2*guard+3),default=0)
    if n:durations.append(n/raw.sample_rate_hz);rates.append(raw.sample_rate_hz)
@@ -131,7 +132,7 @@ def window_spectra(real,window,welch_seconds,band=None):
  return out
 
 def analyze(raw,base,settings,plan,window=None,review=None):
- original=raw;raw,events=quality_record(raw)
+ original=raw;raw,events=quality_record(with_mode(raw,settings['measurementMode']))
  spec=filter_spec(settings,raw.sample_rate_hz)
  g=settings['geometry'];config=replace(base,background=settings['detrend'],filter=spec,welch_window_seconds=plan['sharedWelchSeconds'],core_window_seconds=None,allow_upright_geometry_assumption=g['uprightAssumption'],projection=g['direction'],min_abs_projection=g['minAbsProjection'],max_projection_gain=g['maxProjectionGain'],instrument_sign=g['instrumentSign'])
  correction=g.get('recordOverrides',{}).get(raw.recording_id) or g.get('inputOverrides')
@@ -156,6 +157,8 @@ def analyze(raw,base,settings,plan,window=None,review=None):
   except SignalError as exc:s.spectrum={};s.status.update(spectrum_state='blocked',spectrum_message=str(exc));s.status['issues'].append(exc.code)
   pc=original.manifest.get('pointCycle') or {};planned=[v.get('azimuthDeg') for v in pc.get('plannedStations',[]) if isinstance(v,dict) and isinstance(v.get('azimuthDeg'),(int,float))]
   mapping=angle(pc.get('azimuthDeg'),planned,pc.get('azimuthToleranceDeg',0))
+  s.parameters['measurementMode']=settings['measurementMode']
+  if settings['measurementMode']=='outdoor':s.parameters['capture_key']=capture_key(raw)
   s.parameters['angle_mapping']=mapping;s.parameters['entity_ids']=identities(original.manifest)
   if mapping['mapped'] is None:s.status['summary_eligible']=False;s.status['issues'].append('AZIMUTH_PLAN_CONFLICT')
   else:s.parameters['object']['azimuth_deg']=mapping['mapped']

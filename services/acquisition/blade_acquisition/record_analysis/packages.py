@@ -7,7 +7,7 @@ from __future__ import annotations
 import hashlib,json,time,zipfile,shutil
 from pathlib import Path,PurePosixPath
 import numpy as np
-from .adapter import source_fingerprint,record_files
+from .adapter import source_fingerprint,record_files,auxiliary_files
 from .plan import LIMITS,contract,digest
 from .reference.geometry import SignalError
 
@@ -24,8 +24,8 @@ def create(manager,job_id):
  for source in sources:
   rid=source['recordingId']
   if source_fingerprint(manager.recordings,rid)!=source:raise SignalError('SOURCE_CHANGED','Package source changed after processing')
-  _,_,chunks=record_files(manager.recordings,rid)
-  for f in [manager.recordings/rid/'manifest.json',*chunks]:files['recordings/'+rid+'/'+f.name]=f
+  native,_,chunks=record_files(manager.recordings,rid)
+  for f in [manager.recordings/rid/'manifest.json',*chunks,*auxiliary_files(manager.recordings,rid,native)]:files['recordings/'+rid+'/'+f.name]=f
  for f in folder.iterdir():
   if f.suffix in ('.npz','.json') and f.is_file() and not f.name.startswith(('preview-','extended-')):files['analysis/'+f.name]=f
  if sum(p.stat().st_size for p in files.values())>LIMITS['packageBytes']:raise SignalError('ANALYSIS_SIZE_UNSUPPORTED','Uncompressed package exceeds shared 256 MiB limit')
@@ -79,7 +79,7 @@ def validate_server_sources(root,base,mapping):
    if not target.exists():shutil.copytree(derived['directory'],target)
    candidate=load_raw(target.parent,rid)
   if candidate.time_s.shape!=expected.time_s.shape or not np.array_equal(candidate.time_s,expected.time_s) or not np.array_equal(candidate.overrange,expected.overrange) or not np.array_equal(candidate.velocity_m_s,expected.velocity_m_s,equal_nan=True) or not np.allclose(candidate.rssi_percent,expected.rssi_percent,rtol=0,atol=1e-7,equal_nan=True):raise SignalError('PACKAGE_SOURCE_MISMATCH','Native source or its exact anti-alias derivative differs from the already authorized server waveform')
-  for key in ('pointCycle','turntable','diagnosticOnly','validMeasurement','qualityIntervals','qualityRules'):
+  for key in ('pointCycle','turntable','diagnosticOnly','validMeasurement','qualityIntervals','qualityRules','measurementMode','outdoorSegment','importSource'):
    actual=candidate.manifest.get(key);known=expected.manifest.get(key,(expected.manifest.get('sourceMetadata') or {}).get(key))
    if digest(actual)!=digest(known):raise SignalError('PACKAGE_SOURCE_METADATA_MISMATCH','Candidate boundaries, geometry or raw quality differ from authorized source metadata')
   verified.append({'nativeId':rid,'serverId':server_id,'serverSourceHash':expected.source_hash,'relation':'exact_native_or_recomputed_antialias_derivative'})

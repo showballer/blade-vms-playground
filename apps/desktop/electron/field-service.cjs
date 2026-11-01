@@ -858,12 +858,16 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     await ready();
     return http('blade-passes', 'POST', parameters);
   }
+  async function importSegments(selectedPath) {
+    if(typeof selectedPath!=='string'||!path.isAbsolute(selectedPath))throw failure('请选择本机数据包',400);
+    await ready();return http('record-analysis','POST',{action:'import_stage',selectedPath});
+  }
   async function recordAnalysis(request) {
     const { recordAnalysisRequest } = require('./field-record-analysis.cjs');
     recordAnalysisRequest(request);
     await ready();
     return http('record-analysis', 'POST', request);
   }
-  return { start, status, frame, begin, stop, recordings, simulation, exportRecording, exportTask, prepareUpload, waveform, analysis, rotation, bladePasses, recordAnalysis, device, rssiCalibration, turntable, turntablePorts, singlePoint, motionTrial, shutdown, serviceInfo };
+  return { start, status, frame, begin, stop, recordings, simulation, exportRecording, exportTask, prepareUpload, waveform, analysis, rotation, bladePasses, recordAnalysis, importSegments, device, rssiCalibration, turntable, turntablePorts, singlePoint, motionTrial, shutdown, serviceInfo };
 }
 module.exports = { createFieldService, windowsServiceEnvironment, posixServiceEnvironment, failure };

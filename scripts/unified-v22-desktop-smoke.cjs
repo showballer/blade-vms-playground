@@ -234,7 +234,7 @@ app.on('browser-window-created', (_event, win) => {
       await wait("!!document.querySelector('[data-analysis-card=SYN-WAVE-P1] .fra-card-provenance')",'point preview states');
       const synthesis=await waitPayload(p=>p.command.action==='result'&&!p.command.recordingId&&p.result.workspace?.purpose==='synthesis');assert(synthesis.coverage.analyzableCount>0&&synthesis.coverage.analyzableCount<20);assert(synthesis.coverage.reviewCount>=1);assert.equal(synthesis.records.length,20);assert.equal(synthesis.aggregates.length,5);const p390=synthesis.records.find(r=>r.object.point==='P3'&&r.object.azimuth_deg===90),p390Rep=p390.segments.find(s=>s.result_id===p390.representative);assert(p390Rep.features.half_peak_to_peak_m_s<.005,'P3/90 platform must not leak into quantitative amplitude');check('P3/90 persistent platform is retained as review and excluded from the representative');
       const g=synthesis.aggregates.find(g=>g.point==='P1');assert(g.azimuth_count>=1&&g.azimuth_count<4);assert(Math.abs(g.mean_half_peak_to_peak_m_s-g.azimuth_results.reduce((s,a)=>s+a.mean_half_peak_to_peak_m_s,0)/g.azimuth_count)<1e-12);
-      assert.equal(synthesis.processingContract.version,'unified-analysis-2.2.3');
+      assert.equal(synthesis.processingContract.version,'unified-analysis-2.3.0');
       for(const [point,angle,endMs] of [['P3',0,50],['P3',180,36],['P3',270,48],['P4',0,22],['P4',180,12],['P5',0,6],['P5',180,8],['P5',270,8]]){
         const r=synthesis.records.find(r=>r.object.point===point&&r.object.azimuth_deg===angle),s=r.segments.find(s=>s.result_id===r.representative);
         assert(s,`${point}/${angle} must retain its actual pre-transition segment`);

@@ -89,6 +89,8 @@ class RecordAnalysisManager:
         self.lock=threading.RLock();self.computation_lock=threading.Lock();self.export_lock=threading.Lock()
         self.executor=ThreadPoolExecutor(max_workers=1,thread_name_prefix="record-analysis")
         self.cancel_events={};self.jobs={}
+        self.mode_file=self.root/'task-modes.json'
+        self.task_modes=json.loads(self.mode_file.read_text()) if self.mode_file.is_file() else {}
         for path in self.root.glob("*/job.json"):
             if path.parent.is_symlink() or not ID.fullmatch(path.parent.name):continue
             try:
@@ -106,6 +108,7 @@ class RecordAnalysisManager:
 
     def catalog(self):
         value=catalog(self.recordings);value["algorithmVersion"]=ALGORITHM_VERSION;value["processingContract"]=contract()
+        for task in value['tasks']:task['measurementMode']=self.task_modes.get(task['id'],task.get('measurementMode','indoor'))
         with self.lock:value["jobs"]=[self._public(j) for j in self.jobs.values()][-100:]
         return value
 
@@ -150,7 +153,19 @@ class RecordAnalysisManager:
         if workspace is not None:
             from .workspace import options as workspace_options,VERSION as workspace_version
             if not isinstance(workspace,dict) or set(workspace)!={"purpose","algorithmOptions"} or workspace['purpose'] not in ('signal','synthesis'):raise SignalError('INVALID_CONFIG','Desktop workspace must have a supported purpose and algorithm options')
-            workspace={"purpose":workspace['purpose'],"algorithmOptions":workspace_options(workspace['algorithmOptions']),"version":workspace_version}
+            workspace={"purpose":workspace['purpose'],"algorithmOptions":workspace_options({'measurementMode':task.get('measurementMode','indoor'),**workspace['algorithmOptions']}),"version":workspace_version}
+        if workspace:
+            with self.lock:
+                self.task_modes[task['id']]=workspace['algorithmOptions']['measurementMode'];dump(self.mode_file,self.task_modes)
+            task={**task,'measurementMode':workspace['algorithmOptions']['measurementMode']}
+            if task['measurementMode']=='outdoor':
+                # A multi-blade import is one business task. Shared spectral
+                # planning and upload dependencies belong to selected blades,
+                # not unrelated blades in the same import folder.
+                blades={str(r.get('bladeId')) for r in task['records'] if r['id'] in ids}
+                records=[r for r in task['records'] if str(r.get('bladeId')) in blades]
+                task={**task,'records':records,'recordingIds':[r['id'] for r in records],
+                      'plannedPoints':[p for p in task.get('plannedPoints',[]) if str(p.get('bladeId')) in blades]}
         review=body.get("reviewWindows",{})
         if not isinstance(review,dict) or set(review)-set(ids):raise SignalError("INVALID_ANALYSIS_WINDOW","review windows must refer to selected records")
         if review and scope!="diagnostic":raise SignalError("REVIEW_IS_DIAGNOSTIC","review windows cannot promote source quality")
@@ -237,7 +252,7 @@ class RecordAnalysisManager:
                     metadata={"recording_id":recording_id,"source_hash":raw.source_hash,"name":raw.manifest.get("name"),
                         "application_binding":raw.manifest.get("applicationBinding"),"source_quality":quality,"candidate_window":candidate_mapping(raw.manifest),"samples":len(raw.time_s),
                         "sample_rate_hz":raw.sample_rate_hz,"original_seconds":len(raw.time_s)/raw.sample_rate_hz,
-                        "started_at":raw.manifest.get("startedAt"),"sample_origin":raw.manifest.get("sampleOrigin"),
+                        "measurementMode":workspace["algorithmOptions"]["measurementMode"] if workspace else raw.manifest.get("measurementMode","indoor"),"importSource":raw.manifest.get("importSource"),"sourceMapping":raw.manifest.get("outdoorSegment"),"started_at":raw.manifest.get("startedAt"),"sample_origin":raw.manifest.get("sampleOrigin"),
                         "object":{"wind_farm":raw.manifest.get("windFarm"),"turbine":raw.manifest.get("turbine"),
                                   "blade":(raw.manifest.get("pointCycle") or {}).get("bladeId"),
                                   "point":(raw.manifest.get("pointCycle") or {}).get("radialPointName"),
@@ -252,7 +267,7 @@ class RecordAnalysisManager:
                         bundle=workspace_analyze(raw,config,workspace['algorithmOptions'],auto_plan,(window['start'],window['end']) if window else None,(state.get('qualityReviews') or {}).get(recording_id))
                     else:bundle=analyze_recording(raw,config=config,explicit_window=(window["start"],window["end"]) if window else None)
                     bundle["source_quality"]=quality
-                    assessment=assess_record(raw.manifest,bundle,reviewed=bool(window))
+                    assessment=assess_record({**raw.manifest,**({'measurementMode':workspace['algorithmOptions']['measurementMode']} if workspace else {})},bundle,reviewed=bool(window))
                     bundle["quality_assessment"]=assessment
                     comparison=self.compare_geometry(bundle,raw.manifest)
                     if workspace:
@@ -331,7 +346,7 @@ class RecordAnalysisManager:
             for group in aggregates:self._repeats(group,bundles)
             coverage=self._coverage(task,summaries)
             report={"jobId":job_id,"taskId":task["id"],"taskName":task["name"],"scope":state["scope"],"profile":state["profile"],
-                "algorithmVersion":ALGORITHM_VERSION,"config":asdict(config),"records":summaries,**({"workspace":{**workspace,"automaticPlan":auto_plan}} if workspace else {}),
+                "measurementMode":task.get("measurementMode","indoor"),"algorithmVersion":ALGORITHM_VERSION,"config":asdict(config),"records":summaries,**({"workspace":{**workspace,"automaticPlan":auto_plan}} if workspace else {}),
                 "aggregates":[aggregate_plot(g) for g in aggregates],"comparisonAggregates":[aggregate_plot(g) for g in comparison_aggregates],"aggregateIssues":aggregate_issues,"captureAliases":capture_aliases,"coverage":coverage,
                 "stages":self._stages(),"continuity":"discontinuous_segments","chartAvailability":self._availability(summaries,aggregates),
                 "sourceFingerprints":state["sources"],"policySources":state.get("policySources",state["sources"]),"processingContract":contract(),"qualityReviews":state.get("qualityReviews",{}),"phaseAvailable":False,"healthConclusionAvailable":False,
@@ -541,6 +556,7 @@ class RecordAnalysisManager:
         if report.get('workspace') and saved!=p['band_hz']:raise SignalError('TARGET_BAND_NOT_CONFIGURED','Declare target band and its source in a new processing plan')
         allowed={r['representative'] for r in report['records'] if r.get('representative') and (report['scope']=='diagnostic' or r.get('quality_assessment',{}).get('analysis_eligible'))}
         if not set(ids)<=allowed:raise SignalError('REPRESENTATIVE_REQUIRED','Only eligible real representatives are accepted')
+        outdoor=report.get('measurementMode')=='outdoor'
         groups={}
         for rid in ids:
             r=self._load_segment(body['jobId'],rid);o=r.parameters['object'];key=(o['wind_farm'],o['turbine'],o['blade'],o['point'],o['radius_from_hub_m'],r.layer,r.basis,r.parameters.get('geometryComparisonKey'))
@@ -562,11 +578,11 @@ class RecordAnalysisManager:
         points=[]
         for key,g in groups.items():
             g.pop('grid',None)
-            participating=common[(key[0],key[1],key[2],g['layer'],g['basis'])]
-            angles=[{'azimuth_deg':a,'mean_band_power_m2_s2':float(np.mean([v['band_power'] for v in rs])),'mean_band_rms_m_s':float(np.sqrt(np.mean([v['band_power'] for v in rs]))),'records':rs} for a,rs in sorted(g.pop('azimuths').items()) if a in participating]
+            participating=set(g['azimuths']) if outdoor else common[(key[0],key[1],key[2],g['layer'],g['basis'])]
+            angles=[{'azimuth_deg':a,'mean_band_power_m2_s2':float(np.mean([v['band_power'] for v in rs])),'mean_band_rms_m_s':float(np.mean([np.sqrt(v['band_power']) for v in rs])) if outdoor else float(np.sqrt(np.mean([v['band_power'] for v in rs]))),'records':rs} for a,rs in sorted(g.pop('azimuths').items()) if a in participating]
             power=float(np.mean([v['mean_band_power_m2_s2'] for v in angles])) if angles else None
-            points.append({**g,'azimuth_results':angles,'mean_band_power_m2_s2':power,'mean_azimuth_band_rms_m_s':float(np.sqrt(power)) if power is not None else None,'weighting':'equal_capture_then_equal_common_azimuth_power','participatingAzimuths':sorted(participating),'reason':None if angles else 'NO_COMMON_AZIMUTH'})
-        return {'available':any(p['azimuth_results'] for p in points),'kind':'point_band','band_hz':p['band_hz'],'points':points,'interpretation':'sqrt(integrated_equal_azimuth_mean_PSD)','targetBandSource':plan.get('targetBandSource'),'bandMode':plan.get('bandMode','custom'),'bandMeaning':plan.get('bandMeaning'),'resolvedBandHz':plan.get('resolvedBandHz'),'frequencyResolutionHz':plan.get('frequencyResolutionHz')}
+            points.append({**g,'azimuth_results':angles,'mean_band_power_m2_s2':power,'mean_azimuth_band_rms_m_s':(float(np.mean([a['mean_band_rms_m_s'] for a in angles])) if outdoor else float(np.sqrt(power))) if power is not None else None,'weighting':'equal_capture_then_equal_azimuth_rms' if outdoor else 'equal_capture_then_equal_common_azimuth_power','participatingAzimuths':sorted(participating),'reason':None if angles else 'NO_COMMON_AZIMUTH'})
+        return {'available':any(p['azimuth_results'] for p in points),'kind':'point_band','band_hz':p['band_hz'],'points':points,'interpretation':'arithmetic_mean_of_independent_azimuth_band_RMS' if outdoor else 'sqrt(integrated_equal_azimuth_mean_PSD)','targetBandSource':plan.get('targetBandSource'),'bandMode':plan.get('bandMode','custom'),'bandMeaning':plan.get('bandMeaning'),'resolvedBandHz':plan.get('resolvedBandHz'),'frequencyResolutionHz':plan.get('frequencyResolutionHz')}
 
     def export(self,body):
         strict_keys(body,{"jobId","kind","previewId"})
@@ -611,6 +627,13 @@ class RecordAnalysisManager:
     def handle(self,body):
         if not isinstance(body,dict):raise SignalError("INVALID_REQUEST","request must be an object")
         action=body.get("action")
+        if action=='import_stage':
+            strict_keys(body,{'selectedPath'})
+            from .outdoor_import import stage
+            return stage(self,body['selectedPath'])
+        if action=='import_commit':
+            from .outdoor_import import commit
+            with self.lock:return commit(self,body)
         if action=='contract':strict_keys(body,set());return contract()
         if action=='review':
             from .reviews import save

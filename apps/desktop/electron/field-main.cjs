@@ -181,6 +181,11 @@ async function dispatch(options) {
     case 'bladePasses': return service.bladePasses(options.parameters);
     case 'recordAnalysis': {
       const request = recordAnalysisRequest(options.request);
+      if(request.action==='import_select'){
+        const selected=await dialog.showOpenDialog(win,{title:'导入户外分段数据',properties:[request.kind==='folder'?'openDirectory':'openFile'],...(request.kind==='zip'?{filters:[{name:'分段数据包',extensions:['zip']}]}:{})});
+        if(selected.canceled||!selected.filePaths.length)return {canceled:true};
+        return service.importSegments(selected.filePaths[0]);
+      }
       if(request.action==='sync')return analysisSync.enqueue(request.jobId);
       if(request.action==='sync_status')return analysisSync.status();
       if (['review','publish'].includes(request.action)) request.actor = auth.requireSession().username;

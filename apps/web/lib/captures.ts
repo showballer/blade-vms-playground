@@ -97,7 +97,7 @@ export const sqlCaptureRepository: CaptureRepository = {
 };
 
 const ID = /^[a-f0-9]{32}$/;
-const FILE = /^(?:chunk-[0-9]{8}\.bin|unpaired-rssi\.bin|turntable\.jsonl)$/;
+const FILE = /^(?:chunk-[0-9]{8}\.bin|unpaired-rssi\.bin|turntable\.jsonl|split-source\.csv\.gz)$/;
 const MAX_PART = 8 * 1024 * 1024;
 const LIVE_TTL = 15_000;
 const invalid = (message = "采集参数无效。") => new HttpError(400, message);
@@ -126,8 +126,9 @@ function bounded(value: unknown, depth = 0, arrayLimit = 2048): void {
 export function validateCaptureRecording(value: unknown, complete = false): JsonObject {
   object(value); bounded(value);
   if (!ID.test(value.id) || typeof value.name !== "string" || !value.name.trim() || value.name.length > 180 ||
-      !["polytec_ivs500", "simulation"].includes(value.source) || value.unit !== "m/s" ||
+      !["polytec_ivs500", "simulation", "split_segment_import"].includes(value.source) || value.unit !== "m/s" ||
       !integer(value.samples) || !["incomplete", "complete", "error"].includes(value.status)) throw invalid("采集记录编号、来源、单位或样本信息无效。");
+  if(value.source==='split_segment_import' && (value.measurementMode!=='outdoor'||value.outdoorSegment?.schema!=='BladeVMS-split-segment-v1'||value.outdoorSegment?.rawFile!=='split-source.csv.gz'))throw invalid('户外分段来源描述无效。');
   if (value.source === "simulation") object(value.simulation);
   if (value.source !== "simulation" && value.simulation) throw invalid("模拟数据不能标记为实测。");
   if (complete && (value.status !== "complete" || value.samples < 1 || value.format !== "BLADEV01/<QidifB" ||
@@ -357,6 +358,7 @@ export function createCaptureService({ repository = sqlCaptureRepository, root =
     async upload(user: User, id: string, input: unknown) {
       requireCaptureWrite(user); directory(id); object(input); only(input, ["recording", "files"]);
       const recording = validateCaptureRecording(input.recording, true), inventory = files(input.files);
+      if(recording.source==='split_segment_import'&&!inventory.some(file=>file.name==='split-source.csv.gz'))throw invalid('缺少户外分段原文件。');
       if (inventory.filter(file => file.name.startsWith("chunk-")).length !== recording.chunks) throw invalid("原始分块数量与记录不符。");
       const telemetry = recording.turntable?.telemetry, telemetryFile = inventory.find(file => file.name === "turntable.jsonl");
       if (telemetry || telemetryFile || (recording.turntable && !recording.pointCycle)) {

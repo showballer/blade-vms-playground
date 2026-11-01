@@ -8,7 +8,7 @@ export type AnalysisCatalogRecord = {
   plannedAzimuths?: number[]; sampleRate?: number; samples?: number;
 };
 export type AnalysisTask = {
-  id: string; name: string; windFarm?: string; turbine?: string; recordingIds: string[]; records: AnalysisCatalogRecord[];
+  id: string; name: string; measurementMode?:'indoor'|'outdoor'; windFarm?: string; turbine?: string; recordingIds: string[]; records: AnalysisCatalogRecord[];
   plannedPoints?: { bladeId?: string; radialPointName?: string; radiusM?: number; azimuthDeg?: number }[];
   plan?: { blades?: { bladeId: string; points?: { id?: string; name: string; radiusM?: number; azimuths?: number[] }[] }[] };
 };
