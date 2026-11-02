@@ -2,6 +2,7 @@ import type { FieldMotionMode, FieldPointCycleConfig, FieldPointCyclePoint } fro
 import { isTurntablePort } from "./field-turntable-port";
 import { pointReferenceSignature } from "./field-turntable-points";
 import type { FieldWorkOrigin } from "./field-turntable-origin";
+import { rssiDraftDefaults } from "./field-rssi-defaults";
 
 export type AutoFollowDraft = {
   // Zero means the operator rotates the real blade; no nominal phase is inferred.
@@ -14,6 +15,7 @@ export type AutoFollowDraft = {
   direction: "clockwise" | "counterclockwise"; axis1Sign: 1 | -1; axis2Sign: 1 | -1;
   maxMoveRpm: number; maxMoveAccelerationDegS2: number; followErrorLimitDeg: number; cycles: number; waitRevolutions: number;
   rssiEnterSpread: number; rssiExitSpread: number; rssiEnterConfirmMs: number; rssiConfirmMs: number;
+  rssiDefaultsVersion?: number;
 };
 export type AutoFollowAnchor = {
   port: string; referenceSignature: string; radiusM: number; pointId: string;
@@ -25,7 +27,7 @@ export const autoFollowDefaults: AutoFollowDraft = {
   points: [{ id: "p1", name: "P1", radiusM: 0.31 }], activePointId: "p1",
   distanceM: 2.86, hubHeightDeltaM: 1.46, pitchAngleScale: 1, yawAngleScale: 1, direction: "clockwise", axis1Sign: 1, axis2Sign: 1,
   maxMoveRpm: 0.6, maxMoveAccelerationDegS2: 3, followErrorLimitDeg: .75, cycles: 1, waitRevolutions: 2,
-  rssiEnterSpread: 8, rssiExitSpread: 3, rssiEnterConfirmMs: 20, rssiConfirmMs: 30,
+  ...rssiDraftDefaults,
 };
 export const manualBladeRotationWaitSeconds = 60;
 export type AutoFollowPlan = {

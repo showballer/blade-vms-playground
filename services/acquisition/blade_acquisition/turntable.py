@@ -276,7 +276,8 @@ class PointCycleConfig(BaseModel):
     rssiSmoothingMs: float = Field(default=10, ge=2, le=100, allow_inf_nan=False)
     rssiConfirmMs: float = Field(default=30, ge=10, le=1000, allow_inf_nan=False)
     rssiEnterSpread: float = Field(default=8, gt=0, le=100, allow_inf_nan=False)
-    rssiExitSpread: float = Field(default=3, ge=0, lt=100, allow_inf_nan=False)
+    # Indoor 1102 trial: keep the 30 ms confirmation with a quieter-exit margin.
+    rssiExitSpread: float = Field(default=4, ge=0, lt=100, allow_inf_nan=False)
     rssiEnterConfirmMs: float = Field(default=20, ge=10, le=1000, allow_inf_nan=False)
     rssiMotionMarginMs: float = Field(default=200, ge=0, le=5000, allow_inf_nan=False)
     # Accepted for older clients. Linked capture now keeps light on during the

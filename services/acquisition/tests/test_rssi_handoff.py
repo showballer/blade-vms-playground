@@ -21,6 +21,23 @@ def blade_values(count):
 
 
 class RssiHandoffTests(unittest.TestCase):
+    def test_indoor_noisy_background_keeps_full_exit_confirmation(self):
+        quiet = [0.0, 3.5] * 50
+        pulse = [0.0, 30.0] * 10
+        d = RssiHandoff(config(), 0)
+        d.feed(batch(quiet))
+        self.assertFalse(d.armed)
+        d.feed(batch(pulse, start=100))
+        self.assertTrue(d.armed)
+        d.feed(batch(quiet[:20], start=120))
+        self.assertIsNone(d.trigger, "Noisy background must still confirm for 30 ms")
+        d.feed(batch(quiet[:10], start=140))
+        self.assertEqual(d.trigger["sampleIndex"], 149)
+        self.assertEqual(d.trigger["exitSpread"], 4)
+        old = RssiHandoff(config(rssiExitSpread=3), 0)
+        old.feed(batch(quiet + pulse + quiet))
+        self.assertIsNone(old.trigger, "The old limit stalls on this 3.5 pp background")
+
     def test_entry_then_exit_confirmation_independent_of_rate_and_batch_boundaries(self):
         for rate in (1000, 250000):
             d = RssiHandoff(config(), 100)

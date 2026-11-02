@@ -201,6 +201,8 @@ python export_csv.py "C:\Users\Operator\AppData\Roaming\BladeVMS\field-data\reco
 
 ## 不接硬件的验证
 
+室内新模型试验分支 `codex/indoor-rssi-exit4-20261102` 使用10 ms窗口、进入波动8个百分点并连续确认20 ms、离开波动4个百分点并连续确认30 ms。相对main仅将默认离开门限从3调到4，容纳`1102-采集`的弱背景噪声。原始数据重放仍为8组信号候选，其中一组离开确认提前10 ms，不代表物理识别率已提高。自动、分段及手动路线与服务端默认一致；旧草稿仅完整旧默认`8/3/20/30`升级一次，自定义组合及升级后的手动修改保留。更新后的桌面界面重新加载后使用试验参数，不热改正在运行的采集。自动移动开关、到位确认、断流重置和运动协议沿用原逻辑。
+
 ```powershell
 python -m pip install -r requirements-build.txt
 python -m unittest discover -s tests -v

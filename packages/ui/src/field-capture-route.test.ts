@@ -65,6 +65,15 @@ assert.equal("enabled" in readManualRouteSettings('{"enabled":true,"excludedIds"
 assert.equal(readManualRouteSettings('{"startPointId":"p2"}').startPointId, "p2");
 assert.equal(readManualRouteSettings('{"startPointId":42}').startPointId, undefined);
 assert.equal(readManualRouteSettings('{"startPointId":"  "}').startPointId, undefined);
+const legacyRssiRoute = { ...manualRouteDefaults, rssiExitSpread: 3, excludedIds: ["p1"], startPointId: "p2" };
+delete legacyRssiRoute.rssiDefaultsVersion;
+const migratedRssiRoute = readManualRouteSettings(JSON.stringify(legacyRssiRoute));
+assert.equal(migratedRssiRoute.rssiExitSpread, 4);
+assert.deepEqual(migratedRssiRoute.excludedIds, ["p1"]);
+assert.equal(migratedRssiRoute.startPointId, "p2");
+assert.equal(manualCaptureRoute(points, "COM6", migratedRssiRoute, 1).cycle!.rssiExitSpread, 4);
+assert.equal(readManualRouteSettings(JSON.stringify({ ...migratedRssiRoute, rssiExitSpread: 3 })).rssiExitSpread, 3);
+assert.equal(readManualRouteSettings(JSON.stringify({ ...legacyRssiRoute, rssiEnterConfirmMs: 40 })).rssiExitSpread, 3);
 for (const port of ["COM3", "/dev/cu.usbserial-1140"]) {
   const next = structuredClone(status); next.turntable!.port = port;
   const route = manualCaptureRoute(points.map(point => ({ ...point, port })), port, manualRouteDefaults, 1);

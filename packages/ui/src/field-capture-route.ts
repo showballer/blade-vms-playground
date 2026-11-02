@@ -2,6 +2,7 @@ import { pointReferenceSignature, turntableAxisLimitsError, turntablePointMotion
 import { isTurntablePort } from "./field-turntable-port";
 import { FIELD_POSITION_TOLERANCE_DEG, fieldTurntableMotionMode, type FieldBladePoint, type FieldPointCycleConfig, type FieldPointCyclePoint, type FieldStatus } from "./field-types";
 import type { FieldWorkOrigin } from "./field-turntable-origin";
+import { migrateRssiDraftDefaults, rssiDraftDefaults } from "./field-rssi-defaults";
 
 export type FieldCaptureRoute = {
   kind: "manual" | "auto" | "segmented"; name: string; pointNames: string[];
@@ -17,12 +18,13 @@ export type FieldAutoCaptureTarget = {
 export type ManualRouteSettings = {
   excludedIds: string[]; cycles: number; speedRpm: number; waitSeconds: number;
   rssiEnterSpread: number; rssiExitSpread: number; rssiEnterConfirmMs: number; rssiConfirmMs: number;
+  rssiDefaultsVersion?: number;
   startPointId?: string;
 };
 export const manualRouteKey = "blade-manual-capture-route-v1";
 export const manualRouteDefaults: ManualRouteSettings = {
   excludedIds: [], cycles: 1, speedRpm: .2, waitSeconds: 60,
-  rssiEnterSpread: 8, rssiExitSpread: 3, rssiEnterConfirmMs: 20, rssiConfirmMs: 30,
+  ...rssiDraftDefaults,
 };
 export function readManualRouteSettings(raw: string | null): ManualRouteSettings {
   const defaults = { ...manualRouteDefaults, excludedIds: [] as string[] };
@@ -34,6 +36,7 @@ export function readManualRouteSettings(raw: string | null): ManualRouteSettings
       else if (key !== "startPointId" && typeof saved[key] === "number") defaults[key] = saved[key];
     }
     if (typeof saved.startPointId === "string" && saved.startPointId.trim()) defaults.startPointId = saved.startPointId;
+    return migrateRssiDraftDefaults(defaults, saved);
   } catch { /* Optional configuration never restores a running acquisition. */ }
   return defaults;
 }

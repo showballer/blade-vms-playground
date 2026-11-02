@@ -1,5 +1,6 @@
 import { autoFollowDefaults, type AutoFollowDraft } from "./field-auto-follow-plan";
 import { normalizeTurntablePort } from "./field-turntable-port";
+import { migrateRssiDraftDefaults } from "./field-rssi-defaults";
 
 export const autoFollowStorageKey = "blade-auto-follow-draft-v1";
 export type AutoFollowPoint = AutoFollowDraft["points"][number];
@@ -94,6 +95,7 @@ export function readAutoFollowSurvey(raw: string | null): AutoFollowSurvey {
       else if (typeof result.settings[key] === "number") Object.assign(result.settings, { [key]: typeof values[key] === "number" ? values[key] : NaN });
       else Object.assign(result.settings, { [key]: typeof values[key] === "string" ? values[key] : "" });
     }
+    Object.assign(result.settings, migrateRssiDraftDefaults(result.settings, values));
     if ([2, 3].includes(saved.version) && Array.isArray(saved.blades)) {
       result.blades = saved.blades.slice(0, 12).map((blade: Record<string, unknown>) => ({
         id: typeof blade?.id === "string" ? blade.id : "", name: typeof blade?.name === "string" ? blade.name : "",

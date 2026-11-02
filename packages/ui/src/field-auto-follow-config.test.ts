@@ -12,6 +12,28 @@ const blade = (id = "blade-a", name = "A", points = [point()]) => ({ id, name, p
 const v3 = (): AutoFollowSurvey => ({ ...defaultAutoFollowSurvey(), blades: [blade("a", "A"), blade("b", "B", [point("p2", "P2", .5)])],
   selectedBladeId: "b", selectedPointId: "p2" });
 
+check("室内试验旧默认8/3/20/30仅升级一次，手动修改和测点保持不变", () => {
+  for (const version of [1, 2, 3]) {
+    const settings = { ...autoFollowDefaults, rssiExitSpread: 3 };
+    delete settings.rssiDefaultsVersion;
+    const restored = read(version === 1 ? { draft: settings } : { ...v3(), version, settings });
+    assert.equal(restored.settings.rssiExitSpread, 4);
+    assert.equal(restored.settings.rssiEnterSpread, 8);
+    assert.equal(restored.settings.rssiEnterConfirmMs, 20);
+    assert.equal(restored.settings.rssiConfirmMs, 30);
+    assert.equal(restored.settings.rssiDefaultsVersion, 1);
+    const again = read(restored);
+    assert.deepEqual(again.blades, restored.blades);
+    assert.equal(again.selectedPointId, restored.selectedPointId);
+    restored.settings.rssiExitSpread = 3;
+    assert.equal(read(restored).settings.rssiExitSpread, 3);
+    const customized = { ...settings, rssiEnterConfirmMs: 40 };
+    const custom = read(version === 1 ? { draft: customized } : { ...v3(), version, settings: customized });
+    assert.equal(custom.settings.rssiExitSpread, 3);
+    assert.equal(custom.settings.rssiEnterConfirmMs, 40);
+  }
+});
+
 check("各版本旧配置保留0.75度默认，跟随误差新设置持久化，非法值不会悄悄变成默认", () => {
   for (const version of [1, 2, 3]) {
     const values = { ...autoFollowDefaults } as Record<string, unknown>;
