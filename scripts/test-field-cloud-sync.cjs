@@ -60,6 +60,25 @@ test('upload sampling persists, freezes across retry, and never modifies source 
   assert.deepEqual(fs.readFileSync(path.join(original.dir, 'chunk-00000000.bin')), original.raw);
 });
 
+test('outdoor original-rate uploads survive restart and migrate legacy null sampling values', async t => {
+  const f = fixture(t), original = f.recording();
+  original.manifest.measurementMode = 'outdoor';
+  fs.writeFileSync(path.join(original.dir, 'manifest.json'), JSON.stringify(original.manifest));
+  const before = fs.readFileSync(path.join(original.dir, 'chunk-00000000.bin'));
+  let queue = f.create({ prepareUpload: () => { throw Error('outdoor source must retain its native rate'); } });
+  queue.resume(); queue.uploadRecording(original.manifest.id); await queue.settled();
+  assert.equal(queue.status().items[0].state, 'synced');
+  assert.equal(JSON.parse(fs.readFileSync(f.file)).items[0].uploadSampleRate, 0);
+  queue.dispose(); await queue.settled();
+  const saved = JSON.parse(fs.readFileSync(f.file));
+  saved.items[0].uploadSampleRate = null;
+  fs.writeFileSync(f.file, JSON.stringify(saved));
+  queue = f.create(); queue.resume(); await queue.settled();
+  assert.equal(queue.status().items[0].state, 'synced');
+  assert.ok(!queue.status().error);
+  assert.deepEqual(fs.readFileSync(path.join(original.dir, 'chunk-00000000.bin')), before);
+});
+
 test('high-rate min/max live envelopes reach Web without requiring a raw display array', async t => {
   const f = fixture(t), source = f.recording('a'.repeat(32), 100, 'incomplete');
   const queue = f.create(); queue.resume(); queue.started(source.manifest); await queue.settled();

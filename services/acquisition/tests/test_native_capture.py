@@ -66,6 +66,15 @@ class NativeTurntableCaptureTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_capture(self.directory)
 
+    def test_analysis_workspace_accepts_multiple_complete_outdoor_batches(self):
+        store = RecordingStore(self.root / 'multi-batch-analysis')
+        with patch.object(store, 'list', return_value=[{}] * 140):
+            self.assertEqual(import_capture(store, self.directory)['recording']['samples'], 1)
+        other = RecordingStore(self.root / 'full-analysis')
+        with patch.object(other, 'list', return_value=[{}] * 1000):
+            with self.assertRaisesRegex(ValueError, '1000'):
+                import_capture(other, self.directory)
+
     def test_http_cloud_id_preserves_local_origin_and_blocks_offline_duplicate(self):
         local_id = "b" * 32
         self.manifest["sourceLocalId"] = local_id

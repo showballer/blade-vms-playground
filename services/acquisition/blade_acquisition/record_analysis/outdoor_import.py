@@ -24,6 +24,28 @@ FORMAT = 'BladeVMS-split-segment-v1'
 LIMIT = 256*1024*1024
 COLUMNS = ('local_time_s','source_time_s','source_sample_index','velocity_m_s','RSSI_percent','overrange')
 NAME = re.compile(r'(\d+)号叶片[_\s-]*(\d+(?:\.\d+)?)度', re.I)
+POINT = re.compile(r'^P\d+(?=$|[_\s-])', re.I)
+
+def archive_name(info):
+    # Some macOS ZIP creators write UTF-8 names without setting bit 11.
+    # Decode only a lossless UTF-8 round trip; preserve ordinary CP437 names.
+    if not info.flag_bits & 0x800:
+        try:
+            return info.filename.encode('cp437').decode('utf-8')
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            pass
+    return info.filename
+
+def point_metadata(header, name):
+    """Use the exported point, never stale sourcePointLabel or a distance in the batch name."""
+    point = header.get('point') or (header.get('pointCycle') or {}).get('radialPointName')
+    if not isinstance(point, str) or not point.strip():
+        point = next((m[0].upper() for part in reversed(PurePosixPath(name).parts)
+                      if (m := POINT.match(part))), '')
+    radius = header.get('radiusM', (header.get('pointCycle') or {}).get('radiusM'))
+    if isinstance(radius, bool) or not isinstance(radius, (int, float)) or not math.isfinite(radius) or radius <= 0:
+        radius = None
+    return {'pointName': point.strip(), 'radiusM': radius}
 
 def text(value, name):
     if not isinstance(value,str) or not value.strip() or len(value)>200:
@@ -62,7 +84,12 @@ def parse(blob, name):
     return header,values,{'bladeId':match[1] if match else '', 'azimuthDeg':angle}
 
 def stage(manager, path):
-    source=Path(path).resolve()
+    paths = path if isinstance(path, list) else [path]
+    if not 1 <= len(paths) <= 20 or any(not isinstance(p, str) for p in paths):
+        raise ValueError('请选择1～20个数据包或一个文件夹')
+    sources = [Path(p).resolve() for p in paths]
+    if len(set(sources)) != len(sources) or (len(sources)>1 and any(p.suffix.lower()!='.zip' for p in sources)):
+        raise ValueError('多选仅支持不重复的ZIP数据包')
     token=uuid.uuid4().hex;folder=manager.root/'imports'/token;folder.mkdir(parents=True)
     files=[];manifests={};total=0
     def retain(name,blob):
@@ -75,7 +102,7 @@ def stage(manager, path):
         fid=uuid.uuid4().hex;original=folder/(fid+'.csv.gz');original.write_bytes(blob)
         item={'fileId':fid,'fileName':name,'sha256':hashlib.sha256(blob).hexdigest()}
         try:
-            head,values,mapping=parse(blob,name);item.update(mapping,samples=len(values),sampleRate=head['sampleRate'],header=head)
+            head,values,mapping=parse(blob,name);item.update(mapping,**point_metadata(head,name),samples=len(values),sampleRate=head['sampleRate'],header=head)
             native=np.zeros(len(values),dtype=RECORD_DTYPE);native['index']=np.arange(len(values));native['velocity']=values[:,3]
             native['rssi']=values[:,4];native['flags']=np.where(np.isfinite(values[:,4]),2,0)|np.where(~np.isfinite(values[:,5])|(values[:,5]!=0),1,0)
             # Unknown absolute clock stays unknown; never substitute import time.
@@ -89,25 +116,37 @@ def stage(manager, path):
         except (ValueError,TypeError,OSError,EOFError,KeyError,OverflowError) as exc:item['error']=str(exc)
         files.append(item)
     try:
-        if source.is_dir():
-            paths=sorted(p for p in source.rglob('*') if p.is_file() and (p.name.lower().endswith('.csv.gz') or p.suffix.lower()=='.json'))
-            if not 1<=len(paths)<=250:raise ValueError('目录最多支持200个分段和50份清单')
-            for p in paths:
-                if p.is_symlink() or not p.resolve().is_relative_to(source):raise ValueError('不支持链接文件')
-                if p.stat().st_size>LIMIT:raise ValueError('文件过大')
-                retain(p.relative_to(source).as_posix(),p.read_bytes())
-        elif source.suffix.lower()=='.zip':
-            with zipfile.ZipFile(source) as z:
-                infos=z.infolist()
-                if len(infos)>1000 or sum(i.file_size for i in infos)>LIMIT:raise ValueError('压缩包过大')
-                for i in infos:
-                    p=PurePosixPath(i.filename)
-                    if p.is_absolute() or '..' in p.parts or '\\' in i.filename or (i.external_attr>>16)&0o170000==0o120000:raise ValueError('压缩包路径不安全')
-                    if not i.is_dir() and not i.filename.startswith('__MACOSX/') and (i.filename.lower().endswith('.csv.gz') or i.filename.lower().endswith('.json')):retain(i.filename,z.read(i))
-        else:raise ValueError('请选择 ZIP 或分段文件夹')
+        for source in sources:
+            prefix = source.name+'/' if len(sources)>1 else ''
+            if source.is_dir():
+                files_in_dir=sorted(p for p in source.rglob('*') if p.is_file() and (p.name.lower().endswith('.csv.gz') or p.suffix.lower()=='.json'))
+                if not 1<=len(files_in_dir)<=250:raise ValueError('目录最多支持200个分段和50份清单')
+                for p in files_in_dir:
+                    if p.is_symlink() or not p.resolve().is_relative_to(source):raise ValueError('不支持链接文件')
+                    if p.stat().st_size>LIMIT:raise ValueError('文件过大')
+                    retain(p.relative_to(source).as_posix(),p.read_bytes())
+            elif source.suffix.lower()=='.zip':
+                with zipfile.ZipFile(source) as z:
+                    infos=z.infolist()
+                    # Bundles may also contain duplicate point ZIPs and plots.
+                    # Budget the members we actually read; never decompress
+                    # ignored nested archives or count their duplicate data.
+                    readable=[i for i in infos if not i.is_dir() and not archive_name(i).startswith('__MACOSX/')
+                              and not PurePosixPath(archive_name(i)).name.startswith('._')
+                              and archive_name(i).lower().endswith(('.csv.gz','.json'))]
+                    if len(infos)>1000 or sum(i.file_size for i in readable)>LIMIT:raise ValueError('压缩包过大')
+                    for i in infos:
+                        name=archive_name(i);p=PurePosixPath(name)
+                        if p.is_absolute() or '..' in p.parts or '\\' in name or (i.external_attr>>16)&0o170000==0o120000:raise ValueError('压缩包路径不安全')
+                        if not i.is_dir() and not name.startswith('__MACOSX/') and not p.name.startswith('._') and (name.lower().endswith('.csv.gz') or name.lower().endswith('.json')):retain(prefix+name,z.read(i))
+            else:raise ValueError('请选择 ZIP 或分段文件夹')
         if not files or len(files)>200:raise ValueError('需要1～200个 CSV.GZ 分段文件')
         state={'token':token,'files':files,'sourceManifests':manifests,'createdAt':time.time()};atomic_json(folder/'stage.json',state)
-        return {'token':token,'files':[{k:v for k,v in f.items() if k not in ('header','sampleOrigin','sourceClock')} for f in files]}
+        defaults = {'name': sources[0].stem if len(sources)==1 else ''}
+        for key in ('windFarm', 'turbine'):
+            values = {str(f['header'][key]).strip() for f in files if not f.get('error') and f['header'].get(key)}
+            defaults[key] = next(iter(values)) if len(values)==1 else ''
+        return {'token':token,'defaults':defaults,'files':[{k:v for k,v in f.items() if k not in ('header','sampleOrigin','sourceClock')} for f in files]}
     except Exception:
         shutil.rmtree(folder);raise
 
@@ -117,27 +156,31 @@ def commit(manager, body):
     if not isinstance(token,str) or not ID.fullmatch(token):raise ValueError('导入预览已失效，请重新选择文件')
     folder=manager.root/'imports'/token;state=json.loads((folder/'stage.json').read_text())
     if (folder/'completed.json').exists():return json.loads((folder/'completed.json').read_text())
-    name=text(body.get('name'),'任务名称');farm=text(body.get('windFarm'),'风场');turbine=text(body.get('turbine'),'风机');point=text(body.get('pointName'),'测点')
-    radius=body.get('radiusM')
-    if radius is not None and (isinstance(radius,bool) or not isinstance(radius,(float,int)) or not math.isfinite(radius) or radius<=0):raise ValueError('测点半径须为正数，未知可留空')
+    name=text(body.get('name'),'任务名称');farm=text(body.get('windFarm'),'风场');turbine=text(body.get('turbine'),'风机')
     mappings=body.get('files')
     if not isinstance(mappings,list) or not mappings or len(mappings)>200:raise ValueError('请选择有效分段')
-    collection=uuid.uuid4().hex;prepared=[];slots=set();seen=set();sources={f['fileId']:f for f in state['files']}
+    collection=uuid.uuid4().hex;prepared=[];slots=set();seen=set();point_radii={};sources={f['fileId']:f for f in state['files']}
     for mapping in mappings:
+        if not isinstance(mapping,dict):raise ValueError('分段映射无效')
         fid=mapping.get('fileId');f=sources.get(fid)
         if f is None or f.get('error') or fid in seen:raise ValueError('分段无效或重复')
         seen.add(fid);blade=text(mapping.get('bladeId'),'叶片编号');angle=mapping.get('azimuthDeg')
+        point=text(mapping.get('pointName',body.get('pointName') or f.get('pointName')),'测点')
+        radius=mapping.get('radiusM',body.get('radiusM',f.get('radiusM')))
+        if radius is not None and (isinstance(radius,bool) or not isinstance(radius,(float,int)) or not math.isfinite(radius) or radius<=0):raise ValueError('测点半径须为正数，未知可留空')
+        if point in point_radii and radius!=point_radii[point]:raise ValueError('同一测点的距离必须一致')
+        point_radii[point]=radius
         if isinstance(angle,bool) or not isinstance(angle,(int,float)) or not math.isfinite(angle) or not 0<=angle<360:raise ValueError('角度须在0～360°之间')
         if f.get('bladeId') and (blade!=f['bladeId'] or angle!=f['azimuthDeg']):raise ValueError('可识别的文件名是叶片和角度的依据，不可静默改写')
-        if (blade,angle) in slots:raise ValueError('同一叶片同一角度重复，请仅选择一份；其他角度相同波形仍独立保留')
-        slots.add((blade,angle));rid=uuid.uuid4().hex;head=f['header']
+        if (blade,point,angle) in slots:raise ValueError('同一叶片、测点和角度重复，请仅选择一份')
+        slots.add((blade,point,angle));rid=uuid.uuid4().hex;head=f['header']
         m={'id':rid,'name':name,'windFarm':farm,'turbine':turbine,'point':point,'object':'风机叶片','measurementMode':'outdoor','status':'complete','unit':'m/s','format':'BLADEV01/<QidifB','samples':f['samples'],'sampleRate':f['sampleRate'],'sampleOrigin':f['sampleOrigin'],'startedAt':f['sampleOrigin'] or None,'endedAt':f['sampleOrigin']+f['samples']/f['sampleRate'] if f['sampleOrigin'] else None,'chunks':1,'overrangeSamples':f['overrangeSamples'],'missingRssiSamples':f['missingRssiSamples'],'rssiSampleStride':1,'rssiSampleRate':f['sampleRate'],'source':'split_segment_import','importedAt':time.time(),
            'diagnosticOnly':head.get('diagnosticOnly',True),'validMeasurement':head.get('validMeasurement',False),
            'importSource':{'format':FORMAT,'fileName':f['fileName'],'sha256':f['sha256'],'importId':token,'originalHeader':head,'manifestContent':state['sourceManifests'],'originalManifests':{k:hashlib.sha256(json.dumps(v,sort_keys=True).encode()).hexdigest() for k,v in state['sourceManifests'].items()}},
            'outdoorSegment':{'schema':FORMAT,'rawFile':'split-source.csv.gz','sourceClock':f['sourceClock'],'mappingSource':'file_name' if f.get('bladeId') else 'user_confirmed','sourceRecordingId':head.get('sourceRecordingId'),'originalCaptureKey':head.get('physicalCaptureId')},
            'pointCycle':{'collectionId':collection,'bladeId':blade,'radialPointId':hashlib.sha256((blade+'\0'+point).encode()).hexdigest()[:32],'radialPointName':point,'radiusM':radius,'azimuthDeg':angle,'identityVerified':head.get('identityVerified',False)}}
         prepared.append((f,m))
-    planned=[{'bladeId':m['pointCycle']['bladeId'],'radialPointId':m['pointCycle']['radialPointId'],'radialPointName':point,'radiusM':radius,'azimuthDeg':m['pointCycle']['azimuthDeg']} for _,m in prepared]
+    planned=[{k:m['pointCycle'][k] for k in ('bladeId','radialPointId','radialPointName','radiusM','azimuthDeg')} for _,m in prepared]
     made=[]
     try:
         manager.recordings.mkdir(parents=True,exist_ok=True)

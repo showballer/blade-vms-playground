@@ -1,6 +1,7 @@
 "use client";
 import { memo, useEffect, useRef, useState, type CSSProperties } from "react";
 import { ChartLoading } from "./chart-loading";
+import { sliderOnlyZoom } from "./chart-interactions";
 import * as echarts from "echarts/core";
 import { LineChart, BarChart, HeatmapChart } from "echarts/charts";
 import {
@@ -77,7 +78,7 @@ export const Chart = memo(function Chart({
       if (!applied || applied.option !== current.option || applied.updateMode !== current.updateMode) {
         drawing = true;
         try {
-          c.setOption(current.option, { notMerge: current.updateMode === "replace", lazyUpdate: false,
+          c.setOption(sliderOnlyZoom(current.option), { notMerge: current.updateMode === "replace", lazyUpdate: false,
             ...(current.updateMode === "merge" ? { replaceMerge: ["series"] } : {}) });
           setRenderError("");
         } catch (error) { drawing = false; setRendering(false); setRenderError("图表绘制失败：" + (error as Error).message); }

@@ -7,6 +7,7 @@ from dataclasses import replace
 import hashlib
 import math
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -342,11 +343,60 @@ class JoinAndAggregateTests(unittest.TestCase):
         self.assertAlmostEqual((R[0]-b[-1])-(R[1]-R[0]),0.,places=15)
         np.testing.assert_array_equal(L,before_L);np.testing.assert_array_equal(R,before_R)
 
+    def test_steep_endpoint_adapts_cap_without_relaxing_guards(self):
+        fs=250000.;t=np.arange(4096)/fs
+        L=.2+.01*np.sin(2*np.pi*700*t);R=.22+.01*np.sin(2*np.pi*900*t)
+        R[1]=R[0]+.112
+        cfg=JoinConfig(.00898,.008192,.00112,31250.)
+        before_L,before_R=L.copy(),R.copy()
+        b,info=join_arrays(L,R,fs,cfg)
+        self.assertGreater(len(info['attempted_cap_samples']),1)
+        self.assertLess(info['effective_cap_seconds'],cfg.cap_seconds)
+        self.assertEqual(info['config']['amplitude_guard_factor'],3.)
+        self.assertEqual(info['config']['slope_guard_factor'],3.)
+        y=np.r_[L[-1],b,R[0]]
+        self.assertLessEqual(abs(y).max(),info['amplitude_limit_m_s'])
+        self.assertLessEqual(abs(np.diff(y)).max()*fs,info['slope_limit_m_s2'])
+        self.assertAlmostEqual(b[0]-L[-1],L[-1]-L[-2],places=14)
+        self.assertAlmostEqual(R[0]-b[-1],R[1]-R[0],places=14)
+        np.testing.assert_array_equal(L,before_L);np.testing.assert_array_equal(R,before_R)
+        # Adaptation must not turn an impossible guard into an accepted join.
+        for strict in (replace(cfg,amplitude_guard_factor=.1),replace(cfg,slope_guard_factor=.1)):
+            with self.assertRaisesRegex(SignalError,'amplitude/slope guard'):
+                join_arrays(L,R,fs,strict)
+
+    def test_one_rejected_join_retains_other_joins_and_source_values(self):
+        results=self.point_results();before=[r.features.copy() for r in results]
+        calls=0
+        def fit(left,right,fs,cfg):
+            nonlocal calls
+            calls+=1
+            if calls==2:
+                raise SignalError('JOIN_PREVIEW_UNSUPPORTED','synthesized bridge exceeds configured amplitude/slope guard')
+            return join_arrays(left,right,fs,cfg)
+        with patch('blade_acquisition.record_analysis.reference.stitch.join_arrays',side_effect=fit):
+            p=build_point_preview(results,expected_azimuths=(0.,90.,180.,270.),config=self.join_config())
+        self.assertEqual([j['status'] for j in p.joins],['ready','unavailable','ready'])
+        self.assertEqual(p.joins[1]['message'],'90°→180° 接缝拟合超限，保留原始片段')
+        self.assertEqual((p.measured_samples,p.synthetic_samples),(6000,100))
+        gap=next(b for b in p.blocks if b['kind']=='display_gap')
+        self.assertTrue(np.isnan(p.values_m_s[gap['display_start_sample']:gap['display_start_sample']+gap['samples']]).all())
+        for b,r in zip([b for b in p.blocks if b['kind']=='measured_processed'],results):
+            np.testing.assert_array_equal(p.values_m_s[b['display_start_sample']:b['display_start_sample']+b['samples']],r.analysis_input().values_m_s)
+        self.assertEqual(before,[r.features for r in results])
+        with self.assertRaisesRegex(SignalError,'SYNTHETIC_INPUT_FORBIDDEN'):spectra(p)
+
     def test_short_flat_and_overlapping_caps_refused(self):
         c=self.join_config()
         for L,R,config in [(np.ones(3),np.ones(3),c),(np.ones(1500),np.ones(1500),c),
             (np.arange(1500.),np.arange(1500.),replace(c,cap_seconds=.002))]:
             with self.assertRaisesRegex(SignalError,"JOIN_PREVIEW_UNSUPPORTED"):join_arrays(L,R,25000,config)
+
+    def test_invalid_shared_config_is_not_converted_to_display_gaps(self):
+        results=self.point_results();cfg=self.join_config()
+        for invalid in (replace(cfg,duration_seconds=float('nan')),replace(cfg,cap_seconds=.002)):
+            with self.assertRaisesRegex(SignalError,'JOIN_PREVIEW_UNSUPPORTED'):
+                build_point_preview(results,expected_azimuths=(0.,90.,180.,270.),config=invalid)
 
     def test_preview_source_blocks_are_unchanged_and_not_analyzable(self):
         results=self.point_results()

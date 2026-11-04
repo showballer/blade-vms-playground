@@ -22,7 +22,7 @@ export type RotationResult = {
   warnings: string[];
   sources?: { id: string; name: string; source: string; sourceFile: string; qualityCounts?: Record<string, number> }[];
 };
-type RotationRecording = FieldRecording & { position?: number; rpm?: number; source?: string; qualityCounts?: Record<string, number>; sourceFile?: string };
+type RotationRecording = FieldRecording & { position?: number; rpm?: number; source?: string; qualityCounts?: Record<string, number>; sourceFile?: string; measurementMode?: string; sourceMetadata?: {measurementMode?: string} };
 const number = (value: number | null | undefined) => value == null ? "—" : Number(value.toPrecision(6)).toString();
 const baseChart = {
   animation: false, color: ["#2d6cc0", "#1fa971"], textStyle: { fontSize: 12 },
@@ -36,6 +36,7 @@ export function FieldRotation({ request, onError, refreshKey = 0, preferredIds =
   request: <T>(options: FieldRequestOptions) => Promise<T>; onError: (error: unknown) => void;
   refreshKey?: number; preferredIds?: string[]; canAnalyze?: boolean; emptyText?: string;
 }) {
+  const [outdoorCount,setOutdoorCount]=useState(0);
   const [records, setRecords] = useState<RotationRecording[]>([]), [selected, setSelected] = useState<string[]>([]);
   const [positions, setPositions] = useState<Record<string, number>>({});
   const [rpm, setRpm] = useState(1200), [start, setStart] = useState(0), [end, setEnd] = useState(0);
@@ -50,7 +51,9 @@ export function FieldRotation({ request, onError, refreshKey = 0, preferredIds =
     try {
       const response = await request<{ recordings: RotationRecording[] }>({ action: "recordings" });
       if (!alive.current) return;
-      const complete = response.recordings.filter(record => record.status === "complete" && !hasBladePassMetadata(record));
+      const outdoor=(record:RotationRecording)=>record.measurementMode==="outdoor"||record.sourceMetadata?.measurementMode==="outdoor";
+      setOutdoorCount(response.recordings.filter(outdoor).length);
+      const complete = response.recordings.filter(record => record.status === "complete" && !hasBladePassMetadata(record) && !outdoor(record));
       setRecords(complete);
       setLoaded(true);
       setPositions(previous => Object.fromEntries(complete.map((record, index) => {
@@ -84,6 +87,7 @@ export function FieldRotation({ request, onError, refreshKey = 0, preferredIds =
     finally { if (alive.current) setBusy(false); }
   }
   return <div className="analysis-layout field-rotation-layout">
+    {outdoorCount>0&&<p className="field-notice warning">户外顺序片段缺少真实键相，不能套用默认恒转速；请在旋转测振或叶片响应分析查看这 {outdoorCount} 条数据。</p>}
     <form className="rotation-setup-grid" onSubmit={run} onChange={() => setResult(null)}>
       <section className="field-card rotation-parameters">
         <div className="field-section-heading"><div><h2>分析参数</h2><p>恒定 RPM · 阶次谱、同步平均与多点振型</p></div><span className="field-badge amber">恒转速假设</span></div>

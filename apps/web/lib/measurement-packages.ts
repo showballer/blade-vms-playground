@@ -9,7 +9,13 @@ import {rotationDataDirectory,rotationWorker} from './rotation';
 const hex=/^[0-9a-f]{64}$/;const id=/^[0-9a-f]{32}$/;const limit=256*1024*1024;
 const state=globalThis as typeof globalThis & {packageLocksV22?:Set<string>};const locks=state.packageLocksV22??=new Set();
 async function dependencies(user:User,ids:string[]){
- const sources=await measurementSources(user,{});const matches=ids.map(r=>sources.find(s=>s.reference.kind!=='task'&&[s.raw.sourceRecordingId,s.raw.sourceLocalId,s.raw.sourceMetadata?.id,s.reference.id].includes(r)&&s.context&&s.bindingRevision));
+ const sources=await measurementSources(user,{});
+ const match=(r:string)=>sources.find(s=>s.reference.kind!=='task'&&[s.raw.sourceRecordingId,s.raw.sourceLocalId,s.raw.sourceMetadata?.id,s.reference.id,s.reference.kind==='capture'?s.raw.id:undefined].includes(r)&&s.context&&s.bindingRevision);
+ // Capture IDs on Web differ from the original desktop recording IDs. Search
+ // older source pages as well; uploading more records must not orphan a package.
+ let cursor=sources.nextCursor;
+ while(ids.some(r=>!match(r))&&cursor){const page=await measurementSources(user,{captureOnly:true,cursor});sources.push(...page);cursor=page.nextCursor;}
+ const matches=ids.map(match);
  if(matches.some(s=>!s))throw new HttpError(409,'waiting_dependencies：请先上传并关联所有源记录，再重试处理结果上传');
  const contexts=matches.map(s=>s!.context!),scope=contexts[0];if(!scope?.farmId||!scope.turbineId||!scope.campaignId||contexts.some(c=>['farmId','turbineId','campaignId','bladeId'].some(k=>(c as any)[k]!== (scope as any)[k])))throw new HttpError(409,'包的依赖没有关联到同一风场、批次、风机与叶片');
  return {sources:matches.map(s=>s!),context:scope};

@@ -2,25 +2,56 @@ import {isDeepStrictEqual} from "node:util";
 import { digest,HttpError,pool,rows,unpack,type User,type RecordItem } from './db';
 import { measurementSources,objects,prepareSource,sourceBindings,saveMeasurementRow,requireAnalyst,filterMeasurementAccess } from './measurement-store';
 import { rotationWorker,rotationDataDirectory } from './rotation';
-import { realpath,stat } from 'node:fs/promises';
+import { realpath,stat,readFile,writeFile,mkdir,rename } from 'node:fs/promises';
+import {randomUUID} from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import { Readable } from 'node:stream';
-const globalJobs=globalThis as typeof globalThis & {bladeProcessingJobs?:Map<string,{cancelled:boolean;controller:AbortController}>;bladeProcessingQueue?:Map<string,Promise<unknown>>};
+const globalJobs=globalThis as typeof globalThis & {bladeProcessingJobs?:Map<string,{cancelled:boolean;controller:AbortController}>};
 const MAX_RECORDS=200;
 const running=globalJobs.bladeProcessingJobs??=new Map();
-const queues=globalJobs.bladeProcessingQueue??=new Map();
 function worker(user:Pick<User,'id'|'tenant'>,operation:string,parameters:any={},abortSignal?:AbortSignal) {
-  const key=JSON.stringify([user.tenant,user.id]);
-  const pending=(queues.get(key)||Promise.resolve()).catch(()=>{}).then(()=>rotationWorker(user,{action:'signal-workspace',operation,parameters},abortSignal));
-  queues.set(key,pending);void pending.finally(()=>{if(queues.get(key)===pending)queues.delete(key);}).catch(()=>{});
-  return pending;
+ return rotationWorker(user,{action:'signal-workspace',operation,parameters},abortSignal);
+}
+type SavedReadTask={promise:Promise<any>;controller:AbortController;readers:number;complete:boolean};
+const reads=globalThis as typeof globalThis & {bladeSavedReadTasks?:Map<string,SavedReadTask>};
+const pendingReads=reads.bladeSavedReadTasks??=new Map();
+function joinSavedRead(task:SavedReadTask,signal?:AbortSignal):Promise<any>{
+ task.readers++;
+ return new Promise((resolve,reject)=>{
+  let finished=false;
+  const done=(error?:unknown,value?:any)=>{if(finished)return;finished=true;signal?.removeEventListener('abort',abort);task.readers--;if(!task.readers&&!task.complete)task.controller.abort();if(error)reject(error);else resolve(value);};
+  const abort=()=>done(new HttpError(499,'读取已取消'));
+  signal?.addEventListener('abort',abort,{once:true});
+  task.promise.then(v=>done(undefined,v),e=>done(e));
+  if(signal?.aborted)abort();
+ });
+}
+async function savedRead(value:any,operation:string,parameters:any,signal?:AbortSignal){
+ const started=Date.now(),owner=value.workerAccount;
+ if(signal?.aborted)throw new HttpError(499,'读取已取消');
+ const key=digest(JSON.stringify(['saved-view-20261104-v2',...(['preview','waveforms'].includes(operation)?['adaptive-joins-1']:[]),value.id,value.inputKey,value.packageSha256,operation,parameters]));
+ const directory=path.join(rotationDataDirectory(owner),'saved-web-views'),file=path.join(directory,key+'.json');
+ try{const cached=JSON.parse(await readFile(file,'utf8'));return {...cached,readTiming:{totalMs:Date.now()-started,source:'persisted_view',cacheHit:true}};}catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw e;}
+ let task=pendingReads.get(file);
+ if(!task){
+  task={promise:Promise.resolve(),controller:new AbortController(),readers:0,complete:false};
+  const current=task;
+  task.promise=(async()=>{
+   const result=await worker(owner,operation,parameters,current.controller.signal);
+   const detail=operation==='result'&&parameters.recordingId?{jobId:value.id,detail:result.detail,workerTiming:result.workerTiming}:result;
+   await mkdir(directory,{recursive:true});const tmp=file+'.'+randomUUID();await writeFile(tmp,JSON.stringify(detail));await rename(tmp,file);return detail;
+  })().finally(()=>{current.complete=true;if(pendingReads.get(file)===current)pendingReads.delete(file);});
+  pendingReads.set(file,task);
+ }
+ const output=await joinSavedRead(task,signal);
+ return {...output,readTiming:{totalMs:Date.now()-started,source:'saved_processing_artifacts',cacheHit:false}};
 }
 const modeOf=(s:any)=>s.raw.measurementMode||s.raw.sourceMetadata?.measurementMode||'indoor';
 const pcOf=(s:any)=>s.raw.pointCycle||s.raw.sourceMetadata?.pointCycle||{};
 const wid=(s:any)=>s.reference.kind==='capture'?digest('cloud-capture:'+s.reference.id).slice(0,32):s.reference.id;
 const labels=(v:unknown)=>String(v??'').replace(/^叶片\s*/,'').trim();
-async function selection(user:User,context:any) {
+export async function processingSelection(user:User,context:any) {
   if(!context?.farmId||!context?.campaignId||!context?.turbineId)return null;
   const [all,sources]=await Promise.all([objects(user),measurementSources(user,{context})]);
   const farm=all.find(o=>o.id===context.farmId&&o.kind==='farm'),turbine=all.find(o=>o.id===context.turbineId&&o.kind==='turbine'),campaign=all.find(o=>o.id===context.campaignId&&o.kind==='campaign');
@@ -54,12 +85,12 @@ export async function processingSummaries(user:User,context:any={}){
  return (await filterMeasurementAccess(user,found.sort((a:any,b:any)=>new Date(b.sort_created_at).getTime()-new Date(a.sort_created_at).getTime()).map(unpack))).filter(r=>Object.entries(context).every(([k,v])=>!v||r.context?.[k]===v));
 }
 export async function processingResult(user:User,id:string){return stored(user,id);}
-export async function processingEndpoint(user:User,b:any){
+export async function processingEndpoint(user:User,b:any,signal?:AbortSignal){
  const command=b.request||{},action=command.action;
  if(action==='capabilities'||action==='contract')return worker(user,action==='contract'?'contract':'capabilities');
  if(action==='history')return {results:await processingSummaries(user,b.context)};
  if(action==='catalog'||action==='start'){
-  const s=await selection(user,b.context);if(!s)return {tasks:[],revision:'empty'};
+  const s=await processingSelection(user,b.context);if(!s)return {tasks:[],revision:'empty'};
   const revision=digest(JSON.stringify(s.chosen.map(x=>[x.key,x.bindingRevision,digest(JSON.stringify(x.raw)),x.raw.samples,x.raw.sampleRate])));
   if(action==='catalog')return {tasks:s.chosen.length?[s.task]:[],revision,composition:{required:s.groups.length>1,groups:s.groups,mode:b.compositionMode||null},algorithmVersion:'unified-record-analysis-2.2.0',processingContract:(await worker(user,'capabilities')).processingContract,jobs:(await processingSummaries(user,b.context)).filter(p=>p.status==='complete').map(p=>({jobId:p.id,taskId:p.task.id,status:p.status,finishedAt:Date.parse(p.finishedAt)/1000,algorithmVersion:p.algorithmVersion,recordingIds:p.selectedRecordingIds||p.task.recordingIds,workspacePurpose:p.workspace?.purpose}))};
   if(command.taskId!==s.task.id||!Array.isArray(command.recordingIds)||!command.recordingIds.length||command.recordingIds.length>MAX_RECORDS||command.recordingIds.some((id:string)=>!s.task.recordingIds.includes(id)))throw new HttpError(400,'来源选择已变化，请刷新');
@@ -87,18 +118,21 @@ export async function processingEndpoint(user:User,b:any){
   }catch(e){if(!state.cancelled)await update(user,job.id,{...body,status:'failed',error:(e as Error).message});}finally{running.delete(job.id);}})();
   return {jobId:job.id,status:'queued',completed:0,total:body.total};
  }
- if((action==='inspect'||action==='review_history')&&!command.jobId){const selected=await selection(user,b.context);if(!selected||!selected.task.recordingIds.includes(command.recordingId))throw new HttpError(403,'无权访问该来源');const source=selected.chosen.find(s=>wid(s)===command.recordingId);await prepareSource(user,source!);return worker(user,action,{recordingId:command.recordingId});}
+ if((action==='inspect'||action==='review_history')&&!command.jobId){const selected=await processingSelection(user,b.context);if(!selected||!selected.task.recordingIds.includes(command.recordingId))throw new HttpError(403,'无权访问该来源');const source=selected.chosen.find(s=>wid(s)===command.recordingId);await prepareSource(user,source!);return worker(user,action,{recordingId:command.recordingId},signal);}
  const value=await stored(user,command.jobId);
  if(action==='status')return {jobId:value.id,status:['queued','running'].includes(value.status)&&!running.has(value.id)?'failed':value.status,error:['queued','running'].includes(value.status)&&!running.has(value.id)?'服务已重新启动，请重试处理':value.error,completed:value.completed,total:value.total};
  if(action==='cancel'){requireAnalyst(user);const task=running.get(value.id);if(task){task.cancelled=true;task.controller.abort();}await update(user,value.id,{...value,status:'cancelled'});return {status:'cancelled',backgroundMayContinue:false};}
  if(value.status!=='complete')throw new HttpError(409,'处理尚未完成');
  const owner=value.workerAccount;
  const packageParameters=value.packageSha256?{packageSha256:value.packageSha256}:{};
- if(action==='inspect')return worker(owner,'inspect',{recordingId:command.recordingId,...packageParameters});
+ if(action==='inspect'||action==='review_history'){
+  if(!value.report.records.some((r:any)=>r.recording_id===command.recordingId))throw new HttpError(403,'来源不属于该保存版本');
+  return worker(owner,action,{recordingId:command.recordingId,...packageParameters},signal);
+ }
  if(action==='save'||action==='publish'){requireAnalyst(user);if(!isDeepStrictEqual(value.report.processingContract,await worker(user,'contract')))throw new HttpError(409,'历史方案只读，请按当前方案重新计算');await update(user,value.id,{...value,published:true,publishedAt:new Date().toISOString(),publishedBy:user.id});return {published:true};}
  if(value.packageSha256&&action==='review')throw new HttpError(409,'桌面已保存结果只读，请在桌面复核并上传新版本');
  if(action==='snapshot')return {result:{...value,workerAccount:undefined,report:value.report}};
- if(action==='result')return command.recordingId?worker(owner,'result',{jobId:value.workerJobId,recordingId:command.recordingId,segmentId:command.segmentId,...packageParameters}):{...value.report,jobId:value.id,processingResultId:value.id};
+ if(action==='result')return command.recordingId?savedRead(value,'result',{jobId:value.workerJobId,recordingId:command.recordingId,segmentId:command.segmentId,...packageParameters},signal):{...value.report,jobId:value.id,processingResultId:value.id};
  if(action==='export'){
   const output=await worker(owner,'export',{jobId:value.workerJobId,kind:command.kind,previewId:command.previewId,...packageParameters});
   const base=await realpath(path.join(rotationDataDirectory(owner),...(value.packageSha256?['analysis-packages',value.packageSha256]:[]),'record-analysis-v1',value.workerJobId,'exports')),file=await realpath(output.path);
@@ -106,7 +140,7 @@ export async function processingEndpoint(user:User,b:any){
   return new Response(Readable.toWeb(createReadStream(file)) as ReadableStream,{headers:{'Content-Type':'application/zip','Content-Disposition':`attachment; filename=analysis.zip; filename*=UTF-8''${encodeURIComponent(output.fileName)}`,'Cache-Control':'no-store'}});
  }
  if(action==='review'){requireAnalyst(user);if(!value.report.records.some((r:any)=>r.recording_id===command.recordingId))throw new HttpError(403,'复核来源不属于该版本');return worker(owner,'review',{...command,action:undefined,jobId:value.workerJobId,actor:user.name||user.id});}
- if(action==='waveforms')return worker(owner,'waveforms',{jobId:value.workerJobId,...packageParameters});
- if(action==='extended'||action==='preview')return worker(owner,action,{...command,action:undefined,jobId:value.workerJobId,...packageParameters});
+ if(action==='waveforms')return savedRead(value,'waveforms',{jobId:value.workerJobId,...packageParameters},signal);
+ if(action==='extended'||action==='preview')return savedRead(value,action,{...command,action:undefined,jobId:value.workerJobId,...packageParameters},signal);
  throw new HttpError(400,'不支持的Web处理动作');
 }

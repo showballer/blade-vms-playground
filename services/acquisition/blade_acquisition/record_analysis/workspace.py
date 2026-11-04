@@ -14,7 +14,7 @@ from .reference import analyze_recording
 from .reference.dsp import spectra
 from .reference.cli import json_safe
 
-from .plan import VERSION,DEFAULT,LIMITS,PREVIEW_BAND,contract,identities,angle
+from .plan import VERSION,DEFAULT,LIMITS,PREVIEW_BAND,SPECTRAL_MIN_SAMPLES,contract,identities,angle
 from .modes import assess as assess_boundaries, with_mode, selected, capture_key
 
 def options(value):
@@ -98,9 +98,10 @@ def policy(load,ids,settings,base,reviews=None):
   try:
    raw,_=quality_record(with_mode(load(rid),settings['measurementMode']));spec=filter_spec(settings,raw.sample_rate_hz)
    quality=assess_boundaries(raw,base,(reviews or {}).get(rid));guard=int(round((spec.edge_guard_seconds or 0)*raw.sample_rate_hz))
-   n=min((r['end']-r['start']-2*guard for r in quality['ranges'] if r['state'] in ('auto_pass','reviewed_pass') and r['end']-r['start']>2*guard+3),default=0)
+   usable=[r['end']-r['start']-2*guard for r in quality['ranges'] if r['state'] in ('auto_pass','reviewed_pass')]
+   n=max((n for n in usable if n>=SPECTRAL_MIN_SAMPLES),default=0)
    if n:durations.append(n/raw.sample_rate_hz);rates.append(raw.sample_rate_hz)
-   details.append({'recordingId':rid,'sampleRateHz':raw.sample_rate_hz,'minimumUsableSamples':n,'filterGuardSamplesEachSide':guard})
+   details.append({'recordingId':rid,'sampleRateHz':raw.sample_rate_hz,'minimumUsableSamples':n,'longestEligibleSamples':n,'shortRunsExcludedFromWindow':sum(0<v<SPECTRAL_MIN_SAMPLES for v in usable),'spectralEligible':bool(n),'filterGuardSamplesEachSide':guard})
   except (OSError,ValueError,TypeError) as exc:details.append({'recordingId':rid,'reason':str(exc)})
  if not durations:return {'version':VERSION,'sharedWelchSeconds':None,'automaticBandHz':None,'targetBandReason':'NO_ELIGIBLE_OBSERVATION','bandMode':settings['targetBandMode'],'records':details}
  seconds=min(durations)/2;fs=min(rates);count=max(2,2**int(math.floor(math.log2(max(2,min(32768,seconds*fs))))))
@@ -118,6 +119,7 @@ def policy(load,ids,settings,base,reviews=None):
 
 def window_spectra(real,window,welch_seconds,band=None):
  real=require_real(real)
+ if len(real.values_m_s)<SPECTRAL_MIN_SAMPLES:raise SignalError('INSUFFICIENT_OBSERVATION','Continuous run shorter than 64 samples; spectrum excluded')
  if window=='hann':return spectra(real,welch_window_seconds=welch_seconds,band_hz=band)
  y=real.values_m_s;fs=real.sample_rate_hz;n=len(y);w=signal.get_window(window,n,fftbins=True)
  amplitude=abs(np.fft.rfft(w*y))/w.sum();amplitude[1:-1 if n%2==0 else None]*=2
@@ -138,7 +140,9 @@ def analyze(raw,base,settings,plan,window=None,review=None):
  correction=g.get('recordOverrides',{}).get(raw.recording_id) or g.get('inputOverrides')
  override=(correction or {}).get('values')
  try:quality=assess_boundaries(raw,config,review)
- except (ValueError,TypeError):quality=None
+ except (ValueError,TypeError):
+  if settings['measurementMode']=='outdoor':raise
+  quality=None
  if window is not None:raise SignalError('INVALID_CONFIG','Fixed legacy windows cannot be used with the unified plan; use a versioned quality review')
  if quality is None:bundle=analyze_recording(raw,override,config=config)
  else:
@@ -153,7 +157,9 @@ def analyze(raw,base,settings,plan,window=None,review=None):
  bundle['quality_events'].extend(events)
  for s in bundle['segments']:
   if s.status.get('analysis_state')!='ready':continue
-  try:s.spectrum=window_spectra(s.analysis_input(),settings['window'],config.welch_window_seconds)
+  try:
+   if len(s.analysis_input().values_m_s)<SPECTRAL_MIN_SAMPLES:raise SignalError('INSUFFICIENT_OBSERVATION','Continuous run shorter than 64 samples; waveform retained, spectrum excluded')
+   s.spectrum=window_spectra(s.analysis_input(),settings['window'],config.welch_window_seconds)
   except SignalError as exc:s.spectrum={};s.status.update(spectrum_state='blocked',spectrum_message=str(exc));s.status['issues'].append(exc.code)
   pc=original.manifest.get('pointCycle') or {};planned=[v.get('azimuthDeg') for v in pc.get('plannedStations',[]) if isinstance(v,dict) and isinstance(v.get('azimuthDeg'),(int,float))]
   mapping=angle(pc.get('azimuthDeg'),planned,pc.get('azimuthToleranceDeg',0))

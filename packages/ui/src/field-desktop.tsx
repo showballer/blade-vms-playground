@@ -1,4 +1,5 @@
 "use client";
+import {RetainedPanel} from "./retained-panel";
 import React, { useCallback, useEffect, useId, useRef, useState } from "react";
 import {
   Activity, AlertTriangle, ArrowRight, AudioLines, Check,
@@ -173,11 +174,25 @@ export function FieldServicePanel({ status, busy, onAction }: {
   </section>;
 }
 
+function FieldRecordingPoint({ recording }: { recording: FieldRecording }) {
+  const point = recording.pointCycle;
+  if (!point) return <>—</>;
+  const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
+  const name = point.pointName || [
+    point.bladeId && `叶片${point.bladeId}`,
+    point.radialPointName || recording.point,
+    finite(point.azimuthDeg) ? `${point.azimuthDeg}°` : undefined,
+  ].filter(Boolean).join(" · ") || "—";
+  const hasAxis = finite(point.targetAxis1AngleDeg) || finite(point.targetAxis2AngleDeg);
+  const angle = (value: unknown) => finite(value) ? `${value.toFixed(3)}°` : "—";
+  return <><strong>{name}</strong>{hasAxis && <small>轴1 {angle(point.targetAxis1AngleDeg)} · 轴2 {angle(point.targetAxis2AngleDeg)}</small>}</>;
+}
+
 export function FieldRecordingList({ recordings, selectedId, busy, onSelect, onExport, onUpload, syncedIds = [] }: {
   recordings: FieldRecording[]; selectedId?: string; busy: boolean; onSelect: (id: string) => void; onExport?: (id: string) => void; onUpload?: (id: string) => void; syncedIds?: string[];
 }) {
   if (!recordings.length) return <div className="field-recordings-empty"><HardDrive size={28} /><h3>还没有采集记录</h3><p>完成采集后，可在此查看记录。</p></div>;
-  return <div className="field-table-scroll" role="region" aria-label="本机采集记录，可横向滚动查看所有列" tabIndex={0}><table className="field-table"><thead><tr><th>任务 / 对象</th><th>转盘点位</th><th>开始时间</th><th>原始点数</th><th>采样率</th><th>保存状态</th><th>操作</th></tr></thead><tbody>{recordings.map((recording) => <tr key={recording.id} className={selectedId === recording.id ? "selected" : ""}><td><strong>{recording.name}</strong><span className={`field-badge ${recording.source === "simulation" ? "amber" : ""}`}>{recording.source === "simulation" ? "模拟" : "设备"}</span><small>{[recording.windFarm && `风场 ${recording.windFarm}`, recording.object, recording.turbine, recording.point].filter(Boolean).join(" / ") || "未填写对象信息"}</small></td><td>{recording.pointCycle ? <><strong>{recording.pointCycle.pointName}</strong><small>轴1 {recording.pointCycle.targetAxis1AngleDeg.toFixed(3)}° · 轴2 {recording.pointCycle.targetAxis2AngleDeg.toFixed(3)}°</small></> : "—"}</td><td>{timeOf(recording.startedAt)}</td><td className="mono">{count(recording.samples)}</td><td className="mono">{recording.sampleRate ? `${count(recording.sampleRate)} Hz` : "未知"}</td><td><span className={`field-badge ${recording.status === "complete" ? "green" : recording.status === "error" ? "red" : "amber"}`}>{recording.status === "complete" ? "已完成" : recording.status === "error" ? "异常记录" : "采集中 / 未完整结束"}</span></td><td><div className="field-record-actions"><Button disabled={busy} onClick={() => onSelect(recording.id)}>查看波形</Button>{onExport && <Button disabled={busy || recording.status !== "complete"} onClick={() => onExport(recording.id)}>导出原始数据</Button>}{onUpload && <Button disabled={busy || recording.status !== "complete" || syncedIds.includes(recording.id)} onClick={() => onUpload(recording.id)}>{syncedIds.includes(recording.id) ? "已上传 Web" : "上传至 Web"}</Button>}</div></td></tr>)}</tbody></table></div>;
+  return <div className="field-table-scroll" role="region" aria-label="本机采集记录，可横向滚动查看所有列" tabIndex={0}><table className="field-table"><thead><tr><th>任务 / 对象</th><th>转盘点位</th><th>开始时间</th><th>原始点数</th><th>采样率</th><th>保存状态</th><th>操作</th></tr></thead><tbody>{recordings.map((recording) => <tr key={recording.id} className={selectedId === recording.id ? "selected" : ""}><td><strong>{recording.name}</strong><span className={`field-badge ${recording.source === "simulation" ? "amber" : ""}`}>{recording.source === "simulation" ? "模拟" : recording.source === "split_segment_import" ? "户外导入" : "设备"}</span><small>{[recording.windFarm && `风场 ${recording.windFarm}`, recording.object, recording.turbine, recording.point].filter(Boolean).join(" / ") || "未填写对象信息"}</small></td><td><FieldRecordingPoint recording={recording} /></td><td>{timeOf(recording.startedAt)}</td><td className="mono">{count(recording.samples)}</td><td className="mono">{recording.sampleRate ? `${count(recording.sampleRate)} Hz` : "未知"}</td><td><span className={`field-badge ${recording.status === "complete" ? "green" : recording.status === "error" ? "red" : "amber"}`}>{recording.status === "complete" ? "已完成" : recording.status === "error" ? "异常记录" : "采集中 / 未完整结束"}</span></td><td><div className="field-record-actions"><Button disabled={busy} onClick={() => onSelect(recording.id)}>查看波形</Button>{onExport && <Button disabled={busy || recording.status !== "complete"} onClick={() => onExport(recording.id)}>导出原始数据</Button>}{onUpload && <Button disabled={busy || recording.status !== "complete" || syncedIds.includes(recording.id)} onClick={() => onUpload(recording.id)}>{syncedIds.includes(recording.id) ? "已上传 Web" : "上传至 Web"}</Button>}</div></td></tr>)}</tbody></table></div>;
 }
 
 export function FieldDesktopApp() {
@@ -571,8 +586,8 @@ export function FieldDesktopApp() {
           {busy === "device" && <p className="field-notice warning">设备配置操作进行中，请等待结果。自动聚焦涉及激光，请留意现场状态。</p>}
           {status?.indexWarning && <div className="field-notice warning field-global-message" role="status"><AlertTriangle size={17} /><span>本机索引提示：{status.indexWarning}</span></div>}
           {screen === "analysis" && <FieldAnalysis request={fieldCall} onError={handleError} />}
-          {screen === "record-analysis" && <DesktopAnalysisWorkspace purpose="signal" initialRecordId={analysisRecordId} onNavigate={navigateAnalysis} request={fieldCall} onSync={syncAnalysisResult} onError={handleRecordingError} />}
-          {screen === "blade-synthesis" && <DesktopAnalysisWorkspace purpose="synthesis" initialRecordId={analysisRecordId} onNavigate={navigateAnalysis} request={fieldCall} onSync={syncAnalysisResult} onError={handleRecordingError} />}
+          <RetainedPanel active={screen === "record-analysis"}><DesktopAnalysisWorkspace purpose="signal" initialRecordId={analysisRecordId} onNavigate={navigateAnalysis} request={fieldCall} onSync={syncAnalysisResult} onError={handleRecordingError} /></RetainedPanel>
+          <RetainedPanel active={screen === "blade-synthesis"}><DesktopAnalysisWorkspace purpose="synthesis" initialRecordId={analysisRecordId} onNavigate={navigateAnalysis} request={fieldCall} onSync={syncAnalysisResult} onError={handleRecordingError} /></RetainedPanel>
           {screen === "blade-passes" && <WebBladePasses canAnalyze refreshKey={0} preferredIds={[]} onError={handleError} localData={localBladeData} />}
           <div hidden={screen !== "turntable"}>{turntableVisited && <FieldTurntableWorkspace onConnectionChange={changeTurntableConnection} segmentedAutoMove={segmentedAutoMove} connectionPort={turntableConnection || undefined} pollUnavailable={statusPollUnavailable} visible={screen === "turntable"} onPortChange={setTurntablePort} onOperationBusy={setTurntableOperationBusy} config={config} onConfig={setConfig} status={status} disabled={Boolean(busy)} request={fieldCall} onStatus={setStatus} onService={() => setScreen("service")} onRecords={() => { setScreen("recordings"); void operate("recordings", refreshRecordings); }}
             routeMode={routeMode} onRouteMode={setRouteMode} autoTargetKey={autoTargetKey} onAutoTarget={setAutoTargetKey} onRoute={onRoute} positionedStation={positionedStation} onPositionTarget={(key, angle) => requestPresetPosition(key, angle, true)} onAcquisition={() => { setLinkEnabled(true); setScreen("acquisition"); }} />}</div>

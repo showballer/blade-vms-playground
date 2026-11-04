@@ -19,6 +19,7 @@ from .quality import assess_record
 from .plan import contract,LIMITS,VERSION as PLAN_VERSION,digest as plan_digest
 from .presentation import raw_plot, segment_summary, segment_plot, aggregate_plot, plot_indices, spectrum_plot
 from .reference import analyze_recording, aggregate_points, build_point_preview, JoinConfig
+from .reference.stitch import PREVIEW_VERSION
 from .reference.cli import config_from_dict, json_safe, write_preview_csv
 from .reference.models import RealSegment, SegmentResult
 from .reference.geometry import SignalError
@@ -83,7 +84,7 @@ def validate_config(profile, supplied):
 
 
 class RecordAnalysisManager:
-    def __init__(self, data_dir: Path, *, recordings_dir: Path|None=None):
+    def __init__(self, data_dir: Path, *, recordings_dir: Path|None=None, recover_running: bool=True):
         self.recordings=(recordings_dir or data_dir/"recordings").resolve()
         self.root=(data_dir/"record-analysis-v1").resolve(); self.root.mkdir(parents=True,exist_ok=True)
         self.lock=threading.RLock();self.computation_lock=threading.Lock();self.export_lock=threading.Lock()
@@ -96,7 +97,7 @@ class RecordAnalysisManager:
             try:
                 state=json.loads(path.read_text(encoding="utf-8"))
                 if state.get("jobId")!=path.parent.name:continue
-                if state.get("status") in ("running","queued"):
+                if recover_running and state.get("status") in ("running","queued"):
                     state.update(status="cancelled",error="SERVICE_RESTARTED",finishedAt=time.time());dump(path,state)
                 self.jobs[path.parent.name]=state
             except (OSError,ValueError):continue
@@ -241,7 +242,7 @@ class RecordAnalysisManager:
             workspace=state.get('workspace');auto_plan=None
             if workspace:
                 from .workspace import policy
-                auto_plan=policy(self.load_recording,task['recordingIds'],workspace['algorithmOptions'],config,state.get('qualityReviews'))
+                auto_plan=policy(self.load_recording,state['recordingIds'],workspace['algorithmOptions'],config,state.get('qualityReviews'))
             for i,recording_id in enumerate(state["recordingIds"]):
                 if event.is_set():raise InterruptedError("ANALYSIS_CANCELLED")
                 try:
@@ -290,6 +291,12 @@ class RecordAnalysisManager:
                     if window:bundle["review_window"]={**window,"source":"explicit_diagnostic_review"}
                     bundles.append(bundle)
                     summary=json_safe(bundle);summary.update(metadata)
+                    # Display geometry belongs to this processing version; retain
+                    # the source snapshot separately instead of replacing it.
+                    representative=next((s for s in bundle["segments"] if s.result_id==bundle.get("representative")),None)
+                    if representative is not None:
+                        summary['source_object']=dict(metadata['object'])
+                        summary['object']={**metadata['object'],**representative.parameters['object']}
                     from .plan import angle
                     summary['object']['original_azimuth_deg']=summary['object']['azimuth_deg'];summary['object']['azimuth_deg']=angle(summary['object']['azimuth_deg'],[],0)['normalized']
                     dump(directory/(recording_id+"-analysis.json"),summary)
@@ -371,7 +378,16 @@ class RecordAnalysisManager:
     @staticmethod
     def _coverage(task,records):
         points={}
-        for p in task["plannedPoints"]:
+        corrected_radii={}
+        for record in records:
+            original=record.get("source_object",record.get("object",{}));obj=record.get("object",{})
+            key=(str(original.get("blade")),original.get("point"),original.get("radius_from_hub_m"))
+            corrected_radii.setdefault(key,set()).add(obj.get("radius_from_hub_m"))
+        for original in task["plannedPoints"]:
+            p=dict(original)
+            raw_key=(str(p.get("bladeId")),p.get("radialPointName"),p.get("radiusM"))
+            radii=corrected_radii.get(raw_key,set())
+            if len(radii)==1:p["radiusM"]=next(iter(radii))
             key=(str(p.get("bladeId")),p.get("radialPointName"),p.get("radiusM"))
             point=points.setdefault(key,{"bladeId":p.get("bladeId"),"pointName":p.get("radialPointName"),"radiusM":p.get("radiusM"),"plannedAzimuths":[],"observedAzimuths":[],"usableAzimuths":[]})
             if isinstance(p.get("azimuthDeg"),(int,float)) and p["azimuthDeg"] not in point["plannedAzimuths"]:point["plannedAzimuths"].append(p["azimuthDeg"]%360)
@@ -437,7 +453,7 @@ class RecordAnalysisManager:
         job_id=body.get("jobId");directory=self._directory(job_id)
         if self.jobs[job_id]["status"]!="complete":raise BlockingIOError("记录分析尚未完成。")
         report=json.loads((directory/"result.json").read_text(encoding="utf-8"))
-        report["history"]=self._history(report)
+        report["history"]=[] if body.get("recordingId") else self._history(report)
         if report["history"]:report["chartAvailability"]["A23"]={"status":"ready","reasonCodes":[],"message":"不同业务批次、相同处理与量纲的已分析结果"}
         rid=body.get("recordingId")
         if rid is not None:
@@ -496,6 +512,10 @@ class RecordAnalysisManager:
         if (bridge_samples>2_000_000 or measured_samples+(len(results)-1)*bridge_samples>8_000_000
                 or model_context*join_config.ar_order>2_000_000):
             raise SignalError("ANALYSIS_SIZE_UNSUPPORTED","preview sample count or AR context exceeds the local analysis resource limit")
+        directory=self._directory(body["jobId"]);key=hashlib.sha256(json.dumps({"previewVersion":PREVIEW_VERSION,"ids":ids,"expectedAzimuths":expected,"config":config},sort_keys=True).encode()).hexdigest()
+        saved=directory/("preview-"+key+".json")
+        if saved.is_file() and not saved.is_symlink() and (directory/("preview-"+key+".csv")).is_file():
+            return json.loads(saved.read_text(encoding="utf-8"))
         joined=build_point_preview(results,expected_azimuths=tuple(expected),config=join_config)
         series=[]
         for b in joined.blocks:
@@ -503,9 +523,11 @@ class RecordAnalysisManager:
             series.append({**b,"time_s":(lo+i)/joined.sample_rate_hz,"values_m_s":y[i],"display_source_indices":lo+i,
                 "source_indices":(b["source_start"]+i) if b["kind"]=="measured_processed" else None})
         value=json_safe({"kind":joined.kind,"analysis_eligible":False,"series":series,"blocks":joined.blocks,"joins":joined.joins,
+            "previewVersion":PREVIEW_VERSION,"status":"partial" if any(j.get("status")=="unavailable" for j in joined.joins) else "ready",
+            "message":"；".join(j["message"] for j in joined.joins if j.get("status")=="unavailable"),
+            "gap_samples":sum(b["samples"] for b in joined.blocks if b["kind"]=="display_gap"),
             "sample_rate_hz":joined.sample_rate_hz,"measured_samples":joined.measured_samples,"synthetic_samples":joined.synthetic_samples,
             "watermark":"仅展示，含拟合，禁止用于频谱、特征或健康判断","resultIds":ids,"joinConfig":config},include_arrays=True)
-        directory=self._directory(body["jobId"]);key=hashlib.sha256(json.dumps({"ids":ids,"expectedAzimuths":expected,"config":config},sort_keys=True).encode()).hexdigest()
         value["previewId"]=key;dump(directory/("preview-"+key+".json"),value)
         write_preview_csv(directory/("preview-"+key+".csv"),joined,results)
         return value
@@ -628,9 +650,9 @@ class RecordAnalysisManager:
         if not isinstance(body,dict):raise SignalError("INVALID_REQUEST","request must be an object")
         action=body.get("action")
         if action=='import_stage':
-            strict_keys(body,{'selectedPath'})
+            strict_keys(body,{'selectedPath','selectedPaths'})
             from .outdoor_import import stage
-            return stage(self,body['selectedPath'])
+            return stage(self,body.get('selectedPaths',body.get('selectedPath')))
         if action=='import_commit':
             from .outdoor_import import commit
             with self.lock:return commit(self,body)
@@ -652,7 +674,10 @@ class RecordAnalysisManager:
             strict_keys(body,{"jobId"})
             from .packages import create
             return create(self,body.get("jobId"))
-        if action=="catalog":strict_keys(body,set());return self.catalog()
+        if action=="catalog":
+            strict_keys(body,set())
+            from .presentation import catalog_response
+            return catalog_response(self.catalog())
         if action=="inspect":return self.inspect(body)
         if action=="start":return self.start(body)
         if action in ("status","cancel"):
@@ -661,7 +686,9 @@ class RecordAnalysisManager:
                 with self.lock:
                     if job_id in self.cancel_events:self.cancel_events[job_id].set()
             return self.status(job_id)
-        if action=="result":return self.result(body)
+        if action=="result":
+            from .presentation import result_response
+            return result_response(self.result(body))
         if action in ("preview","extended"):
             if not self.computation_lock.acquire(blocking=False):raise BlockingIOError("已有记录分析正在计算，请等待完成。")
             try:return self.preview(body) if action=="preview" else self.extended(body)

@@ -35,14 +35,14 @@ const beijingTime = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai"
 
 function TimeSemanticsFields({value,onChange}:{value:WindTimeSemantics;onChange:(v:WindTimeSemantics)=>void}){
  const set=(key:string,next:any)=>onChange({...value,[key]:next});
- return <div className="measurement-filters wind-time-semantics">
+ return <>{value.timeShiftedForTest&&<p className="hint">时间平移测试副本 · 数值沿用原记录，用于关联展示。</p>}<div className="measurement-filters wind-time-semantics">
  <Select label="时间统计口径" value={value.timeBasis} onChange={v=>set('timeBasis',v)} options={[{value:'unknown',label:'待确认'},{value:'instantaneous',label:'瞬时值'},{value:'interval_mean',label:'区间均值'}]}/>
  {value.timeBasis==='interval_mean'&&<><label>统计周期 · 秒<input type="number" min={.001} max={86400} value={value.intervalSeconds} onChange={e=>set('intervalSeconds',Number(e.target.value))}/></label><Select label="时间戳表示" value={value.timestampPosition} onChange={v=>set('timestampPosition',v)} options={[{value:'start',label:'区间开始'},{value:'center',label:'区间中心'},{value:'end',label:'区间结束'}]}/></>}
  <Select label="转速物理含义" value={value.rpmMeaning} onChange={v=>set('rpmMeaning',v)} options={[{value:'unknown',label:'待确认'},{value:'rotor',label:'叶轮／主轴转速'}]}/>
  <label>允许邻近时间差 · ms<input type="number" min={0} max={3600000} value={value.maxGapMs} onChange={e=>set('maxGapMs',Number(e.target.value))}/></label>
  <label>时钟校正 · ms<input type="number" value={value.clockOffsetMs} onChange={e=>set('clockOffsetMs',Number(e.target.value))}/></label>
  <label>时间与偏差确认依据<input maxLength={500} value={value.basis} onChange={e=>set('basis',e.target.value)}/></label>
- </div>;
+ </div></>;
 }
 function DatasetTiming({dataset,onClose,onSaved}:{dataset:SavedDataset;onClose:()=>void;onSaved:()=>void}){
  const [value,setValue]=useState(()=>validateWindTimeSemantics((dataset as any).timeSemantics)),[busy,setBusy]=useState(false),[error,setError]=useState('');
@@ -221,6 +221,7 @@ export function WindDatasets({ canWrite }: { canWrite: boolean }) {
     <Card title="已保存数据集">
       <Table headers={["数据集", "风场", "时间范围", "时间点数", "风速与转速同时存在", "操作"]}>
         {shown.slice(page * 20, (page + 1) * 20).map(d => <tr key={d.id}><td>{d.name}
+          {(d as any).timeSemantics?.timeShiftedForTest&&<small className="hint" style={{display:'block'}}>时间已调整 · 非现场同期工况</small>}
           {d.metricCounts && <small className="hint" style={{ display: "block" }}>{Object.keys(unitOptions).filter(key => (d.metricCounts?.[key] || 0) > 0).map(key => `${columns[key]} ${d.metricCounts?.[key].toLocaleString()}`).join(" · ")}</small>}
           <small className="hint">时间口径：{(d as any).timeSemantics?.timeBasis==='interval_mean'?`${(d as any).timeSemantics.intervalSeconds}秒区间均值`:(d as any).timeSemantics?.timeBasis==='instantaneous'?'瞬时值':'待确认'} · 已保存评价关联 {(d as any).associationSummary?.campaigns||0} 批次 / {(d as any).associationSummary?.segments||0} 段</small>
         </td><td>{all.find(o => o.id === d.farmId)?.name}</td><td>{timeText(d.start)} ～ {timeText(d.end)}</td><td>{d.rowCount.toLocaleString()}</td><td>{(d.matchedRowCount ?? d.rowCount).toLocaleString()}

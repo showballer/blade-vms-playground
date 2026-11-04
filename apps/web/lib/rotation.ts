@@ -25,8 +25,8 @@ function projectRoot() {
 }
 
 /** Each job owns a short-lived process. The Web session never exposes service tokens or paths. */
-async function withWorker<T>(user: Pick<User, "id" | "tenant">, operation: (service: string, python: string, data: string) => Promise<T>): Promise<T> {
-  const key = accountKey(user);
+async function withWorker<T>(user: Pick<User, "id" | "tenant">, operation: (service: string, python: string, data: string) => Promise<T>, lane: "compute" | "saved-reads" = "compute"): Promise<T> {
+  const key = accountKey(user) + ":" + lane;
   if (workers.users.has(key)) throw new HttpError(429, "当前账号已有导入或分析在运行，请稍后重试。");
   if (workers.active >= 2) throw new HttpError(429, "分析服务繁忙，请稍后重试。");
   const root = projectRoot();
@@ -50,7 +50,8 @@ function runWorker(service: string, python: string, data: string, payload: Recor
       });
       let output = "", bytes = 0, settled = false;
       let stopping: Error | undefined;
-      const timeout = setTimeout(() => stop(new HttpError(504, "导入或分析超过 180 秒，请缩小文件或分析区间后重试。")), 180_000);
+      const savedRead = payload.action === "signal-workspace" && ["result", "extended", "preview", "waveforms", "review_history"].includes(String(payload.operation));
+      const timeout = setTimeout(() => stop(new HttpError(504, savedRead ? "本版本读取超时，原结果仍保留，请重试。" : "导入或分析超过 180 秒，请检查任务状态后重试。")), 180_000);
       const abort = () => stop(new HttpError(499, "分析已取消"));
       abortSignal?.addEventListener("abort", abort, { once: true });
       if (abortSignal?.aborted) abort();
@@ -96,18 +97,31 @@ const analysisQueueCounts=new Map<string,number>();
 export async function rotationWorker(user: Pick<User, "id" | "tenant">, payload: Record<string, unknown>, abortSignal?: AbortSignal): Promise<any> {
   // The overview and historical-record panel may read the same catalog together.
   // Share only an in-flight read, never mutations, analysis jobs or cached results.
-  if (payload.action === "recordings" && Object.keys(payload).length === 1) {
-    const key = listingKey(user);
+  if (payload.action === "recordings" && Object.keys(payload).every(key => ["action", "excludeCloudCaptures"].includes(key))) {
+    const key = listingKey(user) + (payload.excludeCloudCaptures === true ? ":imports-only" : ":all");
     const current = listings.get(key);
     if (current) return current;
-    const pending = readRotationCatalog(accountData(projectRoot(), user));
+    const pending = readRotationCatalog(accountData(projectRoot(), user), payload.excludeCloudCaptures === true);
     listings.set(key, pending);
     try { return await pending; }
     finally { if (listings.get(key) === pending) listings.delete(key); }
   }
   if(['signal-workspace','formal-modal'].includes(String(payload.action))){
-    const key=accountKey(user);if((analysisQueueCounts.get(key)||0)>=32)throw new HttpError(429,'Too many pending analysis operations');analysisQueueCounts.set(key,(analysisQueueCounts.get(key)||0)+1);const prior=analysisQueue.get(key)||Promise.resolve();
-    const pending=prior.catch(()=>{}).then(()=>{if(abortSignal?.aborted)throw new HttpError(499,'Analysis cancelled before execution');return withWorker(user,(service,python,data)=>runWorker(service,python,data,payload,abortSignal));});
+    const readOnly=payload.action==='signal-workspace'&&['result','extended','preview','waveforms','contract','capabilities','inspect','review_history','fingerprints'].includes(String(payload.operation));
+    const key=accountKey(user)+(readOnly?':saved-reads':':compute');if((analysisQueueCounts.get(key)||0)>=32)throw new HttpError(429,'Too many pending analysis operations');analysisQueueCounts.set(key,(analysisQueueCounts.get(key)||0)+1);const prior=analysisQueue.get(key)||Promise.resolve();
+    const queuedAt=Date.now();
+    const pending=prior.catch(()=>{}).then(async()=>{
+      if(abortSignal?.aborted)throw new HttpError(499,'读取已取消');
+      const startedAt=Date.now();
+      try {
+        const value=await withWorker(user,(service,python,data)=>runWorker(service,python,data,payload,abortSignal),readOnly?'saved-reads':'compute');
+        if(readOnly&&!['contract','fingerprints','capabilities'].includes(String(payload.operation))&&value&&typeof value==='object')value.workerTiming={queueMs:startedAt-queuedAt,executionMs:Date.now()-startedAt,totalMs:Date.now()-queuedAt};
+        return value;
+      } catch(error) {
+        console.warn('analysis-worker', {operation:payload.operation,queueMs:startedAt-queuedAt,executionMs:Date.now()-startedAt,totalMs:Date.now()-queuedAt,status:(error as any)?.status});
+        throw error;
+      }
+    });
     analysisQueue.set(key,pending);void pending.finally(()=>{analysisQueueCounts.set(key,Math.max(0,(analysisQueueCounts.get(key)||1)-1));if(analysisQueue.get(key)===pending)analysisQueue.delete(key);}).catch(()=>{});return pending;
   }
   return withWorker(user, (service, python, data) => runWorker(service, python, data, payload, abortSignal));

@@ -61,6 +61,17 @@ def unpack(package:Path,destination:Path,allowed_ids):
    if sha(target)!=expected['sha256']:raise SignalError('PACKAGE_CHECKSUM_MISMATCH','Member SHA-256 mismatch')
  return m
 
+def same_json_value(a,b):
+ """JSON transport can render 250000.0 as 250000, without changing its value.
+
+ Keep comparisons exact (no float tolerance) and never equate bools to numbers.
+ """
+ if isinstance(a,dict) and isinstance(b,dict):return a.keys()==b.keys() and all(same_json_value(a[k],b[k]) for k in a)
+ if isinstance(a,list) and isinstance(b,list):return len(a)==len(b) and all(same_json_value(x,y) for x,y in zip(a,b))
+ if isinstance(a,bool) or isinstance(b,bool):return type(a) is type(b) and a==b
+ if isinstance(a,(int,float)) and isinstance(b,(int,float)):return a==b
+ return type(a) is type(b) and a==b
+
 def validate_server_sources(root,base,mapping):
  from .adapter import load_raw
  from ..upload_sampling import prepare_upload
@@ -81,7 +92,7 @@ def validate_server_sources(root,base,mapping):
   if candidate.time_s.shape!=expected.time_s.shape or not np.array_equal(candidate.time_s,expected.time_s) or not np.array_equal(candidate.overrange,expected.overrange) or not np.array_equal(candidate.velocity_m_s,expected.velocity_m_s,equal_nan=True) or not np.allclose(candidate.rssi_percent,expected.rssi_percent,rtol=0,atol=1e-7,equal_nan=True):raise SignalError('PACKAGE_SOURCE_MISMATCH','Native source or its exact anti-alias derivative differs from the already authorized server waveform')
   for key in ('pointCycle','turntable','diagnosticOnly','validMeasurement','qualityIntervals','qualityRules','measurementMode','outdoorSegment','importSource'):
    actual=candidate.manifest.get(key);known=expected.manifest.get(key,(expected.manifest.get('sourceMetadata') or {}).get(key))
-   if digest(actual)!=digest(known):raise SignalError('PACKAGE_SOURCE_METADATA_MISMATCH','Candidate boundaries, geometry or raw quality differ from authorized source metadata')
+   if not same_json_value(actual,known):raise SignalError('PACKAGE_SOURCE_METADATA_MISMATCH','Candidate boundaries, geometry or raw quality differ from authorized source metadata: '+key)
   verified.append({'nativeId':rid,'serverId':server_id,'serverSourceHash':expected.source_hash,'relation':'exact_native_or_recomputed_antialias_derivative'})
  return verified
 

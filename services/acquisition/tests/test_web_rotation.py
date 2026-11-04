@@ -50,6 +50,15 @@ class WebRotationTest(unittest.TestCase):
         self.assertAlmostEqual(result["modeShape"]["points"][0]["amplitude"], 0.02, delta=0.0001)
         self.assertEqual(result["sources"][0]["source"], "simulation")
 
+    def test_outdoor_record_cannot_use_default_constant_rpm(self):
+        record = self.csv()
+        path = self.root / "recordings" / record["id"] / "manifest.json"
+        original = json.loads(path.read_text())
+        original["measurementMode"] = "outdoor"
+        path.write_text(json.dumps(original))
+        with self.assertRaisesRegex(ValueError, "真实键相"):
+            dispatch(self.root, {"action": "rotation", "parameters": {"recordingIds": [record["id"]], "rpm": 1200}})
+
     def test_device_source_and_sample_count(self):
         record = self.csv({"format": "blade-vms-csv-1", "source": "polytec_ivs500", "samples": 1001, "sampleRate": 1000})
         self.assertEqual(record["source"], "measured")

@@ -27,11 +27,15 @@ export function useMeasurementContext(): [Partial<MeasurementContext>, (value: P
 export function openMeasurementWorkspace(screen: "blade" | "modal" | "health" | "wind" | "report", context: Partial<MeasurementContext>) {
   publishMeasurementContext(context); window.location.hash = screen;
 }
-export function rememberProcessingResult(context:Partial<MeasurementContext>,id:string){
- try{sessionStorage.setItem('blade.processing-result.v1',JSON.stringify({context,id}));}catch{}
+function processingSelectionKey(context:Partial<MeasurementContext>,purpose:string){return 'blade.processing-result.v2:'+JSON.stringify([purpose,context.farmId,context.campaignId,context.turbineId,context.bladeId]);}
+export function rememberProcessingResult(context:Partial<MeasurementContext>,id:string,purpose='synthesis'){
+ try{sessionStorage.setItem(processingSelectionKey(context,purpose),id);window.dispatchEvent(new Event('blade-processing-selection'));}catch{}
 }
-export function selectedProcessingResult(context:Partial<MeasurementContext>):string|undefined{
- if(typeof window==='undefined')return;try{const v=JSON.parse(sessionStorage.getItem('blade.processing-result.v1')||'null');return v&&['farmId','campaignId','turbineId'].every(k=>v.context?.[k]===context[k as keyof MeasurementContext])?v.id:undefined;}catch{return;}
+export function selectedProcessingResult(context:Partial<MeasurementContext>,purpose='synthesis'):string|undefined{
+ if(typeof window==='undefined')return;try{return sessionStorage.getItem(processingSelectionKey(context,purpose))||undefined;}catch{return;}
+}
+export function selectedBladeProcessingResults(context:Partial<MeasurementContext>,objects:MeasurementObject[]){
+ return Object.fromEntries(objects.filter(o=>o.kind==='blade'&&o.parentId===context.turbineId).flatMap(o=>{const id=selectedProcessingResult({...context,bladeId:o.id});return id?[[o.id,id]]:[];}));
 }
 
 export type Catalog = {

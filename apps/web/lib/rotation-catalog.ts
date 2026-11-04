@@ -27,7 +27,7 @@ export function normalizeImportedMetadata(value: Record<string, any>) {
 
 /** Read only atomic manifests. A catalogue read must never acquire an analysis
  * worker, recover raw files, create a directory, or rewrite the SQLite index. */
-export async function readRotationCatalog(data: string) {
+export async function readRotationCatalog(data: string, excludeCloudCaptures = false) {
   const directory = path.join(data, "recordings");
   let entries;
   try {
@@ -55,6 +55,9 @@ export async function readRotationCatalog(data: string) {
         if (!opened.isFile() || opened.size > 1024 * 1024) throw new Error("Invalid metadata");
         const manifest = JSON.parse(await file.readFile("utf8"));
         if (!manifest || typeof manifest !== "object" || manifest.id !== entry.name) throw new Error("Invalid metadata");
+        // The measurement catalog already lists these via the paginated capture
+        // service. Exclude implementation copies before the response-size bound.
+        if (excludeCloudCaptures && manifest.cloudCaptureId) return null;
         return normalizeImportedMetadata(manifest);
       } catch (error: any) {
         // Imports create a directory before atomically publishing the manifest.

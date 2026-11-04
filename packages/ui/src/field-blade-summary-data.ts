@@ -23,7 +23,7 @@ export type BladeTaskSummary = {
 };
 export type BladeRecordSummary = { groups: BladeRecordGroup[]; collections: BladeCollectionSummary[]; tasks: BladeTaskSummary[]; taskCount: number; ungroupedCount: number };
 type AutomaticRecord = FieldRecording & { pointCycle: NonNullable<FieldRecording["pointCycle"]> & Required<Pick<FieldAutomaticRecord,
-  "sessionId" | "bladeId" | "radialPointId" | "lapIndex" | "stationIndex" | "stationCount">> & { pointId: string } };
+  "sessionId" | "bladeId" | "radialPointId" | "lapIndex" | "stationIndex" | "stationCount">> & { pointId: string; cycles: number } };
 type Session = { executionMode: "continuous" | "manual_segments"; sessionIds: Set<string>; records: AutomaticRecord[]; plan: FieldPlannedStation[] | null; cycles: number; conflict: boolean; latestAt: number;
   collectionId: string | null; collectionConflict: boolean; taskName: string; windFarm: string; turbine: string; measurementObject: string };
 

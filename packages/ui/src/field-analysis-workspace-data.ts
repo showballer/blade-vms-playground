@@ -15,6 +15,12 @@ export function responseBandMessage(plan:AnalysisJson){
 }
 export type RecordFilters={taskName:string;windFarm:string;turbine:string;bladeId:string};
 export const emptyRecordFilters:RecordFilters={taskName:'',windFarm:'',turbine:'',bladeId:''};
+export function workspaceHistory(jobs:AnalysisJson[],taskId:string|undefined,purpose:'signal'|'synthesis',selectedIds:string[]){
+ const ids=new Set(selectedIds);
+ return jobs.filter(j=>j.status==='complete'&&j.taskId===taskId&&(!j.workspacePurpose||j.workspacePurpose===purpose)&&
+  (purpose==='signal'?array<string>(j.recordingIds).some(id=>ids.has(id)):
+   array<string>(j.recordingIds).length>0&&array<string>(j.recordingIds).every(id=>ids.has(id))));
+}
 const taskName=(task:AnalysisTask)=>task.name||'未填写任务';
 const farmName=(task:AnalysisTask)=>task.windFarm||'未填写风场';
 const turbineName=(task:AnalysisTask)=>task.turbine||'未填写风机';
@@ -38,13 +44,18 @@ export function changeRecordFilter(filters:RecordFilters,key:keyof RecordFilters
 export function workspaceStftOption(stft:AnalysisJson|null):AnalysisJson|null{
  const matrix=stft?.data;if(!matrix)return null;
  const times=array<number>(matrix.time_s),frequencies=array<number>(matrix.frequency_hz),psd=array<number[]>(matrix.psd_m2_s2_per_hz);
- const heat=frequencies.flatMap((_f,fi)=>times.map((_t,ti)=>[ti,fi,psd[fi]?.[ti]]).filter(row=>finite(row[2])));
+ // dB reference is 1 (mm/s)^2/Hz. Color clipping only; source powers remain unchanged.
+ const heat=frequencies.flatMap((_f,fi)=>times.map((_t,ti)=>[ti,fi,finite(psd[fi]?.[ti])?10*Math.log10(Math.max(psd[fi][ti]*1e6,1e-30)):null]).filter(row=>finite(row[2])));
  if(!heat.length)return null;
- return {animation:false,animationDuration:0,animationDurationUpdate:0,tooltip:{position:'top',confine:true},
-  grid:{left:70,right:30,top:20,bottom:100},
-  xAxis:{type:'category',data:times.map(v=>v.toFixed(4)),name:'原始时间 / s'},
-  yAxis:{type:'category',data:frequencies.map(v=>v.toFixed(1)),name:'Hz'},
-  visualMap:{min:0,max:heat.reduce((m,row)=>Math.max(m,row[2]!),0)||1,orient:'horizontal',left:'center',bottom:10},
+ const max=heat.reduce((v,row)=>Math.max(v,row[2]!),-Infinity),min=max-80;
+ const energy=psd.map(row=>row.reduce((a,v)=>a+(finite(v)&&v>0?v:0),0)),total=energy.reduce((a,v)=>a+v,0);let sum=0,end=frequencies.length-1;
+ for(let i=0;i<energy.length;i++){sum+=energy[i];if(total&&sum>=total*.95){end=Math.min(frequencies.length-1,Math.max(8,Math.ceil(i*1.2)));break;}}
+ return {animation:false,tooltip:{confine:true,renderMode:'richText',formatter:(p:any)=>`原始时间 ${times[p.value[0]].toFixed(5)} s\n频率 ${frequencies[p.value[1]].toFixed(1)} Hz\nPSD ${p.value[2].toFixed(1)} dB re 1 (mm/s)²/Hz`},
+  grid:{left:76,right:50,top:40,bottom:100},
+  xAxis:{type:'category',data:times.map(v=>v.toFixed(4)),name:'原始时间 / s',nameLocation:'middle',nameGap:25,axisLabel:{hideOverlap:true}},
+  yAxis:{type:'category',data:frequencies.map(v=>v.toFixed(1)),name:'频率 / Hz',axisLabel:{hideOverlap:true}},
+  dataZoom:[{type:'inside',yAxisIndex:0,startValue:0,endValue:end,filterMode:'none'},{type:'slider',yAxisIndex:0,right:5,width:14,startValue:0,endValue:end,filterMode:'none'}],
+  visualMap:{min,max,calculable:true,orient:'horizontal',left:'center',bottom:8,text:['PSD · dB re 1 (mm/s)²/Hz',''],precision:1,inRange:{color:['#edf3fa','#8ab9df','#2766ac','#f3bf53','#bd3628']}},
   series:[{type:'heatmap',data:heat,progressive:0,animation:false,emphasis:{disabled:true}}]};
 }
 export function desktopRecordLabel(task:AnalysisTask,record:AnalysisCatalogRecord){
@@ -66,6 +77,14 @@ export function workspaceAzimuthColor(angle:number,planned:number[]){
  const palette=['#2563eb','#059669','#dc4d65','#9333ea','#0891b2'];
  const order=planned.length?planned:[0,90,180,270];
  return palette[Math.max(0,order.indexOf(angle))%palette.length];
+}
+export function workspacePreviewSeries(preview:AnalysisJson,planned:number[]){
+ return array(preview?.series).map(b=>{
+  const gap=b.kind==='display_gap',measured=b.kind==='measured_processed';
+  return {name:gap?`${b.left_azimuth_deg}°→${b.right_azimuth_deg}° 未拟合`:measured?`${b.azimuth_deg??b.azimuth??'实测'}°`:'拟合接缝',
+   data:array<number>(b.time_s).map((x,j)=>[x,gap||!finite(b.values_m_s?.[j])?null:b.values_m_s[j]*1000]),
+   dashed:!measured,displayOnlyGap:gap,color:gap?'#94a3b8':measured?workspaceAzimuthColor(b.azimuth_deg??b.azimuth,planned):'#d97706'};
+ });
 }
 export function workspacePointSeries(report:AnalysisJson,details:Record<string,AnalysisJson>,point:string,bladeId:string){
  const records=array(report.records).filter(r=>String(r.object?.blade)===bladeId&&r.object?.point===point);

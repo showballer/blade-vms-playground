@@ -15,6 +15,8 @@ from scipy.signal import resample_poly
 from .geometry import SignalError
 from .models import DisplayPreview, SegmentResult, readonly
 
+PREVIEW_VERSION = "adaptive-joins-1"
+
 
 @dataclass(frozen=True)
 class JoinConfig:
@@ -78,22 +80,30 @@ def _extend(context: np.ndarray, count: int, fs: float, cfg: JoinConfig) -> tupl
         max_stabilized_pole_radius=float(abs(roots).max()),context_mean_m_s=center,context_scale_m_s=scale)
 
 
-def join_arrays(left: np.ndarray, right: np.ndarray, fs: float, config: JoinConfig) -> tuple[np.ndarray,dict]:
-    """Display-only helper. No measured value is modified or returned as a prediction."""
-    cfg = config
+def _validate_join_config(cfg: JoinConfig, fs: float) -> None:
     scalars = [cfg.duration_seconds,cfg.context_seconds,cfg.cap_seconds,cfg.model_sample_rate_hz,
         cfg.ridge_relative,cfg.prediction_decay_seconds,cfg.amplitude_guard_factor,cfg.slope_guard_factor,fs]
     if any(not math.isfinite(x) or x<=0 for x in scalars) or not 0<cfg.max_pole_radius<1:
         raise SignalError("JOIN_PREVIEW_UNSUPPORTED", "positive finite join parameters and pole radius in (0,1) required")
     if cfg.model_sample_rate_hz>fs:
         raise SignalError("JOIN_PREVIEW_UNSUPPORTED", "model sampling rate cannot exceed source rate")
+    context_n, M, cap = (int(round(value*fs)) for value in
+        (cfg.context_seconds,cfg.duration_seconds,cfg.cap_seconds))
+    if context_n<3 or M<4 or cap<2 or 2*cap>=M+1:
+        raise SignalError("JOIN_PREVIEW_UNSUPPORTED", "context, bridge or cap is too short/overlapping")
+
+
+def join_arrays(left: np.ndarray, right: np.ndarray, fs: float, config: JoinConfig) -> tuple[np.ndarray,dict]:
+    """Display-only helper. No measured value is modified or returned as a prediction."""
+    cfg = config
+    _validate_join_config(cfg,fs)
     L,R = np.asarray(left,dtype=float),np.asarray(right,dtype=float)
     if L.ndim!=1 or R.ndim!=1 or not np.all(np.isfinite(L)) or not np.all(np.isfinite(R)):
         raise SignalError("JOIN_PREVIEW_UNSUPPORTED", "finite one-dimensional contexts required")
     context_n = int(round(cfg.context_seconds*fs))
     M = int(round(cfg.duration_seconds*fs))
     cap = int(round(cfg.cap_seconds*fs))
-    if context_n<3 or min(len(L),len(R))<context_n or M<4 or cap<2 or 2*cap>=M+1:
+    if min(len(L),len(R))<context_n:
         raise SignalError("JOIN_PREVIEW_UNSUPPORTED", "context, bridge or cap is too short/overlapping")
     t = np.arange(M+2)/fs
     T = float(t[-1])
@@ -102,20 +112,34 @@ def join_arrays(left: np.ndarray, right: np.ndarray, fs: float, config: JoinConf
     B = backward[::-1]
     u = t/T
     weight = 6*u**5-15*u**4+10*u**3
-    y = (1-weight)*F+weight*B
+    blended = (1-weight)*F+weight*B
     d0,d1 = float((L[-1]-L[-2])*fs),float((R[1]-R[0])*fs)
-    gradient = np.gradient(y,1/fs)
-    y[:cap+1] = CubicHermiteSpline([0,t[cap]],[L[-1],y[cap]],[d0,gradient[cap]])(t[:cap+1])
-    y[-cap-1:] = CubicHermiteSpline([t[-cap-1],T],[y[-cap-1],R[0]],[gradient[-cap-1],d1])(t[-cap-1:])
-    y[0],y[-1] = L[-1],R[0]
-    y[1],y[-2] = 2*L[-1]-L[-2],2*R[0]-R[1]
+    gradient = np.gradient(blended,1/fs)
     context = np.r_[L[-context_n:],R[:context_n]]
     amplitude_limit = cfg.amplitude_guard_factor*max(float(abs(context).max()),np.finfo(float).eps)
     derivative_limit = cfg.slope_guard_factor*max(float(abs(np.diff(L[-context_n:])).max()*fs),
         float(abs(np.diff(R[:context_n])).max()*fs),np.finfo(float).eps)
-    if not np.all(np.isfinite(y)) or float(abs(y).max())>amplitude_limit or float(abs(np.diff(y)).max()*fs)>derivative_limit:
-        raise SignalError("JOIN_PREVIEW_UNSUPPORTED", "synthesized bridge exceeds configured amplitude/slope guard")
+    # A steep single-sample endpoint increment must not be extrapolated over a
+    # long cap. Retry only the synthetic caps; AR fits, measured samples and
+    # both guards remain unchanged. Keep the longest candidate that passes.
+    attempted_caps = []
+    while True:
+        attempted_caps.append(cap)
+        y = blended.copy()
+        y[:cap+1] = CubicHermiteSpline([0,t[cap]],[L[-1],blended[cap]],[d0,gradient[cap]])(t[:cap+1])
+        y[-cap-1:] = CubicHermiteSpline([t[-cap-1],T],[blended[-cap-1],R[0]],[gradient[-cap-1],d1])(t[-cap-1:])
+        y[0],y[-1] = L[-1],R[0]
+        y[1],y[-2] = 2*L[-1]-L[-2],2*R[0]-R[1]
+        peak = float(abs(y).max())
+        slope = float(abs(np.diff(y)).max()*fs)
+        if np.all(np.isfinite(y)) and peak<=amplitude_limit and slope<=derivative_limit:
+            break
+        if cap==2:
+            raise SignalError("JOIN_PREVIEW_UNSUPPORTED", "synthesized bridge exceeds configured amplitude/slope guard")
+        cap = max(2,cap//2)
     return readonly(y[1:-1]),dict(config=asdict(cfg),synthetic_samples=M,duration_seconds=M/fs,
+        preview_version=PREVIEW_VERSION,effective_cap_seconds=cap/fs,effective_cap_samples=cap,
+        attempted_cap_samples=attempted_caps,amplitude_peak_m_s=peak,max_slope_m_s2=slope,
         endpoint_to_endpoint_seconds=T,endpoint_policy="exact_discrete_increment",
         left_increment_residual_m_s=float((y[1]-y[0])-(L[-1]-L[-2])),
         right_increment_residual_m_s=float((y[-1]-y[-2])-(R[1]-R[0])),
@@ -158,6 +182,8 @@ def build_point_preview(results: list[SegmentResult], *, expected_azimuths: tupl
                 first.parameters["config"],first.parameters.get("result_set")):
             raise SignalError("AGGREGATION_BASIS_MISMATCH", "mixed layers/bases/rates/profiles/result sets")
     fs = first.segment.sample_rate_hz
+    # Invalid shared parameters are not a per-pair fitting failure.
+    _validate_join_config(config,fs)
     pieces,blocks,joins = [],[],[]
     cursor,measured,synthetic = 0,0,0
     for i,result in enumerate(ordered):
@@ -172,16 +198,34 @@ def build_point_preview(results: list[SegmentResult], *, expected_azimuths: tupl
         measured += len(y)
         if i<len(ordered)-1:
             next_real = ordered[i+1].analysis_input()
-            bridge,info = join_arrays(y,next_real.values_m_s,fs,config)
             join_id = f"join:{result.result_id}:{ordered[i+1].result_id}"
+            try:
+                bridge,info = join_arrays(y,next_real.values_m_s,fs,config)
+                info.update(status="ready")
+                kind = "synthetic_display_transition"
+            except SignalError as exc:
+                if exc.code!="JOIN_PREVIEW_UNSUPPORTED":
+                    raise
+                # Reserve the display interval, with no invented zero samples
+                # or connection across the failed join. Other pairs still fit.
+                bridge = np.full(max(1,int(round(config.duration_seconds*fs))),np.nan)
+                label = f"{expected_azimuths[i]:g}°→{expected_azimuths[i+1]:g}°"
+                reason = "接缝拟合超限" if "amplitude/slope guard" in str(exc) else "接缝无法可靠拟合"
+                info = dict(status="unavailable",code=exc.code,detail=str(exc),
+                    message=f"{label} {reason}，保留原始片段",config=asdict(config),
+                    synthetic_samples=0,gap_samples=len(bridge),preview_version=PREVIEW_VERSION)
+                kind = "display_gap"
             pieces.append(bridge)
             info.update(join_id=join_id,left_result_id=result.result_id,right_result_id=ordered[i+1].result_id,
+                left_azimuth_deg=expected_azimuths[i],right_azimuth_deg=expected_azimuths[i+1],
                 display_start_sample=cursor,actual_source_gap_seconds=None,
                 actual_source_gap_reason="per-record relative time is not an absolute clock mapping")
             joins.append(info)
-            blocks.append(dict(kind="synthetic_display_transition",join_id=join_id,
+            blocks.append(dict(kind=kind,join_id=join_id,
+                left_azimuth_deg=expected_azimuths[i],right_azimuth_deg=expected_azimuths[i+1],
                 display_start_sample=cursor,samples=len(bridge),analysis_eligible=False,
                 source_start=None,source_end=None,source_time_start_s=None))
             cursor += len(bridge)
-            synthetic += len(bridge)
+            if kind=="synthetic_display_transition":
+                synthetic += len(bridge)
     return DisplayPreview(readonly(np.concatenate(pieces)),fs,tuple(blocks),tuple(joins),measured,synthetic)

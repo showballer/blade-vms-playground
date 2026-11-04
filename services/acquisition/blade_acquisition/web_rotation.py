@@ -738,6 +738,8 @@ def dispatch(root: Path, payload: dict):
         return analyze_blade_passes(store, parameters)
     config = RotationRequest.model_validate(payload.get("parameters"))
     manifests = [store._read_manifest(store.directory(record_id)) for record_id in config.recordingIds]
+    if any(record.get("measurementMode", (record.get("sourceMetadata") or {}).get("measurementMode")) == "outdoor" for record in manifests):
+        raise ValueError("户外顺序片段缺少真实键相，不能套用恒定 RPM 分析；请使用真实连续段频谱或叶片响应分析。")
     rates = [record.get("sampleRate") for record in manifests]
     if all(isinstance(rate, (int, float)) and math.isfinite(rate) and rate > 0 for rate in rates):
         maximum_order = min(rates) / 2 / (config.rpm / 60)

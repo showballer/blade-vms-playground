@@ -6,6 +6,11 @@ const dataset=(s:any,r:any[]= [row])=>({id:'wind',farmId:'wf1',timeSemantics:sem
 const run=(d:any[])=>match(d,'wf1','1303',span);
 assert.equal(run([dataset({timeBasis:'instantaneous',rpmMeaning:'rotor'})]).status,'unmatched');
 const near=run([dataset({timeBasis:'instantaneous',rpmMeaning:'rotor',maxGapMs:250})]);assert.equal(near.status,'matched');assert.equal(near.matchMethod,'nearest');assert.equal(near.segments[0].maxGapMs,200);assert.equal(near.healthEligible,true);
+const shifted=run([dataset({timeBasis:'instantaneous',rpmMeaning:'rotor',maxGapMs:250,timeShiftedForTest:true,basis:'用户要求前移一天，数值不变'})]);
+assert.equal(shifted.status,'matched');assert.equal(shifted.windSpeed,near.windSpeed);assert.equal(shifted.rpm,near.rpm);assert.equal(shifted.timeShiftedForTest,true);assert.equal(shifted.healthEligible,false);assert.match(shifted.reasons.join('；'),/时间平移测试副本/);
+assert.throws(()=>semantics({timeShiftedForTest:'false',basis:'test'}),/标记无效/);
+assert.throws(()=>semantics({timeShiftedForTest:true}),/调整说明/);
+const unrelated=run([dataset({timeBasis:'instantaneous',rpmMeaning:'rotor',maxGapMs:250}),{...dataset({timeBasis:'instantaneous',rpmMeaning:'rotor',maxGapMs:250,timeShiftedForTest:true,basis:'时间平移'},[{...row,turbineCode:'other'}]),id:'unrelated'}]);assert.equal(unrelated.healthEligible,true);assert.equal(unrelated.timeShiftedForTest,false);
 assert.equal(run([dataset({timeBasis:'instantaneous',rpmMeaning:'unknown',maxGapMs:250})]).healthEligible,false);
 const mean=run([dataset({timeBasis:'interval_mean',intervalSeconds:600,rpmMeaning:'rotor'})]);assert.equal(mean.status,'matched');assert.equal(mean.timeBasis,'interval_mean');assert.equal(mean.healthEligible,false);assert.equal(mean.synchronousRpm,false);
 assert.equal(run([dataset({timeBasis:'interval_mean',intervalSeconds:600,timestampPosition:'end'})]).status,'unmatched');

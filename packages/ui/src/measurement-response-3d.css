@@ -23,7 +23,13 @@
 }
 .measurement-response-3d-heading h3 { margin: 0 0 5px; font-size: 14px; color: #26364a; }
 .measurement-response-3d-heading span { font-size: 12px; color: #677b94; }
+.measurement-response-3d-title { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 5px; }
+.measurement-response-3d-title h3 { margin: 0; }
+.measurement-response-3d-title .tag { font-size: 11px; }
+.measurement-response-3d-title .tag.amber { color: #b76b16; }
+.measurement-response-3d-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-left: auto; flex-shrink: 0; }
 .measurement-response-3d-canvas {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -76,6 +82,60 @@
 .measurement-workspace .measurement-response-3d .measurement-response-3d-settings label input[type="range"] { height: 18px; margin: 0; padding: 0; border: 0; border-radius: 0; background: transparent; }
 .measurement-response-3d-settings input[type="range"]:focus-visible { outline: 2px solid #306bc4; outline-offset: 3px; }
 .measurement-response-3d-empty { min-height: var(--response-scene-height); display: grid; place-items: center; padding: 20px; color: #74869d; }
+.measurement-response-3d-empty > div { max-width: 480px; text-align: center; line-height: 1.8; }
+.measurement-response-3d-empty strong { color: #445a76; }
+.measurement-response-3d-empty p { margin: 8px 0 0; font-size: 13px; }
+.measurement-response-3d-compact {
+  --response-scene-height: clamp(320px, 40vh, 420px);
+  background: #fff;
+  border-radius: 12px;
+}
+.measurement-response-3d-compact .measurement-response-3d-heading { padding: 20px 20px 12px; border-bottom: 0; align-items: flex-start; }
+.measurement-response-3d-compact .measurement-response-3d-heading h3 { font-size: 16px; }
+.measurement-response-3d-compact .measurement-response-3d-actions .btn { min-height: 30px; padding: 5px 10px; font-size: 12px; white-space: nowrap; }
+.measurement-response-3d-compact .measurement-response-3d-canvas { background: linear-gradient(#fff, #f7faff); }
+.measurement-response-3d-compact .measurement-response-3d-axis { margin: 0 20px 8px; }
+.measurement-response-3d-compact .measurement-response-3d-legend { margin: 0 20px 8px; }
+.measurement-response-3d-compact .measurement-response-reference-toggle { margin: 0 0 12px; justify-content: flex-start; }
+.measurement-response-3d-compact .measurement-response-3d-legend { padding-bottom: 12px; }
+.measurement-response-3d-floating-controls {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  max-width: calc(100% - 24px);
+  max-height: calc(100% - 24px);
+}
+.measurement-response-3d-floating-controls .btn { min-height: 30px; padding: 5px 10px; font-size: 12px; }
+.measurement-response-3d-settings-popover {
+  width: 280px;
+  max-width: 100%;
+  min-height: 0;
+  box-sizing: border-box;
+  padding: 10px 14px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: #ffffffed;
+  backdrop-filter: blur(10px);
+  border: 1px solid #dce5f0;
+  border-radius: 10px;
+  box-shadow: 0 6px 22px #1d355524;
+}
+.measurement-response-3d-settings-popover[hidden] { display: none; }
+.measurement-response-3d-popover-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; color: #354d6c; font-size: 13px; }
+.measurement-response-3d-floating-controls .measurement-response-3d-close { width: 28px; padding: 0; font-size: 20px; }
+.measurement-response-3d-settings-popover > div { grid-template-columns: 1fr; gap: 10px; }
+.measurement-response-3d-explanation { border-top: 1px solid #e7edf5; }
+.measurement-response-3d-explanation summary { padding: 8px 0; }
+.measurement-response-3d-explanation .measurement-response-3d-note { margin: 0 0 10px; }
+@container response-3d (max-width: 500px) {
+  .measurement-response-3d-compact .measurement-response-3d-canvas { height: 280px; }
+  .measurement-response-3d-compact .measurement-response-3d-projection { max-width: calc(280px * 1000 / 420); }
+}
 @container response-3d (max-width: 500px) {
   .measurement-response-3d-settings > div { grid-template-columns: 1fr; }
   .measurement-response-3d-axis span:nth-child(2) { display: none; }

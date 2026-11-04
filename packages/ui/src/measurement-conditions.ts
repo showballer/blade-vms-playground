@@ -1,10 +1,12 @@
 /** Match only real segment times. SCADA averages are context, never keyphasor data. */
-export type WindTimeSemantics={timeBasis:'instantaneous'|'interval_mean'|'unknown';intervalSeconds:number;timestampPosition:'start'|'center'|'end';timezone:string;clockOffsetMs:number;maxGapMs:number;rpmMeaning:'rotor'|'unknown';basis:string};
+export type WindTimeSemantics={timeBasis:'instantaneous'|'interval_mean'|'unknown';intervalSeconds:number;timestampPosition:'start'|'center'|'end';timezone:string;clockOffsetMs:number;maxGapMs:number;rpmMeaning:'rotor'|'unknown';basis:string;timeShiftedForTest?:boolean};
 export function validateWindTimeSemantics(input:any):WindTimeSemantics{
  const v={timeBasis:'unknown',intervalSeconds:60,timestampPosition:'start',timezone:'+08:00',clockOffsetMs:0,maxGapMs:0,rpmMeaning:'unknown',basis:'',...input};
  if(!['instantaneous','interval_mean','unknown'].includes(v.timeBasis)||!['start','center','end'].includes(v.timestampPosition)||!['rotor','unknown'].includes(v.rpmMeaning)||!/^([+-](?:0\d|1[0-4]):[0-5]\d|UTC|Z)$/.test(v.timezone))throw Error('工况时间或转速语义无效');
  for(const [k,min,max] of [['intervalSeconds',.001,86400],['clockOffsetMs',-86400000,86400000],['maxGapMs',0,3600000]] as const)if(typeof v[k]!=='number'||!Number.isFinite(v[k])||v[k]<min||v[k]>max)throw Error('工况时间范围无效');
  if(typeof v.basis!=='string'||v.basis.length>500||(v.clockOffsetMs!==0&&!v.basis.trim()))throw Error('时间偏移必须填写校准依据');
+ if(v.timeShiftedForTest!==undefined&&typeof v.timeShiftedForTest!=='boolean')throw Error('工况时间平移标记无效');
+ if(v.timeShiftedForTest&&!v.basis.trim())throw Error('时间平移副本必须保留调整说明');
  return v;
 }
 export function matchSegmentConditions(datasets:any[],farmId:string,turbineCode:string,segments:{start:number;end:number}[]){
@@ -16,7 +18,7 @@ export function matchSegmentConditions(datasets:any[],farmId:string,turbineCode:
    const explicit=!!d.timeSemantics;let sem;try{sem=validateWindTimeSemantics(d.timeSemantics||{timeBasis:'instantaneous'});}catch{return [];}
    return (d.rows||[]).filter((r:any)=>r.turbineCode===turbineCode).map((r:any)=>({r,sem,explicit,datasetId:d.id,time:Date.parse(r.time)+sem.clockOffsetMs}));
  });
- const fields=['windSpeed','rpm','powerKw','temperatureC','windDirection'];const used=new Set<string>();let unknown=false,averaged=false,nearest=false;const conflictTimes=new Set<number>(),sampleTimes=new Set<number>(),windTimes=new Set<number>(),rpmTimes=new Set<number>(),observations:Record<string,number[]>={};
+ const fields=['windSpeed','rpm','powerKw','temperatureC','windDirection'];const used=new Set<string>();let unknown=false,averaged=false,nearest=false,timeShiftedForTest=false;const conflictTimes=new Set<number>(),sampleTimes=new Set<number>(),windTimes=new Set<number>(),rpmTimes=new Set<number>(),observations:Record<string,number[]>={};
  for(const span of valid){
    const matched:any={start:new Date(span.start).toISOString(),end:new Date(span.end).toISOString(),fields:{},fieldMatches:{},ambiguousFields:[],datasetIds:[],method:'none',maxGapMs:0};
    for(const field of fields){
@@ -27,6 +29,7 @@ export function matchSegmentConditions(datasets:any[],farmId:string,turbineCode:
     // Never select a winner among conflicting observations at the same timestamp.
     const clean=[...groups.values()].filter(items=>{const conflict=fields.some(f=>new Set(items.map(c=>c.r[f]).filter(Number.isFinite)).size>1)||new Set(items.map(c=>JSON.stringify([c.sem.timeBasis,c.sem.timeBasis==='interval_mean'?c.sem.intervalSeconds:0,c.sem.timestampPosition]))).size>1;if(conflict)conflictTimes.add(items[0].time);return !conflict;}).flat();
     if(!clean.length)continue;
+    if(clean.some(c=>c.sem.timeShiftedForTest))timeShiftedForTest=true;
     const weights=clean.map(c=>{if(c.sem.timeBasis!=='interval_mean')return 1;averaged=true;const dur=c.sem.intervalSeconds*1000,left=c.time-(c.sem.timestampPosition==='end'?dur:c.sem.timestampPosition==='center'?dur/2:0);return Math.max(0,Math.min(span.end,left+dur)-Math.max(span.start,left));});
     const denominator=weights.reduce((a,b)=>a+b,0);if(!denominator)continue;
     matched.fieldMatches[field]={datasetIds:[...new Set(clean.map(c=>c.datasetId))],timeBasis:[...new Set(clean.map(c=>c.sem.timeBasis))],maxGapMs:matched.maxGapMs,sourceTimes:clean.slice(0,100).map(c=>({time:new Date(c.time).toISOString(),clockOffsetMs:c.sem.clockOffsetMs,basis:c.sem.basis})),sourceCount:clean.length};
@@ -38,7 +41,7 @@ export function matchSegmentConditions(datasets:any[],farmId:string,turbineCode:
  }
  const complete=base.segments.filter((s:any)=>s.status==='matched');base.matchedSegments=complete.length;base.samples=complete.length?[...windTimes].filter(t=>rpmTimes.has(t)).length||complete.length:0;base.availableSamples=base.segments.filter((s:any)=>Object.keys(s.fields).length).length;base.conflictingSamples=conflictTimes.size;base.datasetIds=[...used];
  if(complete.length===valid.length){base.status='matched';for(const field of fields){const values=complete.map((s:any)=>s.fields[field]).filter(Number.isFinite);if(values.length){base[field]=values.reduce((a:number,b:number)=>a+b,0)/values.length;if(field==='windSpeed'||field==='rpm')base[field==='rpm'?'rpmRange':'windRange']=(observations[field]||values).reduce((bounds:number[],v:number)=>[Math.min(bounds[0],v),Math.max(bounds[1],v)],[Infinity,-Infinity]);}}}
- base.timeBasis=averaged?'interval_mean':unknown?'unknown':'instantaneous';base.matchMethod=averaged?'interval_overlap':nearest?'nearest':'exact_window';base.healthEligible=base.status==='matched'&&!averaged&&!unknown&&!conflictTimes.size;base.reasons=[...(base.status!=='matched'?['部分有效片段缺少同时可用的风速和转速']:[]),...(averaged?['区间均值仅作为背景工况，不代表瞬时转速']:[]),...(unknown?['来源时间或转速物理语义尚未确认']:[]),...(conflictTimes.size?['存在冲突观测，未采用冲突值']:[])];return base;
+ base.timeBasis=averaged?'interval_mean':unknown?'unknown':'instantaneous';base.matchMethod=averaged?'interval_overlap':nearest?'nearest':'exact_window';base.timeShiftedForTest=timeShiftedForTest;base.healthEligible=base.status==='matched'&&!averaged&&!unknown&&!conflictTimes.size&&!timeShiftedForTest;base.reasons=[...(base.status!=='matched'?['部分有效片段缺少同时可用的风速和转速']:[]),...(timeShiftedForTest?['使用时间平移测试副本，非现场同期工况，仅用于关联展示']:[]),...(averaged?['区间均值仅作为背景工况，不代表瞬时转速']:[]),...(unknown?['来源时间或转速物理语义尚未确认']:[]),...(conflictTimes.size?['存在冲突观测，未采用冲突值']:[])];return base;
 }
 export function processingSegmentTimes(record:any){
  const epoch=(v:any)=>typeof v==='number'?v* (v<1e11?1000:1):Date.parse(v);

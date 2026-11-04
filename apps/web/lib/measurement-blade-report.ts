@@ -5,7 +5,7 @@ import {processingResult} from './measurement-processing';
 export async function createBladeReport(user:User,b:any){
  requireAnalyst(user);const all=await objects(user),campaign=all.find(o=>o.id===b.campaignId&&o.kind==='campaign');
  if(!campaign||!b.turbineId||!all.some(o=>o.id===b.turbineId&&o.kind==='turbine'&&o.parentId===campaign.parentId))throw new HttpError(400,'请选择批次和风机');
- const workspace=await bladeHealthWorkspace(user,{farmId:campaign.parentId,campaignId:campaign.id,turbineId:b.turbineId},true,b.processingResultId);
+ const workspace=await bladeHealthWorkspace(user,{farmId:campaign.parentId,campaignId:campaign.id,turbineId:b.turbineId},true,b.processingResultId,b.processingResultIds);
  const ids=[...new Set<string>(workspace.blades.map(b=>b.processingResultId).filter(Boolean))];if(!ids.length)throw new HttpError(400,'请先在模态识别保存本批次的真实信号处理结果');
  const processing=await Promise.all(ids.map(id=>processingResult(user,id)));
  const modalSnapshots=(await listMeasurementRows(user,'measurement_formal_modal')).filter(r=>r.published&&r.status==='complete'&&r.context?.farmId===campaign.parentId&&r.context?.turbineId===b.turbineId&&r.context?.campaignId===campaign.id).map(r=>({id:r.id,context:r.context,inputSummary:r.inputSummary,sourceSha256:r.sourceSha256,method:r.method,result:r.result,publishedAt:r.publishedAt,publishedBy:r.publishedBy}));

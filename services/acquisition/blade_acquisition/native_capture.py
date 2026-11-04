@@ -260,8 +260,10 @@ def import_capture(store: RecordingStore, value):
             atomic_json(destination / "manifest.json", previous)
             store.update_index(previous)
         return {"recording": previous}
-    if len(store.list()) >= 128:
-        raise ValueError("当前分析工作区达到 128 条记录上限。")
+    # Match the indexed workspace catalog capacity. Two full outdoor batches
+    # already contain 120 records, besides existing indoor measurements.
+    if len(store.list()) >= 1000:
+        raise ValueError("当前分析工作区达到 1000 条记录上限。")
     temporary = store.root / (".capture-import-" + uuid.uuid4().hex)
     temporary.mkdir(mode=0o700)
     try:

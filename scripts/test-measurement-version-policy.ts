@@ -1,0 +1,11 @@
+import assert from 'node:assert/strict';
+import {wholeBladeVersion} from '../apps/web/lib/measurement-version-policy';
+const version={status:'complete',scope:'analysis',workspace:{purpose:'synthesis'},report:{records:[{recording_id:'a',object:{blade:'2'}},{recording_id:'b',object:{blade:'2'}}]}};
+assert(wholeBladeVersion(version,'2',['a','b']));
+assert(!wholeBladeVersion({...version,workspace:{purpose:'signal'}},'2',['a','b']));
+assert(!wholeBladeVersion({...version,report:{records:version.report.records.slice(0,1)}},'2',['a','b']));
+assert(!wholeBladeVersion(version,'3',['a','b']));
+assert(!wholeBladeVersion(version,'2',[]));
+assert(!wholeBladeVersion(version,'2',['a','b','c']));
+assert(wholeBladeVersion({...version,packageVerification:{sourceRelations:[{nativeId:'a',serverId:'s1'},{nativeId:'b',serverId:'s2'}]}},'2',['s1','s2']));
+console.log('PASS full-blade selection: purpose, blade, source coverage, verified native mapping');

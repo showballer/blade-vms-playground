@@ -31,12 +31,15 @@ export async function measurementReportDocx(user: User, id: string) {
     p(report.conclusion),
   ];
   if(report.bladeAssessments){
+    const farm=report.objects?.find((o:any)=>o.id===report.context?.farmId),turbine=report.objects?.find((o:any)=>o.id===report.turbineId);
+    children.push(p(`风场：${farm?.name||farm?.code||'未记录'}；风机：${turbine?.name||turbine?.code||'未记录'}`));
     children.push(p(`快照校验：${report.snapshotHash}；工况版本：${report.windRevision}`));
     for(const blade of report.bladeAssessments){
-      children.push(new Paragraph({text:blade.name,heading:HeadingLevel.HEADING_1}),p(`结论：${blade.label}`),p((blade.reasons||[]).join("；")));
+      children.push(new Paragraph({text:/^[1-3]$/.test(blade.name)?`叶片 ${blade.name}`:blade.name,heading:HeadingLevel.HEADING_1}),p(`结论：${blade.label}`),p([...new Set(blade.reasons||[])].join("；")));
       if(!blade.processingResultId)continue;
       children.push(p(`处理 ${blade.processingResultId} / ${blade.processingAlgorithmVersion}；评价 ${blade.assessmentId||"未保存"} / ${blade.assessmentAlgorithmVersion}；${blade.evaluatedAt}`));
       children.push(p(`采到 ${blade.coverage.observed}；可分析 ${blade.coverage.analyzable}；待复核 ${blade.coverage.review}；缺项 ${(blade.coverage.missing||[]).join("、")||"无"}`));
+      if(blade.geometryEstimates?.length)children.push(p('几何输入为现场估算，方位与投影待核验；仅用于空间响应位置展示，不代表轴向振动或同步振型。'),p('估算依据：'+[...new Set(blade.geometryEstimates.map((g:any)=>g.source||g.reason||JSON.stringify(g)))].join('；')));
       const group=blade.commonResponse?.find((g:any)=>g.layer==="los_residual")||blade.commonResponse?.[0];
       if(group?.points?.length){
         const pts=group.points,valid=pts.filter((p:any)=>Number.isFinite(p.radiusM)&&Number.isFinite(p.mean_half_peak_to_peak_m_s));

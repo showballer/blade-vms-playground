@@ -9,6 +9,28 @@ from .reference.cli import json_safe
 PLOT_LIMIT = 2000
 
 
+def import_source_summary(source):
+    """Keep file provenance on screen without repeating the whole package per row."""
+    if not isinstance(source, dict) or "manifestContent" not in source:
+        return source
+    return {**{k: v for k, v in source.items() if k != "manifestContent"},
+            "manifestContentAvailable": True}
+
+
+def catalog_response(catalog):
+    return {**catalog, "tasks": [{**task, "records": [
+        {**record, "importSource": import_source_summary(record.get("importSource"))}
+        for record in task["records"]]} for task in catalog["tasks"]]}
+
+
+def result_response(report):
+    # Full archived results and exports stay unchanged. A requested record's
+    # detail still carries its complete source manifest; the overview does not.
+    return {**report, "records": [
+        {**record, "importSource": import_source_summary(record.get("importSource"))}
+        for record in report["records"]]}
+
+
 def plot_indices(*arrays, limit=PLOT_LIMIT):
     n=len(arrays[0]) if arrays else 0
     if n<=limit: return np.arange(n,dtype=int)

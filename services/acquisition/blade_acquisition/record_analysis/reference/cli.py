@@ -90,7 +90,8 @@ def write_preview_csv(path: Path, preview: DisplayPreview, results: list[Segment
             for j in range(count):
                 i = start+j
                 row = dict(display_sample=i,display_time_s=i/preview.sample_rate_hz,
-                    velocity_m_s=float(preview.values_m_s[i]),sample_type=block["kind"],analysis_eligible="false")
+                    velocity_m_s=float(preview.values_m_s[i]) if np.isfinite(preview.values_m_s[i]) else "",
+                    sample_type=block["kind"],analysis_eligible="false")
                 if real is not None:
                     row.update(recording_id=real.recording_id,segment_id=real.segment_id,result_id=block["result_id"],
                         source_sample_index=real.source_start+j,source_time_s=float(real.time_s[j]),

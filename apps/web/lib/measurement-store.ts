@@ -432,7 +432,7 @@ export async function measurementSources(user: User, selection: SourceSelection 
   const [tasks, captureResult, imports] = await Promise.all([
     !needsSourceKind("task") ? [] : rows<RecordItem>("SELECT r.* FROM records r WHERE r.kind='tasks'" + s.sql + " ORDER BY updated_at DESC LIMIT 1000", s.args).then(rs => rs.map(r => ({ raw: unpack(r), tenant: r.tenant, kind: "task" as const, id: r.id }))),
     selectedCaptures(),
-    !needsSourceKind("import") ? [] : rotationWorker(user, { action: "recordings" }).then(rs => rs.recordings.map((r: any) => ({ raw: r, tenant: user.tenant, kind: "import" as const, id: r.id }))),
+    !needsSourceKind("import") ? [] : rotationWorker(user, { action: "recordings", excludeCloudCaptures: true }).then(rs => rs.recordings.map((r: any) => ({ raw: r, tenant: user.tenant, kind: "import" as const, id: r.id }))),
   ]);
   const captures = captureResult.rows.map(r => ({ raw: r.body.recording, tenant: r.tenant, kind: "capture" as const, id: r.id }));
   // An imported native capture is an implementation copy, even if its original

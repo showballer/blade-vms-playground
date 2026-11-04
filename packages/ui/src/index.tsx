@@ -40,6 +40,7 @@ import { WindDatasets } from "./wind-datasets";
 import { Administration, Developer } from "./admin-screens";
 import { SyncDialog } from "./sync-dialog";
 import { workspaceTask } from "./workspace-context";
+import {RetainedPanel} from "./retained-panel";
 import { WebRotation } from "./web-rotation";
 import { AccountPasswordDialog } from "./account-password-dialog";
 import { ClientDownload } from "./client-download";
@@ -87,6 +88,7 @@ export function BladeApp({ platform }: { platform: "web" | "desktop" }) {
     clearWorkspace(); setOffline(false); setPassword(""); setError("");
     setLoginNotice("统一密码已更新，请使用新密码重新登录。");
   }, [clearWorkspace]);
+  useEffect(()=>{if(platform!=="web")return;const expired=()=>{clearWorkspace();setLoginNotice("登录已过期，请重新登录。已选批次和保存结果保留。");};window.addEventListener("blade-session-expired",expired);return()=>window.removeEventListener("blade-session-expired",expired);},[platform,clearWorkspace]);
   const refresh = useCallback(async () => {
     const epoch = workspaceEpoch.current;
     const next = await api<Bootstrap>(platform === "web" ? "bootstrap?actual=1" : "bootstrap");
@@ -427,9 +429,9 @@ export function BladeApp({ platform }: { platform: "web" | "desktop" }) {
             <small>{isOffline() ? "本机演示工作区" : data.user.tenant}</small>
           </div>
         </nav>
-        <main key={screen} className="workspace">
-          {components[screen] ||
-            components[platform === "web" ? "blade" : "acq"]}
+        <main className="workspace">
+          {['blade','modal','signal','health','report'].map(id=><RetainedPanel key={id} active={screen===id}>{components[id]}</RetainedPanel>)}
+          {!['blade','modal','signal','health','report'].includes(screen)&&<React.Fragment key={screen}>{components[screen] || components[platform === "web" ? "blade" : "acq"]}</React.Fragment>}
         </main>
       </div>
       <footer className="statusbar">

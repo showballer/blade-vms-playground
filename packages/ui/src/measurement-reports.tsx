@@ -11,7 +11,7 @@ import {
   timeText,
   useMeasurements,
   useMeasurementContext,
-  selectedProcessingResult,
+  selectedBladeProcessingResults,
 } from "./measurement-common";
 import { isDiagnosticMeasurement, type MeasurementContext } from "./measurement-domain";
 export function MeasurementReports({ canWrite }: { canWrite: boolean }) {
@@ -34,7 +34,7 @@ export function MeasurementReports({ canWrite }: { canWrite: boolean }) {
         turbineId: filter.turbineId || "",
       });
       const r = await api<any>("measurements/reports?" + q);
-      if(request===generation.current){setReports(r.reports);setTotal(r.total);}
+      if(request===generation.current){setReports(r.reports);setTotal(r.total);setError("");}
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -52,6 +52,7 @@ export function MeasurementReports({ canWrite }: { canWrite: boolean }) {
         { credentials: "same-origin" },
       );
       if (!response.ok) {
+        if(response.status===401)window.dispatchEvent(new Event("blade-session-expired"));
         const e = await response.json();
         throw Error(e.error || "导出失败");
       }
@@ -87,7 +88,7 @@ export function MeasurementReports({ canWrite }: { canWrite: boolean }) {
             try {
               const r = await api<any>("measurements/blade-report", "POST", {
                 campaignId: filter.campaignId,
-                processingResultId:selectedProcessingResult(filter),
+                processingResultIds:selectedBladeProcessingResults(filter,data.objects),
                 turbineId: filter.turbineId || null,
               });
               setSelected(r.report);
@@ -130,7 +131,7 @@ export function MeasurementReports({ canWrite }: { canWrite: boolean }) {
             </tr>
           ))}
         </Table>
-        <PageControls page={page} total={total} onChange={setPage} />
+        {error?<p role="alert">报告列表读取失败，不能据此判断没有报告。请重试。</p>:<PageControls page={page} total={total} onChange={setPage} />}
       </Card>
       {selected && (
         <Dialog title={selected.name} wide onClose={() => setSelected(null)}>

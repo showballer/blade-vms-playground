@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { DesktopAnalysisWorkspace } from "./field-analysis-workspace";
 import { lineOption } from "./field-record-analysis-charts";
 import { ResponseBandFields, ResponseCoverage } from "./unified-analysis-controls";
-import { normalizedAlgorithmOptions,previewBandForRates,responseBandMessage,workspaceAzimuthColor } from "./field-analysis-workspace-data";
+import { normalizedAlgorithmOptions,previewBandForRates,responseBandMessage,workspaceAzimuthColor,workspaceHistory,workspacePreviewSeries } from "./field-analysis-workspace-data";
 import { modalInputReason } from "./formal-modal-workspace";
 import { desktopAlgorithmDefaults, desktopRecordLabel, algorithmError, workspacePointSeries, emptyRecordFilters, recordFilterChoices, changeRecordFilter, workspaceStftOption } from "./field-analysis-workspace-data";
 import type { AnalysisTask } from "./field-record-analysis-data";
@@ -47,7 +47,7 @@ assert.equal(recordFilterChoices(tasks,{...scoped,bladeId:'missing'}).records.le
 assert.deepEqual(recordFilterChoices([{...task,windFarm:undefined,turbine:undefined,records:[{...record,bladeId:undefined}]}],emptyRecordFilters).bladeIds,['未知']);
 const stft=workspaceStftOption({data:{time_s:[.1,.2],frequency_hz:[0,100],psd_m2_s2_per_hz:[[1,2],[3,4]]}})!;
 assert.equal(stft.animation,false);assert.equal(stft.series[0].progressive,0);assert.equal(stft.series[0].emphasis.disabled,true);
-assert.deepEqual(stft.series[0].data,[[0,0,1],[1,0,2],[0,1,3],[1,1,4]]);
+assert.deepEqual(stft.series[0].data,[[0,0,60],[1,0,10*Math.log10(2e6)],[0,1,10*Math.log10(3e6)],[1,1,10*Math.log10(4e6)]]);
 assert.equal(workspaceStftOption(null),null);
 const marked=lineOption([{name:'原始速度',data:[[0,0],[1,1]]}],'时间','mm/s',{area:Array.from({length:100},(_,i)=>[{name:'回波疑点',xAxis:i/100},{xAxis:(i+1)/100}])});
 assert.equal(marked.series[0].markArea?.label.show,false,'Dense quality ranges must not print overlapping canvas labels');
@@ -89,6 +89,22 @@ for(const i of [0,2,3]){assert.deepEqual(gapSeries[i].data.map((pair:any[])=>pai
 assert.equal(workspaceAzimuthColor(270,planned),'#9333ea');
 assert.deepEqual(workspacePointSeries(gapReport,{},'P5','2'),[]);
 
+// A rejected seam keeps a null interval, never a zero line or a fake bridge;
+// valid neighbouring seams and their real source values remain visible.
+const partialPreview=workspacePreviewSeries({series:[
+ {kind:'measured_processed',azimuth_deg:90,time_s:[0,.001],values_m_s:[.2,.21]},
+ {kind:'display_gap',left_azimuth_deg:90,right_azimuth_deg:180,time_s:[.002,.003],values_m_s:[null,null]},
+ {kind:'measured_processed',azimuth_deg:180,time_s:[.004,.005],values_m_s:[.22,.23]},
+ {kind:'synthetic_display_transition',time_s:[.006,.007],values_m_s:[.24,.25]},
+]},planned);
+assert.deepEqual(partialPreview[1].data,[[.002,null],[.003,null]]);
+assert.equal(partialPreview[1].displayOnlyGap,true);
+assert.equal(partialPreview[1].name,'90°→180° 未拟合');
+assert.deepEqual(partialPreview[0].data,[[0,200],[.001,210]]);
+assert.equal(partialPreview[3].name,'拟合接缝');
+assert.equal(partialPreview[3].displayOnlyGap,false);
+assert.equal(lineOption(partialPreview,'时间','mm/s').series[1].connectNulls,false);
+
 let calls = 0;
 const request = async () => { calls++; throw Error("SSR must not read hardware or start analysis"); };
 const signal = renderToStaticMarkup(<DesktopAnalysisWorkspace purpose="signal" request={request} />);
@@ -104,3 +120,11 @@ assert.ok(!signal.includes('aria-label="起始样本"') && !signal.includes('ari
 assert.ok(synthesis.includes("叶片响应分析") && synthesis.includes("合成分析风场") && synthesis.includes("合成分析叶片"));
 assert.ok(!synthesis.includes("信号记录视图"));
 console.log("PASS desktop archive3: identity, Nyquist validation, true core boundaries and independent page scopes");
+
+const histories=[
+ {jobId:'blade1',taskId:'outdoor',status:'complete',workspacePurpose:'synthesis',recordingIds:['b1p1','b1p2']},
+ {jobId:'blade2',taskId:'outdoor',status:'complete',workspacePurpose:'synthesis',recordingIds:['b2p1']},
+ {jobId:'foreign',taskId:'other',status:'complete',workspacePurpose:'synthesis',recordingIds:['b1p1']},
+];
+assert.deepEqual(workspaceHistory(histories,'outdoor','synthesis',['b1p1','b1p2']).map(j=>j.jobId),['blade1']);
+assert.deepEqual(workspaceHistory(histories,'outdoor','synthesis',['b2p1']).map(j=>j.jobId),['blade2']);

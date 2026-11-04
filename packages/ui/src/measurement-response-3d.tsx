@@ -1,5 +1,5 @@
 "use client";
-import React, { useMemo, useState } from "react";
+import React, { useId, useMemo, useRef, useState } from "react";
 import { Button } from "./common";
 
 export type Response3DPoint = {
@@ -15,6 +15,12 @@ export type ResponseEnvelopeInterval = { from: LocatedPoint; to: LocatedPoint };
 const finiteRadius = (r: unknown): r is number => typeof r === "number" && Number.isFinite(r) && r >= 0;
 const finiteAmplitude = (a: unknown): a is number => typeof a === "number" && Number.isFinite(a) && a >= 0;
 const fmt = (value: number) => Number(value.toPrecision(5)).toString();
+
+export function responseGeometryInfo(corrections: { values?: Record<string, unknown> }[] = []) {
+  const distances = [...new Set(corrections.map(c => c.values?.horizontal_distance_m).filter(finiteRadius))];
+  return { instrumentDistanceM: distances.length === 1 ? distances[0] : undefined,
+    hasEstimatedRadius: corrections.some(c => finiteRadius(c.values?.radius_from_hub_m)) };
+}
 
 /** Only bridge adjacent measured points. Unknown positions cannot be placed in
  * the ordering, so that case deliberately supplies point markers without a mesh. */
@@ -42,19 +48,32 @@ export function interpolateResponseEnvelope(points: Response3DPoint[], radiusM: 
   return from.normalizedAmplitude! * (1 - t) + to.normalizedAmplitude! * t;
 }
 
-export function MeasurementResponse3D({ points, bandHz, frequencyHz, metricLabel = "RMS" }: {
+export function MeasurementResponse3D({ points, bandHz, frequencyHz, metricLabel = "RMS", instrumentDistanceM, title = "三维幅值分布", compact = false, estimatedPositions = false }: {
+  title?: string;
+  compact?: boolean;
+  estimatedPositions?: boolean;
   metricLabel?: string;
+  instrumentDistanceM?: number;
   points: Response3DPoint[];
   bandHz?: readonly [number, number];
   frequencyHz?: number;
 }) {
   const [yaw, setYaw] = useState(-25), [elevation, setElevation] = useState(30), [gain, setGain] = useState(.18);
   const [showNegativeReference, setShowNegativeReference] = useState(true);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const settingsId = useId();
+  const headerActions = useRef<HTMLDivElement>(null);
+  const closeSettings = () => {
+    setSettingsOpen(false);
+    headerActions.current?.querySelector<HTMLButtonElement>('button[aria-controls]')?.focus();
+  };
   const located = useMemo(() => points.filter((p): p is LocatedPoint => finiteRadius(p.radiusM)).sort((a, b) => a.radiusM - b.radiusM), [points]);
   const intervals = useMemo(() => responseEnvelopeIntervals(points), [points]);
   const extent = Math.max(0, ...located.map(p => p.radiusM));
   const valid = located.filter(p => finiteAmplitude(p.normalizedAmplitude));
   const unknown = points.filter(p => !finiteRadius(p.radiusM));
+  const hasPlot = extent > 0 && valid.length > 0;
+  const hasAmplitude = points.some(p => finiteAmplitude(p.normalizedAmplitude));
   const duplicate = located.some((p, i) => located.some((q, j) => i !== j && Math.abs(p.radiusM - q.radiusM) < 1e-9));
   const scaleRadius = extent || 1;
   const az = yaw * Math.PI / 180, el = elevation * Math.PI / 180;
@@ -96,12 +115,36 @@ export function MeasurementResponse3D({ points, bandHz, frequencyHz, metricLabel
   });
   const origin = project(0, .13, 0), outer = project(extent, .13, 0);
   const label = bandHz ? `${fmt(bandHz[0])}–${fmt(bandHz[1])} Hz` : finiteAmplitude(frequencyHz) ? `${fmt(frequencyHz)} Hz` : metricLabel === "RMS" ? "当前频带" : "共同角度等权统计";
-  return <section className="measurement-response-3d" aria-label="三维幅值分布">
-    <div className="measurement-response-3d-heading"><div><h3>三维幅值分布</h3><span>{label} · {showNegativeReference ? `零位与 ±${metricLabel} 参考` : `${metricLabel} 大小`}</span></div>
-      <Button type="button" variant="ghost" onClick={() => { setYaw(-25); setElevation(30); setGain(.18); }}>复位视图</Button>
+  const distanceNote = finiteRadius(instrumentDistanceM) && <p className="measurement-response-3d-note">仪器至叶轮距离 {fmt(instrumentDistanceM)} m，不是测点半径。</p>;
+  const interpretationNote = <p className="measurement-response-3d-note">{metricLabel} 表示振动大小，始终非负。上下参考面仅为 ±{metricLabel} 尺度，不是最大摆幅或真实运动边界；灰面不代表测得的平衡姿态。外形仅示意，测点间插值，不补根部或叶尖。</p>;
+  const referenceToggle = <label className="measurement-response-reference-toggle"><input type="checkbox" checked={showNegativeReference} onChange={e => setShowNegativeReference(e.target.checked)} />显示负向尺度参考（非实测负峰值）</label>;
+  const viewControls = <div>
+    <label>视角 <output>{yaw}°</output><input aria-label="三维幅值水平视角" type="range" min={-65} max={65} step={1} value={yaw} onChange={e => setYaw(Number(e.target.value))} /></label>
+    <label>俯仰 <output>{elevation}°</output><input aria-label="三维幅值俯仰视角" type="range" min={10} max={70} step={1} value={elevation} onChange={e => setElevation(Number(e.target.value))} /></label>
+    <label>显示变形 <output>{Math.round(gain * 100)}%</output><input aria-label="三维幅值显示变形" type="range" min={.02} max={.3} step={.01} value={gain} onChange={e => setGain(Number(e.target.value))} /></label>
+  </div>;
+  const viewActions = <div ref={headerActions} className="measurement-response-3d-actions">
+    {compact && <Button type="button" variant={settingsOpen ? "outline" : "ghost"} aria-expanded={settingsOpen} aria-controls={settingsId} onClick={() => setSettingsOpen(open => !open)}>显示设置</Button>}
+    <Button type="button" variant="ghost" onClick={() => { setYaw(-25); setElevation(30); setGain(.18); }}>复位视图</Button>
+  </div>;
+  return <section className={`measurement-response-3d${compact ? " measurement-response-3d-compact" : ""}`} aria-label="三维幅值分布" onKeyDown={e => {
+    if (e.key === "Escape" && settingsOpen) { e.stopPropagation(); closeSettings(); }
+  }}>
+    <div className="measurement-response-3d-heading"><div><div className="measurement-response-3d-title"><h3>{title}</h3>{estimatedPositions && <span className="tag amber">估算位置</span>}</div><span>{label} · {showNegativeReference ? `零位与 ±${metricLabel} 参考` : `${metricLabel} 大小`}</span></div>
+      {hasPlot && viewActions}
     </div>
-    {extent > 0 && valid.length > 0 ? <>
+    {hasPlot ? <>
       <div className="measurement-response-3d-canvas">
+        {compact && <div className="measurement-response-3d-floating-controls">
+          <div id={settingsId} className="measurement-response-3d-settings measurement-response-3d-settings-popover" role="region" aria-label="图形显示设置" hidden={!settingsOpen}>
+            <header className="measurement-response-3d-popover-heading"><strong>显示设置</strong><Button type="button" variant="ghost" className="measurement-response-3d-close" aria-label="关闭显示设置" onClick={closeSettings}>×</Button></header>
+            {viewControls}{referenceToggle}
+            <details className="measurement-response-3d-explanation"><summary>图示说明</summary>
+              {estimatedPositions && <p className="measurement-response-3d-note">按当前版本估算半径定位，几何与投影待核验；非同步振型。</p>}
+              {distanceNote}{interpretationNote}
+            </details>
+          </div>
+        </div>}
         <div className="measurement-response-3d-projection">
           <svg viewBox="0 0 1000 420" role="img" aria-label={showNegativeReference ? `真实测点 ${metricLabel} 幅值与正负尺度参考，非实测振动轨迹` : `真实测点 ${metricLabel} 大小，非实测振动轨迹`}>
             <title>{(showNegativeReference ? `实测 ${metricLabel} 大小保持非负；负向面为镜像参考，不是负振幅、实测极值或瞬时姿态。` : `实测 ${metricLabel} 大小保持非负，不是实测极值或瞬时姿态。`) + "灰色面为示意零位，没有推算相位或叶尖。"}</title>
@@ -141,15 +184,15 @@ export function MeasurementResponse3D({ points, bandHz, frequencyHz, metricLabel
       </div>
       <div className="measurement-response-3d-axis"><span>0 = 风机中心</span><span>距中心 / m</span><span>最远测点 {fmt(extent)} m（非叶尖）</span></div>
       <div className="measurement-response-3d-legend"><span>0</span><i aria-hidden="true" /><span>{fmt(amplitudeExtent)}</span><span>归一化 {metricLabel} 大小</span><small>灰面：零位参考</small></div>
-      <label className="measurement-response-reference-toggle"><input type="checkbox" checked={showNegativeReference} onChange={e => setShowNegativeReference(e.target.checked)} />显示负向尺度参考（非实测负峰值）</label>
-    </> : <div className="measurement-response-3d-empty">缺少有效测点或位置，暂不能绘制三维分布。</div>}
-    {unknown.length > 0 && <p className="measurement-response-3d-note">{unknown.map(p => p.name).join("、")} 的位置未知，仅显示已知测点，不做面插值。</p>}
+      {!compact && referenceToggle}
+    </> : <div className="measurement-response-3d-empty"><div>
+      <strong>{hasAmplitude ? "已有测点幅值，缺少测点位置" : "当前版本暂无可用的测点幅值"}</strong>
+      <p>{hasAmplitude ? unknown.length ? `请补充 ${unknown.map(p => p.name).join("、")} 距风机旋转中心的半径（m），才能绘制三维分布。` : "当前有效测点均位于旋转中心，暂不能绘制径向分布。" : "请先选择已有分析结果的叶片。"}</p>
+      {hasAmplitude && <p>波形、频谱和各测点幅值仍可正常查看。</p>}
+    </div></div>}
+    {(!compact || !hasPlot) && distanceNote}
+    {hasPlot && unknown.length > 0 && <p className="measurement-response-3d-note">{unknown.map(p => p.name).join("、")} 的位置未知，仅显示已知测点，不做面插值。</p>}
     {duplicate && <p className="measurement-response-3d-note">存在重复半径，相关区间不做面插值。</p>}
-    <details className="measurement-response-3d-settings"><summary>显示设置</summary><div>
-      <label>视角 <output>{yaw}°</output><input aria-label="三维幅值水平视角" type="range" min={-65} max={65} step={1} value={yaw} onChange={e => setYaw(Number(e.target.value))} /></label>
-      <label>俯仰 <output>{elevation}°</output><input aria-label="三维幅值俯仰视角" type="range" min={10} max={70} step={1} value={elevation} onChange={e => setElevation(Number(e.target.value))} /></label>
-      <label>显示变形 <output>{Math.round(gain * 100)}%</output><input aria-label="三维幅值显示变形" type="range" min={.02} max={.3} step={.01} value={gain} onChange={e => setGain(Number(e.target.value))} /></label>
-    </div></details>
-    <p className="measurement-response-3d-note">RMS 表示振动大小，始终非负。上下参考面仅为 ±RMS 尺度，不是最大摆幅或真实运动边界；灰面不代表测得的平衡姿态。外形仅示意，测点间插值，不补根部或叶尖。</p>
+    {hasPlot && !compact && <><details className="measurement-response-3d-settings"><summary>显示设置</summary>{viewControls}</details>{interpretationNote}</>}
   </section>;
 }

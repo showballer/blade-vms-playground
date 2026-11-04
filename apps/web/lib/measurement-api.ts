@@ -413,7 +413,7 @@ export async function measurementEndpoint(
     url = new URL(req.url);
   if(resource === "measurements" && action === "analysis-packages" && method === "POST") return analysisPackageEndpoint(user,req);
   if(resource === "measurements" && action === "formal-modal" && method === "POST") return formalModalEndpoint(user,JSON.parse((await limitedBody(req,20*1024*1024)).toString()));
-  if (resource === "measurements" && action === "processing" && method === "POST") return processingEndpoint(user,await input(req));
+  if (resource === "measurements" && action === "processing" && method === "POST") return processingEndpoint(user,await input(req),req.signal);
   if(resource==="measurements"&&action==="blade-report"&&method==="POST")return createBladeReport(user,await input(req));
   if(resource==="measurements"&&action==="blade-review"&&method==="POST"){
     requireAnalyst(user);const b=await input(req),p=await processingResult(user,b.processingResultId);if(!p.report.records.some((r:any)=>r.recording_id===b.recordingId))throw new HttpError(400,"复核记录不属于该处理版本");

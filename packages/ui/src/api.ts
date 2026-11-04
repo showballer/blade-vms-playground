@@ -69,6 +69,7 @@ export async function api<T = any>(
   path: string,
   method = "GET",
   body?: unknown,
+  signal?: AbortSignal,
 ): Promise<T> {
   if (typeof window !== "undefined" && window.blade) {
     const res = await (offline ? window.blade.offline : window.blade.request)({
@@ -80,12 +81,14 @@ export async function api<T = any>(
     return res.data;
   }
   const res = await fetch("/api/v1/" + path, {
+    signal,
     method,
     credentials: "same-origin",
     headers: body ? { "Content-Type": "application/json" } : undefined,
     body: body ? JSON.stringify(body) : undefined,
   });
   const data = await res.json();
+  if (res.status===401&&path!=="session"&&typeof window!=="undefined") window.dispatchEvent(new Event("blade-session-expired"));
   if (!res.ok) throw new ApiError(data.error || "请求失败", res.status);
   return data;
 }

@@ -35,6 +35,9 @@ function createFieldCloudSync({ file, dataDir, auth, getLive, prepareUpload, fet
       if (!plain(item) || !ID.test(item.recordingId) || typeof item.owner !== 'string' || item.owner.length > 2500 || !['recording', 'queued', 'uploading', 'synced', 'error'].includes(item.state) || typeof item.manual !== 'boolean') throw Error('invalid queue item');
       if (item.captureId && !/^[A-Za-z0-9_-]{1,128}$/.test(item.captureId)) throw Error('invalid capture');
       if (item.files && (!Array.isArray(item.files) || item.files.length > MAX_FILES || item.files.some(f => !FILE.test(f.name) || !Number.isSafeInteger(f.bytes) || f.bytes < 0 || !SHA.test(f.sha256)))) throw Error('invalid file plan');
+      // Older outdoor uploads saved null for native sampling. Normalize that
+      // equivalent value; do not discard a completed or resumable queue.
+      if (item.uploadSampleRate === null) item.uploadSampleRate = 0;
       if (item.uploadSampleRate !== undefined && !validRate(item.uploadSampleRate)) throw Error('invalid upload sampling');
       if (item.terminalPending !== undefined && typeof item.terminalPending !== 'boolean') throw Error('invalid live terminal');
       if ((item.terminalPending || item.terminalState !== undefined) && !['stopped', 'error'].includes(item.terminalState)) throw Error('invalid live terminal state');
@@ -167,7 +170,7 @@ function createFieldCloudSync({ file, dataDir, auth, getLive, prepareUpload, fet
     }
     let directory = safeDirectory(item.recordingId);
     // Freeze the rate before the first plan so retry/restart cannot mix chunks.
-    if (item.uploadSampleRate === undefined) { item.uploadSampleRate = recording.measurementMode==='outdoor' ? null : saved.uploadSampleRate; persist(); }
+    if (item.uploadSampleRate === undefined) { item.uploadSampleRate = recording.measurementMode==='outdoor' ? 0 : saved.uploadSampleRate; persist(); }
     if (item.uploadSampleRate && recording.sampleRate > item.uploadSampleRate) {
       if (typeof prepareUpload !== 'function') throw fail('当前采集服务不支持上传降采样，请升级或选择原始采样率。', 422);
       const prepared = await prepareUpload(item.recordingId, item.uploadSampleRate);

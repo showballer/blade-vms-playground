@@ -1,0 +1,16 @@
+import assert from 'node:assert/strict';
+import {importPointMappings,importFileMappings} from './outdoor-segment-import';
+const files=Array.from({length:5},(_,p)=>Array.from({length:3},(_,b)=>[0,90,180,270].map(angle=>({fileId:`${p}-${b}-${angle}`,fileName:`P${p+1}/${b+1}号叶片_${angle}度.csv.gz`,pointName:`P${p+1}`,radiusM:null,bladeId:String(b+1),azimuthDeg:angle,selected:true})))).flat(2);
+const points=importPointMappings(files);
+assert.deepEqual(points.map(p=>p.name),['P1','P2','P3','P4','P5']);
+assert.ok(points.every(p=>p.radiusM===''));
+points[2].radiusM='25';
+const mappings=importFileMappings(files,points);
+assert.equal(mappings.length,60);
+assert.equal(new Set(mappings.map(f=>[f.bladeId,f.pointName,f.azimuthDeg].join('/'))).size,60);
+assert.ok(mappings.filter(f=>f.pointName==='P3').every(f=>f.radiusM===25));
+assert.ok(mappings.filter(f=>f.pointName!=='P3').every(f=>f.radiusM===null));
+assert.equal(importFileMappings([{...files[0],selected:false},{...files[1],error:'bad'},files[2]],points).length,1);
+assert.equal(importPointMappings([{...files[0],pointName:undefined}])[0].name,'');
+assert.equal(importFileMappings([{...files[0],pointName:undefined}],[])[0].pointName,'');
+console.log('PASS multi-point import retains all 60 blade/point/angle slots and optional distances');

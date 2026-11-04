@@ -859,8 +859,9 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     return http('blade-passes', 'POST', parameters);
   }
   async function importSegments(selectedPath) {
-    if(typeof selectedPath!=='string'||!path.isAbsolute(selectedPath))throw failure('请选择本机数据包',400);
-    await ready();return http('record-analysis','POST',{action:'import_stage',selectedPath});
+    const selectedPaths = Array.isArray(selectedPath) ? selectedPath : [selectedPath];
+    if(!selectedPaths.length||selectedPaths.length>20||selectedPaths.some(p=>typeof p!=='string'||!path.isAbsolute(p)))throw failure('请选择本机数据包',400);
+    await ready();return http('record-analysis','POST',{action:'import_stage',selectedPaths});
   }
   async function recordAnalysis(request) {
     const { recordAnalysisRequest } = require('./field-record-analysis.cjs');

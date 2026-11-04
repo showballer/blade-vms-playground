@@ -1,6 +1,7 @@
 """Native API contracts and scientific data boundaries, using isolated local files."""
 from __future__ import annotations
 import hashlib
+import csv
 import json
 from pathlib import Path
 import tempfile
@@ -195,6 +196,31 @@ class RecordAnalysisManagerTests(unittest.TestCase):
         self.assertEqual(angle["pass_count"],2)
         self.assertEqual(angle["repeated_waveform"]["status"],"ready")
         self.assertEqual(angle["repeated_psd"]["status"],"ready")
+
+    def test_failed_join_has_null_plot_blank_export_and_versioned_cache(self):
+        job=self.start();report=wait(self.manager,job)
+        request={"jobId":job["jobId"],"resultIds":[r["representative"] for r in report["records"]],
+            "expectedAzimuths":[0,90],"joinConfig":{"duration_seconds":.02,"context_seconds":.1,
+            "cap_seconds":.004,"model_sample_rate_hz":2000,"amplitude_guard_factor":20,"slope_guard_factor":20}}
+        before=json.dumps(report['aggregates'],sort_keys=True)
+        with patch('blade_acquisition.record_analysis.reference.stitch.join_arrays',side_effect=SignalError('JOIN_PREVIEW_UNSUPPORTED','synthesized bridge exceeds configured amplitude/slope guard')):
+            preview=self.manager.preview(request)
+        self.assertEqual(preview['status'],'partial')
+        self.assertIn('0°→90° 接缝拟合超限',preview['message'])
+        gap=next(b for b in preview['series'] if b['kind']=='display_gap')
+        self.assertTrue(all(v is None for v in gap['values_m_s']))
+        self.assertIsNone(gap['source_indices']);self.assertEqual(preview['synthetic_samples'],0)
+        with (self.manager._directory(job['jobId'])/('preview-'+preview['previewId']+'.csv')).open(encoding='utf-8-sig',newline='') as stream:
+            rows=list(csv.DictReader(stream))
+        self.assertTrue(all(r['velocity_m_s']==r['source_sample_index']=='' for r in rows if r['sample_type']=='display_gap'))
+        self.assertEqual(sum(r['sample_type']=='display_gap' for r in rows),preview['gap_samples'])
+        with patch('blade_acquisition.record_analysis.manager.build_point_preview') as build:
+            self.assertEqual(self.manager.preview(request),preview);build.assert_not_called()
+        with patch('blade_acquisition.record_analysis.manager.PREVIEW_VERSION','test-new-preview'):
+            updated=self.manager.preview(request)
+        self.assertNotEqual(preview['previewId'],updated['previewId'])
+        self.assertEqual(updated['status'],'ready')
+        self.assertEqual(before,json.dumps(self.manager.result({'jobId':job['jobId']})['aggregates'],sort_keys=True))
 
     def test_preview_rejects_unbounded_generation_and_mixed_geometry(self):
         job=self.start();report=wait(self.manager,job)

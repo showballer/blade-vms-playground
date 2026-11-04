@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MeasurementResponse3D, interpolateResponseEnvelope, responseEnvelopeIntervals, type Response3DPoint } from "./measurement-response-3d";
+import { MeasurementResponse3D, interpolateResponseEnvelope, responseEnvelopeIntervals, responseGeometryInfo, type Response3DPoint } from "./measurement-response-3d";
 
 const point = (id: string, radiusM: number | null, amplitude: number | null): Response3DPoint => ({
   id, name: id, radiusM, normalizedAmplitude: amplitude, displacementRmsM: amplitude == null ? null : amplitude * 1e-6,
@@ -30,7 +30,15 @@ for (const p of points.filter(p => p.normalizedAmplitude != null)) {
   assert(html.includes(`data-response-negative-point="${p.id}" data-reference-amplitude="${-p.normalizedAmplitude!}"`), "Only explicitly labelled mirror has a negative value");
 }
 const missing = renderToStaticMarkup(<MeasurementResponse3D points={[point("P1", .1, null)]} />);
-assert(missing.includes("缺少有效测点或位置"));assert(!missing.includes("data-response-interval"));
+assert(missing.includes("当前版本暂无可用的测点幅值"));assert(!missing.includes("data-response-interval"));
+const missingPositions=renderToStaticMarkup(<MeasurementResponse3D points={[point('P1',null,.5),point('P2',null,1)]} instrumentDistanceM={78} metricLabel="半峰峰值"/>);
+assert(missingPositions.includes('已有测点幅值，缺少测点位置'));
+assert(missingPositions.includes('P1、P2 距风机旋转中心的半径'));
+assert(missingPositions.includes('仪器至叶轮距离 78 m，不是测点半径'));
+assert(!missingPositions.includes('data-response-point='));assert(!missingPositions.includes('显示设置'));
+assert.deepEqual(responseGeometryInfo([{values:{horizontal_distance_m:78}}]),{instrumentDistanceM:78,hasEstimatedRadius:false});
+assert.equal(responseGeometryInfo([{values:{radius_from_hub_m:16}}]).hasEstimatedRadius,true);
+assert.equal(responseGeometryInfo([{values:{horizontal_distance_m:78}},{values:{horizontal_distance_m:80}}]).instrumentDistanceM,undefined);
 const unknown = renderToStaticMarkup(<MeasurementResponse3D points={[...points, point("P6", null, .6)]} />);
 assert(unknown.includes("位置未知"));assert(!unknown.includes("data-response-interval"));
 const zero = renderToStaticMarkup(<MeasurementResponse3D points={[point("P1", .1, 0), point("P2", .2, 0)]} />);

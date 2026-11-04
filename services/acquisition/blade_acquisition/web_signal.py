@@ -47,7 +47,7 @@ def normalized_record(root, recording_id, binding):
 class WebSignalManager(RecordAnalysisManager):
     def __init__(self,root,task=None,bindings=None):
         self.web_task=task;self.bindings=bindings or {}
-        super().__init__(root)
+        super().__init__(root,recover_running=False)
     def catalog(self):
         if self.web_task is None:return super().catalog()
         return {'tasks':[self.web_task],'revision':self.web_task['id']}
@@ -72,7 +72,9 @@ def common_response(report, task):
             outdoor=report.get('measurementMode')=='outdoor'
             points=[]
             for name,radius in sorted(planned.items()):
-                g=candidates[name]; values=[a for a in g.get('azimuth_results',[]) if outdoor or a['azimuth_deg'] in angles] if g else []
+                g=candidates[name]
+                if g and g.get('radius_from_hub_m') is not None:radius=g['radius_from_hub_m']
+                values=[a for a in g.get('azimuth_results',[]) if outdoor or a['azimuth_deg'] in angles] if g else []
                 points.append({'point':name,'radiusM':radius,'mean_half_peak_to_peak_m_s':sum(a['mean_half_peak_to_peak_m_s'] for a in values)/len(values) if values else None,
                     'mean_segment_rms_m_s':sum(a['mean_segment_rms_m_s'] for a in values)/len(values) if values else None,
                     'resultIds':[rid for a in values for rid in a.get('result_ids',[])]})

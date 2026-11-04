@@ -231,7 +231,8 @@ export type FieldRecording = {
   sampleOrigin?: number | null;
   velocityRangeMps?: number | null;
   deviceSettings?: FieldDeviceSettings | null;
-  pointCycle?: FieldAutomaticRecord & { cycle: number; pointIndex: number; pointId?: string; pointName: string; cycles: number; dwellSeconds: number; targetAxis1AngleDeg: number; targetAxis2AngleDeg: number; actualAngles?: Record<string, number | null> };
+  // Imported blade segments can have point/azimuth metadata without a turntable move.
+  pointCycle?: FieldAutomaticRecord & { cycle?: number; pointIndex?: number; pointId?: string; pointName?: string; cycles?: number; dwellSeconds?: number; targetAxis1AngleDeg?: number | null; targetAxis2AngleDeg?: number | null; actualAngles?: Record<string, number | null> };
 };
 export type FieldRecordingDetail = {
   recording: FieldRecording;

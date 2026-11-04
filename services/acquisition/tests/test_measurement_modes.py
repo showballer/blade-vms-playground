@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 from blade_acquisition.record_analysis.manager import RecordAnalysisManager
 from blade_acquisition.record_analysis.adapter import load_raw,source_fingerprint
-from blade_acquisition.record_analysis.outdoor_import import parse
+from blade_acquisition.record_analysis.outdoor_import import parse,archive_name
 from blade_acquisition.record_analysis.packages import create,verify
 from blade_acquisition.web_signal import normalized_manifest
 
@@ -48,6 +48,17 @@ class MeasurementModesTest(unittest.TestCase):
             self.assertFalse(r['quality_assessment']['health_conclusion_eligible']);self.assertTrue(r['importSource']['originalHeader']['isCopied']);self.assertEqual(r['importSource']['manifestContent']['manifest.json']['qualityNote'],'source evidence retained')
             raw=load_raw(self.manager.recordings,r['recording_id']);self.assertTrue(np.all(raw.rssi_percent==0));self.assertNotEqual(raw.manifest['pointCycle']['bladeId'],'9')
         self.assertEqual(before,[source_fingerprint(self.manager.recordings,r) for r in task['recordingIds']])
+        # Overview payloads must not duplicate the package manifest for every
+        # record; raw provenance, exports and requested detail remain complete.
+        overview=self.manager.handle({'action':'result','jobId':report['jobId']})
+        self.assertTrue(all('manifestContent' not in r['importSource'] for r in overview['records']))
+        self.assertTrue(all(r['importSource']['manifestContentAvailable'] for r in overview['records']))
+        self.assertLess(len(json.dumps(overview)),len(json.dumps(report)))
+        detail=self.manager.handle({'action':'result','jobId':report['jobId'],'recordingId':task['recordingIds'][0]})
+        self.assertIn('manifestContent',detail['detail']['record']['importSource'])
+        self.assertIn('manifestContent',self.manager.result({'jobId':report['jobId']})['records'][0]['importSource'])
+        catalog=self.manager.handle({'action':'catalog'})
+        self.assertTrue(all('manifestContent' not in r['importSource'] for r in catalog['tasks'][0]['records']))
     def test_band_rms_is_mean_of_angles_and_ar_is_only_display(self):
         r=self.run_job(self.imported(),{'targetBandMode':'custom','targetBandHz':[30,50]})
         records=[v for v in r['records'] if v['object']['blade']=='1'];ids=[v['representative'] for v in records]
@@ -58,6 +69,49 @@ class MeasurementModesTest(unittest.TestCase):
         preview=self.manager.preview({'jobId':r['jobId'],'resultIds':ids,'expectedAzimuths':[0,90,180,270],'automatic':True})
         self.assertFalse(preview['analysis_eligible']);self.assertEqual(len(preview['joins']),3)
         self.assertEqual(len([b for b in preview['blocks'] if b['kind']=='measured_processed']),4)
+
+    def test_declared_context_is_removed_before_waveform_spectrum_and_statistics(self):
+        from scipy.signal import detrend,welch
+        # A background step must not leak into the blade residual. A real
+        # large pulse INSIDE the declared event remains, regardless of RSSI=0.
+        blob=sample_file(segmentation={'method':'negative_velocity_excursion_with_local_baseline',
+            'boundaryContextSeconds':.12,'eventPeakTimeSeconds':2.5,'boundaryConfirmedByDevice':False})
+        lines=gzip.decompress(blob).decode().splitlines()
+        for i in range(4000):
+            row=lines[i+2].split(',');row[3]=str(2.0 if i<480 or i>=3520 else -.8+.01*np.sin(2*np.pi*40*i/4000)+(1 if i==2000 else 0));lines[i+2]=','.join(row)
+        (self.source/'1号叶片_0度.csv.gz').write_bytes(gzip.compress('\n'.join(lines).encode()))
+        task=self.imported();before=[source_fingerprint(self.manager.recordings,r) for r in task['recordingIds']]
+        report=self.run_job(task,{'targetBandMode':'custom','targetBandHz':[0,2000]})
+        r=next(r for r in report['records'] if r['object']['blade']=='1' and r['object']['azimuth_deg']==0)
+        s=self.manager._load_segment(report['jobId'],r['representative']);raw=load_raw(self.manager.recordings,r['recording_id'])
+        self.assertEqual((s.segment.source_start,s.segment.source_end),(480,3520))
+        np.testing.assert_allclose(s.analysis_input().values_m_s,detrend(raw.velocity_m_s[480:3520]),atol=1e-12)
+        self.assertGreater(s.features['half_peak_to_peak_m_s'],.49)
+        self.assertFalse(r['quality_assessment']['health_conclusion_eligible'])
+        self.assertEqual([(e['source_start'],e['source_end']) for e in r['quality_events'] if e['code']=='OUTDOOR_BACKGROUND_CONTEXT'],[(0,480),(3520,4000)])
+        fs=raw.sample_rate_hz;n=round(report['workspace']['automaticPlan']['sharedWelchSeconds']*fs)
+        f,p=welch(s.analysis_input().values_m_s,fs,window='hann',nperseg=n,noverlap=n//2,detrend=False,scaling='density')
+        np.testing.assert_allclose(s.spectrum['psd_m2_s2_per_hz'],p,atol=1e-12)
+        band=self.manager.extended({'jobId':report['jobId'],'kind':'point_band','resultIds':[r['representative']],'parameters':{'band_hz':[0,2000]}})['points'][0]
+        self.assertAlmostEqual(band['mean_azimuth_band_rms_m_s'],np.sqrt(p.sum()*fs/n),12)
+        self.assertEqual(before,[source_fingerprint(self.manager.recordings,r) for r in task['recordingIds']])
+
+    def test_inconsistent_context_blocks_instead_of_analysing_background(self):
+        (self.source/'1号叶片_0度.csv.gz').write_bytes(sample_file(segmentation={
+            'method':'negative_velocity_excursion_with_local_baseline','boundaryContextSeconds':.6}))
+        report=self.run_job(self.imported());blocked=[r for r in report['records'] if r.get('status')=='blocked']
+        self.assertEqual(len(blocked),1);self.assertIn('OUTDOOR_CONTEXT_INVALID',blocked[0]['issues'])
+
+    def test_zip_filename_without_utf8_flag_and_ignored_duplicate_archives(self):
+        info=zipfile.ZipInfo('P2/2号叶片_90度.csv.gz'.encode('utf8').decode('cp437'));info.flag_bits=0
+        self.assertEqual(archive_name(info),'P2/2号叶片_90度.csv.gz')
+        path=self.root/'mixed.zip'
+        with zipfile.ZipFile(path,'w') as z:
+            z.writestr('1号叶片_0度.csv.gz',sample_file())
+            z.writestr('point.zip',b'not opened, duplicate archive contents')
+            z.writestr('__MACOSX/._1号叶片_0度.csv.gz',b'not a data file')
+        staged=self.manager.handle({'action':'import_stage','selectedPath':str(path)})
+        self.assertEqual(len(staged['files']),1);self.assertFalse(staged['files'][0].get('error'))
     def test_portable_package_recomputes_same_results(self):
         task=self.imported();r=self.run_job(task);package=create(self.manager,r['jobId'])
         verified=verify(self.root/'server',Path(package['path']),task['recordingIds'])
@@ -98,6 +152,61 @@ class MeasurementModesTest(unittest.TestCase):
         self.assertEqual(len(timed),1)
         self.assertEqual(timed[0].manifest['sampleOrigin'],1800000002)
         self.assertTrue(all(r.manifest['startedAt'] is None for r in records if not r.manifest['sampleOrigin']))
+
+    def test_multi_point_archives_form_one_task_and_keep_each_blade_point(self):
+        archives=[]
+        for point in ('P1','P2','P3','P4','P5'):
+            path=self.root/(point+'_桌面端导入.zip');archives.append(str(path))
+            with zipfile.ZipFile(path,'w') as z:
+                z.writestr('manifest.json',json.dumps({'point':point}))
+                for blade in ('1','2','3'):
+                    for angle in (0,90,180,270):
+                        z.writestr(f'{blade}号叶片_{angle}度.csv.gz',sample_file(point=point,windFarm='旧风场',turbine='1303',sourcePointLabel='叶片2 · P4'))
+        staged=self.manager.handle({'action':'import_stage','selectedPaths':archives})
+        self.assertEqual(len(staged['files']),60)
+        self.assertEqual(staged['defaults']['turbine'],'1303')
+        self.assertEqual({f['pointName'] for f in staged['files']},{'P1','P2','P3','P4','P5'})
+        body={'action':'import_commit','token':staged['token'],'name':'五点同任务','windFarm':'武川风场','turbine':'1号风机',
+              'files':[{k:f[k] for k in ('fileId','bladeId','azimuthDeg','pointName','radiusM')} for f in staged['files']]}
+        task=self.manager.handle(body)
+        self.assertEqual(task['imported'],60)
+        self.assertEqual(self.manager.handle(body),task,'Retries must not create a second task')
+        tasks=self.manager.catalog()['tasks'];self.assertEqual(len(tasks),1)
+        c=tasks[0];self.assertEqual(c['windFarm'],'武川风场');self.assertEqual(c['turbine'],'1号风机')
+        self.assertEqual(len(c['plannedPoints']),60)
+        self.assertEqual(len({(r['bladeId'],r['pointName'],r['azimuthDeg']) for r in c['records']}),60)
+        for rid in task['recordingIds']:
+            raw=load_raw(self.manager.recordings,rid);m=raw.manifest;pc=m['pointCycle']
+            self.assertIsNone(pc['radiusM']);self.assertEqual(m['point'],pc['radialPointName'])
+            self.assertEqual(m['importSource']['originalHeader']['turbine'],'1303')
+            self.assertEqual(len(pc['plannedStations']),20)
+            self.assertEqual({p['radialPointName'] for p in pc['plannedStations']},{'P1','P2','P3','P4','P5'})
+        report=self.run_job(task)
+        self.assertEqual(len(report['coverage']['points']),15)
+        self.assertEqual(len(report['aggregates']),15)
+        self.assertEqual(report['coverage']['analyzableCount'],60)
+        for point in report['coverage']['points']:self.assertEqual(point['usableAzimuths'],[0,90,180,270])
+
+    def test_folder_point_fallback_duplicate_and_radius_validation_are_atomic(self):
+        root=self.root/'multi';root.mkdir()
+        for point in ('P1','P2'):
+            directory=root/point;directory.mkdir()
+            (directory/'1号叶片_0度.csv.gz').write_bytes(sample_file())
+        staged=self.manager.handle({'action':'import_stage','selectedPath':str(root)})
+        self.assertEqual({f['pointName'] for f in staged['files']},{'P1','P2'})
+        body={'action':'import_commit','token':staged['token'],'name':'两个测点','windFarm':'风场','turbine':'风机',
+              'files':[{k:f[k] for k in ('fileId','bladeId','azimuthDeg','pointName')} for f in staged['files']]}
+        body['files'][1]['pointName']='P1'
+        with self.assertRaisesRegex(ValueError,'角度重复'):self.manager.handle(body)
+        self.assertEqual(self.manager.catalog()['tasks'],[])
+        body['files'][1]['pointName']='P2';body['files'][1]['radiusM']=-1
+        with self.assertRaisesRegex(ValueError,'半径'):self.manager.handle(body)
+        self.assertEqual(self.manager.catalog()['tasks'],[])
+        body['files'][1]['radiusM']=12
+        task=self.manager.handle(body)
+        c=self.manager.catalog()['tasks'][0]
+        self.assertEqual({r['pointName']:r['radiusM'] for r in c['records']},{'P1':None,'P2':12})
+        self.assertEqual(task['imported'],2)
 
     def test_native_cloud_upload_validates_and_retains_full_precision_source(self):
         from blade_acquisition.native_capture import validate_capture, import_capture

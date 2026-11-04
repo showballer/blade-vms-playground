@@ -16,6 +16,22 @@ class PackageTests(unittest.TestCase):
   remote=self.root/'remote';v=verify(remote,Path(self.package['path']),[self.rid]);self.assertEqual(v['report']['processingSource'],'desktop_verified');self.assertEqual(v['verifiedArrays'],1);self.assertEqual(v,verify(remote,Path(self.package['path']),[self.rid]));self.assertEqual(v['report']['records'][0]['source_hash'],self.manager.result({'jobId':self.job})['records'][0]['source_hash'])
  def test_missing_dependencies_and_cross_account_scope(self):
   self.assertRaises(SignalError,verify,self.root/'foreign',Path(self.package['path']),[])
+ def test_transport_numeric_metadata_is_equal_but_quality_and_boundaries_stay_exact(self):
+  import shutil
+  from blade_acquisition.record_analysis.packages import same_json_value,validate_server_sources
+  self.assertTrue(same_json_value({'clock':[0.,250000.]},{'clock':[0,250000]}))
+  self.assertFalse(same_json_value({'valid':True},{'valid':1}))
+  self.assertFalse(same_json_value({'end':30000},{'end':30000.000000001}))
+  remote=self.root/'json-server';shutil.copytree(self.root/'recordings',remote/'recordings')
+  p=remote/'recordings'/self.rid/'manifest.json';m=json.loads(p.read_text())
+  def integers(v):
+   if isinstance(v,dict):return {k:integers(x) for k,x in v.items()}
+   if isinstance(v,list):return [integers(x) for x in v]
+   return int(v) if isinstance(v,float) and v.is_integer() else v
+  p.write_text(json.dumps(integers(m)))
+  self.assertEqual(validate_server_sources(remote,self.root,{self.rid:self.rid})[0]['nativeId'],self.rid)
+  m['pointCycle']['handoff']['exitSampleIndex']+=1;p.write_text(json.dumps(m))
+  with self.assertRaisesRegex(SignalError,'PACKAGE_SOURCE_METADATA_MISMATCH'):validate_server_sources(remote,self.root,{self.rid:self.rid})
  def test_server_known_source_is_checked_not_only_client_checksums(self):
   import shutil
   remote=self.root/'server';shutil.copytree(self.root/'recordings',remote/'recordings')

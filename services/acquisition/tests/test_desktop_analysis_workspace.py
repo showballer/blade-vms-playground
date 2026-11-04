@@ -39,8 +39,31 @@ class DesktopWorkspaceTest(unittest.TestCase):
  def test_verified_loss_zero_run_excluded_without_overwriting_raw(self):
   self.rewrite(lambda a:(a['velocity'].__setitem__(slice(3000,3100),0),a['rssi'].__setitem__(slice(3000,3100),0)))
   p=self.recordings/self.rid/'manifest.json';m=json.loads(p.read_text());m['qualityRules']={'rssiAlignmentVerified':True,'lossRuleVerified':True};p.write_text(json.dumps(m));before=(self.recordings/self.rid/'chunk-00000000.bin').read_bytes();r=self.start();self.assertEqual(len(r['records'][0]['segments']),2);self.assertTrue(any(e['code']=='ZERO_RUN_CONFIRMED_INVALID' for e in r['records'][0]['quality_events']));self.assertEqual((self.recordings/self.rid/'chunk-00000000.bin').read_bytes(),before)
- def test_single_and_synthesis_share_result_ids(self):
-  other=write_record(self.recordings,angle=90,n=1000,fs=4000.);one=self.start();both=self.start([self.rid,other],purpose='synthesis');self.assertEqual(one['records'][0]['segments'][0]['result_id'],next(r for r in both['records'] if r['recording_id']==self.rid)['segments'][0]['result_id']);self.assertEqual(len(both['aggregates']),1)
+ def test_single_selection_keeps_waveform_but_uses_its_own_spectral_window(self):
+  other=write_record(self.recordings,angle=90,n=1000,fs=4000.)
+  one=self.start();both=self.start([self.rid,other],purpose='synthesis')
+  a=one['records'][0]['segments'][0];b=next(r for r in both['records'] if r['recording_id']==self.rid)['segments'][0]
+  self.assertEqual(a['features'],b['features'])
+  self.assertGreater(one['workspace']['automaticPlan']['sharedWelchSeconds'],both['workspace']['automaticPlan']['sharedWelchSeconds'])
+  self.assertNotEqual(a['result_id'],b['result_id'])
+  self.assertEqual(len(both['aggregates']),1)
+ def test_estimated_radius_preserves_one_coverage_point_and_original_snapshot(self):
+  before=(self.recordings/self.rid/'manifest.json').read_bytes()
+  r=self.start(settings={'geometry':{'recordOverrides':{self.rid:{'values':{'radius_from_hub_m':10},'source':'现场估算','reason':'仅用于展示'}}}})
+  self.assertEqual(r['records'][0]['object']['radius_from_hub_m'],10)
+  self.assertNotEqual(r['records'][0]['source_object']['radius_from_hub_m'],10)
+  self.assertEqual(len(r['coverage']['points']),1)
+  self.assertEqual(r['coverage']['points'][0]['radiusM'],10)
+  self.assertEqual((self.recordings/self.rid/'manifest.json').read_bytes(),before)
+ def test_tiny_fragment_does_not_collapse_usable_record_spectrum(self):
+  self.rewrite(lambda a:a['flags'].__setitem__(slice(4,8),a['flags'][4:8]|1))
+  r=self.start();plan=r['workspace']['automaticPlan']
+  self.assertGreater(plan['sharedWelchSeconds'],.1)
+  self.assertIsNotNone(plan['automaticBandHz'])
+  tiny=next(s for s in r['records'][0]['segments'] if s['source_end']-s['source_start']==4)
+  self.assertEqual(tiny['status']['spectrum_state'],'blocked')
+  self.assertEqual(tiny['features']['sample_count'],4)
+  self.assertTrue(r['aggregates'][0]['cross_azimuth_psd'])
  def test_filter_changes_only_derived_and_exports_parameters(self):
   raw=(self.recordings/self.rid/'chunk-00000000.bin').read_bytes();r=self.start(settings={'filterKind':'lowpass','highHz':200,'filterOrder':3,'window':'blackman'});s=r['records'][0]['segments'][0];self.assertEqual(s['layer'],'filtered_residual');self.assertGreater(s['analysis_source_start'],s['source_start']);self.assertEqual(s['spectrum']['window'],'periodic_blackman');self.assertEqual((self.recordings/self.rid/'chunk-00000000.bin').read_bytes(),raw)
   export=self.manager.export({'jobId':r['jobId'],'kind':'analysis'})

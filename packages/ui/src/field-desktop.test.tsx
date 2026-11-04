@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { FieldLoginPanel, FieldPasswordPanel, FieldRecordingList, FieldServicePanel, FieldWaveChart, fieldStatusPollError } from "./field-desktop";
-import { fieldCanStart, fieldDate, fieldIsActive, fieldSampleX, validateFieldConfig, type FieldAccountInfo, type FieldRequestOptions, type FieldStatus, type FieldWaveform } from "./field-types";
+import { fieldCanStart, fieldDate, fieldIsActive, fieldSampleX, validateFieldConfig, type FieldAccountInfo, type FieldRecording, type FieldRequestOptions, type FieldStatus, type FieldWaveform } from "./field-types";
 import { FieldAccountPanel, FieldCloudSyncPanel, FieldBindAccountDialog, FieldUnbindAccountDialog, fieldAccountServerDefault, fieldAccountTime, fieldAccountUsesPlainHttp } from "./field-account";
 import { clampWaveRange, formatWaveTime, waveBounds, waveScaleDraft, type WaveScaleDraft } from "./field-waveform";
 import { FieldDeviceSnapshot } from "./field-device";
@@ -402,6 +402,25 @@ check("记录空态不预置数据", () => {
   assert.ok(html.includes("还没有采集记录"));
   assert.ok(html.includes("完成采集后"));
   assert.ok(!html.includes("<table"));
+});
+check("户外导入与设备记录混合显示，缺少转盘角度不白屏也不补零", () => {
+  const base: FieldRecording = { id: "outdoor", name: "户外分段", source: "split_segment_import", point: "P1", samples: 173750, sampleRate: 250000, startedAt: 1793518543.8, status: "complete" };
+  const records: FieldRecording[] = [
+    { ...base, pointCycle: { collectionId: "outdoor-task", bladeId: "2", radialPointName: "P1", azimuthDeg: 0 } },
+    { ...base, id: "missing", pointCycle: { bladeId: "3", radialPointName: "P5", azimuthDeg: 270, targetAxis1AngleDeg: null, targetAxis2AngleDeg: Number.NaN } },
+    { ...base, id: "partial", source: "device", pointCycle: { pointName: "部分反馈", targetAxis1AngleDeg: Number.POSITIVE_INFINITY, targetAxis2AngleDeg: 0 } },
+    { ...base, id: "device", source: "device", pointCycle: { pointName: "设备点位", targetAxis1AngleDeg: 12.34567, targetAxis2AngleDeg: -3.5 } },
+  ];
+  const html = renderToStaticMarkup(<FieldRecordingList recordings={records} busy={false} onSelect={() => {}} onExport={() => {}} />);
+  assert.ok(html.includes("叶片2 · P1 · 0°"));
+  assert.ok(html.includes("叶片3 · P5 · 270°"));
+  assert.equal((html.match(/>户外导入<\/span>/g) || []).length, 2);
+  assert.equal((html.match(/轴1/g) || []).length, 2);
+  assert.ok(html.includes("轴1 — · 轴2 0.000°"));
+  assert.ok(html.includes("轴1 12.346° · 轴2 -3.500°"));
+  assert.ok(!/NaN|Infinity|undefined/.test(html));
+  assert.equal((html.match(/>查看波形<\/button>/g) || []).length, 4);
+  assert.equal((html.match(/>导出原始数据<\/button>/g) || []).length, 4);
 });
 check("模拟记录必须展示来源且不会因模拟来源掩盖异常状态", () => {
   const html = renderToStaticMarkup(<FieldRecordingList recordings={[{ id: "simulation", name: "模拟风机", source: "simulation", simulation: { point: "P2", scenario: "impact" }, samples: 1200, sampleRate: 2000, startedAt: "2026-09-22T01:00:00Z", status: "error", error: "write failed" }]} busy={false} onSelect={() => {}} />);
