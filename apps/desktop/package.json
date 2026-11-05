@@ -72,7 +72,8 @@
           ]
         }
       ],
-      "signAndEditExecutable": false
+      "signExecutable": false,
+      "icon": "build/icons/icon.ico"
     },
     "nsis": {
       "artifactName": "BladeVMS-Setup-${version}-x64.exe",
@@ -85,7 +86,8 @@
     },
     "mac": {
       "target": "dir",
-      "category": "public.app-category.productivity"
+      "category": "public.app-category.productivity",
+      "icon": "build/icons/icon.icns"
     }
   }
 }

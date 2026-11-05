@@ -55,6 +55,24 @@ class RecordAnalysisManagerTests(unittest.TestCase):
     def tearDown(self):self.manager.close();self.temp.cleanup()
     def start(self,**extra):return self.manager.start({"taskId":self.task["id"],"scope":"diagnostic",**extra})
 
+    def test_catalog_reuses_latest_task_geometry_across_blades_without_reviving_cleared_overrides(self):
+        first,second=self.ids
+        def state(job_id,at,ids,overrides,task=None):
+            return {'jobId':job_id,'taskId':task or self.task['id'],'status':'complete','finishedAt':at,'recordingIds':ids,
+                'workspace':{'purpose':'synthesis','algorithmOptions':{'geometry':{'inputOverrides':{'values':{'hub_height_m':90}},'recordOverrides':overrides}}}}
+        self.manager.jobs={
+            'old':state('old',1,[first,second],{first:{'radius':10},second:{'radius':20}}),
+            'blade2':state('blade2',2,[second],{second:{'radius':21.15}}),
+            'cleared':state('cleared',3,[first],{}),
+            'foreign':state('foreign',4,[first],{first:{'radius':999}},'another-task'),
+            'legacy':{'jobId':'legacy','status':'complete','finishedAt':5,'taskId':self.task['id'],'workspace':None},
+        }
+        task=next(t for t in self.manager.catalog()['tasks'] if t['id']==self.task['id'])
+        self.assertEqual(task['analysisGeometry']['recordOverrides'],{second:{'radius':21.15}})
+        self.assertEqual(task['analysisGeometry']['inputOverrides']['values']['hub_height_m'],90)
+        task['analysisGeometry']['recordOverrides'][second]['radius']=0
+        self.assertEqual(self.manager.jobs['blade2']['workspace']['algorithmOptions']['geometry']['recordOverrides'][second]['radius'],21.15)
+
     def test_snapshot_native_full_values_and_rssi_unknown_not_filled(self):
         rid=write_record(self.raw,task="sparse",rssi_stride=4)
         raw=load_raw(self.raw,rid)

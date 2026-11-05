@@ -1,6 +1,6 @@
 /** Display adapters only. Signal processing and admission stay in the local worker. */
 export type AnalysisJson = Record<string, any>;
-export type RecordAnalysisCommand = { action: "catalog" | "start" | "status" | "result" | "preview" | "extended" | "export" | "cancel" | "import_select" | "import_commit"; [key: string]: unknown };
+export type RecordAnalysisCommand = { action: "catalog" | "start" | "status" | "result" | "details" | "preview" | "extended" | "export" | "cancel" | "import_select" | "import_commit"; [key: string]: unknown };
 export type RecordAnalysisBridge = <T>(options: { action: "recordAnalysis"; request: RecordAnalysisCommand; signal?: AbortSignal }) => Promise<T>;
 export type AnalysisCatalogRecord = {
   id: string; bladeId?: string; pointName?: string; pointId?: string; radiusM?: number | null;
@@ -8,7 +8,7 @@ export type AnalysisCatalogRecord = {
   plannedAzimuths?: number[]; sampleRate?: number; samples?: number;
 };
 export type AnalysisTask = {
-  id: string; name: string; measurementMode?:'indoor'|'outdoor'; windFarm?: string; turbine?: string; recordingIds: string[]; records: AnalysisCatalogRecord[];
+  id: string; name: string; measurementMode?:'indoor'|'outdoor'; analysisGeometry?:AnalysisJson; windFarm?: string; turbine?: string; recordingIds: string[]; records: AnalysisCatalogRecord[];
   plannedPoints?: { bladeId?: string; radialPointName?: string; radiusM?: number; azimuthDeg?: number }[];
   plan?: { blades?: { bladeId: string; points?: { id?: string; name: string; radiusM?: number; azimuths?: number[] }[] }[] };
 };

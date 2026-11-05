@@ -122,9 +122,18 @@ def dispatch(root:Path,payload:dict):
             result['formalModal']={'available':True,'inputQualified':False,'reason':'按方法导入连续、同步且有标定证据的模态输入'}
             return result
         finally:manager.close()
-    if operation not in ('result','extended','preview','export','waveforms','inspect','review','review_history','contract'):raise ValueError('不支持的信号分析动作')
+    if operation not in ('result','details','extended','preview','export','waveforms','inspect','review','review_history','contract'):raise ValueError('不支持的信号分析动作')
     manager=WebSignalManager(root)
     try:
+        if operation=='details':
+            selections=params.get('selections')
+            if not isinstance(selections,list) or not 1<=len(selections)<=5:raise ValueError('Select 1..5 records')
+            details={}
+            for selection in selections:
+                if not isinstance(selection,dict) or set(selection)-{'recordingId','segmentId'}:raise ValueError('Invalid detail selection')
+                # result validates membership in the immutable saved job.
+                details[selection['recordingId']]=manager.result({'jobId':params.get('jobId'),**selection})['detail']
+            return {'jobId':params.get('jobId'),'details':details}
         if operation=='waveforms':
             report=manager.result({'jobId':params.get('jobId')});curves=[]
             for record in report['records']:

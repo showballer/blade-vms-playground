@@ -666,3 +666,30 @@
 /* Measurement strategies and bounded offline import. */
 .dra-mode-control{display:flex;align-items:flex-end;gap:16px;flex-wrap:wrap;margin:14px 0}.dra-mode-control>label{display:grid;gap:7px;min-width:200px}.dra-mode-control>span{font-size:12px;color:#64748b;padding-bottom:9px}.outdoor-import-backdrop{position:fixed;inset:0;background:#0f172a66;z-index:1400;display:flex;align-items:center;justify-content:center;padding:24px}.outdoor-import-dialog{background:white;border-radius:16px;padding:24px;width:min(1060px,96vw);max-height:90vh;overflow:auto;box-shadow:0 20px 70px #0f172a44}.outdoor-import-dialog>header{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:16px}.outdoor-import-dialog h2{margin:0;font-size:20px}.outdoor-import-dialog p{font-size:13px;color:#64748b}.outdoor-import-dialog .dra-algorithm-grid{margin:18px 0;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.outdoor-import-dialog label{display:grid;gap:7px;font-size:13px}.outdoor-import-dialog input:not([type=checkbox]){width:100%;min-width:0;padding:9px 12px;border:1px solid #ced8e8;border-radius:7px;box-sizing:border-box}.outdoor-import-files{max-height:42vh;overflow:auto}.outdoor-import-files input:not([type=checkbox]){max-width:110px}.outdoor-import-dialog footer{margin-top:18px}@media(max-width:700px){.outdoor-import-dialog .dra-algorithm-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.outdoor-import-dialog{padding:16px}.outdoor-import-backdrop{padding:10px}}
 .outdoor-import-points input{max-width:220px}.outdoor-import-detail{margin-top:16px}.outdoor-import-detail>summary{cursor:pointer;font-size:13px;font-weight:600;padding:10px 0;color:#526b8e}.outdoor-import-files td:nth-child(2){max-width:280px;overflow-wrap:anywhere}
+.health-slot-title{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%}
+.health-slot-outcome{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:6px 0;color:#34465e;font-weight:600}
+.health-slot-outcome small{font-size:12px;color:#7b8ca4;font-weight:400;white-space:nowrap}
+.blade-health-slot.health-local-slot{display:grid;gap:8px;text-align:left;border-left:4px solid #26a078}
+.blade-health-slot.health-local-slot.damage{border-left-color:#dc4457}
+.blade-health-slot.health-local-slot.healthy.active{background:#f2faf7;border-color:#26a078}
+.blade-health-slot.health-local-slot.damage.active{background:#fff5f5;border-color:#dc4457}
+.health-local-conclusion{display:flex;align-items:center;gap:18px;border:1px solid #cae6db;border-radius:12px;padding:24px;background:#f6fbf8}
+.health-local-conclusion.damage{background:#fff7f7;border-color:#f1ced3}
+.health-local-conclusion-icon{display:grid;place-items:center;width:56px;height:56px;flex-shrink:0;border-radius:14px;background:#e2f3eb;color:#16835c}
+.health-local-conclusion.damage .health-local-conclusion-icon{background:#ffe5e9;color:#c22e45}
+.health-local-conclusion-main{flex:1;min-width:0}
+.health-local-conclusion-title{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.health-local-conclusion-title h2{font-size:20px;margin:0}
+.health-local-conclusion-main p{margin:8px 0 4px;font-size:15px}
+.health-local-conclusion-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.health-local-formal{border:1px solid #dce5ef;border-radius:12px;background:#fff;overflow:hidden}
+.health-local-formal>summary{padding:16px 20px;cursor:pointer;font-weight:600;color:#526881}
+.health-local-formal>summary span{margin-left:16px;color:#b77b34;font-size:13px;font-weight:400}
+.health-local-formal>.card{border:0;border-top:1px solid #e8edf4;border-radius:0;box-shadow:none}
+.health-local-waveform-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:24px}
+.health-local-waveform-heading .measurement-tabs{display:flex;gap:8px;margin:0}
+.health-local-waveform-metrics{display:flex;gap:32px;flex-wrap:wrap;padding:16px 0;margin-top:8px;border-top:1px solid #e8edf4;color:#667991}
+.health-local-waveform-metrics strong{color:#25344b;margin-left:12px}
+.measurement-response-3d-labels .health-focus-point{color:#c22e45}
+@media(max-width:900px){.health-local-conclusion{align-items:flex-start;flex-wrap:wrap}.health-local-conclusion-actions{width:100%;padding-left:74px}.health-slot-outcome{align-items:flex-start;flex-direction:column;gap:4px}}
+@media(max-width:600px){.health-local-conclusion{padding:16px}.health-local-conclusion-actions{padding-left:0}.health-local-waveform-metrics{gap:12px}}

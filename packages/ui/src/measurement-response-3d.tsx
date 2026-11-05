@@ -8,6 +8,7 @@ export type Response3DPoint = {
   radiusM: number | null;
   normalizedAmplitude: number | null;
   displacementRmsM: number | null;
+  highlighted?: boolean;
 };
 
 type LocatedPoint = Response3DPoint & { radiusM: number };
@@ -156,6 +157,7 @@ export function MeasurementResponse3D({ points, bandHz, frequencyHz, metricLabel
               const known = finiteAmplitude(p.normalizedAmplitude), pos = project(p.radiusM, 0, known ? p.normalizedAmplitude! : 0);
               const zero = project(p.radiusM, 0, 0), negative = project(p.radiusM, 0, known ? -p.normalizedAmplitude! : 0);
               return <g key={p.id}>
+                {p.highlighted && <circle data-response-highlight={p.id} cx={pos[0]} cy={pos[1]} r={12} fill="#dc4457" fillOpacity={.16} stroke="#dc4457"><title>{p.name} · 预设关注点，幅值仍为实测统计</title></circle>}
                 {known && showNegativeReference && <>
                   <line x1={pos[0]} y1={pos[1]} x2={negative[0]} y2={negative[1]} stroke="#7893b3" strokeDasharray="3 4" />
                   <circle data-response-negative-point={p.id} data-reference-amplitude={-p.normalizedAmplitude!}
@@ -165,7 +167,7 @@ export function MeasurementResponse3D({ points, bandHz, frequencyHz, metricLabel
                   <circle cx={zero[0]} cy={zero[1]} r={2.5} fill="#72859d" />
                 </>}
                 <circle data-response-point={p.id} data-radius-m={p.radiusM} data-amplitude={known ? p.normalizedAmplitude : "missing"}
-                cx={pos[0]} cy={pos[1]} r={6} fill={known ? "#174775" : "#fff"} stroke={known ? "#fff" : "#7b8ca4"} strokeWidth={2}>
+                cx={pos[0]} cy={pos[1]} r={6} fill={known ? p.highlighted ? "#dc4457" : "#174775" : "#fff"} stroke={known ? "#fff" : "#7b8ca4"} strokeWidth={2}>
                 <title>{`${p.name} · 距中心 ${fmt(p.radiusM)} m · ${known ? `归一化幅值 ${fmt(p.normalizedAmplitude!)}${finiteAmplitude(p.displacementRmsM) ? ` · 位移 RMS ${fmt(p.displacementRmsM * 1e6)} μm` : ""}` : "缺测"}`}</title>
               </circle></g>;
             })}
@@ -178,7 +180,7 @@ export function MeasurementResponse3D({ points, bandHz, frequencyHz, metricLabel
           </svg>
           <div className="measurement-response-3d-labels" aria-hidden="true">{located.map(p => {
             const known = finiteAmplitude(p.normalizedAmplitude), pos = project(p.radiusM, 0, known ? p.normalizedAmplitude! : 0);
-            return <span key={p.id} className={known ? "" : "missing"} style={{ left: `${pos[0] / 10}%`, top: `${pos[1] / 4.2}%` }}>{p.name}{known ? "" : " · 缺测"}</span>;
+            return <span key={p.id} className={`${known ? "" : "missing"} ${p.highlighted ? "health-focus-point" : ""}`} style={{ left: `${pos[0] / 10}%`, top: `${pos[1] / 4.2}%` }}>{p.name}{known ? "" : " · 缺测"}</span>;
           })}</div>
         </div>
       </div>

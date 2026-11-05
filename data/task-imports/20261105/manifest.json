@@ -1,0 +1,73 @@
+{
+  "snapshotDate": "2026-11-05",
+  "geometry": {
+    "instrumentDistanceM": 78,
+    "hubHeightM": 90,
+    "bladeLengthM": 70.5,
+    "rootReservePercent": 10,
+    "tipReservePercent": 10,
+    "radiiM": {
+      "P1": 7.05,
+      "P2": 21.15,
+      "P3": 35.25,
+      "P4": 49.35,
+      "P5": 63.45
+    },
+    "positionBasis": "estimated_from_blade_length",
+    "source": "用户提供尺寸，五点在10%至90%区间内等分，半径为估算位置"
+  },
+  "tasks": [
+    {
+      "name": "1101-78m-背景塔桶-第二组_桌面端导入_2026-11-02",
+      "windFarm": "武川风场",
+      "turbine": "1号风机",
+      "records": 60,
+      "archives": [
+        {
+          "path": "1101-78m-背景塔桶-第二组_桌面端导入_2026-11-02/叶片1.zip",
+          "bytes": 35665746,
+          "sha256": "9eaa896fe1bb64910d5face96f693eb75348d14d9bb6a6064fe2691fd3f638bd",
+          "records": 20
+        },
+        {
+          "path": "1101-78m-背景塔桶-第二组_桌面端导入_2026-11-02/叶片2.zip",
+          "bytes": 33792467,
+          "sha256": "ec523ef1f40962d502388d117970390cd60acfb5df42b396fcf0e4058437f73c",
+          "records": 20
+        },
+        {
+          "path": "1101-78m-背景塔桶-第二组_桌面端导入_2026-11-02/叶片3.zip",
+          "bytes": 31288882,
+          "sha256": "b6cc41812234b8abbf1a9dadce765d6240cd467cc776af11c032cca08645b00f",
+          "records": 20
+        }
+      ]
+    },
+    {
+      "name": "第三组全流程_桌面端导入_2026-11-04",
+      "windFarm": "武川风场",
+      "turbine": "R024",
+      "records": 60,
+      "archives": [
+        {
+          "path": "第三组全流程_桌面端导入_2026-11-04/叶片1.zip",
+          "bytes": 47627619,
+          "sha256": "1c5cf416bfed45539a8e46d8afa198696e9567a10e90d47aebb25ec9d41dc142",
+          "records": 20
+        },
+        {
+          "path": "第三组全流程_桌面端导入_2026-11-04/叶片2.zip",
+          "bytes": 47355782,
+          "sha256": "2726d242d921d11436d71b21fb974f8d49d2bcdfbaea2b81c4dfe094307603a0",
+          "records": 20
+        },
+        {
+          "path": "第三组全流程_桌面端导入_2026-11-04/叶片3.zip",
+          "bytes": 47301981,
+          "sha256": "a616a22491b7af321ae9f6d3f7d4ad553cc09d8dfeb305b0936464039e6392bd",
+          "records": 20
+        }
+      ]
+    }
+  ]
+}

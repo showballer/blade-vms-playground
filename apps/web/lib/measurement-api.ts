@@ -1,4 +1,5 @@
 import {analysisPackageEndpoint} from './measurement-packages';
+import {measurementMemberships} from './measurement-memberships';
 import {formalModalEndpoint} from './measurement-formal-modal';
 import {createBladeReport} from "./measurement-blade-report";
 import {bladeHealthEndpoint} from "./measurement-blade-health";
@@ -586,6 +587,7 @@ export async function measurementEndpoint(
       ]);
       return {
         sources: sources.map(sourceView),
+        memberships: await measurementMemberships(user, sources.filter(s => s.reference.kind === 'import')),
         nextSourcesCursor: sources.nextCursor,
         objects: all,
         results: results.map(summarizeAnalysis),

@@ -13,8 +13,8 @@ export function responseBandMessage(plan:AnalysisJson){
  const reasons:Record<string,string>={BAND_DISABLED:'已关闭频带统计，原始波形和频谱仍可查看',NO_ELIGIBLE_OBSERVATION:'没有通过质量检查的连续段，请先查看原始记录与复核原因',BAND_ABOVE_NYQUIST:'指定频带超过采样率允许的上限，请缩小范围或使用宽频预览',NO_RESOLVED_FREQUENCY_BINS:'当前有效时长与谱窗不能分辨此频带，请扩大范围或采集更长的连续数据',TARGET_BAND_NOT_CONFIGURED:'此历史版本未配置频带；返回当前配置可使用宽频预览'};
  return reasons[plan?.targetBandReason]||'共同频带内无可比实测结果';
 }
-export type RecordFilters={taskName:string;windFarm:string;turbine:string;bladeId:string};
-export const emptyRecordFilters:RecordFilters={taskName:'',windFarm:'',turbine:'',bladeId:''};
+export type RecordFilters={taskId:string;windFarm:string;turbine:string;bladeId:string};
+export const emptyRecordFilters:RecordFilters={taskId:'',windFarm:'',turbine:'',bladeId:''};
 export function workspaceHistory(jobs:AnalysisJson[],taskId:string|undefined,purpose:'signal'|'synthesis',selectedIds:string[]){
  const ids=new Set(selectedIds);
  return jobs.filter(j=>j.status==='complete'&&j.taskId===taskId&&(!j.workspacePurpose||j.workspacePurpose===purpose)&&
@@ -27,19 +27,25 @@ const turbineName=(task:AnalysisTask)=>task.turbine||'未填写风机';
 const bladeName=(record:AnalysisCatalogRecord)=>String(record.bladeId??'未知');
 export function recordFilterChoices(tasks:AnalysisTask[],filters:RecordFilters){
  const unique=(values:string[])=>[...new Set(values)].sort((a,b)=>a.localeCompare(b,'zh-CN',{numeric:true}));
- const byTask=tasks.filter(t=>!filters.taskName||taskName(t)===filters.taskName);
+ const nameCounts=new Map<string,number>();for(const t of tasks)nameCounts.set(taskName(t),(nameCounts.get(taskName(t))||0)+1);
+ const byTask=tasks.filter(t=>!filters.taskId||t.id===filters.taskId);
  const byFarm=byTask.filter(t=>!filters.windFarm||farmName(t)===filters.windFarm);
  const byTurbine=byFarm.filter(t=>!filters.turbine||turbineName(t)===filters.turbine);
  const records=byTurbine.flatMap(task=>task.records.filter(r=>!filters.bladeId||bladeName(r)===filters.bladeId).map(r=>({...r,task})));
- return {taskNames:unique(tasks.map(taskName)),windFarms:unique(byTask.map(farmName)),turbines:unique(byFarm.map(turbineName)),
+ return {tasks:tasks.map(t=>({value:t.id,label:taskName(t)+((nameCounts.get(taskName(t))||0)>1?` · ${farmName(t)} / ${turbineName(t)} · ${t.id.slice(-6)}`:'')})),windFarms:unique(byTask.map(farmName)),turbines:unique(byFarm.map(turbineName)),
   bladeIds:unique(byTurbine.flatMap(t=>t.records.map(bladeName))),records};
 }
-export function changeRecordFilter(filters:RecordFilters,key:keyof RecordFilters,value:string):RecordFilters{
- const next={...filters,[key]:value};
- if(key==='taskName')return {...next,windFarm:'',turbine:'',bladeId:''};
- if(key==='windFarm')return {...next,turbine:'',bladeId:''};
- if(key==='turbine')return {...next,bladeId:''};
+export function normalizeRecordFilters(tasks:AnalysisTask[],filters:RecordFilters):RecordFilters{
+ const next={...filters};
+ if(next.taskId&&!tasks.some(t=>t.id===next.taskId))next.taskId='';
+ for(const [key,choice] of [['windFarm','windFarms'],['turbine','turbines'],['bladeId','bladeIds']] as const){
+  const values=recordFilterChoices(tasks,next)[choice];
+  if(!values.includes(next[key]))next[key]=values.length===1?values[0]:'';
+ }
  return next;
+}
+export function changeRecordFilter(filters:RecordFilters,key:keyof RecordFilters,value:string,tasks:AnalysisTask[]):RecordFilters{
+ return normalizeRecordFilters(tasks,{...filters,[key]:value});
 }
 export function workspaceStftOption(stft:AnalysisJson|null):AnalysisJson|null{
  const matrix=stft?.data;if(!matrix)return null;

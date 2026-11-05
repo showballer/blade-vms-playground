@@ -72,6 +72,8 @@ export function MeasurementReports({ canWrite }: { canWrite: boolean }) {
       <Card title="报告范围">
         <ObjectFilters
           objects={data.objects}
+          memberships={data.memberships}
+          loading={loading}
           value={filter}
           onChange={(v) => {
             setFilter(v);

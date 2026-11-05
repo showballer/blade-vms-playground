@@ -12,7 +12,7 @@
     "packages/*"
   ],
   "scripts": {
-    "test:record-analysis": "node --test scripts/test-field-record-analysis.cjs scripts/test-field-service.cjs scripts/test-field-capture-main.cjs scripts/test-windows-packaged-bridge.cjs && tsx --tsconfig apps/desktop/tsconfig.json packages/ui/src/field-record-analysis.test.tsx && tsx --tsconfig apps/desktop/tsconfig.json packages/ui/src/field-analysis-workspace.test.tsx",
+    "test:record-analysis": "node --test scripts/test-field-record-analysis.cjs scripts/test-field-service.cjs scripts/test-field-capture-main.cjs scripts/test-windows-packaged-bridge.cjs && tsx --tsconfig apps/desktop/tsconfig.json packages/ui/src/field-record-analysis.test.tsx && tsx --tsconfig apps/desktop/tsconfig.json packages/ui/src/field-analysis-workspace.test.tsx && tsx --tsconfig apps/desktop/tsconfig.json packages/ui/src/analysis-detail-loader.test.ts",
     "test:field": "node scripts/test-local-auth.cjs && node scripts/test-field-service.cjs && node scripts/test-field-sdk.cjs && node scripts/test-field-window.cjs && tsx packages/ui/src/field-desktop.test.tsx && tsx packages/ui/src/field-turntable-points.test.ts && tsx packages/ui/src/field-turntable-origin.test.ts && tsx packages/ui/src/field-capture-route.test.ts && tsx --tsconfig apps/desktop/tsconfig.json packages/ui/src/field-turntable-origin-control.test.tsx && tsx --tsconfig apps/desktop/tsconfig.json packages/ui/src/field-cycle-motion.test.tsx && tsx --tsconfig apps/desktop/tsconfig.json packages/ui/src/field-header-laser.test.tsx && tsx --tsconfig apps/desktop/tsconfig.json packages/ui/src/field-bending.test.tsx && tsx --tsconfig apps/desktop/tsconfig.json packages/ui/src/field-turntable-health.test.tsx && tsx --tsconfig apps/desktop/tsconfig.json packages/ui/src/field-drive-profile.test.tsx && tsx --tsconfig apps/desktop/tsconfig.json packages/ui/src/field-mechanical-home.test.tsx && tsx --tsconfig apps/desktop/tsconfig.json packages/ui/src/field-turntable-connection.test.tsx && tsx packages/ui/src/field-preset-position.test.ts && tsx --tsconfig apps/desktop/tsconfig.json packages/ui/src/field-recording-tasks.test.tsx && tsx --tsconfig apps/desktop/tsconfig.json packages/ui/src/field-capture-readiness.test.tsx && tsx packages/ui/src/field-route-position.test.ts",
     "test:field-recovery": "npm run build -w @blade/desktop && electron scripts/field-capture-readiness-smoke.cjs && electron scripts/field-capture-recovery-smoke.cjs && electron scripts/field-error-retry-ui-smoke.cjs",
     "test:single-point": "npm run test:single-point:ui && node scripts/test-field-service.cjs && node scripts/test-field-capture-main.cjs",
@@ -81,7 +81,9 @@
     "test:measurement-ui": "electron scripts/measurement-ui-smoke.cjs",
     "test:measurement-sync": "tsx --tsconfig apps/web/tsconfig.json scripts/test-measurement-sync.ts",
     "test:measurement-sync-e2e": "node --env-file=apps/web/.env.local scripts/test-measurement-sync-e2e.cjs",
-    "test:bundled-recordings": "node --test scripts/test-field-bundled-recordings.cjs"
+    "test:bundled-recordings": "node --test scripts/test-field-bundled-recordings.cjs",
+    "test:measurement-filters": "tsx --tsconfig apps/web/tsconfig.json packages/ui/src/measurement-filter-options.test.ts && tsx --tsconfig apps/desktop/tsconfig.json packages/ui/src/field-analysis-workspace.test.tsx",
+    "test:measurement-memberships": "node --env-file=apps/web/.env.local node_modules/tsx/dist/cli.mjs --tsconfig apps/web/tsconfig.json scripts/test-measurement-memberships.ts"
   },
   "devDependencies": {
     "@types/node": "^22.19.0",

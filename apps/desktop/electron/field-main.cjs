@@ -297,8 +297,10 @@ else {
       dialog.showErrorBox('无法打开现场工作台', '本机凭证、设置或数据目录不可用。未覆盖已有数据、未重置管理员密码。请检查用户目录权限和文件完整性。');
       quitting = true; app.quit(); return;
     }
+    const icon = path.join(__dirname, '../dist/brand/app-icon.png');
+    if (process.platform === 'darwin' && app.dock) app.dock.setIcon(icon);
     const workArea = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
-    win = new BrowserWindow({ ...initialWindowBounds(workArea),
+    win = new BrowserWindow({ ...initialWindowBounds(workArea), icon,
       title: 'BladeVMS 现场采集工作台', frame: false, backgroundColor: '#F5F7FA',
       webPreferences: { preload: path.join(__dirname, 'field-preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
     entryUrl = process.env.BLADE_DEV_URL === 'http://127.0.0.1:5210'

@@ -77,6 +77,7 @@ async function main() {
   copy(frozen, path.join(stage, 'resources/acquisition'));
   copy(vendor, path.join(stage, 'resources/acquisition/vendor'));
   copy(path.join(desktop, 'dist'), path.join(stage, 'dist'));
+  copy(path.join(desktop, 'build/icons'), path.join(stage, 'build/icons'));
   fs.mkdirSync(path.join(stage, 'electron'), { recursive: true });
   for (const file of fs.readdirSync(path.join(desktop, 'electron')))
     if (/^field-.*\.cjs$/.test(file) || ['local-auth.cjs', 'unified-auth.cjs'].includes(file))
@@ -93,7 +94,7 @@ async function main() {
     electronVersion: require('electron/package.json').version,
     extraResources: [{ from: 'resources/acquisition', to: 'acquisition', filter: ['**/*'] },
       ...(bundledRecords ? [{ from: 'resources/bundled-recordings', to: 'bundled-recordings', filter: ['**/*'] }] : [])],
-    mac: { target: 'dir', category: 'public.app-category.productivity', identity: '-', hardenedRuntime: false } });
+    mac: { icon: 'build/icons/icon.icns', target: 'dir', category: 'public.app-category.productivity', identity: '-', hardenedRuntime: false } });
   fs.writeFileSync(path.join(stage, 'package.json'), JSON.stringify(pkg, null, 2));
   console.log('Packaging and signing app…');
   run(path.join(root, 'node_modules/.bin/electron-builder'), ['--projectDir', stage, '--mac', 'dir', '--arm64'],

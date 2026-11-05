@@ -2,6 +2,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { Button, Select, Tag } from "./common";
+import { changeMeasurementFilter, measurementFilterOptions, normalizeMeasurementFilters, sameMeasurementFilters, type MeasurementFilterKind } from './measurement-filter-options';
 import type {
   MeasurementContext,
   MeasurementObject,
@@ -40,6 +41,7 @@ export function selectedBladeProcessingResults(context:Partial<MeasurementContex
 
 export type Catalog = {
   objects: MeasurementObject[];
+  memberships?: MeasurementContext[];
   sources: any[];
   results: any[];
   rules: any;
@@ -135,6 +137,8 @@ export function MeasurementStatus({
 }
 export function ObjectFilters({
   objects,
+  memberships,
+  loading = false,
   value,
   onChange,
   position = true,
@@ -143,6 +147,8 @@ export function ObjectFilters({
   disabled = false,
 }: {
   objects: MeasurementObject[];
+  memberships?: MeasurementContext[];
+  loading?: boolean;
   value: Partial<MeasurementContext>;
   onChange: (v: Partial<MeasurementContext>) => void;
   position?: boolean;
@@ -150,9 +156,16 @@ export function ObjectFilters({
   campaign?: boolean;
   disabled?: boolean;
 }) {
+  // Only reconcile when a complete catalog arrives. User changes are normalized
+  // below in one update; retained hidden pages must not rewrite shared selection.
+  useEffect(() => {
+    if (loading || !memberships) return;
+    const next = normalizeMeasurementFilters(objects, memberships, value);
+    if (!sameMeasurementFilters(value, next)) onChange(next);
+  }, [objects, memberships, loading]);
   const fields = [
-    "farm",
     ...(campaign ? ["campaign"] : []),
+    "farm",
     "turbine",
     ...(blade ? ["blade"] : []),
     ...(blade && position ? ["position"] : []),
@@ -167,27 +180,14 @@ export function ObjectFilters({
   return (
     <div className="measurement-filters">
       {fields.map((kind) => {
-        const key = (kind + "Id") as keyof MeasurementContext,
-          parent =
-            kind === "turbine" || kind === "campaign"
-              ? value.farmId
-              : kind === "blade"
-                ? value.turbineId
-                : kind === "position"
-                  ? value.bladeId
-                  : undefined;
-        const options = objects.filter(
-          (o) =>
-            o.kind === kind &&
-            (kind === "farm" || (!!parent && o.parentId === parent)) &&
-            (kind !== "campaign" || !value.turbineId || !o.turbineIds?.length || o.turbineIds.includes(value.turbineId)),
-        );
+        const key = (kind + "Id") as keyof MeasurementContext;
+        const options = measurementFilterOptions(objects, memberships || [], value, kind as MeasurementFilterKind);
         return (
           <Select
             key={kind}
             label={labels[kind]}
             value={value[key] || ""}
-            disabled={disabled}
+            disabled={disabled || loading || (kind !== 'campaign' && options.length <= 1)}
             options={[
               { value: "", label: "全部 / 未选择" },
               ...options.map((o) => ({
@@ -196,21 +196,7 @@ export function ObjectFilters({
               })),
             ]}
             onChange={(v) => {
-              const next = { ...value, [key]: v };
-              if (kind === "farm") {
-                next.turbineId = "";
-                next.bladeId = "";
-                next.positionId = "";
-                next.campaignId = "";
-              }
-              if (kind === "turbine") {
-                const currentCampaign = objects.find(o => o.id === next.campaignId);
-                if (currentCampaign?.turbineIds?.length && !currentCampaign.turbineIds.includes(v)) next.campaignId = "";
-                next.bladeId = "";
-                next.positionId = "";
-              }
-              if (kind === "blade") next.positionId = "";
-              onChange(next);
+              onChange(changeMeasurementFilter(objects, memberships || [], value, kind as MeasurementFilterKind, v));
             }}
           />
         );

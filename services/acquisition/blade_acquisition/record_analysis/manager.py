@@ -109,8 +109,26 @@ class RecordAnalysisManager:
 
     def catalog(self):
         value=catalog(self.recordings);value["algorithmVersion"]=ALGORITHM_VERSION;value["processingContract"]=contract()
-        for task in value['tasks']:task['measurementMode']=self.task_modes.get(task['id'],task.get('measurementMode','indoor'))
-        with self.lock:value["jobs"]=[self._public(j) for j in self.jobs.values()][-100:]
+        with self.lock:
+            completed=sorted((j for j in self.jobs.values() if j.get('status')=='complete'),key=lambda j:j.get('finishedAt',0),reverse=True)
+            value["jobs"]=[self._public(j) for j in self.jobs.values()][-100:]
+        for task in value['tasks']:
+            task['measurementMode']=self.task_modes.get(task['id'],task.get('measurementMode','indoor'))
+            # Reuse explicit, versioned installation corrections for this task.
+            # Raw manifests remain immutable; corrections never cross tasks.
+            relevant=[j for j in completed if j.get('taskId')==task['id'] and (j.get('workspace') or {}).get('purpose')=='synthesis']
+            if relevant:
+                import copy
+                geometry=copy.deepcopy(relevant[0]['workspace']['algorithmOptions'].get('geometry',{}))
+                corrections={};seen=set()
+                for job in relevant:
+                    own=job['workspace']['algorithmOptions'].get('geometry',{}).get('recordOverrides',{})
+                    for rid in job.get('recordingIds',[]):
+                        if rid not in seen and rid in task['recordingIds']:
+                            seen.add(rid)
+                            if rid in own:corrections[rid]=copy.deepcopy(own[rid])
+                geometry['recordOverrides']=corrections
+                task['analysisGeometry']=geometry
         return value
 
     def load_recording(self, recording_id):

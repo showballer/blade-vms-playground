@@ -92,7 +92,19 @@ export async function processingEndpoint(user:User,b:any,signal?:AbortSignal){
  if(action==='catalog'||action==='start'){
   const s=await processingSelection(user,b.context);if(!s)return {tasks:[],revision:'empty'};
   const revision=digest(JSON.stringify(s.chosen.map(x=>[x.key,x.bindingRevision,digest(JSON.stringify(x.raw)),x.raw.samples,x.raw.sampleRate])));
-  if(action==='catalog')return {tasks:s.chosen.length?[s.task]:[],revision,composition:{required:s.groups.length>1,groups:s.groups,mode:b.compositionMode||null},algorithmVersion:'unified-record-analysis-2.2.0',processingContract:(await worker(user,'capabilities')).processingContract,jobs:(await processingSummaries(user,b.context)).filter(p=>p.status==='complete').map(p=>({jobId:p.id,taskId:p.task.id,status:p.status,finishedAt:Date.parse(p.finishedAt)/1000,algorithmVersion:p.algorithmVersion,recordingIds:p.selectedRecordingIds||p.task.recordingIds,workspacePurpose:p.workspace?.purpose}))};
+  if(action==='catalog'){
+   const completed=(await processingSummaries(user,b.context)).filter(p=>p.status==='complete');
+   const relevant=completed.filter(p=>p.task.id===s.task.id&&p.workspace?.purpose==='synthesis').sort((a,b)=>Date.parse(b.finishedAt)-Date.parse(a.finishedAt));
+   if(relevant.length){
+    const geometry=structuredClone(relevant[0].workspace.algorithmOptions.geometry||{}),corrections:Record<string,any>={},seen=new Set<string>();
+    for(const p of relevant)for(const id of p.selectedRecordingIds||p.task.recordingIds){
+     if(seen.has(id)||!s.task.recordingIds.includes(id))continue;seen.add(id);
+     const correction=p.workspace.algorithmOptions.geometry?.recordOverrides?.[id];if(correction)corrections[id]=structuredClone(correction);
+    }
+    (s.task as any).analysisGeometry={...geometry,recordOverrides:corrections};
+   }
+   return {tasks:s.chosen.length?[s.task]:[],revision,composition:{required:s.groups.length>1,groups:s.groups,mode:b.compositionMode||null},algorithmVersion:'unified-record-analysis-2.2.0',processingContract:(await worker(user,'capabilities')).processingContract,jobs:completed.map(p=>({jobId:p.id,taskId:p.task.id,status:p.status,finishedAt:Date.parse(p.finishedAt)/1000,algorithmVersion:p.algorithmVersion,recordingIds:p.selectedRecordingIds||p.task.recordingIds,workspacePurpose:p.workspace?.purpose}))};
+  }
   if(command.taskId!==s.task.id||!Array.isArray(command.recordingIds)||!command.recordingIds.length||command.recordingIds.length>MAX_RECORDS||command.recordingIds.some((id:string)=>!s.task.recordingIds.includes(id)))throw new HttpError(400,'来源选择已变化，请刷新');
   if(s.groups.length>1&&!['diagnostic_group','confirmed_same_blade'].includes(b.compositionMode))throw new HttpError(409,'需明确建立跨任务业务诊断展示组，或提供同一实体核验依据');
   if(b.compositionMode==='confirmed_same_blade'&&!s.chosen.every(x=>pcOf(x).identityVerified===true))throw new HttpError(409,'来源实体身份尚未核验，只能建立诊断展示组');
@@ -133,6 +145,10 @@ export async function processingEndpoint(user:User,b:any,signal?:AbortSignal){
  if(value.packageSha256&&action==='review')throw new HttpError(409,'桌面已保存结果只读，请在桌面复核并上传新版本');
  if(action==='snapshot')return {result:{...value,workerAccount:undefined,report:value.report}};
  if(action==='result')return command.recordingId?savedRead(value,'result',{jobId:value.workerJobId,recordingId:command.recordingId,segmentId:command.segmentId,...packageParameters},signal):{...value.report,jobId:value.id,processingResultId:value.id};
+ if(action==='details'){
+  if(!Array.isArray(command.selections)||!command.selections.length||command.selections.length>5||command.selections.some((s:any)=>!s||!value.report.records.some((r:any)=>r.recording_id===s.recordingId)))throw new HttpError(400,'请选择当前版本中1～5条记录');
+  return savedRead(value,'details',{jobId:value.workerJobId,selections:command.selections,...packageParameters},signal);
+ }
  if(action==='export'){
   const output=await worker(owner,'export',{jobId:value.workerJobId,kind:command.kind,previewId:command.previewId,...packageParameters});
   const base=await realpath(path.join(rotationDataDirectory(owner),...(value.packageSha256?['analysis-packages',value.packageSha256]:[]),'record-analysis-v1',value.workerJobId,'exports')),file=await realpath(output.path);

@@ -1,4 +1,5 @@
 "use client";
+import {PartnerBrand} from "./partner-brand";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   Activity,
@@ -190,9 +191,7 @@ export function BladeApp({ platform }: { platform: "web" | "desktop" }) {
     return (
       <div className="login-shell">
         <div className="login-intro">
-          <div className="brand-icon">
-            <Activity size={24} />
-          </div>
+          <PartnerBrand/>
           <span className="login-eyebrow">
             BLADE VIBRATION MONITORING SYSTEM
           </span>
@@ -344,19 +343,7 @@ export function BladeApp({ platform }: { platform: "web" | "desktop" }) {
         </div>
       )}
       <header className="app-header">
-        <div className="brand">
-          <div className="brand-icon">
-            <Activity size={21} />
-          </div>
-          <div>
-            <strong>三维台架结构力学特征测试系统</strong>
-            <small>
-              {platform === "desktop"
-                ? "现场采集应用端 · 桌面 EXE"
-                : "实验室管理服务端 · Web B/S"}
-            </small>
-          </div>
-        </div>
+        <PartnerBrand subtitle={platform === "desktop" ? "现场采集工作台" : "三维台架结构力学特征测试系统"} />
         <div className="header-actions">
           {platform === "desktop" && typeof window !== "undefined" && window.blade && (
             <Button onClick={() => setSyncOpen(true)}><CloudUpload size={15} />回传本机任务</Button>

@@ -1960,3 +1960,18 @@ pre {
 @media screen and (max-width: 760px) { .app-shell.web .workspace { padding: 14px 12px; } .app-shell.web .sidebar { width: 100%; padding: 8px; } .app-shell.web .app-header { padding: 12px 16px; } .app-shell.web .card { padding: 16px; } }
 @media screen and (max-width: 880px) { .app-shell.web .sidebar { width: 64px; padding: 10px 7px; } .app-shell.web .sidebar > button { width: 100%; justify-content: center; padding-inline: 0; } }
 @media screen and (max-width: 600px) { .app-shell.web .sidebar { width: 52px; padding-inline: 4px; } }
+
+/* Main marks share a top/baseline; IPA must not shift the wordmark upward. */
+.partner-brand{--brand-scale:.8;position:relative;flex-shrink:0;min-width:0}
+.partner-brand-marks{display:flex;align-items:flex-start;gap:calc(12px * var(--brand-scale));height:calc(52px * var(--brand-scale))}
+.partner-brand-marks>span{display:block;position:relative;overflow:hidden;flex-shrink:0}
+.partner-brand-marks img{display:block;position:absolute;max-width:none}
+.partner-polytec{width:calc(128px * var(--brand-scale));height:calc(34px * var(--brand-scale));border-radius:4px;background:#ffc400}
+.partner-polytec img{width:calc(161px * var(--brand-scale));height:auto;left:calc(-23px * var(--brand-scale));top:calc(-25px * var(--brand-scale))}
+.partner-fraunhofer{width:calc(200px * var(--brand-scale));height:calc(52px * var(--brand-scale))}
+.partner-fraunhofer img{width:calc(211px * var(--brand-scale));height:auto;left:calc(-5.8px * var(--brand-scale));top:calc(-14px * var(--brand-scale))}
+.partner-brand-marks>.partner-brand-times{display:grid;place-items:center;width:calc(14px * var(--brand-scale));height:calc(34px * var(--brand-scale));font-size:calc(20px * var(--brand-scale));line-height:1;color:#8b98aa;font-weight:400}
+.partner-brand>small{position:absolute;left:0;bottom:0;font-size:11px;color:#7b8ca5;line-height:1.2;letter-spacing:.02em}
+.app-symbol{width:20px;height:20px;object-fit:contain}
+.field-header .partner-brand{margin-right:20px}
+@media(max-width:1000px){.partner-brand{--brand-scale:.7}.partner-brand>small{font-size:10px}.field-header .partner-brand{margin-right:4px}}

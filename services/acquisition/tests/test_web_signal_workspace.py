@@ -1,9 +1,24 @@
 from pathlib import Path
 import copy,json,tempfile,unittest
-from blade_acquisition.web_signal import normalized_record,common_response
-from test_record_analysis_manager import write_record
+from blade_acquisition.web_signal import normalized_record,common_response,dispatch
+from blade_acquisition.record_analysis.manager import RecordAnalysisManager
+from test_record_analysis_manager import write_record,wait
 
 class WebSignalTests(unittest.TestCase):
+ def test_batched_details_match_individual_reads_and_reject_foreign_sources(self):
+  with tempfile.TemporaryDirectory() as folder:
+   root=Path(folder);raw=root/'recordings';ids=[write_record(raw,angle=a) for a in (0,90)]
+   manager=RecordAnalysisManager(root)
+   try:
+    task=manager.catalog()['tasks'][0];job=manager.start({'taskId':task['id'],'scope':'analysis'});report=wait(manager,job)
+    selections=[{'recordingId':r['recording_id'],'segmentId':r['representative']} for r in report['records']]
+    result=dispatch(root,{'operation':'details','parameters':{'jobId':job['jobId'],'selections':selections}})
+    for selection in selections:
+     self.assertEqual(result['details'][selection['recordingId']],manager.result({'jobId':job['jobId'],**selection})['detail'])
+    for selection in ([],selections*3,[{'recordingId':ids[0],'jobId':'other'}],[{'recordingId':'f'*32}]):
+     with self.assertRaises((ValueError,KeyError)):
+      dispatch(root,{'operation':'details','parameters':{'jobId':job['jobId'],'selections':selection}})
+   finally:manager.close()
  def test_common_angles_keep_null(self):
   def angle(a,v):return {'azimuth_deg':a,'mean_half_peak_to_peak_m_s':v,'mean_segment_rms_m_s':v/2,'result_ids':[str(a)]}
   report={'aggregates':[{'blade':'2','point':'P1','layer':'los_residual','azimuth_results':[angle(0,1),angle(180,3),angle(270,5)]},{'blade':'2','point':'P2','layer':'los_residual','azimuth_results':[angle(0,2),angle(90,999),angle(180,4),angle(270,6)]}]}

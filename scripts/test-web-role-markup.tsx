@@ -85,12 +85,15 @@ for (const role of [
   });
   check(role + " 模态页保存/报告与查看入口", () => {
     const html = renderToStaticMarkup(createElement(ModalAnalysis, props));
-    state(html, "计算并保存五点响应", true);
+    state(html, "叶片响应分析", false);
+    state(html, "模态参数识别", false);
+    assert.ok(html.includes("正在加载测量数据"));
+    assert.equal(buttons(html, "计算并保存五点响应").length, 0);
     assert.equal(buttons(html, "基线管理").length, 0);
   });
   check(role + " 报告页模板/批量入口", () => {
     const html = renderToStaticMarkup(createElement(Reports, props));
-    state(html, "生成真实工况报告", true);
+    state(html, "生成逐叶片报告", true);
   });
   check(role + " 二次开发只读与管理员配置入口", () => {
     const html = renderToStaticMarkup(createElement(Developer, props));

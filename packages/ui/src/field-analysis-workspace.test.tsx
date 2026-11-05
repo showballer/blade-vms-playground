@@ -6,7 +6,7 @@ import { lineOption } from "./field-record-analysis-charts";
 import { ResponseBandFields, ResponseCoverage } from "./unified-analysis-controls";
 import { normalizedAlgorithmOptions,previewBandForRates,responseBandMessage,workspaceAzimuthColor,workspaceHistory,workspacePreviewSeries } from "./field-analysis-workspace-data";
 import { modalInputReason } from "./formal-modal-workspace";
-import { desktopAlgorithmDefaults, desktopRecordLabel, algorithmError, workspacePointSeries, emptyRecordFilters, recordFilterChoices, changeRecordFilter, workspaceStftOption } from "./field-analysis-workspace-data";
+import { desktopAlgorithmDefaults, desktopRecordLabel, algorithmError, workspacePointSeries, emptyRecordFilters, recordFilterChoices, changeRecordFilter, normalizeRecordFilters, workspaceStftOption } from "./field-analysis-workspace-data";
 import type { AnalysisTask } from "./field-record-analysis-data";
 
 const task: AnalysisTask = { id: "task", name: "10241804-叶片2-P1至P5", turbine: "1303", windFarm: "wf1", recordingIds: ["record"], plannedPoints: [], records: [] };
@@ -37,12 +37,16 @@ const tasks:AnalysisTask[]=[
  { ...task, id:'task2', name:'另一个任务', records:[{...record,id:'other-task'}] },
 ];
 assert.equal(recordFilterChoices(tasks,emptyRecordFilters).records.length,5);
-const scoped={taskName:task.name,windFarm:'wf1',turbine:'1303',bladeId:'2'};
+const scoped={taskId:'farm1',windFarm:'wf1',turbine:'1303',bladeId:'2'};
 assert.deepEqual(recordFilterChoices(tasks,scoped).records.map(r=>r.id),['record'],'Same-number blades from other farms, turbines or tasks cannot leak into the selector');
-assert.deepEqual(recordFilterChoices(tasks,scoped).windFarms,['wf1','wf2']);
+assert.deepEqual(recordFilterChoices(tasks,scoped).windFarms,['wf1']);
 assert.deepEqual(recordFilterChoices(tasks,scoped).bladeIds,['2','3']);
-assert.deepEqual(changeRecordFilter(scoped,'taskName','另一个任务'),{taskName:'另一个任务',windFarm:'',turbine:'',bladeId:''});
-assert.deepEqual(changeRecordFilter(scoped,'windFarm','wf2'),{...scoped,windFarm:'wf2',turbine:'',bladeId:''});
+assert.deepEqual(changeRecordFilter(scoped,'taskId','farm2',tasks),{taskId:'farm2',windFarm:'wf2',turbine:'1303',bladeId:'2'});
+assert.deepEqual(changeRecordFilter(scoped,'taskId','task2',tasks),{...scoped,taskId:'task2'});
+assert.deepEqual(changeRecordFilter(scoped,'windFarm','wf2',tasks),scoped,'Cannot select a farm outside the current task');
+assert.deepEqual(normalizeRecordFilters(tasks,{...scoped,bladeId:'missing'}),{...scoped,bladeId:''},'Invalid previous blade clears when several blades remain');
+assert.deepEqual(normalizeRecordFilters(tasks,{...emptyRecordFilters,taskId:'farm2'}),{taskId:'farm2',windFarm:'wf2',turbine:'1303',bladeId:'2'});
+assert.deepEqual(recordFilterChoices(tasks,{...scoped,taskId:'farm2',windFarm:'wf2'}).records.map(r=>r.id),['other-farm'],'Same-named tasks remain separate');
 assert.equal(recordFilterChoices(tasks,{...scoped,bladeId:'missing'}).records.length,0);
 assert.deepEqual(recordFilterChoices([{...task,windFarm:undefined,turbine:undefined,records:[{...record,bladeId:undefined}]}],emptyRecordFilters).bladeIds,['未知']);
 const stft=workspaceStftOption({data:{time_s:[.1,.2],frequency_hz:[0,100],psd_m2_s2_per_hz:[[1,2],[3,4]]}})!;

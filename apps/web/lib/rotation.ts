@@ -50,7 +50,7 @@ function runWorker(service: string, python: string, data: string, payload: Recor
       });
       let output = "", bytes = 0, settled = false;
       let stopping: Error | undefined;
-      const savedRead = payload.action === "signal-workspace" && ["result", "extended", "preview", "waveforms", "review_history"].includes(String(payload.operation));
+      const savedRead = payload.action === "signal-workspace" && ["result", "details", "extended", "preview", "waveforms", "review_history"].includes(String(payload.operation));
       const timeout = setTimeout(() => stop(new HttpError(504, savedRead ? "本版本读取超时，原结果仍保留，请重试。" : "导入或分析超过 180 秒，请检查任务状态后重试。")), 180_000);
       const abort = () => stop(new HttpError(499, "分析已取消"));
       abortSignal?.addEventListener("abort", abort, { once: true });
@@ -107,7 +107,7 @@ export async function rotationWorker(user: Pick<User, "id" | "tenant">, payload:
     finally { if (listings.get(key) === pending) listings.delete(key); }
   }
   if(['signal-workspace','formal-modal'].includes(String(payload.action))){
-    const readOnly=payload.action==='signal-workspace'&&['result','extended','preview','waveforms','contract','capabilities','inspect','review_history','fingerprints'].includes(String(payload.operation));
+    const readOnly=payload.action==='signal-workspace'&&['result','details','extended','preview','waveforms','contract','capabilities','inspect','review_history','fingerprints'].includes(String(payload.operation));
     const key=accountKey(user)+(readOnly?':saved-reads':':compute');if((analysisQueueCounts.get(key)||0)>=32)throw new HttpError(429,'Too many pending analysis operations');analysisQueueCounts.set(key,(analysisQueueCounts.get(key)||0)+1);const prior=analysisQueue.get(key)||Promise.resolve();
     const queuedAt=Date.now();
     const pending=prior.catch(()=>{}).then(async()=>{
