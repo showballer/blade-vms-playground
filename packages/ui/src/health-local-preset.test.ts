@@ -7,7 +7,13 @@ assert.equal(localHealthPreset(input)?.source, '预设结论');
 assert.equal(localHealthPreset({ ...input, bladeCode: '1' })?.status, 'healthy');
 assert.equal(localHealthPreset({ ...input, bladeCode: '3' })?.status, 'healthy');
 assert.equal(localHealthPreset({ ...input, taskName: '1101-78m-背景塔桶-第二组_桌面端导入_2026-11-02', turbineName: '1号风机' })?.status, 'healthy');
-for (const hostname of ['115.190.201.41', 'production.example.com', '127.0.0.1.example.com', '']) assert.equal(localHealthPreset({ ...input, hostname }), null);
+for (const hostname of ['localhost', '127.0.0.1', '[::1]', '::1', '115.190.201.41']) {
+  assert.equal(localHealthPreset({ ...input, hostname })?.status, 'damage');
+  assert.equal(localHealthPreset({ ...input, hostname, taskName: '1101-78m-背景塔桶-第二组_桌面端导入_2026-11-02', turbineName: '1号风机' })?.status, 'healthy');
+  assert.equal(localHealthPreset({ ...input, hostname, hasResult: false }), null);
+  assert.equal(localHealthPreset({ ...input, hostname, taskName: 'other' }), null);
+}
+for (const hostname of ['production.example.com', '127.0.0.1.example.com', '115.190.201.41.example.com', '']) assert.equal(localHealthPreset({ ...input, hostname }), null);
 for (const overrides of [{ hasResult: false }, { turbineName: 'R025' }, { taskName: 'other' }, { bladeCode: '4' }]) assert.equal(localHealthPreset({ ...input, ...overrides }), null);
 
 const time = Array.from({ length: 1001 }, (_, i) => 10 + i / 10000);

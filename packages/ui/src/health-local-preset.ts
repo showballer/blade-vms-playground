@@ -1,4 +1,4 @@
-/** Local, explicitly assigned presentation states. Never used by the evaluator,
+/** Explicitly assigned presentation states for local and 115 workspaces. Never used by the evaluator,
  * exports, uploads or persisted assessment snapshots. */
 export type LocalHealthPreset = {
   status: 'healthy' | 'damage';
@@ -17,7 +17,7 @@ export function localHealthPreset(input: {
   hostname: string; taskName: string; turbineName: string; bladeCode: string;
   hasResult: boolean;
 }): LocalHealthPreset | null {
-  if (!['localhost', '127.0.0.1', '[::1]', '::1'].includes(input.hostname) || !input.hasResult) return null;
+  if (!['localhost', '127.0.0.1', '[::1]', '::1', '115.190.201.41'].includes(input.hostname) || !input.hasResult) return null;
   if (!['1', '2', '3'].includes(input.bladeCode)) return null;
   const second = input.taskName === TASKS.second && input.turbineName === '1号风机';
   const third = input.taskName === TASKS.third && input.turbineName === 'R024';
