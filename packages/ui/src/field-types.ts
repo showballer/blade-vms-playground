@@ -271,6 +271,7 @@ export type FieldStatus = {
 };
 export type FieldRequestOptions =
   | { action: "session" | "accountInfo" | "logout" | "status" | "stop" | "recordings" | "simulation" | "openDataDirectory" | "restartService" | "configureService" | "configureDll" | "syncStatus" | "retrySync" | "turntablePorts" }
+  | { action: "deleteRecording"; id: string }
   | { action: "setAutoSync"; enabled: boolean }
   | { action: "setUploadSampleRate"; sampleRate: number }
   | { action: "syncRecording"; id: string }

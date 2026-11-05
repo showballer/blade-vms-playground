@@ -145,6 +145,7 @@ async function dispatch(options) {
       return result;
     }
     case 'recordings': return service.recordings();
+    case 'deleteRecording': return service.deleteRecording(options.id);
     case 'simulation': return service.simulation();
     case 'recording': return service.recordings(options.id);
     case 'exportTask': {

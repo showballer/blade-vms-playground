@@ -172,11 +172,11 @@ export function FieldServicePanel({ status, busy, onAction }: {
   </section>;
 }
 
-export function FieldRecordingList({ recordings, selectedId, busy, onSelect, onExport, onUpload, syncedIds = [] }: {
-  recordings: FieldRecording[]; selectedId?: string; busy: boolean; onSelect: (id: string) => void; onExport?: (id: string) => void; onUpload?: (id: string) => void; syncedIds?: string[];
+export function FieldRecordingList({ recordings, selectedId, busy, onSelect, onExport, onUpload, onDelete, syncedIds = [] }: {
+  recordings: FieldRecording[]; selectedId?: string; busy: boolean; onSelect: (id: string) => void; onExport?: (id: string) => void; onUpload?: (id: string) => void; onDelete?: (id: string) => void; syncedIds?: string[];
 }) {
   if (!recordings.length) return <div className="field-recordings-empty"><HardDrive size={28} /><h3>还没有采集记录</h3><p>完成采集后，可在此查看记录。</p></div>;
-  return <div className="field-table-scroll" role="region" aria-label="本机采集记录，可横向滚动查看所有列" tabIndex={0}><table className="field-table"><thead><tr><th>任务 / 对象</th><th>转盘点位</th><th>开始时间</th><th>原始点数</th><th>采样率</th><th>保存状态</th><th>操作</th></tr></thead><tbody>{recordings.map((recording) => <tr key={recording.id} className={selectedId === recording.id ? "selected" : ""}><td><strong>{recording.name}</strong><span className={`field-badge ${recording.source === "simulation" ? "amber" : ""}`}>{recording.source === "simulation" ? "模拟" : "设备"}</span><small>{[recording.windFarm && `风场 ${recording.windFarm}`, recording.object, recording.turbine, recording.point].filter(Boolean).join(" / ") || "未填写对象信息"}</small></td><td>{recording.pointCycle ? <><strong>{recording.pointCycle.pointName}</strong><small>轴1 {recording.pointCycle.targetAxis1AngleDeg.toFixed(3)}° · 轴2 {recording.pointCycle.targetAxis2AngleDeg.toFixed(3)}°</small></> : "—"}</td><td>{timeOf(recording.startedAt)}</td><td className="mono">{count(recording.samples)}</td><td className="mono">{recording.sampleRate ? `${count(recording.sampleRate)} Hz` : "未知"}</td><td><span className={`field-badge ${recording.status === "complete" ? "green" : recording.status === "error" ? "red" : "amber"}`}>{recording.status === "complete" ? "已完成" : recording.status === "error" ? "异常记录" : "采集中 / 未完整结束"}</span></td><td><div className="field-record-actions"><Button disabled={busy} onClick={() => onSelect(recording.id)}>查看波形</Button>{onExport && <Button disabled={busy || recording.status !== "complete"} onClick={() => onExport(recording.id)}>导出原始数据</Button>}{onUpload && <Button disabled={busy || recording.status !== "complete" || syncedIds.includes(recording.id)} onClick={() => onUpload(recording.id)}>{syncedIds.includes(recording.id) ? "已上传 Web" : "上传至 Web"}</Button>}</div></td></tr>)}</tbody></table></div>;
+  return <div className="field-table-scroll" role="region" aria-label="本机采集记录，可横向滚动查看所有列" tabIndex={0}><table className="field-table"><thead><tr><th>任务 / 对象</th><th>转盘点位</th><th>开始时间</th><th>原始点数</th><th>采样率</th><th>保存状态</th><th>操作</th></tr></thead><tbody>{recordings.map((recording) => <tr key={recording.id} className={selectedId === recording.id ? "selected" : ""}><td><strong>{recording.name}</strong><span className={`field-badge ${recording.source === "simulation" ? "amber" : ""}`}>{recording.source === "simulation" ? "模拟" : "设备"}</span><small>{[recording.windFarm && `风场 ${recording.windFarm}`, recording.object, recording.turbine, recording.point].filter(Boolean).join(" / ") || "未填写对象信息"}</small></td><td>{recording.pointCycle ? <><strong>{recording.pointCycle.pointName}</strong><small>轴1 {recording.pointCycle.targetAxis1AngleDeg.toFixed(3)}° · 轴2 {recording.pointCycle.targetAxis2AngleDeg.toFixed(3)}°</small></> : "—"}</td><td>{timeOf(recording.startedAt)}</td><td className="mono">{count(recording.samples)}</td><td className="mono">{recording.sampleRate ? `${count(recording.sampleRate)} Hz` : "未知"}</td><td><span className={`field-badge ${recording.status === "complete" ? "green" : recording.status === "error" ? "red" : "amber"}`}>{recording.status === "complete" ? "已完成" : recording.status === "error" ? "异常记录" : "采集中 / 未完整结束"}</span></td><td><div className="field-record-actions"><Button disabled={busy} onClick={() => onSelect(recording.id)}>查看波形</Button>{onExport && <Button disabled={busy || recording.status !== "complete"} onClick={() => onExport(recording.id)}>导出原始数据</Button>}{onUpload && <Button disabled={busy || recording.status !== "complete" || syncedIds.includes(recording.id)} onClick={() => onUpload(recording.id)}>{syncedIds.includes(recording.id) ? "已上传 Web" : "上传至 Web"}</Button>}{onDelete && <Button variant="danger" disabled={busy} onClick={() => onDelete(recording.id)}>删除</Button>}</div></td></tr>)}</tbody></table></div>;
 }
 
 export function FieldDesktopApp() {
@@ -354,6 +354,16 @@ export function FieldDesktopApp() {
     if (busy || turntableOperationBusy || stoppingCapture) return;
     const recording = recordings.find(item => item.id === id);
     if (recording) { setError(""); setNotice(""); setSelected(recording); }
+  }
+  function deleteRecording(id: string) {
+    const recording = recordings.find(item => item.id === id);
+    if (!recording || busy || active || !window.confirm(`确定删除本机记录“${recording.name}”吗？此操作会删除该记录的原始数据文件，且不会影响云端副本。`)) return;
+    void operate("delete-recording", async () => {
+      await fieldCall({ action: "deleteRecording", id });
+      if (selected?.id === id) setSelected(null);
+      await refreshRecordings();
+      setNotice(`已删除本机记录：${recording.name}`);
+    });
   }
   function exportTask(recordingIds: string[], level: "task" | "blade" | "point" = "task") {
     void operate("export-task", async () => {
@@ -593,7 +603,7 @@ export function FieldDesktopApp() {
             </div>
             <div id={`${recordsTabId}-records-panel`} role="tabpanel" aria-labelledby={`${recordsTabId}-records-tab`} tabIndex={0} hidden={recordsTab !== "records"}>
               <section className="field-card">
-                {recordingsLoaded ? <FieldTaskRecords recordings={recordings} busy={Boolean(busy) || active} exporting={busy === "export-task"} onExportTask={exportTask}>{items => <FieldRecordingList recordings={items} syncedIds={syncStatus?.items.filter(item => item.state === "synced").map(item => item.recordingId)} onUpload={unifiedAccount ? id => void operate("sync", async () => { await fieldCall({ action: "syncRecording", id }); setSyncStatus(await fieldCall<FieldSyncStatus>({ action: "syncStatus" })); setNotice("已加入 Web 上传队列，可在设备与服务查看进度。"); }) : undefined} busy={Boolean(busy)} selectedId={selected?.id} onExport={id => void operate("export", async () => { const result = await fieldCall<{ saved?: boolean; fileName?: string }>({ action: "exportRecording", id }); if (result.saved) setNotice(`已导出完整原始波形 ${result.fileName}`); })} onSelect={openRecording} />}</FieldTaskRecords> : <p className="field-notice">记录列表尚未读取成功，请确认采集服务可用后刷新。服务不可用不代表本机没有保存数据。</p>}
+                {recordingsLoaded ? <FieldTaskRecords recordings={recordings} busy={Boolean(busy) || active} exporting={busy === "export-task"} onExportTask={exportTask}>{items => <FieldRecordingList recordings={items} syncedIds={syncStatus?.items.filter(item => item.state === "synced").map(item => item.recordingId)} onUpload={unifiedAccount ? id => void operate("sync", async () => { await fieldCall({ action: "syncRecording", id }); setSyncStatus(await fieldCall<FieldSyncStatus>({ action: "syncStatus" })); setNotice("已加入 Web 上传队列，可在设备与服务查看进度。"); }) : undefined} onDelete={deleteRecording} busy={Boolean(busy)} selectedId={selected?.id} onExport={id => void operate("export", async () => { const result = await fieldCall<{ saved?: boolean; fileName?: string }>({ action: "exportRecording", id }); if (result.saved) setNotice(`已导出完整原始波形 ${result.fileName}`); })} onSelect={openRecording} />}</FieldTaskRecords> : <p className="field-notice">记录列表尚未读取成功，请确认采集服务可用后刷新。服务不可用不代表本机没有保存数据。</p>}
               </section>
             </div>
             <div id={`${recordsTabId}-summary-panel`} role="tabpanel" aria-labelledby={`${recordsTabId}-summary-tab`} tabIndex={0} hidden={recordsTab !== "summary"}>

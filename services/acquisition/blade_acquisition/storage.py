@@ -7,6 +7,7 @@ import math
 import os
 import re
 import sqlite3
+import shutil
 import struct
 import time
 import uuid
@@ -309,6 +310,22 @@ class RecordingStore:
         if stride > 1:
             wave.update(rssiSampleStride=stride, rssiSampleRate=manifest["rssiSampleRate"])
         return {"recording": manifest, "waveform": wave}
+
+    def delete(self, recording_id: str) -> None:
+        directory = self.directory(recording_id)
+        try:
+            self._read_manifest(directory)
+        except FileNotFoundError as exc:
+            raise KeyError("采集记录不存在。") from exc
+        tombstone = self.root / f".deleting-{recording_id}-{time.time_ns()}"
+        directory.rename(tombstone)
+        try:
+            with closing(sqlite3.connect(self.index_path, timeout=3)) as database, database:
+                database.execute("DELETE FROM recordings WHERE id = ?", (recording_id,))
+        except Exception:
+            tombstone.rename(directory)
+            raise
+        shutil.rmtree(tombstone)
 
     def create(self, metadata: dict) -> "RecordingWriter":
         return RecordingWriter(self, metadata)

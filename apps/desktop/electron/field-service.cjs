@@ -613,6 +613,11 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     }
     throw failure('采集记录分页未结束，请刷新重试');
   }
+  async function deleteRecording(id) {
+    if (typeof id !== 'string' || !/^[0-9a-f]{32}$/.test(id)) throw failure('无效录制编号', 400);
+    await ready();
+    return http(`recordings/${id}`, 'DELETE');
+  }
   async function simulation() {
     await ready(); return http('simulation');
   }
@@ -858,6 +863,6 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     await ready();
     return http('blade-passes', 'POST', parameters);
   }
-  return { start, status, frame, begin, stop, recordings, simulation, exportRecording, exportTask, prepareUpload, waveform, analysis, rotation, bladePasses, device, rssiCalibration, turntable, turntablePorts, singlePoint, motionTrial, shutdown, serviceInfo };
+  return { start, status, frame, begin, stop, recordings, deleteRecording, simulation, exportRecording, exportTask, prepareUpload, waveform, analysis, rotation, bladePasses, device, rssiCalibration, turntable, turntablePorts, singlePoint, motionTrial, shutdown, serviceInfo };
 }
 module.exports = { createFieldService, windowsServiceEnvironment, posixServiceEnvironment, failure };

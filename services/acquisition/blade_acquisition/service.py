@@ -3738,6 +3738,25 @@ def create_app(settings: Settings, receiver_factory=PolytecReceiver, motor_facto
             except (OSError, ValueError) as exc:
                 raise HTTPException(500, f"无法读取采集记录：{exc}") from exc
 
+    @app.delete("/api/field/recordings/{recording_id}")
+    def delete_recording(recording_id: str):
+        with controller.lock:
+            current = controller.status()
+            if (current.get("state") in {"starting", "acquiring", "stopping"} or
+                    current.get("receiver", {}).get("running") or current.get("turntableBusy") or
+                    current.get("deviceBusy") or controller.export_lock.locked() or
+                    controller.upload_sampling_lock.locked()):
+                raise HTTPException(409, "采集、设备运动或文件任务进行中，暂不能删除记录。")
+            try:
+                controller.store.delete(recording_id)
+            except KeyError as exc:
+                raise HTTPException(404, str(exc)) from exc
+            except (OSError, ValueError) as exc:
+                raise HTTPException(500, f"删除本机记录失败：{exc}") from exc
+            if controller.writer and controller.writer.id == recording_id:
+                controller.writer = None
+        return {"deleted": recording_id}
+
     @app.post("/api/field/recordings/{recording_id}/upload-copy")
     def upload_copy(recording_id: str, parameters: dict):
         from .upload_sampling import prepare_upload

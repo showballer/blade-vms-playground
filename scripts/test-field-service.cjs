@@ -361,6 +361,18 @@ test('recording list pages are aggregated while detail reads stay complete', asy
   assert.deepEqual((await f.service.recordings(full.id)).recording, full);
 });
 
+test('local recording deletion validates the id and sends an authenticated DELETE request', async t => {
+  const id = 'c'.repeat(32);
+  const f = fixture(t, { fetch: ({ route, options }) => {
+    if (route === `recordings/${id}` && options.method === 'DELETE') return response({ deleted: id });
+    return response(idle());
+  } });
+  await assert.rejects(f.service.deleteRecording('../recordings'), { status: 400 });
+  assert.deepEqual(await f.service.deleteRecording(id), { deleted: id });
+  assert.equal(f.requests.at(-1).route, `recordings/${id}`);
+  assert.equal(f.requests.at(-1).options.method, 'DELETE');
+});
+
 test('recording pagination rejects repeated cursors instead of looping or returning a partial list', async t => {
   const f = fixture(t, { fetch: ({ route }) => response(route === 'recordings'
     ? { recordings: [{ id: 'a'.repeat(32) }], nextOffset: 0 } : idle()) });

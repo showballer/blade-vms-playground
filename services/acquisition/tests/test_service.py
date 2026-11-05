@@ -5,6 +5,7 @@ import ctypes as C
 import json
 import os
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -85,6 +86,26 @@ class ApiTests(unittest.TestCase):
         self.assertIsNone(result["recording"])
         self.assertEqual(FixtureReceiver.starts, previous)
         self.assertEqual(result["receiver"]["channels"], ["CH1", "RSSI1"])
+
+    def test_delete_recording_removes_raw_files_and_index_only_when_idle(self):
+        record_id = "a" * 32
+        store = self.app.state.controller.store
+        directory = store.root / record_id
+        directory.mkdir()
+        manifest = {"id": record_id, "name": "delete me", "startedAt": 1, "status": "complete",
+                    "samples": 0, "sampleRate": 1000, "unit": "m/s"}
+        (directory / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        store.update_index(manifest)
+        self.assertEqual(self.client.delete(f"/api/field/recordings/{record_id}").status_code, 200)
+        self.assertFalse(directory.exists())
+        self.assertEqual(store.list(), [])
+        self.assertEqual(sqlite3.connect(store.index_path).execute("PRAGMA quick_check").fetchone(), ("ok",))
+
+    def test_delete_recording_rejects_active_capture(self):
+        controller = self.app.state.controller
+        controller.state = "acquiring"
+        response = self.client.delete(f"/api/field/recordings/{'b' * 32}")
+        self.assertEqual(response.status_code, 409)
 
     def test_http_auth_origin_and_host(self):
         self.assertEqual(self.client.get("/api/field/status", headers={"Authorization": ""}).status_code, 401)
