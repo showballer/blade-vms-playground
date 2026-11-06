@@ -352,7 +352,7 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     if (!port || !secret || !child) throw failure('本机采集服务尚未就绪');
     const requestGeneration = generation, requestChild = child;
     const response = await fetchImpl(`http://127.0.0.1:${port}/api/field/${route}`, {
-      method, redirect: 'error', signal: AbortSignal.any([childAbort.signal, AbortSignal.timeout(route.endsWith('/upload-copy') ? 1800000 : route.endsWith('/analysis') || route === 'rotation' || route === 'blade-passes' || route === 'record-analysis' || route.endsWith('/waveform') || route.includes('/waveform?') ? 120000 :
+      method, redirect: 'error', signal: AbortSignal.any([childAbort.signal, AbortSignal.timeout(route.endsWith('/upload-copy') ? 1800000 : route.endsWith('/analysis') || route === 'rotation' || route === 'blade-passes' || route === 'record-analysis' || route === 'formal-modal' || route.endsWith('/waveform') || route.includes('/waveform?') ? 120000 :
         route === 'device' || route === 'rssi-calibration' ? 90000 : route === 'stop' || route === 'turntable' || route === 'single-point' && body?.action === 'cancel' ? Math.max(75000, requestTimeoutMs) : requestTimeoutMs)]),
       headers: { Authorization: `Bearer ${secret}`, 'Content-Type': 'application/json' },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -361,7 +361,7 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     if (requestGeneration !== generation || requestChild !== child) throw failure('采集服务已变化，请刷新状态后重试', 409);
     // A blade result can contain 64 bounded raw/valid previews plus per-point
     // spectra. Match the analysis worker's 8 MiB budget; ordinary polling stays small.
-    const responseLimit = ['blade-passes', 'record-analysis'].includes(route) ? 8 * 1024 * 1024 : 2_000_000;
+    const responseLimit = ['blade-passes', 'record-analysis', 'formal-modal'].includes(route) ? 8 * 1024 * 1024 : 2_000_000;
     if (Buffer.byteLength(content, 'utf8') > responseLimit) throw failure('采集服务响应超过安全大小限制');
     let data;
     try { data = JSON.parse(content); } catch { throw failure('采集服务返回了无效响应'); }
@@ -694,7 +694,7 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     await ready();
     if (request.action === 'laser_read') return http('device', 'POST', { deviceIp: request.deviceIp, action: 'laser_read' });
     const current = await http('status');
-    if (current.deviceBusy || current.turntableBusy || current.receiver?.running || ['starting', 'acquiring', 'stopping'].includes(current.state)) throw failure('设备正在使用，请先停止并保存', 409);
+    if (current.modalCaptureActive || current.deviceBusy || current.turntableBusy || current.receiver?.running || ['starting', 'acquiring', 'stopping'].includes(current.state)) throw failure('设备正在使用，请先停止并保存', 409);
     return http('device', 'POST', Object.fromEntries(['deviceIp', 'action', 'key', 'value', 'expected', 'confirmChange', 'confirmLaser']
       .filter(key => request[key] !== undefined).map(key => [key, request[key]])));
   }
@@ -705,7 +705,7 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
       throw failure('无效 RSSI 三状态标定请求', 400);
     await ready();
     const current = await http('status');
-    if (current.deviceBusy || current.turntableBusy || current.receiver?.running || ['starting', 'acquiring', 'stopping'].includes(current.state)) throw failure('设备正在使用，请先停止采集或转盘动作', 409);
+    if (current.modalCaptureActive || current.deviceBusy || current.turntableBusy || current.receiver?.running || ['starting', 'acquiring', 'stopping'].includes(current.state)) throw failure('设备正在使用，请先停止采集或转盘动作', 409);
     return http('rssi-calibration', 'POST', { deviceIp: request.deviceIp, hostIp: request.hostIp, state: request.state, durationSeconds: request.durationSeconds, confirmLaser: true });
   }
   async function turntablePorts() { await ready(); return http('turntable/ports'); }
@@ -804,7 +804,7 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     })() : {};
     await ready();
     const current = await http('status');
-    if (current.deviceBusy || (current.turntableBusy && request.action !== 'stop') || current.receiver?.running || ['starting', 'acquiring', 'stopping'].includes(current.state)) throw failure('设备正在使用，请先停止并保存', 409);
+    if (current.modalCaptureActive || current.deviceBusy || (current.turntableBusy && request.action !== 'stop') || current.receiver?.running || ['starting', 'acquiring', 'stopping'].includes(current.state)) throw failure('设备正在使用，请先停止并保存', 409);
     if (request.directPositionOnly === true && !current.pointCycleExecutionModes?.includes('manual_segments'))
       throw failure('当前采集服务不支持分段直接定位，请更新桌面客户端及采集服务后重启', 409);
     snapshotEpoch += 1;
@@ -869,6 +869,21 @@ function createFieldService({ getConfig, dataDir, resourcesDir, platform = proce
     await ready();
     return http('record-analysis', 'POST', request);
   }
-  return { start, status, frame, begin, stop, recordings, simulation, exportRecording, exportTask, prepareUpload, waveform, analysis, rotation, bladePasses, recordAnalysis, importSegments, device, rssiCalibration, turntable, turntablePorts, singlePoint, motionTrial, shutdown, serviceInfo };
+  async function formalModal(request) {
+    const actions = new Set(['capabilities', 'capture-start', 'capture-status', 'capture-stop', 'from-recording', 'import', 'preview', 'catalog', 'start', 'result', 'export']);
+    if (!request || typeof request !== 'object' || Array.isArray(request) || !actions.has(request.operation) || Buffer.byteLength(JSON.stringify(request), 'utf8') > (request.operation === 'import' ? 21 * 1024 * 1024 : 64000))
+      throw failure('无效模态识别请求', 400);
+    const p = request.parameters || {};
+    if (request.operation === 'from-recording' && (typeof p.recordingId !== 'string' || !/^[0-9a-f]{32}$/.test(p.recordingId) ||
+        typeof p.startSeconds !== 'number' || !Number.isFinite(p.startSeconds) || p.startSeconds < 0 ||
+        typeof p.evidence?.excitationRemovalSource !== 'string' || p.evidence.excitationRemovalSource.length > 1000))
+      throw failure('请选择完整采集记录，并填写激励撤除时间和依据', 400);
+    if (request.operation === 'start' && (typeof p.datasetId !== 'string' || !/^[0-9a-f]{32}$/.test(p.datasetId) || !['decay', 'frf', 'ssi_cov'].includes(p.method)))
+      throw failure('无效模态输入或识别方法', 400);
+    if (request.operation === 'capture-stop' && (typeof p.sessionId !== 'string' || !/^[0-9a-f]{32}$/.test(p.sessionId))) throw failure('无效采集会话', 400);
+    await ready();
+    return http('formal-modal', 'POST', request);
+  }
+  return { start, status, frame, begin, stop, recordings, simulation, exportRecording, exportTask, prepareUpload, waveform, analysis, rotation, bladePasses, recordAnalysis, formalModal, importSegments, device, rssiCalibration, turntable, turntablePorts, singlePoint, motionTrial, shutdown, serviceInfo };
 }
 module.exports = { createFieldService, windowsServiceEnvironment, posixServiceEnvironment, failure };

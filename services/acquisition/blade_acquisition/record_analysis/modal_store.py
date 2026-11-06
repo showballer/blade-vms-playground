@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib,json,time,uuid,zipfile,csv,io
 from pathlib import Path
 import numpy as np
+from scipy import signal
 from . import modal_engine as engine
 from .reference.geometry import SignalError
 from .reference.cli import json_safe
@@ -17,6 +18,42 @@ def dispatch(root,payload):
  folder=Path(root)/'formal-modal-v22';datasets=folder/'datasets';jobs=folder/'jobs';datasets.mkdir(parents=True,exist_ok=True);jobs.mkdir(exist_ok=True)
  action=payload.get('operation');p=payload.get('parameters') or {}
  if action=='capabilities':return engine.capabilities()
+ if action=='from-recording':
+  from fractions import Fraction
+  from .adapter import load_raw
+  recording_id=_id(p.get('recordingId'))
+  evidence=p.get('evidence') or {}
+  if evidence.get('excitationRemoved') is not True or not isinstance(evidence.get('excitationRemovalSource'),str) or not evidence['excitationRemovalSource'].strip():
+   raise SignalError('FREE_DECAY_EVIDENCE_REQUIRED','Document the release event before modal estimation')
+  raw=load_raw(Path(root)/'recordings',recording_id);manifest=raw.manifest
+  if manifest.get('source')=='simulation' or manifest.get('simulation') or manifest.get('status')!='complete':
+   raise SignalError('MODAL_SOURCE_REQUIRED','Select a completed physical device recording')
+  if raw.parse_issues:
+   raise SignalError('MODAL_CLOCK_GAP','Recording has a source sample-clock gap')
+  if not isinstance(p.get('startSeconds'),(int,float)) or isinstance(p.get('startSeconds'),bool) or not np.isfinite(p['startSeconds']) or p['startSeconds']<0:
+   raise SignalError('INVALID_MODAL_WINDOW','Enter the release time relative to recording start')
+  end=p.get('endSeconds');duration=len(raw.time_s)/raw.sample_rate_hz
+  if end is not None and (not isinstance(end,(int,float)) or isinstance(end,bool) or not np.isfinite(end) or not p['startSeconds']<end<=duration):
+   raise SignalError('INVALID_MODAL_WINDOW','Select an end time after release and inside the recording')
+  lo=int(np.ceil(p['startSeconds']*raw.sample_rate_hz));hi=len(raw.time_s) if end is None else int(np.floor(end*raw.sample_rate_hz))
+  if hi-lo<32 or np.any(raw.overrange[lo:hi]):
+   raise SignalError('MODAL_QUALITY_REVIEW_REQUIRED','Selected response is too short or contains overrange samples')
+  source_rate=raw.sample_rate_hz;target_rate=min(200.,source_rate);ratio=Fraction(target_rate/source_rate).limit_denominator(100000)
+  values=signal.resample_poly(raw.velocity_m_s[lo:hi],ratio.numerator,ratio.denominator)
+  actual_rate=source_rate*ratio.numerator/ratio.denominator
+  if not 32<=len(values)<=engine.LIMITS['modalSamples']:
+   raise SignalError('MODAL_OBSERVATION_SIZE','Downsampled free-decay interval must contain 32 to 2,000,000 samples')
+  times=np.arange(len(values),dtype=float)/actual_rate
+  point=(manifest.get('pointCycle') or {}).get('radialPointName') or manifest.get('point') or '未标注测点'
+  channel={'id':recording_id,'pointId':str(point),'role':'response','quantity':'velocity','unit':'m/s','direction':'unknown',
+   'calibrationSource':'Polytec velocity recording; scale calibration not independently verified','calibrationStatus':'unverified',
+   'measurementSource':'native_device_recording','values':values.tolist()}
+  data={'schemaVersion':'modal-input-1','sourceKind':'native_record_segment','time_s':times.tolist(),'channels':[channel],
+   'evidence':{'excitationRemoved':True,'excitationRemovalSource':evidence['excitationRemovalSource'].strip(),
+    'recordingSampleRateHz':source_rate,'analysisSampleRateHz':actual_rate,'antiAliasResampling':'scipy.signal.resample_poly'},
+   'sourceReference':{'recordingId':recording_id,'sourceHash':raw.source_hash,'sourceRange':[lo,hi],
+    'sourceName':manifest.get('name'),'startedAt':manifest.get('startedAt'),'point':point}}
+  return dispatch(root,{'operation':'import','parameters':{'dataset':data,'name':p.get('name') or manifest.get('name') or recording_id,'context':{'turbine':manifest.get('turbine'),'object':manifest.get('object'),'point':point}}})
  if action=='from-segment':
   from .manager import RecordAnalysisManager
   base=Path(root);package=p.get('packageSha256')
@@ -45,7 +82,14 @@ def dispatch(root,payload):
   if old:return json.loads(old.read_text())['summary']
   identity=uuid.uuid4().hex;t,y,fs,channels,_=engine.validate(data);meta={'id':identity,'sourceSha256':sha,'name':p.get('name') or identity,'samples':len(t),'sampleRateHz':fs,'durationSeconds':len(t)/fs,'channels':[{k:v for k,v in c.items() if k!='values'} for c in channels],'context':p.get('context'),'evidence':data.get('evidence'),'sourceReference':data.get('sourceReference'),'createdAt':time.time(),'sourceKind':data['sourceKind']}
   atomic_json(datasets/(identity+'.json'),{'sourceSha256':sha,'summary':meta,'data':data});return meta
- if action=='catalog':return {'datasets':[json.loads(f.read_text())['summary'] for f in datasets.glob('*.json') if not f.is_symlink()],'capabilities':engine.capabilities()}
+ if action=='catalog':return {'datasets':[json.loads(f.read_text())['summary'] for f in datasets.glob('*.json') if not f.is_symlink()],'jobs':[json.loads(f.read_text()) for f in jobs.glob('*/job.json') if not f.is_symlink() and not f.parent.is_symlink()],'capabilities':engine.capabilities()}
+ if action=='preview':
+  path=datasets/(_id(p.get('datasetId'))+'.json')
+  if path.is_symlink():raise SignalError('INVALID_MODAL_INPUT','Dataset links forbidden')
+  saved=json.loads(path.read_text());data=saved['data'];channels=data['channels']
+  i=plot_indices(*(np.asarray(c['values']) for c in channels),limit=2000)
+  return {'summary':saved['summary'],'time_s':np.asarray(data['time_s'])[i].tolist(),'channels':[{**{k:v for k,v in c.items() if k!='values'},'values':np.asarray(c['values'])[i].tolist()} for c in channels],'displayOnly':True}
+
  dataset_id=p.get('datasetId');job_id=p.get('jobId')
  if action=='start':
   path=datasets/(_id(dataset_id)+'.json')

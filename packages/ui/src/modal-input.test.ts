@@ -1,0 +1,15 @@
+import assert from 'node:assert/strict';
+import { modalCsv, modalMappedInput } from './modal-input';
+const rows = Array.from({length:32},(_,i)=>`${i/100},${i},${2*i}`).join('\r\n');
+const parsed=modalCsv('\uFEFF"time_s","P1, axial",force\r\n'+rows);
+assert.equal(parsed.columns[1],'P1, axial');
+const draft={...parsed,timeIndex:0,channels:[{id:'r',column:1,pointId:'P1',quantity:'velocity',direction:'axial',scale:.001},{id:'f',column:2,pointId:'force',quantity:'force',direction:'axial',scale:1}]};
+const mapped=modalMappedInput(draft,{synchronization:'common_sample_clock',clockSource:'test'},'calibration');
+assert.equal(mapped.channels[0].values[10],.01);
+assert.equal(mapped.channels[1].role,'excitation');
+assert.equal(mapped.time_s.length,32);
+assert.throws(()=>modalCsv('t,x\n1,\n'));
+assert.throws(()=>modalCsv('t,x\n"broken'));
+assert.throws(()=>modalMappedInput(draft,{},''));
+assert.throws(()=>modalMappedInput({...draft,channels:[{...draft.channels[0],scale:0}]},{},'cal'));
+console.log('PASS synchronous CSV mapping, SI conversion, metadata and malformed input rejection');

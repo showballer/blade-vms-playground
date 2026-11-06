@@ -35,6 +35,7 @@ function persistConfig(next) {
 }
 async function idleRequired() {
   const status = await service.status();
+  if (status.modalCaptureActive) throw failure('请先停止并保存模态同步采集，再修改设置或退出登录', 409);
   if (status.deviceBusy) throw failure('设备配置进行中，请等待完成并确认激光状态', 409);
   if (status.turntableBusy) throw failure('转盘检查或试转进行中，请先停止并确认停稳', 409);
   if (status.receiver?.running || ['starting', 'acquiring', 'stopping'].includes(status.state)) throw failure('请先停止采集并确认保存，再修改服务设置或退出登录', 409);
@@ -204,6 +205,7 @@ async function dispatch(options) {
       } finally { await fs.promises.unlink(temporary).catch(() => {}); }
       return { saved: true, fileName: path.basename(selected.filePath) };
     }
+    case 'formalModal': return service.formalModal(options.request);
     case 'device': return service.device(options.request);
     case 'rssiCalibration': return service.rssiCalibration(options.request);
     case 'configureService': return chooseProgram('executable');

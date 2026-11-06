@@ -3,7 +3,7 @@ import { memo, useEffect, useRef, useState, type CSSProperties } from "react";
 import { ChartLoading } from "./chart-loading";
 import { sliderOnlyZoom } from "./chart-interactions";
 import * as echarts from "echarts/core";
-import { LineChart, BarChart, HeatmapChart } from "echarts/charts";
+import { LineChart, BarChart, HeatmapChart, ScatterChart } from "echarts/charts";
 import {
   GridComponent,
   TooltipComponent,
@@ -19,6 +19,7 @@ echarts.use([
   LineChart,
   BarChart,
   HeatmapChart,
+  ScatterChart,
   GridComponent,
   TooltipComponent,
   LegendComponent,

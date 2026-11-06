@@ -94,6 +94,31 @@ class UnifiedPlanTests(unittest.TestCase):
   data=json.loads((self.root/'formal-modal-v22/datasets'/(saved['id']+'.json')).read_text())['data']
   with self.assertRaises(SignalError) as error:compute(data,'decay')
   self.assertEqual(error.exception.code,'FREE_DECAY_EVIDENCE_REQUIRED');self.assertEqual((self.records/self.rid/'chunk-00000000.bin').read_bytes(),before)
+ def test_modal_input_uses_selected_interval_from_completed_native_recording(self):
+  from blade_acquisition.record_analysis.modal_store import dispatch
+  from blade_acquisition.record_analysis.reference.geometry import SignalError
+  before=(self.records/self.rid/'chunk-00000000.bin').read_bytes()
+  saved=dispatch(self.root,{'operation':'from-recording','parameters':{'recordingId':self.rid,'startSeconds':.5,'endSeconds':1.5,
+   'evidence':{'excitationRemoved':True,'excitationRemovalSource':'Hand release after a tap; observed at 0.5 s'}}})
+  self.assertEqual(saved['sourceKind'],'native_record_segment');self.assertEqual(saved['samples'],200);self.assertAlmostEqual(saved['sampleRateHz'],200,places=9)
+  self.assertEqual(saved['sourceReference']['sourceRange'],[2000,6000]);self.assertEqual(saved['sourceReference']['recordingId'],self.rid)
+  data=json.loads((self.root/'formal-modal-v22/datasets'/(saved['id']+'.json')).read_text())['data']
+  self.assertEqual(data['channels'][0]['measurementSource'],'native_device_recording');self.assertEqual(data['channels'][0]['calibrationStatus'],'unverified')
+  self.assertEqual(data['evidence']['recordingSampleRateHz'],4000);self.assertEqual(data['evidence']['analysisSampleRateHz'],200)
+  np.testing.assert_array_equal(load_raw(self.records,self.rid).velocity_m_s,np.frombuffer(before[HEADER.size:],dtype=RECORD_DTYPE)['velocity'])
+  with self.assertRaises(SignalError):dispatch(self.root,{'operation':'from-recording','parameters':{'recordingId':self.rid,'startSeconds':3,'endSeconds':4,
+   'evidence':{'excitationRemoved':True,'excitationRemovalSource':'release'}}})
+ def test_point_displacement_manager_export_and_eligibility(self):
+  import zipfile
+  from blade_acquisition.record_analysis.reference.geometry import SignalError
+  self.values(lambda t:.002*np.cos(2*np.pi*50*t))
+  report=self.run_job();ids=[r['representative'] for r in report['records'] if r.get('representative')]
+  value=self.manager.extended({'jobId':report['jobId'],'kind':'point_displacement','resultIds':ids})
+  self.assertTrue(value['available']);self.assertAlmostEqual(value['points'][0]['mean_half_peak_to_peak_m'],.002/(2*np.pi*50),delta=.05*.002/(2*np.pi*50)) # finite-window baseline subtraction perturbs the lowest resolved bins
+  archive=self.manager.export({'jobId':report['jobId'],'kind':'summary'})
+  with zipfile.ZipFile(archive['path']) as z:
+   self.assertIn('point-displacement.json',z.namelist());self.assertIn('point-displacement.csv',z.namelist())
+  with self.assertRaises(SignalError):self.manager.extended({'jobId':report['jobId'],'kind':'point_displacement','resultIds':['bad']})
  def test_band_response_integrates_equal_angle_power_before_root(self):
   other=write_record(self.records,angle=90,n=8000,fs=4000.)
   for rid,amplitude in [(self.rid,.002),(other,.006)]:

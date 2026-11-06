@@ -297,6 +297,7 @@ class AcquisitionController:
     def status(self) -> dict:
         with self.lock:
             return {"state": self.state, "error": self.error,
+                    "modalCaptureActive": bool(getattr(self, "modal_capture_active", lambda: False)()),
                     "pointCycleExecutionModes": ["continuous", "manual_segments"],
                     "pointCycleSegmentedAutoMove": True,
                     "receiver": {"source": self.source, "simulation": copy.deepcopy(self.simulation),
@@ -3567,15 +3568,21 @@ class AcquisitionController:
             return self.status()
 
 
-def create_app(settings: Settings, receiver_factory=PolytecReceiver, motor_factory=DEFAULT_MOTOR_FACTORY) -> FastAPI:
+def create_app(settings: Settings, receiver_factory=PolytecReceiver, motor_factory=DEFAULT_MOTOR_FACTORY, modal_receiver_factory=None) -> FastAPI:
     controller = AcquisitionController(settings, receiver_factory, motor_factory)
     from .record_analysis.manager import RecordAnalysisManager
     record_analysis = RecordAnalysisManager(settings.data_dir)
+    from .modal_capture import ModalCaptureController
+    modal_capture = ModalCaptureController(settings.data_dir, modal_receiver_factory, lambda: controller.status()["state"] not in ("idle", "error"))
+    capture_operation_lock = threading.Lock()
+    # Lock-free boolean snapshot avoids reversing native-lock/modal-lock order.
+    controller.modal_capture_active = lambda: modal_capture.current["state"] in {"connecting", "acquiring", "stopping", "saving"}
 
     @asynccontextmanager
     async def lifespan(_app):
         # Idle by default: importing/starting the service never loads the SDK or touches a device.
         yield
+        await asyncio.to_thread(modal_capture.close)
         record_analysis.close()
         try:
             await asyncio.to_thread(controller.stop)
@@ -3586,6 +3593,7 @@ def create_app(settings: Settings, receiver_factory=PolytecReceiver, motor_facto
                   docs_url=None, redoc_url=None, openapi_url=None)
     app.state.controller = controller
     app.state.record_analysis = record_analysis
+    app.state.modal_capture = modal_capture
     analysis_lock = threading.Lock()
     allowed_origins = {f"http://127.0.0.1:{settings.port}", f"http://localhost:{settings.port}"}
     allowed_hosts = {f"127.0.0.1:{settings.port}", f"localhost:{settings.port}"}
@@ -3622,6 +3630,25 @@ def create_app(settings: Settings, receiver_factory=PolytecReceiver, motor_facto
             raise HTTPException(422, str(exc)) from exc
         except OSError as exc:
             raise HTTPException(500, f"记录分析文件访问失败：{exc}") from exc
+
+    @app.post("/api/field/formal-modal")
+    def formal_modal_request(parameters: dict):
+        try:
+            operation=parameters.get('operation');p=parameters.get('parameters') or {}
+            if operation=='capture-status':return modal_capture.status()
+            if operation=='capture-start':
+                with capture_operation_lock:return modal_capture.start(p)
+            if operation=='capture-stop':return modal_capture.stop(p.get('sessionId'))
+            from .record_analysis.modal_store import dispatch as modal_dispatch
+            return modal_dispatch(settings.data_dir, parameters)
+        except (KeyError, FileNotFoundError) as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+        except BlockingIOError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(500, f"模态数据访问失败：{exc}") from exc
 
     @app.get("/api/field/simulation")
     def simulation():
@@ -3682,10 +3709,19 @@ def create_app(settings: Settings, receiver_factory=PolytecReceiver, motor_facto
 
     @app.post("/api/field/start")
     def start(request: StartRequest):
-        return controller.start(request)
+        with capture_operation_lock:
+            if modal_capture.active():raise HTTPException(409,'模态同步采集正在进行，请先停止并保存')
+            return controller.start(request)
 
     @app.post("/api/field/stop")
     def stop():
+        if modal_capture.active():
+            modal_capture.stop(modal_capture.status()['id'])
+            deadline=time.monotonic()+20
+            while modal_capture.active() and time.monotonic()<deadline:time.sleep(.05)
+            if modal_capture.active():raise HTTPException(503,'同步采集驱动尚未停止，原始数据仍未保存完成')
+            snapshot=modal_capture.status()
+            if snapshot['state']=='error':raise HTTPException(503,'同步采集未完整保存：'+snapshot['error'])
         return controller.stop()
 
     @app.get("/api/field/recordings")

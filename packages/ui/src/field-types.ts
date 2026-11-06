@@ -290,6 +290,7 @@ export type FieldRequestOptions =
   | { action: "rotation"; parameters: Record<string, unknown> }
   | { action: "bladePasses"; parameters: Record<string, unknown> }
   | { action: "recordAnalysis"; request: Record<string, unknown> }
+  | { action: "formalModal"; request: Record<string, unknown> }
   | { action: "device"; request: FieldDeviceRequest }
   | { action: "rssiCalibration"; request: FieldRssiCalibrationRequest }
   | { action: "singlePoint"; request: FieldSinglePointRequest }

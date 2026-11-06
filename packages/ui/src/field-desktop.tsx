@@ -3,7 +3,7 @@ import {PartnerBrand,AppSymbol} from "./partner-brand";
 import {RetainedPanel} from "./retained-panel";
 import React, { useCallback, useEffect, useId, useRef, useState } from "react";
 import {
-  Activity, AlertTriangle, ArrowRight, AudioLines, Check,
+  Activity, AlertTriangle, ArrowRight, AudioLines, Check, ChartSpline,
   FolderOpen, HardDrive, Layers3, LoaderCircle, LockKeyhole, LogOut, Minus,
   Radio, RefreshCw, Settings, ShieldCheck, Square, X,
 } from "lucide-react";
@@ -14,6 +14,7 @@ import { FieldHeaderLaser } from "./field-header-laser";
 import { isTurntablePort, readSavedTurntableConnection, turntableConnectionKey } from "./field-turntable-port";
 import { FieldAnalysis } from "./field-analysis";
 import { DesktopAnalysisWorkspace } from "./field-analysis-workspace";
+import { FieldModalWorkspace } from "./field-modal-workspace";
 import { WebBladePasses } from "./web-blade-passes";
 import type { BladePassRecording, BladePassResult } from "./web-blade-passes-data";
 import { FieldAcquisition, FieldCaptureStatusTags } from "./field-acquisition";
@@ -216,7 +217,7 @@ export function FieldDesktopApp() {
   const [analysisRecordId,setAnalysisRecordId]=useState<string|undefined>();
   const syncAnalysisResult=useCallback((jobId:string)=>fieldCall({action:"recordAnalysis",request:{action:"sync",jobId}}),[]);
   const navigateAnalysis=useCallback((purpose:'signal'|'synthesis',record?:any)=>{if(record?.recording_id)setAnalysisRecordId(record.recording_id);setScreen(purpose==='signal'?'record-analysis':'blade-synthesis');},[]);
-  const [screen, setScreen] = useState<"acquisition" | "turntable" | "recordings" | "service" | "analysis" | "blade-passes" | "record-analysis" | "blade-synthesis">("acquisition");
+  const [screen, setScreen] = useState<"acquisition" | "modal-capture" | "turntable" | "recordings" | "service" | "analysis" | "blade-passes" | "record-analysis" | "blade-synthesis" | "modal">("acquisition");
   const [turntableVisited, setTurntableVisited] = useState(false);
   const [turntableConnection, setTurntableConnection] = useState(() => {
     try { return readSavedTurntableConnection(localStorage.getItem(turntableConnectionKey)); } catch { return ""; }
@@ -485,11 +486,11 @@ export function FieldDesktopApp() {
   function cancelPresetPosition() {
     presetRun.current?.abort(); setPresetStopping(true);
   }
-  function requestCapture(targetKey?: string) {
+  function requestCapture(targetKey?: string, configOverride?: FieldConfig) {
     if (presetRun.current || captureStarting.current || busy || stoppingCapture || fieldIsActive(status) || status?.turntableBusy || turntableOperationBusy) return;
     const clientRequestedAt = Date.now() / 1000;
     let route = linkEnabled ? currentRoute : null;
-    let capture = fieldCaptureConfig(config);
+    let capture = fieldCaptureConfig(configOverride || config);
     if (linkEnabled && routeMode !== "manual") {
       const selected = routes[routeMode];
       const target = selected?.targets?.find(item => item.key === (targetKey || selected?.selectedTargetKey));
@@ -544,6 +545,10 @@ export function FieldDesktopApp() {
       setConfig(plain); setStatus(nextStatus); setScreen("acquisition");
     }).finally(() => { captureStarting.current = false; });
   }
+  function startModalCapture(value: { name: string; point: string }) {
+    if (linkEnabled) { setError("模态自由衰减要求叶片静止，请先解除转盘联动。"); return; }
+    requestCapture(undefined, fieldCaptureConfig({ ...config, name: value.name, point: value.point, object: "叶片静止模态试验" }));
+  }
   const active = fieldIsActive(status);
   const selectedSegmentedTarget = currentRoute?.targets?.find(item => item.key === (autoTargetKey || currentRoute.selectedTargetKey));
   const segmentStartError = linkEnabled && routeMode === "segmented"
@@ -567,11 +572,11 @@ export function FieldDesktopApp() {
     }} /> : session.mustChangePassword || changingPassword ? <main className="field-password-shell"><FieldPasswordPanel mandatory={session.mustChangePassword} account={account} busy={Boolean(busy)} error={error} onSave={savePassword} onCancel={() => { if (session.mustChangePassword) void logout(); else { setChangingPassword(false); setError(""); } }} /></main> : <>
       <header className="field-header"><PartnerBrand subtitle="现场采集工作台"/><div className="field-header-right"><FieldHeaderLaser deviceIp={config.deviceIp} status={status} disabled={Boolean(busy) || turntableOperationBusy || stoppingCapture} pollUnavailable={statusPollUnavailable} request={fieldCall} onBusy={headerLaserBusyChanged} /><span className={`field-account-header ${account?.offline ? "offline" : ""}`} title={unifiedAccount ? `已绑定 ${account.serverUrl || "Web"}；离线有效期至 ${fieldAccountTime(account.offlineUntil)}` : "原始记录保存在本机"}><ShieldCheck size={13} />{unifiedAccount ? account.offline ? "统一账号 · 离线验证" : "统一账号" : "本机账号"}</span><span className="field-header-user"><span className="field-avatar">{(session.user.name || session.user.username).slice(0, 1).toUpperCase()}</span>{session.user.name || session.user.username}</span><Button variant="ghost" disabled={Boolean(busy) || accountLocked} onClick={openPassword} aria-label={unifiedAccount ? "修改统一密码" : "修改本机密码"}><LockKeyhole size={15} /></Button><Button variant="ghost" disabled={Boolean(busy) || active} onClick={() => void logout()} title={active ? "请先停止并保存采集" : "退出账号"}><LogOut size={15} />退出</Button></div></header>
       {screen !== "acquisition" && <>{captureControls}{positionControls}</>}
-      <div className="field-workspace"><aside className="field-sidebar"><p>现场作业</p><button disabled={turntableOperationBusy} className={screen === "acquisition" ? "active" : ""} onClick={() => setScreen("acquisition")}><Activity size={17} />数据采集</button><button disabled={turntableOperationBusy} className={screen === "turntable" ? "active" : ""} onClick={() => { setTurntableVisited(true); setScreen("turntable"); }}><Settings size={17} />转盘点位</button><button disabled={turntableOperationBusy} className={screen === "recordings" ? "active" : ""} onClick={() => { setScreen("recordings"); void operate("recordings", refreshRecordings); }}><HardDrive size={17} />本机记录</button><button disabled={turntableOperationBusy} className={screen === "service" ? "active" : ""} onClick={() => setScreen("service")}><Settings size={17} />设备与服务</button><p>记录分析</p><button disabled={turntableOperationBusy} className={screen === "record-analysis" ? "active" : ""} onClick={() => setScreen("record-analysis")}><AudioLines size={17} />旋转测振</button><button disabled={turntableOperationBusy} className={screen === "blade-synthesis" ? "active" : ""} onClick={() => setScreen("blade-synthesis")}><Layers3 size={17} />叶片响应分析</button>{showRecordAnalysisMenus && <><button disabled={turntableOperationBusy} className={screen === "analysis" ? "active" : ""} onClick={() => setScreen("analysis")}><AudioLines size={17} />信号处理</button><button disabled={turntableOperationBusy} className={screen === "blade-passes" ? "active" : ""} onClick={() => setScreen("blade-passes")}><Layers3 size={17} />叶片片段分析</button></>}</aside>
+      <div className="field-workspace"><aside className="field-sidebar"><p>现场作业</p><button disabled={turntableOperationBusy} className={screen === "acquisition" ? "active" : ""} onClick={() => setScreen("acquisition")}><Activity size={17} />数据采集</button><button disabled={turntableOperationBusy} className={screen === "modal-capture" ? "active" : ""} onClick={() => setScreen("modal-capture")}><ChartSpline size={17} />模态采集</button><button disabled={turntableOperationBusy} className={screen === "turntable" ? "active" : ""} onClick={() => { setTurntableVisited(true); setScreen("turntable"); }}><Settings size={17} />转盘点位</button><button disabled={turntableOperationBusy} className={screen === "recordings" ? "active" : ""} onClick={() => { setScreen("recordings"); void operate("recordings", refreshRecordings); }}><HardDrive size={17} />本机记录</button><button disabled={turntableOperationBusy} className={screen === "service" ? "active" : ""} onClick={() => setScreen("service")}><Settings size={17} />设备与服务</button><p>记录分析</p><button disabled={turntableOperationBusy} className={screen === "record-analysis" ? "active" : ""} onClick={() => setScreen("record-analysis")}><AudioLines size={17} />旋转测振</button><button disabled={turntableOperationBusy} className={screen === "blade-synthesis" ? "active" : ""} onClick={() => setScreen("blade-synthesis")}><Layers3 size={17} />叶片响应分析</button><button disabled={turntableOperationBusy} className={screen === "modal" ? "active" : ""} onClick={() => setScreen("modal")}><ChartSpline size={17} />模态识别</button>{showRecordAnalysisMenus && <><button disabled={turntableOperationBusy} className={screen === "analysis" ? "active" : ""} onClick={() => setScreen("analysis")}><AudioLines size={17} />信号处理</button><button disabled={turntableOperationBusy} className={screen === "blade-passes" ? "active" : ""} onClick={() => setScreen("blade-passes")}><Layers3 size={17} />叶片片段分析</button></>}</aside>
         <main className="field-content" ref={contentRef}>
           {!["record-analysis","blade-synthesis"].includes(screen) && <div className={`field-page-heading${screen === "acquisition" ? " field-acquisition-heading" : ""}`}>
-            <div className={screen === "turntable" ? "field-turntable-heading field-servo-ui" : screen === "acquisition" ? "field-acquisition-title" : undefined}>
-              <div className="field-page-title-line"><h1>{screen === "acquisition" ? "数据采集" : screen === "turntable" ? "转盘点位控制" : screen === "recordings" ? "本机记录" : screen === "analysis" ? "信号处理" : screen === "blade-passes" ? "叶片片段分析" : "设备与本机服务"}</h1>
+              <div className={screen === "turntable" ? "field-turntable-heading field-servo-ui" : screen === "acquisition" ? "field-acquisition-title" : undefined}>
+              <div className="field-page-title-line"><h1>{screen === "acquisition" ? "数据采集" : screen === "modal-capture" ? "模态采集" : screen === "turntable" ? "转盘点位控制" : screen === "recordings" ? "本机记录" : screen === "analysis" ? "信号处理" : screen === "blade-passes" ? "叶片片段分析" : screen === "modal" ? "模态识别" : "设备与本机服务"}</h1>
                 {screen === "acquisition" && <span className={`field-badge field-acquisition-state ${active ? "green" : status?.state === "error" ? "red" : ""}`} title={notice || undefined} role="status"><span className="field-status-dot" />{stoppingCapture ? "正在停止" : busy === "preposition" ? "正在定位" : busy === "start" ? "正在启动" : status ? stateLabels[status.state] : "读取状态中"}</span>}
               </div>
               {screen === "acquisition" && <FieldCaptureStatusTags status={status} />}
@@ -587,6 +592,10 @@ export function FieldDesktopApp() {
           {busy === "device" && <p className="field-notice warning">设备配置操作进行中，请等待结果。自动聚焦涉及激光，请留意现场状态。</p>}
           {status?.indexWarning && <div className="field-notice warning field-global-message" role="status"><AlertTriangle size={17} /><span>本机索引提示：{status.indexWarning}</span></div>}
           {screen === "analysis" && <FieldAnalysis request={fieldCall} onError={handleError} />}
+          {screen === "modal-capture" && <FieldModalWorkspace view="capture" recordings={recordings} request={fieldCall} onStartCapture={startModalCapture}
+            captureDisabledReason={linkEnabled ? "请先解除转盘联动，固定叶片后进行静止测试。" : !status || status.service.state !== "ready" ? "本机采集服务尚未就绪。" : status.service.dllConfigured === false ? "请先在设备与服务中配置测振仪 SDK。" : active || busy || turntableOperationBusy ? "设备或采集操作正在进行。" : ""} />}
+          {screen === "modal" && <FieldModalWorkspace view="analysis" recordings={recordings} request={fieldCall} onStartCapture={startModalCapture}
+            captureDisabledReason={linkEnabled ? "请先解除转盘联动，固定叶片后进行静止测试。" : !status || status.service.state !== "ready" ? "本机采集服务尚未就绪。" : status.service.dllConfigured === false ? "请先在设备与服务中配置测振仪 SDK。" : active || busy || turntableOperationBusy ? "设备或采集操作正在进行。" : ""} />}
           <RetainedPanel active={screen === "record-analysis"}><DesktopAnalysisWorkspace purpose="signal" initialRecordId={analysisRecordId} onNavigate={navigateAnalysis} request={fieldCall} onSync={syncAnalysisResult} onError={handleRecordingError} /></RetainedPanel>
           <RetainedPanel active={screen === "blade-synthesis"}><DesktopAnalysisWorkspace purpose="synthesis" initialRecordId={analysisRecordId} onNavigate={navigateAnalysis} request={fieldCall} onSync={syncAnalysisResult} onError={handleRecordingError} /></RetainedPanel>
           {screen === "blade-passes" && <WebBladePasses canAnalyze refreshKey={0} preferredIds={[]} onError={handleError} localData={localBladeData} />}

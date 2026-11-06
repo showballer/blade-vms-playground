@@ -1858,6 +1858,39 @@ pre {
 .modal-explanation summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .modal-explanation p { margin: 6px 0 0; }
 @media (max-width: 880px) { .modal-screen .modal-grid { grid-template-columns: minmax(0, 1fr); } }
+
+.field-modal-workspace { gap: 12px; }
+.field-modal-methods { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.field-modal-methods button { display: flex; flex-direction: column; gap: 5px; min-height: 76px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 4px; background: #fff; color: var(--ink); text-align: left; cursor: pointer; }
+.field-modal-methods button.active { border-color: #39806f; box-shadow: inset 0 -2px #39806f; background: #f2f8f5; }
+.field-modal-methods button:disabled { cursor: not-allowed; opacity: .65; }
+.field-modal-methods > div { padding: 10px 12px; border: 1px solid var(--line); border-radius: 4px; background: #f8fafb; }
+.field-modal-methods > div p { margin: 5px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.field-modal-provenance pre { max-height: 240px; overflow: auto; font-size: 11px; }
+.field-modal-methods button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.field-modal-methods strong { font-size: 13px; }
+.field-modal-methods span { color: var(--muted); font-size: 11px; line-height: 1.45; }
+.field-modal-capture-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+.field-modal-capture-fields label, .field-modal-batch-fields label { display: flex; flex-direction: column; gap: 5px; min-width: 0; color: var(--muted); font-size: 12px; }
+.field-modal-capture-fields input, .field-modal-capture-fields select, .field-modal-batch-fields select { width: 100%; min-width: 0; }
+.field-modal-capture-fields > p { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.field-modal-capture-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+.field-modal-capture-actions .muted { font-size: 11px; }
+.field-modal-batch-fields { display: grid; grid-template-columns: minmax(260px, 1fr); gap: 8px; }
+.field-modal-batch-meta, .field-modal-result-meta { display: flex; align-items: center; gap: 7px 16px; flex-wrap: wrap; color: var(--muted); font-size: 11px; }
+.field-modal-batch-meta span { padding: 3px 0; }
+.field-modal-empty { padding: 12px; border-left: 3px solid #b6c5ce; background: #f6f8f9; color: var(--muted); font-size: 12px; }
+.field-modal-mode-summary { display: grid; grid-template-columns: auto minmax(80px, auto) auto minmax(80px, auto) minmax(180px, 1fr); align-items: baseline; gap: 8px 12px; margin-top: 12px; }
+.field-modal-mode-summary strong { font-variant-numeric: tabular-nums; font-size: 20px; }
+.field-modal-mode-summary span { color: var(--muted); font-size: 11px; }
+.field-modal-charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.field-modal-charts > .card { min-width: 0; }
+.field-modal-provenance { padding: 10px 12px; border: 1px solid var(--line); background: #fbfcfd; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.field-modal-provenance summary { display: flex; align-items: center; gap: 7px; color: var(--ink); cursor: pointer; }
+.field-modal-provenance summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.field-modal-provenance p { margin: 8px 0 0; }
+@media (max-width: 900px) { .field-modal-methods, .field-modal-charts { grid-template-columns: minmax(0, 1fr); } .field-modal-mode-summary { grid-template-columns: auto 1fr; } .field-modal-mode-summary span:last-child { grid-column: 1 / -1; } }
+@media (max-width: 620px) { .field-modal-capture-fields { grid-template-columns: minmax(0, 1fr); } .field-modal-batch-fields { grid-template-columns: minmax(0, 1fr); } }
 .import-csv-fields { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 12px; border: 1px solid var(--line); border-radius: 6px; }
 .import-result-table { max-height: 320px; overflow: auto; margin: 12px 0; }
 .acquisition-screen .import-result-table .table-scroll { max-height: none; overflow: visible; }
@@ -1975,3 +2008,16 @@ pre {
 .app-symbol{width:20px;height:20px;object-fit:contain}
 .field-header .partner-brand{margin-right:20px}
 @media(max-width:1000px){.partner-brand{--brand-scale:.7}.partner-brand>small{font-size:10px}.field-header .partner-brand{margin-right:4px}}
+
+.field-modal-capture-fieldset { margin: 0; padding: 0; border: 0; min-width: 0; }
+.field-modal-flow { display: flex; flex-wrap: wrap; gap: 10px 24px; padding: 8px 0 12px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+.field-modal-flow span { display: flex; align-items: center; gap: 7px; }
+.field-modal-flow b { display: inline-grid; place-items: center; width: 21px; height: 21px; border-radius: 50%; background: #e5f0ea; color: #276451; font-size: 11px; }
+.field-modal-channel-table { overflow-x: auto; margin-top: 14px; }
+.field-modal-channel-table table { width: 100%; min-width: 720px; font-size: 12px; }
+.field-modal-channel-table input { width: 100%; min-width: 70px; }
+.field-modal-channel-table td:nth-child(5) { width: 27%; }
+.field-modal-confirm { display: flex; align-items: center; gap: 8px; font-size: 12px; margin-top: 12px; }
+.field-modal-instructions { background: #f3f7f5; border-left: 3px solid #39806f; padding: 10px 12px; font-size: 12px; line-height: 1.7; margin: 14px 0 0; }
+.field-modal-live { border-top: 1px solid var(--line); margin-top: 14px; padding-top: 12px; }
+.field-modal-live progress { display: block; width: 100%; height: 7px; margin: 10px 0; accent-color: #39806f; }

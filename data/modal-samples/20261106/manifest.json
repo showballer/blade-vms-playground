@@ -1,0 +1,31 @@
+{
+  "schemaVersion": "modal-sample-catalog-1",
+  "synthetic": true,
+  "sourceGitCommit": "6359473",
+  "datasets": [
+    {
+      "method": "decay",
+      "input": "数据/01_自由衰减_仿真输入.json",
+      "inputFileSha256": "69ee29f6aeed9261f7a692d644dec48038687e95a4a17870f5a1f9f6df2bad12",
+      "samplesPerChannel": 1920,
+      "channels": 1,
+      "synthetic": true
+    },
+    {
+      "method": "frf",
+      "input": "数据/02_FRF_仿真输入.json",
+      "inputFileSha256": "9686d4734fe25d99278bea3e3e1423afceee3cfb73968cbeba5473b803fa476e",
+      "samplesPerChannel": 65536,
+      "channels": 2,
+      "synthetic": true
+    },
+    {
+      "method": "ssi_cov",
+      "input": "数据/03_SSI_COV_仿真输入.json",
+      "inputFileSha256": "2ac42d88e9e89a0738277017d0917b45e8aa9923cb78ac1c1f9833663cc35053",
+      "samplesPerChannel": 30000,
+      "channels": 5,
+      "synthetic": true
+    }
+  ]
+}

@@ -1374,3 +1374,27 @@ test('Mac and Windows forward diagnostic early detection only as an explicit boo
     }
   }
 });
+
+test('modal bridge permits bounded synchronous input imports and preserves metadata', async t => {
+  const f = fixture(t);
+  const request = {operation:'import',parameters:{name:'test fixture',dataset:{schemaVersion:'modal-input-1',sourceKind:'imported_measurement',time_s:Array.from({length:4000},(_,i)=>i/100),channels:[{id:'r',pointId:'P1',quantity:'velocity',unit:'m/s',role:'response',calibrationSource:'test',direction:'axial',values:Array(4000).fill(.1234567890123)}]}}};
+  assert.ok(JSON.stringify(request).length > 64000);
+  await f.service.formalModal(request);
+  assert.deepEqual(JSON.parse(f.requests.filter(r=>r.route==='formal-modal').at(-1).options.body),request);
+  await f.service.formalModal({operation:'preview',parameters:{datasetId:'a'.repeat(32)}});
+  await assert.rejects(f.service.formalModal({operation:'delete',parameters:{}}),{status:400});
+  await assert.rejects(f.service.formalModal({operation:'start',parameters:{datasetId:'../escape',method:'frf'}}),{status:400});
+  await assert.rejects(f.service.formalModal({operation:'import',parameters:{dataset:'x'.repeat(21*1024*1024)}}),{status:400});
+});
+
+test('modal synchronous capture controls validate sessions and use the modal endpoint', async t => {
+  const f=fixture(t);
+  await f.service.formalModal({operation:'capture-status'});
+  await f.service.formalModal({operation:'capture-start',parameters:{method:'frf',name:'isolated control test'}});
+  await f.service.formalModal({operation:'capture-stop',parameters:{sessionId:'a'.repeat(32)}});
+  const operations=f.requests.filter(r=>r.route==='formal-modal').map(r=>JSON.parse(r.options.body).operation);
+  assert.deepEqual(operations,['capture-status','capture-start','capture-stop']);
+  const before=f.requests.length;
+  await assert.rejects(f.service.formalModal({operation:'capture-stop',parameters:{sessionId:'../wrong'}}),{status:400});
+  assert.equal(f.requests.length,before);
+});

@@ -561,6 +561,7 @@ class RecordAnalysisManager:
             try:return json_safe({'available':True,'kind':'stft','resultId':result.result_id,'parameters':result.parameters['desktop_workspace']['automatic'],'data':auto_stft(result)},include_arrays=True)
             except (ValueError,TypeError) as exc:return {'available':False,'reasonCode':getattr(exc,'code','INSUFFICIENT_OBSERVATION'),'message':str(exc)}
         if kind=="point_band":return self._point_band(body)
+        if kind=="point_displacement":return self._point_displacement(body)
         result=self._load_segment(body.get("jobId"),body.get("resultId"));real=result.analysis_input()
         try:
             if kind=="stft":
@@ -586,6 +587,18 @@ class RecordAnalysisManager:
             else:raise SignalError("INVALID_ANALYSIS_KIND","unknown extension")
             return json_safe({"available":True,"kind":kind,"resultId":result.result_id,"layer":result.layer,"basis":result.basis,"data":data,"parameters":p},include_arrays=True)
         except (SignalError,TypeError) as exc:return {"available":False,"kind":kind,"resultId":result.result_id,"reasonCode":getattr(exc,"code","ANALYSIS_PARAMETERS_REQUIRED"),"message":str(exc)}
+
+    def _point_displacement(self,body):
+        from .displacement import summarize_displacement
+        ids=body.get('resultIds')
+        if not isinstance(ids,list) or not ids or len(ids)>LIMITS['recordsPerJob'] or any(not isinstance(v,str) for v in ids) or len(ids)!=len(set(ids)) or body.get('parameters',{}):
+            raise SignalError('INVALID_CONFIG','Select distinct real representatives; integration policy is fixed and versioned')
+        report=self.result({'jobId':body['jobId']})
+        allowed={r['representative'] for r in report['records'] if r.get('representative') and r.get('quality_assessment',{}).get('analysis_eligible')}
+        if not set(ids)<=allowed:raise SignalError('REPRESENTATIVE_REQUIRED','Only eligible real representatives are accepted')
+        value=summarize_displacement([self._load_segment(body['jobId'],rid) for rid in ids],report.get('measurementMode')=='outdoor')
+        atomic_json(self._directory(body['jobId'])/'point-displacement.json',value)
+        return value
 
     def _point_band(self,body):
         ids=body.get('resultIds');p=body.get('parameters',{})
@@ -654,6 +667,17 @@ class RecordAnalysisManager:
                 fields=["wind_farm","turbine","blade","point","radius_from_hub_m","layer","basis","result_set","azimuth_count","mean_half_peak_to_peak_m_s","mean_segment_rms_m_s","comparison_key"]
                 w=csv.DictWriter(stream,fieldnames=fields,extrasaction="ignore");w.writeheader();w.writerows(report["aggregates"])
             files.append(table)
+            ids=[r['representative'] for r in report['records'] if r.get('representative') and r.get('quality_assessment',{}).get('analysis_eligible')]
+            if ids:
+                displacement=self._point_displacement({'jobId':job_id,'resultIds':ids})
+                files.append(directory/'point-displacement.json')
+                displacement_table=out/'point-displacement.csv'
+                with displacement_table.open('w',encoding='utf-8-sig',newline='') as stream:
+                    writer=csv.DictWriter(stream,fieldnames=['point','radius_m','basis','layer','band_low_hz','band_high_hz','mean_amplitude_mm','angles'])
+                    writer.writeheader()
+                    for p in displacement['points']:
+                        writer.writerow({'point':p['object']['point'],'radius_m':p['object']['radius_from_hub_m'],'basis':p['basis'],'layer':p['layer'],'band_low_hz':p['band_hz'][0],'band_high_hz':p['band_hz'][1],'mean_amplitude_mm':p['mean_half_peak_to_peak_m']*1000 if p['mean_half_peak_to_peak_m'] is not None else None,'angles':p['azimuth_count']})
+                files.append(displacement_table)
         path=out/filename;temporary=out/(filename+".part")
         with zipfile.ZipFile(temporary,"w",compression=zipfile.ZIP_DEFLATED,compresslevel=6) as archive:
             for f in files:
