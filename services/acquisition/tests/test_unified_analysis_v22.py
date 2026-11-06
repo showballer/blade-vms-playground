@@ -15,8 +15,8 @@ class UnifiedPlanTests(unittest.TestCase):
  def tearDown(self):self.manager.close();self.temp.cleanup()
  def values(self,fn):
   p=self.records/self.rid/'chunk-00000000.bin';b=p.read_bytes();a=np.frombuffer(b,dtype=RECORD_DTYPE,offset=HEADER.size).copy();a['velocity']=fn(np.arange(len(a))/4000);p.write_bytes(b[:HEADER.size]+a.tobytes())
- def run_job(self,settings=None):
-  t=self.manager.catalog()['tasks'][0];j=self.manager.start({'taskId':t['id'],'recordingIds':[self.rid],'workspace':{'purpose':'signal','algorithmOptions':settings or {}}});limit=time.monotonic()+15
+ def run_job(self,settings=None,recording_ids=None):
+  t=self.manager.catalog()['tasks'][0];j=self.manager.start({'taskId':t['id'],'recordingIds':recording_ids or [self.rid],'workspace':{'purpose':'signal','algorithmOptions':settings or {}}});limit=time.monotonic()+15
   while self.manager.status(j['jobId'])['status'] in ('queued','running'):
    assert time.monotonic()<limit;time.sleep(.01)
   self.assertEqual(self.manager.status(j['jobId'])['status'],'complete',self.manager.status(j['jobId']));return self.manager.result({'jobId':j['jobId']})
@@ -83,7 +83,7 @@ class UnifiedPlanTests(unittest.TestCase):
   for settings,reason in [({'targetBandMode':'none'},'BAND_DISABLED'),({'targetBandMode':'custom','targetBandHz':[3000,4000]},'BAND_ABOVE_NYQUIST'),({'targetBandMode':'custom','targetBandHz':[.01,.02]},'NO_RESOLVED_FREQUENCY_BINS')]:
    r=self.run_job(settings);self.assertIsNone(r['workspace']['automaticPlan']['automaticBandHz']);self.assertEqual(r['workspace']['automaticPlan']['targetBandReason'],reason);self.assertTrue(r['records'][0]['quality_assessment']['analysis_eligible']);self.assertTrue(r['records'][0]['segments'][0]['spectrum']['fft_frequency_hz'])
  def test_preview_clamps_to_lowest_usable_rate(self):
-  write_record(self.records,angle=90,n=8000,fs=1000.);r=self.run_job();p=r['workspace']['automaticPlan'];self.assertEqual(p['automaticBandHz'],[50,500]);self.assertLessEqual(p['resolvedBandHz'][1],500)
+  other=write_record(self.records,angle=90,n=8000,fs=1000.);r=self.run_job(recording_ids=[self.rid,other]);p=r['workspace']['automaticPlan'];self.assertEqual(p['automaticBandHz'],[50,500]);self.assertLessEqual(p['resolvedBandHz'][1],500)
  def test_native_input_automatically_inherits_source_without_claiming_calibration(self):
   from blade_acquisition.record_analysis.modal_store import dispatch
   from blade_acquisition.record_analysis.modal_engine import compute
@@ -91,7 +91,7 @@ class UnifiedPlanTests(unittest.TestCase):
   before=(self.records/self.rid/'chunk-00000000.bin').read_bytes();r=self.run_job();rec=r['records'][0];s=next(v for v in rec['segments'] if v['result_id']==rec['representative'])
   saved=dispatch(self.root,{'operation':'from-segment','parameters':{'workerJobId':r['jobId'],'resultId':s['result_id']}})
   self.assertEqual(saved['samples'],s['features']['sample_count']);self.assertEqual(saved['sourceReference']['sourceRange'],[s['analysis_source_start'],s['analysis_source_end']]);self.assertEqual(saved['channels'][0]['unit'],'m/s');self.assertEqual(saved['channels'][0]['calibrationStatus'],'unverified');self.assertIn(self.rid,saved['channels'][0]['calibrationSource']);self.assertNotEqual((saved.get('evidence') or {}).get('excitationRemoved'),True)
-  data=json.loads((self.root/'formal-modal-v22/datasets'/(saved['id']+'.json')).read_text())['data']
+  data=json.loads((self.root/'formal-modal-v22/datasets'/(saved['id']+'.json')).read_text(encoding="utf-8"))['data']
   with self.assertRaises(SignalError) as error:compute(data,'decay')
   self.assertEqual(error.exception.code,'FREE_DECAY_EVIDENCE_REQUIRED');self.assertEqual((self.records/self.rid/'chunk-00000000.bin').read_bytes(),before)
  def test_modal_input_uses_selected_interval_from_completed_native_recording(self):
@@ -102,7 +102,7 @@ class UnifiedPlanTests(unittest.TestCase):
    'evidence':{'excitationRemoved':True,'excitationRemovalSource':'Hand release after a tap; observed at 0.5 s'}}})
   self.assertEqual(saved['sourceKind'],'native_record_segment');self.assertEqual(saved['samples'],200);self.assertAlmostEqual(saved['sampleRateHz'],200,places=9)
   self.assertEqual(saved['sourceReference']['sourceRange'],[2000,6000]);self.assertEqual(saved['sourceReference']['recordingId'],self.rid)
-  data=json.loads((self.root/'formal-modal-v22/datasets'/(saved['id']+'.json')).read_text())['data']
+  data=json.loads((self.root/'formal-modal-v22/datasets'/(saved['id']+'.json')).read_text(encoding="utf-8"))['data']
   self.assertEqual(data['channels'][0]['measurementSource'],'native_device_recording');self.assertEqual(data['channels'][0]['calibrationStatus'],'unverified')
   self.assertEqual(data['evidence']['recordingSampleRateHz'],4000);self.assertEqual(data['evidence']['analysisSampleRateHz'],200)
   np.testing.assert_array_equal(load_raw(self.records,self.rid).velocity_m_s,np.frombuffer(before[HEADER.size:],dtype=RECORD_DTYPE)['velocity'])

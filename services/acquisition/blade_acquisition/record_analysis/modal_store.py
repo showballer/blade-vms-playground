@@ -78,15 +78,15 @@ def dispatch(root,payload):
   if data.get('sourceKind') not in ('imported_measurement','native_record_segment'):raise SignalError('MODAL_SOURCE_REQUIRED','Production datasets must declare a measured source; validation fixtures do not enter health history')
   encoded=json.dumps(data,sort_keys=True,ensure_ascii=False,allow_nan=False).encode()
   if len(encoded)>20*1024*1024:raise SignalError('ANALYSIS_SIZE_UNSUPPORTED','Modal JSON input exceeds 20 MiB; import a smaller continuous dataset')
-  sha=hashlib.sha256(encoded).hexdigest();old=next((f for f in datasets.glob('*.json') if json.loads(f.read_text()).get('sourceSha256')==sha),None)
-  if old:return json.loads(old.read_text())['summary']
+  sha=hashlib.sha256(encoded).hexdigest();old=next((f for f in datasets.glob('*.json') if json.loads(f.read_text(encoding="utf-8")).get('sourceSha256')==sha),None)
+  if old:return json.loads(old.read_text(encoding="utf-8"))['summary']
   identity=uuid.uuid4().hex;t,y,fs,channels,_=engine.validate(data);meta={'id':identity,'sourceSha256':sha,'name':p.get('name') or identity,'samples':len(t),'sampleRateHz':fs,'durationSeconds':len(t)/fs,'channels':[{k:v for k,v in c.items() if k!='values'} for c in channels],'context':p.get('context'),'evidence':data.get('evidence'),'sourceReference':data.get('sourceReference'),'createdAt':time.time(),'sourceKind':data['sourceKind']}
   atomic_json(datasets/(identity+'.json'),{'sourceSha256':sha,'summary':meta,'data':data});return meta
- if action=='catalog':return {'datasets':[json.loads(f.read_text())['summary'] for f in datasets.glob('*.json') if not f.is_symlink()],'jobs':[json.loads(f.read_text()) for f in jobs.glob('*/job.json') if not f.is_symlink() and not f.parent.is_symlink()],'capabilities':engine.capabilities()}
+ if action=='catalog':return {'datasets':[json.loads(f.read_text(encoding="utf-8"))['summary'] for f in datasets.glob('*.json') if not f.is_symlink()],'jobs':[json.loads(f.read_text(encoding="utf-8")) for f in jobs.glob('*/job.json') if not f.is_symlink() and not f.parent.is_symlink()],'capabilities':engine.capabilities()}
  if action=='preview':
   path=datasets/(_id(p.get('datasetId'))+'.json')
   if path.is_symlink():raise SignalError('INVALID_MODAL_INPUT','Dataset links forbidden')
-  saved=json.loads(path.read_text());data=saved['data'];channels=data['channels']
+  saved=json.loads(path.read_text(encoding="utf-8"));data=saved['data'];channels=data['channels']
   i=plot_indices(*(np.asarray(c['values']) for c in channels),limit=2000)
   return {'summary':saved['summary'],'time_s':np.asarray(data['time_s'])[i].tolist(),'channels':[{**{k:v for k,v in c.items() if k!='values'},'values':np.asarray(c['values'])[i].tolist()} for c in channels],'displayOnly':True}
 
@@ -94,7 +94,7 @@ def dispatch(root,payload):
  if action=='start':
   path=datasets/(_id(dataset_id)+'.json')
   if path.is_symlink():raise SignalError('INVALID_MODAL_INPUT','Dataset links forbidden')
-  saved=json.loads(path.read_text());jid=uuid.uuid4().hex;dest=jobs/jid;dest.mkdir();job={'id':jid,'datasetId':dataset_id,'method':p.get('method'),'sourceSha256':saved['sourceSha256'],'context':saved['summary'].get('context'),'algorithmVersion':engine.VERSION,'createdAt':time.time(),'status':'running'};atomic_json(dest/'job.json',job)
+  saved=json.loads(path.read_text(encoding="utf-8"));jid=uuid.uuid4().hex;dest=jobs/jid;dest.mkdir();job={'id':jid,'datasetId':dataset_id,'method':p.get('method'),'sourceSha256':saved['sourceSha256'],'context':saved['summary'].get('context'),'algorithmVersion':engine.VERSION,'createdAt':time.time(),'status':'running'};atomic_json(dest/'job.json',job)
   try:
    result=engine.compute(saved['data'],p.get('method'));arrays={}
    def store(v,key='data'):
@@ -109,19 +109,19 @@ def dispatch(root,payload):
  if action in ('result','export'):
   dest=jobs/_id(job_id)
   if dest.is_symlink():raise SignalError('INVALID_MODAL_ID','Result links forbidden')
-  job=json.loads((dest/'job.json').read_text())
+  job=json.loads((dest/'job.json').read_text(encoding="utf-8"))
   if job['status']!='complete':raise SignalError('MODAL_RESULT_NOT_READY','Result is not complete')
   if action=='result':return {'job':job,'result':plot_result(dest)}
   name='模态参数识别_'+job_id[:8]+'.zip';output=dest/name
   with zipfile.ZipFile(output,'w',zipfile.ZIP_DEFLATED) as z:
    for f in [dest/'job.json',dest/'result.json',dest/'evidence.npz']:z.write(f,f.name)
-   saved=json.loads((datasets/(job['datasetId']+'.json')).read_text());summary=saved['summary'];z.writestr('input-provenance.json',json.dumps(summary,ensure_ascii=False));z.writestr('real-input.json',json.dumps(saved['data'],ensure_ascii=False))
+   saved=json.loads((datasets/(job['datasetId']+'.json')).read_text(encoding="utf-8"));summary=saved['summary'];z.writestr('input-provenance.json',json.dumps(summary,ensure_ascii=False));z.writestr('real-input.json',json.dumps(saved['data'],ensure_ascii=False))
    result=plot_result(dest);stream=io.StringIO();writer=csv.DictWriter(stream,fieldnames=['mode','naturalFrequencyHz','dampedFrequencyHz','dampingRatio','decayRatePerSecond','timeConstantSeconds','status'],extrasaction='ignore');writer.writeheader();writer.writerows({'mode':i+1,**m} for i,m in enumerate(result['modes']));z.writestr('modal-parameters.csv',stream.getvalue().encode('utf-8-sig'))
   return {'path':str(output.resolve()),'fileName':name,'mimeType':'application/zip'}
  raise SignalError('INVALID_MODAL_ACTION','Unsupported modal action')
 
 def plot_result(directory):
- meta=json.loads((directory/'result.json').read_text())
+ meta=json.loads((directory/'result.json').read_text(encoding="utf-8"))
  with np.load(directory/'evidence.npz',allow_pickle=False) as archive:
   def expand(v):
    if isinstance(v,dict) and 'npz' in v:return archive[v['npz']].copy()

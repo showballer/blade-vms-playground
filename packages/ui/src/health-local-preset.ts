@@ -19,8 +19,8 @@ export function localHealthPreset(input: {
 }): LocalHealthPreset | null {
   if (!['localhost', '127.0.0.1', '[::1]', '::1', '115.190.201.41'].includes(input.hostname) || !input.hasResult) return null;
   if (!['1', '2', '3'].includes(input.bladeCode)) return null;
-  const second = input.taskName === TASKS.second && input.turbineName === '1号风机';
-  const third = input.taskName === TASKS.third && input.turbineName === 'R024';
+  const second = (input.taskName === TASKS.second && input.turbineName === '1号风机') || (input.taskName === '武川风场 R001 风机测量任务' && input.turbineName === 'R001');
+  const third = [TASKS.third, '武川风场 R024 风机测量任务'].includes(input.taskName) && input.turbineName === 'R024';
   if (!second && !third) return null;
   const damaged = third && input.bladeCode === '2';
   return {

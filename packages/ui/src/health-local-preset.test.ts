@@ -33,3 +33,8 @@ assert.equal(localResponsePreview([0, 1, 2], [1]), null);
 assert.equal(localResponsePreview([0, 0, 1], [1, 2, 3]), null);
 assert.equal(localResponsePreview([0, 1, 2], [1, NaN, 3]), null);
 console.log('PASS local preset isolation, per-blade mapping, source preservation and local enhancement');
+
+for (const bladeCode of ['1', '2', '3']) {
+  assert.equal(localHealthPreset({ ...input, taskName: '武川风场 R001 风机测量任务', turbineName: 'R001', bladeCode })?.status, 'healthy');
+  assert.equal(localHealthPreset({ ...input, taskName: '武川风场 R024 风机测量任务', bladeCode })?.status, bladeCode === '2' ? 'damage' : 'healthy');
+}

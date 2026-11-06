@@ -91,7 +91,7 @@ class RecordAnalysisManager:
         self.executor=ThreadPoolExecutor(max_workers=1,thread_name_prefix="record-analysis")
         self.cancel_events={};self.jobs={}
         self.mode_file=self.root/'task-modes.json'
-        self.task_modes=json.loads(self.mode_file.read_text()) if self.mode_file.is_file() else {}
+        self.task_modes=json.loads(self.mode_file.read_text(encoding="utf-8")) if self.mode_file.is_file() else {}
         for path in self.root.glob("*/job.json"):
             if path.parent.is_symlink() or not ID.fullmatch(path.parent.name):continue
             try:

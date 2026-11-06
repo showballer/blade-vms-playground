@@ -9,7 +9,7 @@ from ..storage import atomic_json
 def history(manager,rid):
  manager.load_recording(rid);folder=manager.root/'quality-reviews'/rid
  if folder.is_symlink():raise SignalError('INVALID_REVIEW','Review folder must not be a link')
- return sorted([json.loads(p.read_text()) for p in folder.glob('*.json') if not p.is_symlink()],key=lambda r:r['at'])
+ return sorted([json.loads(p.read_text(encoding="utf-8")) for p in folder.glob('*.json') if not p.is_symlink()],key=lambda r:r['at'])
 def current(manager,rid,revision=None):
  entries=history(manager,rid)
  if revision is not None:return next((r for r in entries if r['id']==revision),None)

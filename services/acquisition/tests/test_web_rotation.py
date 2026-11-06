@@ -42,7 +42,7 @@ class WebRotationTest(unittest.TestCase):
         values, rate, trace = read_raw(store, record["id"], 64, record["samples"])
         np.testing.assert_allclose(values, 0.02 * np.sin(2 * np.pi * 20 * np.arange(64, 1001) / 1000), atol=1e-14)
         self.assertEqual(len(values), 937)
-        source = json.loads((store.directory(record["id"]) / "source-columns.json").read_text())
+        source = json.loads((store.directory(record["id"]) / "source-columns.json").read_text(encoding="utf-8"))
         self.assertEqual(len(source["columns"]["rssi_percent"]), 1001)
         result = dispatch(self.root, {"action": "rotation", "parameters": {"recordingIds": [record["id"]], "rpm": 1200, "startSeconds": 0.1}})
         self.assertEqual(len(result["synchronousAverages"][0]["values"]), 256)
@@ -53,7 +53,7 @@ class WebRotationTest(unittest.TestCase):
     def test_outdoor_record_cannot_use_default_constant_rpm(self):
         record = self.csv()
         path = self.root / "recordings" / record["id"] / "manifest.json"
-        original = json.loads(path.read_text())
+        original = json.loads(path.read_text(encoding="utf-8"))
         original["measurementMode"] = "outdoor"
         path.write_text(json.dumps(original))
         with self.assertRaisesRegex(ValueError, "真实键相"):

@@ -656,7 +656,8 @@
   .blade-health-response-overview > .card { padding: 16px; }
 }
 
-.unified-modal-page>.measurement-tabs{display:flex;gap:8px;flex-wrap:wrap}.unified-modal-page>.measurement-tabs button{border:1px solid #d4e0ef;background:white;border-radius:8px;padding:10px 18px;color:#60738c;cursor:pointer;font-weight:600}.unified-modal-page>.measurement-tabs button.active{background:#eaf2ff;color:#2767bd;border-color:#8bb5f2}
+.unified-modal-page .measurement-tabs{display:flex;gap:8px;flex-wrap:wrap}.unified-modal-page .measurement-tabs button{border:1px solid #d4e0ef;background:white;border-radius:8px;padding:10px 18px;color:#60738c;cursor:pointer;font-weight:600}.unified-modal-page .measurement-tabs button.active{background:#eaf2ff;color:#2767bd;border-color:#8bb5f2}
+.unified-modal-input-tabs{margin-bottom:16px}
 .measurement-processing-toolbar{margin-top:14px;gap:10px 16px}.measurement-processing-source{display:flex;align-items:center;gap:12px;min-width:0;font-size:13px;color:#5b6f88}.measurement-processing-source>span{white-space:nowrap}.measurement-processing-source>.custom-select{min-width:210px}.measurement-processing-toolbar>[role=combobox]{min-width:240px}.measurement-processing-source [role=combobox]{min-height:38px}
 .wind-import-controls{display:grid;grid-template-columns:minmax(240px,360px) minmax(220px,1fr);gap:16px;align-items:end}.wind-import-controls [role=combobox]{min-height:38px}.wind-file-picker{display:grid;align-content:start;gap:8px;min-width:0}.wind-file-label{color:#62758e;font-size:13px;line-height:20px}.wind-file-actions{display:flex;align-items:center;flex-wrap:wrap;gap:10px;min-height:38px}.wind-file-actions>.btn{min-height:38px;min-width:156px;white-space:nowrap}.wind-file-actions>.hint{margin:0}
 @media(max-width:700px){.wind-import-controls{grid-template-columns:minmax(0,1fr)}}

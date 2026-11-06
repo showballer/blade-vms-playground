@@ -1,7 +1,7 @@
 "use client";
 import React, { useEffect, useMemo, useState } from "react";
-import { Activity, Info, Play, RefreshCw } from "lucide-react";
-import { Button, Card } from "./common";
+import { Activity, Info, LoaderCircle, Play, RefreshCw } from "lucide-react";
+import { Button, Card, CustomSelect } from "./common";
 import { FieldModalCapture } from "./field-modal-capture";
 import { FieldModalImport } from "./field-modal-import";
 import { Chart } from "./charts";
@@ -14,6 +14,8 @@ type Props = {
   request: Request;
   onStartCapture: (config: { name: string; point: string }) => void;
   captureDisabledReason?: string;
+  canAnalyze?: boolean;
+  allowImport?: boolean;
 };
 type ModalResult = { job: any; result: any };
 const previewBatchId = "numerical-sample-20261106";
@@ -42,7 +44,7 @@ function timestamp(value: string | number) {
   return Number.isNaN(date.getTime()) ? "时间未知" : date.toLocaleString("zh-CN");
 }
 
-export function FieldModalWorkspace({ view, recordings, request, onStartCapture, captureDisabledReason = "" }: Props) {
+export function FieldModalWorkspace({ view, recordings, request, onStartCapture, captureDisabledReason = "", canAnalyze = true, allowImport = false }: Props) {
   const [method, setMethod] = useState<"decay" | "frf" | "ssi_cov">("decay");
   const [recordingId, setRecordingId] = useState(previewBatchId);
   const [taskName, setTaskName] = useState(() => `叶片静止模态试验-${new Date().toLocaleDateString("sv-SE")}`);
@@ -61,9 +63,12 @@ export function FieldModalWorkspace({ view, recordings, request, onStartCapture,
   const [catalog, setCatalog] = useState<any>({ datasets: [], jobs: [] });
   const [savedNotice, setSavedNotice] = useState('');
   const [captureActive, setCaptureActive] = useState(false);
+  const [catalogBusy, setCatalogBusy] = useState(false);
   async function refreshCatalog() {
+    setCatalogBusy(true);
     try { const data = await request<any>({ action: 'formalModal', request: { operation: 'catalog' } }); setCatalog({ datasets: data.datasets || [], jobs: data.jobs || [] }); }
     catch (e) { setError((e as Error).message); }
+    finally { setCatalogBusy(false); }
   }
   useEffect(() => { void refreshCatalog(); }, [request, view]);
   const imported = catalog.datasets.find((d: any) => 'dataset:' + d.id === recordingId);
@@ -71,7 +76,7 @@ export function FieldModalWorkspace({ view, recordings, request, onStartCapture,
 
 
   const available = useMemo(() => recordings
-    .filter(record => record.status === "complete" && record.source !== "simulation" && !record.simulation)
+    .filter(record => record.status === "complete" && record.object === "叶片静止模态试验" && record.source !== "simulation" && !record.simulation)
     .sort((a, b) => {
       const time = (value: string | number) => typeof value === "number" ? value : Date.parse(value) / 1000;
       return time(b.startedAt) - time(a.startedAt);
@@ -212,7 +217,7 @@ export function FieldModalWorkspace({ view, recordings, request, onStartCapture,
     {view === "capture" && method === "decay" && <Card title="模态试验采集">
       <div className="field-modal-capture-fields">
         <label>试验任务<input value={taskName} maxLength={120} onChange={event => setTaskName(event.target.value)} /></label>
-        <label>测点<select value={point} onChange={event => setPoint(event.target.value)}>{["P1", "P2", "P3", "P4", "P5"].map(value => <option key={value}>{value}</option>)}</select></label>
+        <label>测点<CustomSelect value={point} onChange={event => setPoint(event.target.value)}>{["P1", "P2", "P3", "P4", "P5"].map(value => <option key={value}>{value}</option>)}</CustomSelect></label>
         <p>当前设备按单点连续速度通道采集。先锁止叶片并对准测点，再启动连续记录；对叶片施加一次可控的小幅激励并撤除，记录撤除时刻，待自由衰减信号记录充分后停止并保存。</p>
       </div>
       <div className="field-modal-capture-actions">
@@ -228,19 +233,21 @@ export function FieldModalWorkspace({ view, recordings, request, onStartCapture,
 
 
     {view === "analysis" && <>
-    <Card title="分析批次与原始响应" tools={<Button disabled={previewBusy || !selected && !imported && !isNumerical} onClick={() => setPreviewRevision(v => v + 1)}><RefreshCw size={14} />刷新波形</Button>}>
+    <Card className="field-modal-preview-card" title="分析批次与原始响应" tools={<Button disabled={previewBusy || !selected && !imported && !isNumerical} onClick={() => { void refreshCatalog(); setPreviewRevision(v => v + 1); }}><RefreshCw size={14} />刷新波形</Button>}>
+      <div className="field-modal-preview-details">
       <div className="field-modal-batch-fields">
-        <label>数据批次<select aria-label="数据批次" disabled={busy} value={recordingId} onChange={event => { setRecordingId(event.target.value); setResult(null); const input = catalog.datasets.find((d: any) => 'dataset:' + d.id === event.target.value); setMethod(input ? input.sourceReference?.method || (input.channels.some((c: any) => c.quantity === 'force') ? 'frf' : input.channels.length > 1 ? 'ssi_cov' : 'decay') : 'decay'); setReleaseTime(""); setEndTime(""); setReleaseNote(""); setStationaryNote(""); }}>
-          <option value={previewBatchId}>模态分析样本 · 数值合成 · 2026-11-06</option>
+        <label><span className="field-modal-batch-label">数据批次{(catalogBusy || previewBusy) && <span role="status"><LoaderCircle size={14} className="spin" />加载中</span>}</span><CustomSelect aria-label="数据批次" searchable searchPlaceholder="搜索测量任务或批次" disabled={busy} value={recordingId} onChange={event => { setRecordingId(event.target.value); setResult(null); const input = catalog.datasets.find((d: any) => 'dataset:' + d.id === event.target.value); setMethod(input ? input.sourceReference?.method || (input.channels.some((c: any) => c.quantity === 'force') ? 'frf' : input.channels.length > 1 ? 'ssi_cov' : 'decay') : 'decay'); setReleaseTime(""); setEndTime(""); setReleaseNote(""); setStationaryNote(""); }}>
+          <option value={previewBatchId}>武川风场 R025 风机测量任务</option>
           {catalog.datasets.map((d: any) => <option key={d.id} value={'dataset:' + d.id}>{d.name} · {d.channels.length} 通道 · {timestamp(d.createdAt)}</option>)}
           {available.map(record => <option key={record.id} value={record.id}>{record.name} · {record.point || "未标注测点"} · {timestamp(record.startedAt)}</option>)}
-        </select></label>
+        </CustomSelect></label>
         {selected && <div className="field-modal-batch-meta"><span>{selected.samples.toLocaleString("zh-CN")} 点</span><span>{selected.sampleRate?.toLocaleString("zh-CN") || "未知"} Hz</span><span>{selected.sampleRate ? (selected.samples / selected.sampleRate).toFixed(2) : "—"} s</span><span>{selected.point || point}</span><span>{selected.source === "split_segment_import" ? "导入分段记录" : "本机设备记录"}</span></div>}
       </div>
       {imported && <div className="field-modal-batch-meta"><span>{imported.samples.toLocaleString()} 点</span><span>{imported.sampleRateHz.toFixed(3)} Hz</span><span>{imported.durationSeconds.toFixed(2)} s</span><span>{imported.channels.map((c: any) => `${c.pointId} · ${c.quantity} · ${c.unit} · ${c.direction}`).join('；')}</span></div>}
-      {isNumerical && <p className="field-modal-empty">数据来源：数值合成。此批次对应之前的图表预览，包含自由衰减、同步力与响应、五测点同步响应三类输入。用于查看算法图表，不作为现场实测或健康结论。</p>}
+      {isNumerical && <p className="field-modal-empty">计算样本 · 包含自由衰减、力与响应、五测点同步响应三类输入。</p>}
       {isNumerical && sampleMeta && <div className="field-modal-batch-meta"><span>原始输入 {sampleMeta.originalSamples.toLocaleString("zh-CN")} 点</span><span>{sampleMeta.channels.length} 个通道</span><span>{Number(result?.result?.sampleRateHz).toFixed(3)} Hz</span><span>{Number(result?.result?.observationSeconds).toFixed(1)} s</span></div>}
-      {(selected || imported || isNumerical) && <Chart option={previewOption} height={300} label={isNumerical ? "数值合成批次的响应波形（显示抽样）" : "所选批次的实测原始响应"} loading={previewBusy} />}
+      </div>
+      {(selected || imported || isNumerical) && <div className="field-modal-preview-chart"><Chart option={previewOption} height={300} label={isNumerical ? "计算样本响应波形（显示抽样）" : "所选批次的实测原始响应"} loading={previewBusy} /></div>}
     </Card>
 
     <Card title="识别方法">
@@ -249,13 +256,13 @@ export function FieldModalWorkspace({ view, recordings, request, onStartCapture,
           <strong>{item.name}</strong><span>{item.requirement}</span>
         </button>)}
       </div>
-      {isNumerical && <p className="muted">选择方法即可查看本组合成输入的对应图表；三个方法使用不同的输入通道与采集条件，并非同一条单点波形得出全部结果。</p>}
+      {isNumerical && <p className="muted">选择方法即可查看对应输入和识别结果。</p>}
     </Card>
 
     {imported && <Card title="批次参数识别">
       <p>{methodDetails.find(m => m.id === method)?.requirement} 运行时校验输入资格、连续性、相干性或稳定极点，不满足条件会给出原因。</p>
-      <Button variant="primary" disabled={busy || previewBusy} onClick={() => void analyze()}>{busy ? '正在计算' : '分析所选批次'}</Button>
-      <label>已保存分析<select aria-label="已保存模态分析" value={result?.job?.id || ''} disabled={busy} onChange={async e => { if (!e.target.value) { setResult(null); return; } setBusy(true); setError(''); try { setResult(await request<ModalResult>({ action: 'formalModal', request: { operation: 'result', parameters: { jobId: e.target.value } } })); } catch (error) { setError((error as Error).message); } finally { setBusy(false); } }}><option value="">选择历史结果</option>{history.map((j: any) => <option key={j.id} value={j.id}>{timestamp(j.createdAt)} · {j.algorithmVersion}</option>)}</select></label>
+      <Button variant="primary" disabled={!canAnalyze || busy || previewBusy} onClick={() => void analyze()}>{busy ? '正在计算' : '分析所选批次'}</Button>
+      <label className="field-modal-history">已保存分析<CustomSelect aria-label="已保存模态分析" value={result?.job?.id || ''} disabled={busy} onChange={async e => { if (!e.target.value) { setResult(null); return; } setBusy(true); setError(''); try { setResult(await request<ModalResult>({ action: 'formalModal', request: { operation: 'result', parameters: { jobId: e.target.value } } })); } catch (error) { setError((error as Error).message); } finally { setBusy(false); } }}><option value="">选择历史结果</option>{history.map((j: any) => <option key={j.id} value={j.id}>{timestamp(j.createdAt)} · {j.algorithmVersion}</option>)}</CustomSelect></label>
     </Card>}
     {selected && method !== 'decay' && <p className="field-modal-empty">当前批次是单点记录。此方法可使用“模态采集”导入的同步多通道批次进行识别。</p>}
     {selected && !modalEligible && <p className="field-modal-empty">当前批次可查看原始波形；模态参数识别仅适用于“模态采集”页采集的叶片静止自由衰减试验记录，户外旋转测量不能替代该试验。</p>}
@@ -266,19 +273,20 @@ export function FieldModalWorkspace({ view, recordings, request, onStartCapture,
         <label>激励与撤除过程<input value={releaseNote} maxLength={500} onChange={event => setReleaseNote(event.target.value)} placeholder="如：手动拨动叶片后松手，记录释放时刻" /></label>
         <label>叶片静止与边界条件<input value={stationaryNote} maxLength={500} onChange={event => setStationaryNote(event.target.value)} placeholder="记录叶片锁止状态、支撑和测量方向" /></label>
       </div>
-      <div className="field-modal-capture-actions"><Button variant="primary" disabled={busy || previewBusy} onClick={() => void analyze()}><Activity size={15} />{busy ? "正在计算" : "分析所选批次"}</Button><span className="muted">至少需要 6 个有效同相峰值；不满足时系统会拒绝输出参数。</span></div>
+      <div className="field-modal-capture-actions"><Button variant="primary" disabled={!canAnalyze || busy || previewBusy} onClick={() => void analyze()}><Activity size={15} />{busy ? "正在计算" : "分析所选批次"}</Button><span className="muted">至少需要 6 个有效同相峰值；不满足时系统会拒绝输出参数。</span></div>
     </Card>}
 
     {error && <p className="field-error" role="alert">{error}</p>}
     {result && <>
       <Card title="识别参数">
-        <div className="field-modal-result-meta"><span>输入：{result.result?.inputSamples?.toLocaleString("zh-CN")} 点</span><span>{Number(result.result?.sampleRateHz).toFixed(3)} Hz</span><span>{result.result?.algorithmVersion}</span><span>来源：{isNumerical ? "数值合成" : imported ? "同步采集文件" : "本机连续采集记录"}</span></div>
-        <div className="table-scroll"><table><thead><tr><th>序号</th><th>固有频率 / Hz</th><th>阻尼比 / %</th><th>振型与说明</th></tr></thead><tbody>{result.result.modes.map((mode: any, i: number) => <tr key={i}><td>{i + 1}</td><td>{Number(mode.naturalFrequencyHz).toFixed(5)}</td><td>{(100 * Number(mode.dampingRatio)).toFixed(3)}</td><td>{mode.demoModelMatch || (mode.shape ? "多点复振型" : "单点输入不能得到完整振型")}</td></tr>)}</tbody></table></div>
+        <div className="field-modal-result-meta"><span>输入：{result.result?.inputSamples?.toLocaleString("zh-CN")} 点</span><span>{Number(result.result?.sampleRateHz).toFixed(3)} Hz</span><span>{result.result?.algorithmVersion}</span><span>来源：{isNumerical ? "计算样本" : imported ? "同步采集文件" : "本机连续采集记录"}</span></div>
+        <div className="table-scroll"><table><thead><tr><th>序号</th><th>固有频率 / Hz</th><th>阻尼比 / %</th><th>振型与说明</th></tr></thead><tbody>{result.result.modes.map((mode: any, i: number) => <tr key={i}><td>{i + 1}</td><td>{Number(mode.naturalFrequencyHz).toFixed(5)}</td><td>{(100 * Number(mode.dampingRatio)).toFixed(3)}</td><td>{isNumerical && mode.demoModelMatch ? "匹配预设模态（计算样本）" : mode.demoModelMatch || (mode.shape ? "多点复振型" : "单点输入不能得到完整振型")}</td></tr>)}</tbody></table></div>
         <details className="field-modal-provenance"><summary>查看计算质量与输入依据</summary><pre>{JSON.stringify({ source: isNumerical ? "numerical_synthesis" : imported?.sourceKind || "device_recording", inputSha256: sampleMeta?.inputSha256 || imported?.sourceSha256, channels: imported?.channels, evidence: imported?.evidence, parameters: result.result.parameters, modes: result.result.modes.map((m: any) => ({ quality: m.quality, uncertainty: m.uncertainty })) }, null, 2)}</pre></details>
       </Card>
       <div className="field-modal-charts">{resultCharts.map(chart => <Card key={chart.id} title={chart.title}><Chart option={chart.option} height={270} label={chart.title} /></Card>)}</div>
     </>}
 
+    {allowImport && canAnalyze && <details className="field-modal-provenance"><summary>导入模态批次</summary><FieldModalImport request={request} method={method} onSaved={dataset => { void refreshCatalog(); setRecordingId('dataset:' + dataset.id); }} /></details>}
     <details className="field-modal-provenance"><summary><Info size={15} />方法适用条件</summary>
       <p>自由衰减使用固定叶片单点响应，必须从外部激励停止后开始选取分析区间。采样时钟、通道单位、源记录和所选样本区间随输入保存。</p>
       <p>FRF 需要同一采样时钟下的激励力与响应；SSI-COV 需要多个物理测点同步连续采样。当前单点激光测振仪不能通过拼接不同时间的记录补出力通道、同步相位或完整振型。</p>

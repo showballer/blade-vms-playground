@@ -20,7 +20,7 @@ def sha(path):
 def create(manager,job_id):
  folder=manager._directory(job_id);job=manager.jobs[job_id];report=manager.result({'jobId':job_id})
  if not report.get('workspace') or report.get('processingContract')!=contract():raise SignalError('PACKAGE_LEGACY_READONLY','Recalculate legacy results with the current plan before uploading')
- files={};sources=job['policySources'];task=json.loads((folder/'task.json').read_text())
+ files={};sources=job['policySources'];task=json.loads((folder/'task.json').read_text(encoding="utf-8"))
  for source in sources:
   rid=source['recordingId']
   if source_fingerprint(manager.recordings,rid)!=source:raise SignalError('SOURCE_CHANGED','Package source changed after processing')
@@ -77,7 +77,7 @@ def validate_server_sources(root,base,mapping):
  from ..upload_sampling import prepare_upload
  class Store:
   def directory(self,rid):return base/'recordings'/rid
-  def _read_manifest(self,directory):return json.loads((directory/'manifest.json').read_text())
+  def _read_manifest(self,directory):return json.loads((directory/'manifest.json').read_text(encoding="utf-8"))
   def chunks(self,directory):return sorted(directory.glob('chunk-*.bin'))
  verified=[]
  for rid,server_id in mapping.items():
@@ -103,7 +103,7 @@ def verify(root,package:Path,allowed_ids,server_sources=None):
  from .reviews import history
  identity=sha(package);base=Path(root)/'analysis-packages'/identity;verified=base/'verification.json'
  if verified.is_file():
-  old=json.loads(verified.read_text())
+  old=json.loads(verified.read_text(encoding="utf-8"))
   if set(old['dependencyIds'])<=set(allowed_ids):
    if server_sources:validate_server_sources(root,base,server_sources)
    return old
@@ -129,7 +129,7 @@ def verify(root,package:Path,allowed_ids,server_sources=None):
    if time.monotonic()>until:raise SignalError('PACKAGE_VERIFY_TIMEOUT','Recomputation timed out')
    time.sleep(.02)
   if manager.status(job['jobId'])['status']!='complete':raise SignalError('PACKAGE_RECOMPUTE_FAILED',manager.status(job['jobId']).get('error') or 'Recompute failed')
-  result=json.loads((manager._directory(job['jobId'])/'result.json').read_text());claimed=json.loads((base/'analysis/result.json').read_text())
+  result=json.loads((manager._directory(job['jobId'])/'result.json').read_text(encoding="utf-8"));claimed=json.loads((base/'analysis/result.json').read_text(encoding="utf-8"))
   def equivalent(a,b):
    if isinstance(a,dict) and isinstance(b,dict):return set(a)==set(b) and all(equivalent(a[k],b[k]) for k in a if k!='jobId')
    if isinstance(a,list) and isinstance(b,list):return len(a)==len(b) and all(equivalent(x,y) for x,y in zip(a,b))

@@ -1,6 +1,6 @@
 "use client";
 import React, { useRef, useState } from 'react';
-import { Button, Card } from './common';
+import { Button, Card, CustomSelect } from './common';
 import { modalCsv, modalMappedInput, modalUnits } from './modal-input';
 import type { FieldRequestOptions } from './field-types';
 type Props = { request: <T>(v: FieldRequestOptions) => Promise<T>; method: string; onSaved: (dataset: any) => void };
@@ -45,7 +45,7 @@ export function FieldModalImport({ request, method, onSaved }: Props) {
     <div className="field-modal-capture-actions"><Button disabled={busy} onClick={() => file.current?.click()}>导入采集文件 CSV / JSON</Button><Button onClick={template}>下载通道模板</Button><input ref={file} type="file" accept=".csv,.json" hidden onChange={e => { void read(e.target.files?.[0]); e.target.value = ''; }} /></div>
     {draft && <><div className="field-modal-capture-fields"><label>批次名称<input value={name} onChange={e => setName(e.target.value)} /></label>
       {draft.json ? <p>按文件内的时间、通道、标定和来源信息保存，服务端将校验输入。</p> : <>
-        <label>时间列 · 秒<select value={draft.timeIndex} onChange={e => { const t = Number(e.target.value); setDraft({ ...draft, timeIndex: t, channels: channelsFor(draft.columns, t) }); }}>{draft.columns.map((c: string, i: number) => <option key={i} value={i}>{c}</option>)}</select></label>
+        <label>时间列 · 秒<CustomSelect value={draft.timeIndex} onChange={e => { const t = Number(e.target.value); setDraft({ ...draft, timeIndex: t, channels: channelsFor(draft.columns, t) }); }}>{draft.columns.map((c: string, i: number) => <option key={i} value={i}>{c}</option>)}</CustomSelect></label>
         <label>标定依据<input value={calibration} onChange={e => setCalibration(e.target.value)} placeholder="仪器标定记录、量程及单位" /></label>
         <label>同步时钟依据 · FRF / SSI<input value={clock} onChange={e => setClock(e.target.value)} placeholder="共享时钟、硬件同步方式和记录编号" /></label>
         <label>激励撤除记录 · 自由衰减<input value={release} onChange={e => setRelease(e.target.value)} placeholder="释放时刻、边界条件与截取依据" /></label>
@@ -55,7 +55,7 @@ export function FieldModalImport({ request, method, onSaved }: Props) {
     {!draft.json && <><p>{draft.rows.length.toLocaleString()} 个连续样本 · {draft.channels.length} 个通道；单位系数示例：mm/s → m/s 填 0.001。</p>
       {draft.channels.map((c: any, i: number) => <div className="field-modal-capture-fields" key={c.id}>
         <label>{draft.columns[c.column]} · 测点<input value={c.pointId} onChange={e => update(i, { pointId: e.target.value })} /></label>
-        <label>物理量与目标单位<select value={c.quantity} onChange={e => update(i, { quantity: e.target.value })}>{Object.entries(modalUnits).map(([q, unit]) => <option key={q} value={q}>{q} · {unit}</option>)}</select></label>
+        <label>物理量与目标单位<CustomSelect value={c.quantity} onChange={e => update(i, { quantity: e.target.value })}>{Object.entries(modalUnits).map(([q, unit]) => <option key={q} value={q}>{q} · {unit}</option>)}</CustomSelect></label>
         <label>测量方向<input value={c.direction} onChange={e => update(i, { direction: e.target.value })} placeholder="如 axial / flapwise" /></label>
         <label>原值乘以系数 → SI<input type="number" min="0" step="any" value={c.scale} onChange={e => update(i, { scale: Number(e.target.value) })} /></label>
       </div>)}

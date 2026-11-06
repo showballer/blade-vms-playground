@@ -37,7 +37,7 @@ class ModalCaptureTests(unittest.TestCase):
   for method in ('frf','ssi_cov'):
    c=self.controller();c.start(plan(method));status=self.finished(c)
    self.assertEqual(status['state'],'complete',status);saved=status['dataset'];self.assertEqual(saved['samples'],128)
-   path=self.root/'formal-modal-v22/datasets'/(saved['id']+'.json');data=json.loads(path.read_text())['data']
+   path=self.root/'formal-modal-v22/datasets'/(saved['id']+'.json');data=json.loads(path.read_text(encoding="utf-8"))['data']
    self.assertEqual(data['evidence']['synchronization'],'common_sample_clock');self.assertEqual(len(data['channels']),2 if method=='frf' else 3)
    self.assertAlmostEqual(data['channels'][1]['values'][0],.002)
    self.assertEqual(len(data['sourceReference']['rawSha256']),64)
@@ -74,7 +74,7 @@ class ModalCaptureTests(unittest.TestCase):
   c=self.controller(device_busy=lambda:True)
   with self.assertRaises(BlockingIOError):c.start(plan())
   folder=self.root/'modal-captures'/('a'*32);folder.mkdir();(folder/'session.json').write_text(json.dumps({'state':'acquiring'}));c2=self.controller()
-  self.assertEqual(json.loads((folder/'session.json').read_text())['state'],'error')
+  self.assertEqual(json.loads((folder/'session.json').read_text(encoding="utf-8"))['state'],'error')
  def test_http_start_stop_and_native_capture_exclusion(self):
   from fastapi.testclient import TestClient
   from blade_acquisition.service import Settings,create_app

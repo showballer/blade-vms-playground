@@ -15,6 +15,11 @@ const update=(u:User,id:string,v:any)=>pool().execute("UPDATE records SET body=?
 export async function formalModalEndpoint(user:User,body:any){
  const action=body.action;
  if(action==='catalog'){const result=await worker(user,'catalog');const records=await rows<RecordItem>("SELECT * FROM records WHERE kind='measurement_formal_modal' AND tenant=? AND created_by=? ORDER BY updated_at DESC LIMIT 100",[user.tenant,user.id]);return {...result,jobs:records.map(unpack)};}
+ if(action==='preview'){
+  const catalog=await worker(user,'catalog');
+  if(!catalog.datasets.some((d:any)=>d.id===body.datasetId))throw new HttpError(404,'模态输入不存在或不属于当前账号');
+  return worker(user,'preview',{datasetId:body.datasetId});
+ }
  if(action==='from-segment'){
   requireAnalyst(user);const p=await processingResult(user,body.processingResultId);if(!p.report.records.some((r:any)=>r.segments.some((s:any)=>s.result_id===body.resultId)))throw new HttpError(403,'真实段不属于所选处理版本');if(p.workerAccount.id!==user.id)throw new HttpError(403,'请由当前账号重新计算并保存此输入');return worker(user,'from-segment',{processingResultId:p.id,workerJobId:p.workerJobId,packageSha256:p.packageSha256,resultId:body.resultId,startSeconds:body.startSeconds,endSeconds:body.endSeconds,pointId:p.context.positionId,context:p.context,calibrationSource:body.calibrationSource,evidence:body.evidence,name:body.name});
  }

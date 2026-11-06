@@ -1,6 +1,6 @@
 {
   "name": "@blade/desktop",
-  "version": "1.5.8",
+  "version": "1.5.9",
   "private": true,
   "type": "module",
   "description": "BladeVMS 现场采集与分析工作台",

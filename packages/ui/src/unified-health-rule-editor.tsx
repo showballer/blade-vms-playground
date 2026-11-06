@@ -1,8 +1,90 @@
 "use client";
-import React,{useState} from 'react';
-import {Button,Dialog} from './common';
-import {api} from './api';
-export function HealthRuleEditor({choices,context,onClose,onSaved,onError}:{choices:any[];context:any;onClose:()=>void;onSaved:()=>void;onError:(s:string)=>void}){
- const [rule,setRule]=useState<any>({referenceResultId:'',warningRatio:'',alarmRatio:'',windTolerance:'',rpmTolerance:'',referenceApproval:'',thresholdSource:''});
- return <Dialog title="响应变化预警规则" onClose={onClose}><label>独立正常参考版本<select value={rule.referenceResultId} onChange={e=>setRule({...rule,referenceResultId:e.target.value})}><option value="">选择独立测量批次</option>{choices.filter(p=>p.context.campaignId!==context.campaignId).map(p=><option key={p.id} value={p.id}>{p.name} · {p.finishedAt}</option>)}</select></label>{[['warningRatio','预警倍数（>1）'],['alarmRatio','严重预警倍数'],['windTolerance','同工况风速容差 m/s'],['rpmTolerance','同工况转速容差 rpm']].map(([k,n])=><label key={k}>{n}<input type="number" value={rule[k]} onChange={e=>setRule({...rule,[k]:e.target.value})}/></label>)}<label>参考复核依据<input value={rule.referenceApproval} onChange={e=>setRule({...rule,referenceApproval:e.target.value})}/></label><label>预警阈值来源<input value={rule.thresholdSource} onChange={e=>setRule({...rule,thresholdSource:e.target.value})}/></label><Button disabled={!rule.referenceResultId||!rule.thresholdSource.trim()||!rule.referenceApproval.trim()||['warningRatio','alarmRatio','windTolerance','rpmTolerance'].some(k=>rule[k]==='')} onClick={async()=>{try{await api('measurements/blade-health','POST',{action:'configure',...rule,...Object.fromEntries(['warningRatio','alarmRatio','windTolerance','rpmTolerance'].map(k=>[k,Number(rule[k])])),context});onClose();onSaved();}catch(e){onError((e as Error).message);}}}>保存规则版本</Button></Dialog>;
+
+import React, { useState } from "react";
+import { Button, CustomSelect, Dialog } from "./common";
+import { api } from "./api";
+
+const numericFields = [
+  ["warningRatio", "预警倍数（>1）"],
+  ["alarmRatio", "严重预警倍数"],
+  ["windTolerance", "同工况风速容差 · m/s"],
+  ["rpmTolerance", "同工况转速容差 · rpm"],
+] as const;
+
+export function HealthRuleEditor({ choices, context, onClose, onSaved, onError }: {
+  choices: any[];
+  context: any;
+  onClose: () => void;
+  onSaved: () => void;
+  onError: (message: string) => void;
+}) {
+  const [rule, setRule] = useState({
+    referenceResultId: "",
+    warningRatio: "",
+    alarmRatio: "",
+    windTolerance: "",
+    rpmTolerance: "",
+    referenceApproval: "",
+    thresholdSource: "",
+  });
+  const [saving, setSaving] = useState(false);
+  const incomplete = !rule.referenceResultId || !rule.thresholdSource.trim()
+    || !rule.referenceApproval.trim() || numericFields.some(([key]) => rule[key] === "");
+
+  async function save(event: React.FormEvent) {
+    event.preventDefault();
+    if (saving || incomplete) return;
+    setSaving(true);
+    try {
+      await api("measurements/blade-health", "POST", {
+        action: "configure",
+        ...rule,
+        ...Object.fromEntries(numericFields.map(([key]) => [key, Number(rule[key])])),
+        context,
+      });
+      onClose();
+      onSaved();
+    } catch (error) {
+      onError((error as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return <Dialog title="响应变化预警规则" onClose={onClose}>
+    <form onSubmit={save}>
+      <div className="form-grid">
+        <label className="form-field span-2">
+          <span>独立正常参考版本</span>
+          <CustomSelect aria-label="独立正常参考版本" value={rule.referenceResultId}
+            onChange={event => setRule({ ...rule, referenceResultId: event.target.value })}>
+            <option value="">选择独立测量批次</option>
+            {choices.filter(choice => choice.context.campaignId !== context.campaignId).map(choice =>
+              <option key={choice.id} value={choice.id}>{choice.name} · {choice.finishedAt}</option>)}
+          </CustomSelect>
+        </label>
+        {numericFields.map(([key, label]) => <label className="form-field" key={key}>
+          <span>{label}</span>
+          <input type="number" step="any" value={rule[key]}
+            onChange={event => setRule({ ...rule, [key]: event.target.value })} />
+        </label>)}
+        <label className="form-field span-2">
+          <span>参考复核依据</span>
+          <input value={rule.referenceApproval}
+            onChange={event => setRule({ ...rule, referenceApproval: event.target.value })} />
+        </label>
+        <label className="form-field span-2">
+          <span>预警阈值来源</span>
+          <input value={rule.thresholdSource}
+            onChange={event => setRule({ ...rule, thresholdSource: event.target.value })} />
+        </label>
+      </div>
+      <div className="dialog-actions">
+        <Button type="button" onClick={onClose}>取消</Button>
+        <Button type="submit" variant="primary" disabled={saving || incomplete}>
+          {saving ? "正在保存…" : "保存规则版本"}
+        </Button>
+      </div>
+    </form>
+  </Dialog>;
 }
