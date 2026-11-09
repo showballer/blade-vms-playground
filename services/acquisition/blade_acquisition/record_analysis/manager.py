@@ -512,10 +512,11 @@ class RecordAnalysisManager:
         if not set(ids)<=allowed:raise SignalError("JOIN_PREVIEW_UNSUPPORTED","select eligible pass representatives from this analysis")
         if len({r.parameters.get("geometryComparisonKey") for r in results})!=1:
             raise SignalError("AGGREGATION_BASIS_MISMATCH","preview cannot combine different saved installations")
+        automatic_policy=None
         if body.get('automatic') is True:
             if not all(r.parameters.get('desktop_workspace') for r in results):raise SignalError('INVALID_CONFIG','Automatic joins require a saved desktop workspace result')
-            from .workspace import automatic_preview_config
-            config=automatic_preview_config(results)
+            from .workspace import automatic_preview_plan
+            plan=automatic_preview_plan(results);config=plan['config'];automatic_policy=plan['policy']
         try:join_config=JoinConfig(**config)
         except TypeError as exc:raise SignalError("JOIN_PREVIEW_UNSUPPORTED","explicit supported join parameters required") from exc
         values=asdict(join_config)
@@ -530,7 +531,7 @@ class RecordAnalysisManager:
         if (bridge_samples>2_000_000 or measured_samples+(len(results)-1)*bridge_samples>8_000_000
                 or model_context*join_config.ar_order>2_000_000):
             raise SignalError("ANALYSIS_SIZE_UNSUPPORTED","preview sample count or AR context exceeds the local analysis resource limit")
-        directory=self._directory(body["jobId"]);key=hashlib.sha256(json.dumps({"previewVersion":PREVIEW_VERSION,"ids":ids,"expectedAzimuths":expected,"config":config},sort_keys=True).encode()).hexdigest()
+        directory=self._directory(body["jobId"]);key=hashlib.sha256(json.dumps({"previewVersion":PREVIEW_VERSION,"ids":ids,"expectedAzimuths":expected,"config":config,**({'automaticPolicy':automatic_policy} if automatic_policy else {})},sort_keys=True).encode()).hexdigest()
         saved=directory/("preview-"+key+".json")
         if saved.is_file() and not saved.is_symlink() and (directory/("preview-"+key+".csv")).is_file():
             return json.loads(saved.read_text(encoding="utf-8"))
@@ -545,7 +546,7 @@ class RecordAnalysisManager:
             "message":"；".join(j["message"] for j in joined.joins if j.get("status")=="unavailable"),
             "gap_samples":sum(b["samples"] for b in joined.blocks if b["kind"]=="display_gap"),
             "sample_rate_hz":joined.sample_rate_hz,"measured_samples":joined.measured_samples,"synthetic_samples":joined.synthetic_samples,
-            "watermark":"仅展示，含拟合，禁止用于频谱、特征或健康判断","resultIds":ids,"joinConfig":config},include_arrays=True)
+            "watermark":"仅展示，含拟合，禁止用于频谱、特征或健康判断","resultIds":ids,"joinConfig":config,**({'automaticPolicy':automatic_policy} if automatic_policy else {})},include_arrays=True)
         value["previewId"]=key;dump(directory/("preview-"+key+".json"),value)
         write_preview_csv(directory/("preview-"+key+".csv"),joined,results)
         return value
@@ -562,6 +563,7 @@ class RecordAnalysisManager:
             except (ValueError,TypeError) as exc:return {'available':False,'reasonCode':getattr(exc,'code','INSUFFICIENT_OBSERVATION'),'message':str(exc)}
         if kind=="point_band":return self._point_band(body)
         if kind=="point_displacement":return self._point_displacement(body)
+        if kind=="defect_validation":return self._defect_validation(body)
         result=self._load_segment(body.get("jobId"),body.get("resultId"));real=result.analysis_input()
         try:
             if kind=="stft":
@@ -587,6 +589,53 @@ class RecordAnalysisManager:
             else:raise SignalError("INVALID_ANALYSIS_KIND","unknown extension")
             return json_safe({"available":True,"kind":kind,"resultId":result.result_id,"layer":result.layer,"basis":result.basis,"data":data,"parameters":p},include_arrays=True)
         except (SignalError,TypeError) as exc:return {"available":False,"kind":kind,"resultId":result.result_id,"reasonCode":getattr(exc,"code","ANALYSIS_PARAMETERS_REQUIRED"),"message":str(exc)}
+
+    def _defect_validation(self,body):
+        from .anomaly import VERSION, inject_local_response, paired_response_screen
+        ids=body.get('resultIds')
+        if not isinstance(ids,list) or not ids or len(ids)>16 or any(not isinstance(v,str) for v in ids) or len(ids)!=len(set(ids)) or body.get('parameters',{}):
+            raise SignalError('INVALID_CONFIG','Select 1 to 16 distinct real representatives; fault test policy is versioned')
+        report=self.result({'jobId':body['jobId']})
+        allowed={r['representative'] for r in report['records'] if r.get('representative') and r.get('quality_assessment',{}).get('analysis_eligible')}
+        if not set(ids)<=allowed:raise SignalError('REPRESENTATIVE_REQUIRED','Only eligible real representatives are accepted')
+        results=[self._load_segment(body['jobId'],rid) for rid in ids]
+        if len({(r.parameters['object']['blade'],r.parameters['object']['point'],r.layer,r.basis) for r in results})!=1:
+            raise SignalError('AGGREGATION_BASIS_MISMATCH','Fault tests must use one blade, point and direction')
+        key=hashlib.sha256(json.dumps([VERSION,ids],sort_keys=True).encode()).hexdigest()
+        directory=self._directory(body['jobId'])/'diagnostic-tests';directory.mkdir(exist_ok=True)
+        items=[];arrays={}
+        for index,r in enumerate(results):
+            real=r.analysis_input();original=real.values_m_s
+            try:
+                injected,injection=inject_local_response(original)
+                detected=paired_response_screen(original,injected,real.sample_rate_hz)
+                control=paired_response_screen(original,original,real.sample_rate_hz)
+                i=plot_indices(original,injected)
+                arrays['time_'+str(index)]=real.time_s
+                arrays['reference_'+str(index)]=original
+                arrays['test_'+str(index)]=injected
+                items.append({'available':True,'resultId':r.result_id,'object':r.parameters['object'],'sourceHash':real.source_hash,
+                    'sourceRange':[real.source_start,real.source_end],'sampleRateHz':real.sample_rate_hz,'injection':injection,
+                    'detection':detected,'control':control,'plot':{'time_s':real.time_s[i]-real.time_s[0],
+                    'reference_m_s':original[i],'test_m_s':injected[i],'display_only':True}})
+            except SignalError as exc:items.append({'available':False,'resultId':r.result_id,'object':r.parameters['object'],'reason':str(exc)})
+        # Test arrays are stored separately, never replacing captured/processed segments.
+        if arrays:
+            import os
+            import tempfile
+            fd,tmp=tempfile.mkstemp(prefix='fault-',suffix='.npz',dir=directory)
+            try:
+                with os.fdopen(fd,'wb') as output:np.savez_compressed(output,**arrays)
+                os.replace(tmp,directory/(key+'.npz'))
+            finally:
+                if os.path.exists(tmp):os.unlink(tmp)
+        usable=[item for item in items if item['available']]
+        status='warning' if any(item['detection']['suspectedDamage'] for item in usable) else 'normal' if usable and all(item['control']['status']=='normal' for item in usable) else 'insufficient'
+        value=json_safe({'available':bool(arrays),'test_only':True,'kind':'defect_validation','algorithmVersion':VERSION,'status':status,
+            'artifactId':key,'sourceJobId':body['jobId'],'structuralDamageConfirmed':False,'items':items,
+            'limitation':'Paired artificial response anomaly test only; source is not a verified healthy reference and no structural damage is confirmed'},include_arrays=True)
+        dump(directory/(key+'.json'),value)
+        return value
 
     def _point_displacement(self,body):
         from .displacement import summarize_displacement

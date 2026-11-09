@@ -1,24 +1,16 @@
 export type DisplacementDisplayPoint = {point: string; radiusM: number | null; actualMm: number; displayMm: number};
 
-/** An explicitly separate presentation series. Never used in signal/health calculations. */
+/** Least-squares cantilever first-bending shape assumption, never a measurement correction.
+ * u=r/r_max, phi=u²(3-u)/2. The fitted scale is nonnegative; original values survive unchanged.
+ * r_max is the outermost measured radius, not an asserted blade length or blade-tip amplitude.
+ */
 export function increasingDisplacementDisplay(input: readonly Omit<DisplacementDisplayPoint, 'displayMm'>[]): DisplacementDisplayPoint[] {
-  const valid = input.filter(p => Number.isFinite(p.actualMm) && p.actualMm >= 0)
-    .sort((a, b) => a.point.localeCompare(b.point, 'zh-CN', {numeric: true}));
-  if (valid.length < 2) return valid.map(p => ({...p, displayMm: p.actualMm}));
-  // Equal-weight isotonic regression with a 2% minimum visual increment.
-  const step = Math.max(...valid.map(p => p.actualMm)) * .02;
-  if (!step) return valid.map(p => ({...p, displayMm: 0}));
-  const blocks: {sum: number; count: number}[] = [];
-  valid.forEach((p, i) => {
-    blocks.push({sum: p.actualMm - step * i, count: 1});
-    while (blocks.length > 1) {
-      const a = blocks[blocks.length - 2], b = blocks[blocks.length - 1];
-      if (a.sum / a.count <= b.sum / b.count) break;
-      blocks.splice(-2, 2, {sum: a.sum + b.sum, count: a.count + b.count});
-    }
-  });
-  const levels = blocks.flatMap(b => Array(b.count).fill(Math.max(0, b.sum / b.count)));
-  return valid.map((p, i) => ({...p, displayMm: levels[i] + step * i}));
+  const valid = input.filter(p => Number.isFinite(p.actualMm) && p.actualMm >= 0 && p.radiusM != null && Number.isFinite(p.radiusM) && p.radiusM >= 0)
+    .sort((a,b) => a.radiusM! - b.radiusM! || a.point.localeCompare(b.point, 'zh-CN', {numeric:true}));
+  if (valid.length < 2 || valid.at(-1)!.radiusM === 0) return [];
+  const radius=valid.at(-1)!.radiusM!;
+  const shape=valid.map(p => {const u=p.radiusM!/radius;return u*u*(3-u)/2;});
+  const denominator=shape.reduce((sum,v)=>sum+v*v,0);
+  const scale=shape.reduce((sum,v,i)=>sum+v*valid[i].actualMm,0)/denominator;
+  return valid.map((p,i)=>({...p,displayMm:scale*shape[i]}));
 }
-
-export const displacementDisplayTasks = new Set(['武川风场 R001 风机测量任务', '武川风场 R024 风机测量任务']);

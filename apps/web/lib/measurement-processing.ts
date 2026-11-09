@@ -30,7 +30,7 @@ function joinSavedRead(task:SavedReadTask,signal?:AbortSignal):Promise<any>{
 async function savedRead(value:any,operation:string,parameters:any,signal?:AbortSignal){
  const started=Date.now(),owner=value.workerAccount;
  if(signal?.aborted)throw new HttpError(499,'读取已取消');
- const key=digest(JSON.stringify(['saved-view-20261104-v2',...(['preview','waveforms'].includes(operation)?['adaptive-joins-1']:[]),value.id,value.inputKey,value.packageSha256,operation,parameters]));
+ const key=digest(JSON.stringify(['saved-view-20261104-v2',...(['preview','waveforms'].includes(operation)?['adaptive-joins-1','subcycle-seam-1','endpoint-series-2']:[]),value.id,value.inputKey,value.packageSha256,operation,parameters]));
  const directory=path.join(rotationDataDirectory(owner),'saved-web-views'),file=path.join(directory,key+'.json');
  try{const cached=JSON.parse(await readFile(file,'utf8'));return {...cached,readTiming:{totalMs:Date.now()-started,source:'persisted_view',cacheHit:true}};}catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw e;}
  let task=pendingReads.get(file);
@@ -157,6 +157,7 @@ export async function processingEndpoint(user:User,b:any,signal?:AbortSignal){
  }
  if(action==='review'){requireAnalyst(user);if(!value.report.records.some((r:any)=>r.recording_id===command.recordingId))throw new HttpError(403,'复核来源不属于该版本');return worker(owner,'review',{...command,action:undefined,jobId:value.workerJobId,actor:user.name||user.id});}
  if(action==='waveforms')return savedRead(value,'waveforms',{jobId:value.workerJobId,...packageParameters},signal);
+ if(action==='extended'&&command.kind==='defect_validation')requireAnalyst(user);
  if(action==='extended'||action==='preview')return savedRead(value,action,{...command,action:undefined,jobId:value.workerJobId,...packageParameters},signal);
  throw new HttpError(400,'不支持的Web处理动作');
 }

@@ -589,7 +589,7 @@ export async function measurementEndpoint(
         sources: sources.map(sourceView),
         memberships: await measurementMemberships(user, sources.filter(s => s.reference.kind === 'import')),
         nextSourcesCursor: sources.nextCursor,
-        objects: all,
+        objects: all.filter(o => o.active),
         results: results.map(summarizeAnalysis),
         ...rules,
         limit: 5000,

@@ -188,9 +188,41 @@ def auto_stft(result):
  fi=np.unique(np.linspace(0,len(f)-1,min(128,len(f)),dtype=int));ti=np.unique(np.linspace(0,len(t)-1,min(160,len(t)),dtype=int))
  return {'frequency_hz':f[fi],'time_s':t[ti]+real.time_s[0],'psd_m2_s2_per_hz':z[np.ix_(fi,ti)],'window_samples':n,'window':saved['algorithmOptions']['window'],'unit':'(m/s)^2/Hz','display_only':True}
 
+def automatic_preview_plan(results):
+ """A short display seam, bounded by the fastest resolved endpoint oscillation.
+
+ The period is a local response timescale, never an identified natural frequency.
+ Only adjacent endpoint contexts participate; real samples are never trimmed.
+ """
+ values=[r.analysis_input().values_m_s for r in results];fs=results[0].segment.sample_rate_hz
+ smallest=min(map(len,values));context=max(32,min(8192,smallest//4))
+ periods=[];evidence=[]
+ for i,y in enumerate(values):
+  for side in ('head','tail'):
+   if (i==0 and side=='head') or (i==len(values)-1 and side=='tail'):continue
+   local=y[:context] if side=='head' else y[-context:]
+   x=np.linspace(-1.,1.,len(local));z=local-local.mean()
+   z=z-x*np.dot(x,z)/np.dot(x,x)
+   if len(z)<16 or not np.all(np.isfinite(z)) or np.max(np.abs(z))<=np.finfo(float).eps:continue
+   f,p=signal.periodogram(z,fs,window='hann',detrend=False)
+   peak=1+int(np.argmax(p[1:]));period=fs/f[peak]
+   # A single trend across the context is not a resolved oscillation.
+   if peak<2 or p[peak]/max(float(p.sum()),np.finfo(float).tiny)<.05:continue
+   periods.append(period);evidence.append({'resultId':results[i].result_id,'side':side,'frequencyHz':float(f[peak]),'periodSamples':float(period)})
+ original=max(8,int(smallest*.02))
+ if periods:
+  # Include the two measured endpoints when limiting elapsed connection time.
+  budget=int(math.floor(.75*min(periods)))-1
+  if budget<4:raise SignalError('JOIN_PREVIEW_UNSUPPORTED','Local oscillation is too short for a guarded sub-cycle seam at this sample rate')
+  bridge=min(original,budget)
+ else:
+  # No defensible period: keep a tiny bounded connector instead of inventing
+  # a long waveform. The AR amplitude/slope guards still decide availability.
+  bridge=min(original,8)
+ cap=max(2,bridge//8)
+ down=max(1,int(math.ceil(context/1024)));model_fs=fs/down;order=min(12,max(1,int(context/down)//8))
+ config=dict(duration_seconds=bridge/fs,context_seconds=context/fs,cap_seconds=cap/fs,model_sample_rate_hz=model_fs,ar_order=order,prediction_decay_seconds=context/fs,ridge_relative=.003,max_pole_radius=.995,amplitude_guard_factor=3.,slope_guard_factor=3.)
+ return {'config':config,'policy':{'version':'subcycle-seam-1','maximumLocalCycles':.75,'endpointToEndpointSamples':bridge+1,'limitingPeriodSamples':min(periods) if periods else None,'periodEvidence':evidence,'periodStatus':'resolved' if periods else 'unresolved_short_connector','previousLengthSamples':original,'measuredSamplesModified':False}}
+
 def automatic_preview_config(results):
- sizes=[len(r.analysis_input().values_m_s) for r in results];fs=results[0].segment.sample_rate_hz
- smallest=min(sizes);context=max(32,min(2048,smallest//4));bridge=max(8,int(smallest*.02));cap=max(2,bridge//8)
- # Every duration derives from this group's real sample count/rate, not lab geometry.
- down=max(1,int(math.ceil(context/256)));model_fs=fs/down;order=min(12,max(1,int(context/down)//8))
- return dict(duration_seconds=bridge/fs,context_seconds=context/fs,cap_seconds=cap/fs,model_sample_rate_hz=model_fs,ar_order=order,prediction_decay_seconds=context/fs,ridge_relative=.003,max_pole_radius=.995,amplitude_guard_factor=3.,slope_guard_factor=3.)
+ return automatic_preview_plan(results)['config']

@@ -23,6 +23,7 @@
     "./measurement-domain": "./src/measurement-domain.ts",
     "./measurement-conditions": "./src/measurement-conditions.ts",
     "./response-health-policy": "./src/response-health-policy.ts",
+    "./measurement-health-readiness": "./src/measurement-health-readiness.ts",
     "./modal-result-comparison": "./src/modal-result-comparison.ts"
   },
   "dependencies": {

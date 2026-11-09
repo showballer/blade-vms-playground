@@ -61,6 +61,7 @@ export async function listMeasurementRows(user: User, kind: string) {
     "measurement_modal",
     "measurement_processing",
     "measurement_blade_assessments",
+    "measurement_health_tests",
   ].includes(kind)
     ? filterMeasurementAccess(user, listed)
     : listed;
@@ -440,12 +441,13 @@ export async function measurementSources(user: User, selection: SourceSelection 
   const candidates = [...tasks, ...captures, ...imports].filter(r => r.tenant === user.tenant && !isHealthDemo(r.raw) &&
     !(r.kind === "import" && r.raw.cloudCaptureId) && (!references || references.some(ref => ref.kind === r.kind && ref.id === r.id)));
   const bindings = scopedBindings || await sourceBindings(user, candidates.map(r => sourceKey(user, { kind: r.kind, id: r.id })));
+  const activeObjects=new Map((await objects(user)).map(o=>[o.id,o.active]));
   const sources = candidates.map(r => {
     const reference = { kind: r.kind, id: r.id }, key = sourceKey(user, reference), link = bindings.find(b => b.key === key);
     return { key, reference, name: r.raw.name || "未命名记录", raw: r.raw,
       measuredAt: healthTime(r.raw.sourceSampleOrigin ?? r.raw.sourceMetadata?.sampleOrigin ?? r.raw.testTime ?? r.raw.sourceStartedAt ?? r.raw.sourceMetadata?.startedAt ?? r.raw.startedAt),
       tenant: r.tenant, context: link?.context || null, bindingRevision: link ? digest(JSON.stringify(link)) : null };
-  }) as MeasurementSource[];
+  }).filter(s=>!s.context||Object.values(s.context).every(id=>!id||activeObjects.get(String(id))!==false)) as MeasurementSource[];
   return Object.assign(sources, { nextCursor: captureResult.nextCursor });
 }
 export async function measurementLive(user: User, options: Pick<CapturePageOptions, "limit" | "cursor"> = {}) {

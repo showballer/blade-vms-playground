@@ -1,0 +1,18 @@
+import assert from 'node:assert/strict';
+import React from 'react';
+import {renderToStaticMarkup} from 'react-dom/server';
+import {resolveHealthWindDataset,healthEvidenceReadiness} from '../packages/ui/src/measurement-health-readiness';
+import {DisplacementDisplay} from '../packages/ui/src/displacement-display';
+const choices=[{id:'a'}];
+assert.equal(resolveHealthWindDataset(choices,undefined).id,'a');
+assert.equal(resolveHealthWindDataset([{id:'a'},{id:'b'}],undefined).id,'');
+assert.equal(resolveHealthWindDataset([{id:'a'},{id:'b'}],undefined,{windDatasetId:'b'}).id,'b');
+assert.equal(resolveHealthWindDataset(choices,undefined,{windDatasetId:''}).id,'','explicit deselection survives reopening');
+assert.equal(resolveHealthWindDataset(choices,undefined,{windDatasetId:'deleted'}).source,'unavailable');
+assert.throws(()=>resolveHealthWindDataset(choices,'foreign'));
+assert.throws(()=>resolveHealthWindDataset(choices,{id:'a'}));
+const readiness=healthEvidenceReadiness({conditions:[{condition:{status:'matched',windSpeed:8,rpm:10,healthEligible:false}}],records:[{source_quality:{identity_verified:false},quality_assessment:{analysis_eligible:true}}],rule:null,reference:null,published:true});
+assert.equal(readiness.association,'matched');assert(readiness.blockers.some(v=>v.includes('身份')));assert(readiness.blockers.some(v=>v.includes('参考')));
+const html=renderToStaticMarkup(<DisplacementDisplay context="test" loading={false} points={[{point:'P1',radiusM:10,actualMm:2},{point:'P2',radiusM:30,actualMm:1}]}/>);
+assert(html.includes('实测计算'));assert(html.includes('模型拟合'));assert(html.includes('未修改测量数据'));assert(html.includes('不参与健康评价'));
+console.log('PASS health followup: persistent-selection policy, background conditions distinct from evidence, explicit model labeling');

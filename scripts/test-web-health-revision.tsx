@@ -1,0 +1,14 @@
+import assert from 'node:assert/strict';
+import React from 'react';
+import {renderToStaticMarkup} from 'react-dom/server';
+import {MeasurementResponse3D} from '../packages/ui/src/measurement-response-3d';
+import {MeasurementHealth} from '../packages/ui/src/measurement-health';
+import {matchSegmentConditions,processingSegmentTimes} from '../packages/ui/src/measurement-conditions';
+const points=[{id:'P1',name:'P1',radiusM:10,normalizedAmplitude:.1,displacementRmsM:null},{id:'P2',name:'P2',radiusM:30,normalizedAmplitude:1,displacementRmsM:null}];
+const before=JSON.stringify(points),html=renderToStaticMarkup(<MeasurementResponse3D points={points} animate metricLabel="位移振幅"/>);
+assert(html.includes('暂停振动'));assert(html.includes('振动动画周期'));assert(html.includes('displacement-slow-motion'));assert(html.includes('不表示实测相位'));assert(!html.includes('data-response-negative-reference'));assert.equal(JSON.stringify(points),before);
+const health=renderToStaticMarkup(<MeasurementHealth canWrite={true} platform="web"/>);assert(health.includes('健康监测风场数据集'));
+const datasets=[{id:'wind-a',farmId:'farm',timeSemantics:{timeBasis:'interval_mean',intervalSeconds:1,timestampPosition:'start',timezone:'+08:00',clockOffsetMs:0,maxGapMs:0,rpmMeaning:'rotor',basis:'每秒均值'},rows:[{turbineCode:'R024',time:'2026-11-01T07:00:00Z',windSpeed:6.4,rpm:10.2}]},{id:'wind-b',farmId:'farm',timeSemantics:{timeBasis:'instantaneous'},rows:[{turbineCode:'R024',time:'2026-11-01T07:00:00Z',windSpeed:99,rpm:99}]}];
+const spans=processingSegmentTimes({sample_origin:1793516400,sample_rate_hz:1000,segments:[{source_start:200,source_end:800,result_id:'s'}]});assert.equal(spans.length,1);
+const result=matchSegmentConditions(datasets.filter(d=>d.id==='wind-a'),'farm','R024',spans);assert.equal(result.status,'matched');assert.equal(result.windSpeed,6.4);assert.equal(result.rpm,10.2);assert.equal(result.healthEligible,false);assert.deepEqual(result.datasetIds,['wind-a']);assert.equal(matchSegmentConditions([],'farm','R024',spans).status,'unmatched');assert.equal(matchSegmentConditions(datasets.filter(d=>d.id==='wind-a'),'farm','R001',spans).status,'unmatched');
+console.log('PASS web health revision: motion controls, immutable amplitudes, explicit wind selection and interval averages remain background conditions');

@@ -17,6 +17,8 @@ export type MeasurementObject = {
   operators?: string;
   weather?: string;
   turbineIds?: string[];
+  /** Confirmed business association for wind datasets; raw source code stays unchanged. */
+  windTurbineCode?: string;
 };
 export type MeasurementContext = {
   farmId: string;

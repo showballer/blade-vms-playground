@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { DesktopAnalysisWorkspace } from "./field-analysis-workspace";
 import { lineOption } from "./field-record-analysis-charts";
 import { ResponseBandFields, ResponseCoverage } from "./unified-analysis-controls";
-import { normalizedAlgorithmOptions,previewBandForRates,responseBandMessage,workspaceAzimuthColor,workspaceHistory,workspacePreviewSeries } from "./field-analysis-workspace-data";
+import { normalizedAlgorithmOptions,workspaceOptionsForPlatform,desktopAnalysisCatalog,previewBandForRates,responseBandMessage,workspaceAzimuthColor,workspaceHistory,workspacePreviewSeries } from "./field-analysis-workspace-data";
 import { modalInputReason } from "./formal-modal-workspace";
 import { desktopAlgorithmDefaults, desktopRecordLabel, algorithmError, workspacePointSeries, emptyRecordFilters, recordFilterChoices, changeRecordFilter, normalizeRecordFilters, workspaceStftOption } from "./field-analysis-workspace-data";
 import type { AnalysisTask } from "./field-record-analysis-data";
@@ -18,6 +18,14 @@ assert.equal(algorithmError(desktopAlgorithmDefaults, [record]), "");
 assert.deepEqual(previewBandForRates([250000])?.band,[100,20000]);
 assert.deepEqual(previewBandForRates([250000,1000])?.band,[50,500]);
 assert.equal(normalizedAlgorithmOptions({}).targetBandMode,'preview');
+assert.equal(workspaceOptionsForPlatform(normalizedAlgorithmOptions({measurementMode:'indoor'}),'desktop').measurementMode,'outdoor');
+assert.equal(workspaceOptionsForPlatform(normalizedAlgorithmOptions({measurementMode:'indoor'}),'web').measurementMode,'outdoor');
+const sourceCatalog={tasks:[{...task,name:'1101-78m-背景塔桶-第二组_桌面端导入_2026-11-02',records:[record]}, {...task,id:'second',name:'第三组全流程_桌面端导入_2026-11-04'}, {...task,id:'other',name:'其他任务'}]};
+const renamed=desktopAnalysisCatalog(sourceCatalog);
+assert.deepEqual(renamed.tasks.map((t:AnalysisTask)=>t.name),['武川风场-R024-1101-第一组','武川风场-R024-1101-第二组','其他任务']);
+assert.equal(renamed.tasks[0].id,sourceCatalog.tasks[0].id);
+assert.equal(renamed.tasks[0].records,sourceCatalog.tasks[0].records,'Naming must not rewrite or regroup recordings');
+assert.equal(sourceCatalog.tasks[0].name,'1101-78m-背景塔桶-第二组_桌面端导入_2026-11-02');
 assert.equal(normalizedAlgorithmOptions({targetBandHz:[40,60]}).targetBandMode,'custom');
 assert.equal(algorithmError(normalizedAlgorithmOptions({targetBandMode:'custom',targetBandHz:[40,60],targetBandSource:''}),[record]),'');
 assert.ok(responseBandMessage({targetBandReason:'NO_RESOLVED_FREQUENCY_BINS'}).includes('有效时长'));
@@ -108,11 +116,22 @@ assert.deepEqual(partialPreview[0].data,[[0,200],[.001,210]]);
 assert.equal(partialPreview[3].name,'拟合接缝');
 assert.equal(partialPreview[3].displayOnlyGap,false);
 assert.equal(lineOption(partialPreview,'时间','mm/s').series[1].connectNulls,false);
+const touching=workspacePreviewSeries({series:[
+ {kind:'measured_processed',azimuth_deg:0,time_s:[0,.001],values_m_s:[.001,.002]},
+ {kind:'synthetic_display_transition',time_s:[.002],values_m_s:[.003]},
+ {kind:'measured_processed',azimuth_deg:90,time_s:[.003,.004],values_m_s:[.004,.005]},
+]},[0,90]);
+assert.deepEqual(touching[1].data,[[.001,2],[.002,3],[.003,4]],'The short connector must touch both measured endpoints');
+assert.deepEqual(touching[0].data,[[0,1],[.001,2]],'Endpoint styling must not change measured samples');
 
 let calls = 0;
 const request = async () => { calls++; throw Error("SSR must not read hardware or start analysis"); };
 const signal = renderToStaticMarkup(<DesktopAnalysisWorkspace purpose="signal" request={request} />);
 const synthesis = renderToStaticMarkup(<DesktopAnalysisWorkspace purpose="synthesis" request={request} />);
+assert.ok(!signal.includes('测量模式')&&!synthesis.includes('测量模式'));
+assert.ok(!signal.includes('室内模型')&&!synthesis.includes('室内模型'));
+const webSignal=renderToStaticMarkup(<DesktopAnalysisWorkspace purpose="signal" request={request} platform="web"/>);
+assert.ok(!webSignal.includes('aria-label="测量模式"'),'Web shares the fixed outdoor policy');
 assert.equal(calls, 0);
 assert.ok(signal.includes("旋转测振") && signal.includes("有效信号") && signal.includes("原始记录"));
 assert.ok(signal.includes("算法配置") && signal.includes("开始分析"));

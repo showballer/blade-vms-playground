@@ -1,5 +1,5 @@
 "use client";
-import React, { useId, useMemo, useRef, useState } from "react";
+import React, { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Button } from "./common";
 
 export type Response3DPoint = {
@@ -49,7 +49,8 @@ export function interpolateResponseEnvelope(points: Response3DPoint[], radiusM: 
   return from.normalizedAmplitude! * (1 - t) + to.normalizedAmplitude! * t;
 }
 
-export function MeasurementResponse3D({ points, bandHz, frequencyHz, metricLabel = "RMS", instrumentDistanceM, title = "三维幅值分布", compact = false, estimatedPositions = false }: {
+export function MeasurementResponse3D({ points, bandHz, frequencyHz, metricLabel = "RMS", instrumentDistanceM, title = "三维幅值分布", compact = false, estimatedPositions = false, animate = false }: {
+  animate?: boolean;
   title?: string;
   compact?: boolean;
   estimatedPositions?: boolean;
@@ -60,6 +61,16 @@ export function MeasurementResponse3D({ points, bandHz, frequencyHz, metricLabel
   frequencyHz?: number;
 }) {
   const [yaw, setYaw] = useState(-25), [elevation, setElevation] = useState(30), [gain, setGain] = useState(.18);
+  const [playing,setPlaying]=useState(true),[periodSeconds,setPeriodSeconds]=useState(8),[phase,setPhase]=useState(Math.PI/2);
+  const phaseRef=useRef(Math.PI/2),surface=useRef<HTMLElement>(null);
+  useEffect(()=>{if(window.matchMedia('(prefers-reduced-motion: reduce)').matches)setPlaying(false);},[]);
+  useEffect(()=>{
+    if(!animate||!playing)return;let frame=0,last=0,lastPaint=0,visible=true;
+    const observer=new IntersectionObserver(entries=>{visible=entries[0]?.isIntersecting??true;last=0;});if(surface.current)observer.observe(surface.current);
+    const step=(now:number)=>{if(visible&&!document.hidden&&!surface.current?.closest('[hidden]')){if(last)phaseRef.current=(phaseRef.current+Math.min(now-last,100)/1000*Math.PI*2/periodSeconds)%(Math.PI*2);if(now-lastPaint>=33){setPhase(phaseRef.current);lastPaint=now;}last=now;}else last=0;frame=requestAnimationFrame(step);};frame=requestAnimationFrame(step);
+    return()=>{cancelAnimationFrame(frame);observer.disconnect();};
+  },[animate,playing,periodSeconds]);
+  const motion=animate?Math.sin(phase):1;
   const [showNegativeReference, setShowNegativeReference] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const settingsId = useId();
@@ -86,7 +97,7 @@ export function MeasurementResponse3D({ points, bandHz, frequencyHz, metricLabel
   };
   // Fit display geometry only. The metre coordinates and measured RMS values
   // are never changed by perspective, gain or the drawing extent.
-  const corners = [0, 1].flatMap(x => [-.14, .14].flatMap(y => [showNegativeReference ? -gain * amplitudeExtent : 0, gain * amplitudeExtent].map(z => rawProject(x, y, z))));
+  const corners = [0, 1].flatMap(x => [-.14, .14].flatMap(y => [animate || showNegativeReference ? -gain * amplitudeExtent : 0, gain * amplitudeExtent].map(z => rawProject(x, y, z))));
   const minU = Math.min(...corners.map(p => p[0])), maxU = Math.max(...corners.map(p => p[0]));
   const minV = Math.min(...corners.map(p => p[1])), maxV = Math.max(...corners.map(p => p[1]));
   const scale = Math.min(850, 820 / Math.max(.01, maxU - minU), 280 / Math.max(.01, maxV - minV));
@@ -111,27 +122,28 @@ export function MeasurementResponse3D({ points, bandHz, frequencyHz, metricLabel
       const color = `hsl(${220 - 210 * Math.min(1, (va + vb) / 2 / amplitudeExtent)} 76% 49%)`;
       return <polygon key={`${direction}-${index}-${i}`} data-response-interval={direction === 1 ? `${from.id}:${to.id}` : undefined}
         data-reference-interval={direction === -1 ? `${from.id}:${to.id}` : undefined}
-        points={polygon(a, b, direction * va, direction * vb)} fill={color} stroke={color} strokeWidth={.5} />;
+        points={polygon(a, b, direction * va * (animate?motion:1), direction * vb * (animate?motion:1))} fill={color} stroke={color} strokeWidth={.5} />;
     });
   });
   const origin = project(0, .13, 0), outer = project(extent, .13, 0);
   const label = bandHz ? `${fmt(bandHz[0])}–${fmt(bandHz[1])} Hz` : finiteAmplitude(frequencyHz) ? `${fmt(frequencyHz)} Hz` : metricLabel === "RMS" ? "当前频带" : "共同角度等权统计";
   const distanceNote = finiteRadius(instrumentDistanceM) && <p className="measurement-response-3d-note">仪器至叶轮距离 {fmt(instrumentDistanceM)} m，不是测点半径。</p>;
-  const interpretationNote = <p className="measurement-response-3d-note">{metricLabel} 表示振动大小，始终非负。上下参考面仅为 ±{metricLabel} 尺度，不是最大摆幅或真实运动边界；灰面不代表测得的平衡姿态。外形仅示意，测点间插值，不补根部或叶尖。</p>;
+  const interpretationNote = animate?<p className="measurement-response-3d-note">按带限相对位移幅值等比例、同相缓慢摆动；显示变形可调，不代表同步实测轨迹或模态振型。各测点幅值保持原计算值，缺测处不补齐。</p>:<p className="measurement-response-3d-note">{metricLabel} 表示振动大小，始终非负。上下参考面仅为 ±{metricLabel} 尺度，不是最大摆幅或真实运动边界；灰面不代表测得的平衡姿态。外形仅示意，测点间插值，不补根部或叶尖。</p>;
   const referenceToggle = <label className="measurement-response-reference-toggle"><input type="checkbox" checked={showNegativeReference} onChange={e => setShowNegativeReference(e.target.checked)} />显示负向尺度参考（非实测负峰值）</label>;
   const viewControls = <div>
     <label>视角 <output>{yaw}°</output><input aria-label="三维幅值水平视角" type="range" min={-65} max={65} step={1} value={yaw} onChange={e => setYaw(Number(e.target.value))} /></label>
     <label>俯仰 <output>{elevation}°</output><input aria-label="三维幅值俯仰视角" type="range" min={10} max={70} step={1} value={elevation} onChange={e => setElevation(Number(e.target.value))} /></label>
     <label>显示变形 <output>{Math.round(gain * 100)}%</output><input aria-label="三维幅值显示变形" type="range" min={.02} max={.3} step={.01} value={gain} onChange={e => setGain(Number(e.target.value))} /></label>
   </div>;
+  const animationControls=animate&&<><Button type="button" aria-pressed={playing} onClick={()=>setPlaying(v=>!v)}>{playing?'暂停振动':'播放振动'}</Button><label className="measurement-motion-speed">周期<select aria-label="振动动画周期" value={periodSeconds} onChange={e=>setPeriodSeconds(Number(e.target.value))}><option value={4}>4 秒</option><option value={8}>8 秒</option><option value={12}>12 秒</option></select></label></>;
   const viewActions = <div ref={headerActions} className="measurement-response-3d-actions">
-    {compact && <Button type="button" variant={settingsOpen ? "outline" : "ghost"} aria-expanded={settingsOpen} aria-controls={settingsId} onClick={() => setSettingsOpen(open => !open)}>显示设置</Button>}
+    {animationControls}{compact && <Button type="button" variant={settingsOpen ? "outline" : "ghost"} aria-expanded={settingsOpen} aria-controls={settingsId} onClick={() => setSettingsOpen(open => !open)}>显示设置</Button>}
     <Button type="button" variant="ghost" onClick={() => { setYaw(-25); setElevation(30); setGain(.18); }}>复位视图</Button>
   </div>;
-  return <section className={`measurement-response-3d${compact ? " measurement-response-3d-compact" : ""}`} aria-label="三维幅值分布" onKeyDown={e => {
+  return <section ref={surface} data-response-animation={animate?'displacement-slow-motion':undefined} data-animation-phase={animate?phase:undefined} className={`measurement-response-3d${compact ? " measurement-response-3d-compact" : ""}`} aria-label="三维幅值分布" onKeyDown={e => {
     if (e.key === "Escape" && settingsOpen) { e.stopPropagation(); closeSettings(); }
   }}>
-    <div className="measurement-response-3d-heading"><div><div className="measurement-response-3d-title"><h3>{title}</h3>{estimatedPositions && <span className="tag amber">估算位置</span>}</div><span>{label} · {showNegativeReference ? `零位与 ±${metricLabel} 参考` : `${metricLabel} 大小`}</span></div>
+    <div className="measurement-response-3d-heading"><div><div className="measurement-response-3d-title"><h3>{title}</h3>{estimatedPositions && <span className="tag amber">估算位置</span>}</div><span>{label} · {animate?'位移幅值 · 慢速振动示意':showNegativeReference ? `零位与 ±${metricLabel} 参考` : `${metricLabel} 大小`}</span></div>
       {hasPlot && viewActions}
     </div>
     {hasPlot ? <>
@@ -139,7 +151,7 @@ export function MeasurementResponse3D({ points, bandHz, frequencyHz, metricLabel
         {compact && <div className="measurement-response-3d-floating-controls">
           <div id={settingsId} className="measurement-response-3d-settings measurement-response-3d-settings-popover" role="region" aria-label="图形显示设置" hidden={!settingsOpen}>
             <header className="measurement-response-3d-popover-heading"><strong>显示设置</strong><Button type="button" variant="ghost" className="measurement-response-3d-close" aria-label="关闭显示设置" onClick={closeSettings}>×</Button></header>
-            {viewControls}{referenceToggle}
+            {viewControls}{!animate&&referenceToggle}
             <details className="measurement-response-3d-explanation"><summary>图示说明</summary>
               {estimatedPositions && <p className="measurement-response-3d-note">按当前版本估算半径定位，几何与投影待核验；非同步振型。</p>}
               {distanceNote}{interpretationNote}
@@ -147,18 +159,18 @@ export function MeasurementResponse3D({ points, bandHz, frequencyHz, metricLabel
           </div>
         </div>}
         <div className="measurement-response-3d-projection">
-          <svg viewBox="0 0 1000 420" role="img" aria-label={showNegativeReference ? `真实测点 ${metricLabel} 幅值与正负尺度参考，非实测振动轨迹` : `真实测点 ${metricLabel} 大小，非实测振动轨迹`}>
-            <title>{(showNegativeReference ? `实测 ${metricLabel} 大小保持非负；负向面为镜像参考，不是负振幅、实测极值或瞬时姿态。` : `实测 ${metricLabel} 大小保持非负，不是实测极值或瞬时姿态。`) + "灰色面为示意零位，没有推算相位或叶尖。"}</title>
-            {showNegativeReference && <g className="measurement-response-negative" data-response-negative-reference="rms-mirror">{mesh(-1)}</g>}
+          <svg viewBox="0 0 1000 420" role="img" aria-label={animate?'依据位移幅值的叶片慢速振动示意，采用同相假设':showNegativeReference ? `真实测点 ${metricLabel} 幅值与正负尺度参考，非实测振动轨迹` : `真实测点 ${metricLabel} 大小，非实测振动轨迹`}>
+            <title>{animate?"根据位移幅值进行同相慢速示意；不是实测同步轨迹。":(showNegativeReference ? `实测 ${metricLabel} 大小保持非负；负向面为镜像参考，不是负振幅、实测极值或瞬时姿态。` : `实测 ${metricLabel} 大小保持非负，不是实测极值或瞬时姿态。`) + "灰色面为示意零位，没有推算相位或叶尖。"}</title>
+            {!animate&&showNegativeReference && <g className="measurement-response-negative" data-response-negative-reference="rms-mirror">{mesh(-1)}</g>}
             <polygon data-response-zero-plane="true" points={polygon(0, extent, 0, 0)} fill="#e7edf4" fillOpacity={.85} stroke="#72859d" strokeDasharray="5 4" />
             {mesh(1)}
             <line x1={origin[0]} y1={origin[1]} x2={outer[0]} y2={outer[1]} stroke="#93a5bc" strokeWidth="1.5" />
             {located.map(p => {
-              const known = finiteAmplitude(p.normalizedAmplitude), pos = project(p.radiusM, 0, known ? p.normalizedAmplitude! : 0);
+              const known = finiteAmplitude(p.normalizedAmplitude), pos = project(p.radiusM, 0, known ? p.normalizedAmplitude! * motion : 0);
               const zero = project(p.radiusM, 0, 0), negative = project(p.radiusM, 0, known ? -p.normalizedAmplitude! : 0);
               return <g key={p.id}>
                 {p.highlighted && <circle data-response-highlight={p.id} cx={pos[0]} cy={pos[1]} r={12} fill="#dc4457" fillOpacity={.16} stroke="#dc4457"><title>{p.name} · 预设关注点，幅值仍为实测统计</title></circle>}
-                {known && showNegativeReference && <>
+                {!animate && known && showNegativeReference && <>
                   <line x1={pos[0]} y1={pos[1]} x2={negative[0]} y2={negative[1]} stroke="#7893b3" strokeDasharray="3 4" />
                   <circle data-response-negative-point={p.id} data-reference-amplitude={-p.normalizedAmplitude!}
                     cx={negative[0]} cy={negative[1]} r={4} fill="#fff" stroke="#7893b3" strokeWidth={1.5}>
@@ -172,21 +184,21 @@ export function MeasurementResponse3D({ points, bandHz, frequencyHz, metricLabel
               </circle></g>;
             })}
             <g className="measurement-response-scale-labels" aria-hidden="true">
-              {(showNegativeReference ? [1, 0, -1] : [1, 0]).map(sign => {
+              {(animate || showNegativeReference ? [1, 0, -1] : [1, 0]).map(sign => {
                 const pos = project(extent, -.12, sign * amplitudeExtent);
                 return <text key={sign} x={Math.min(900, pos[0] + 42)} y={pos[1] + 4}>{sign === 0 ? "零位参考" : sign === 1 ? `+${metricLabel}` : `−${metricLabel} 参考`}</text>;
               })}
             </g>
           </svg>
           <div className="measurement-response-3d-labels" aria-hidden="true">{located.map(p => {
-            const known = finiteAmplitude(p.normalizedAmplitude), pos = project(p.radiusM, 0, known ? p.normalizedAmplitude! : 0);
+            const known = finiteAmplitude(p.normalizedAmplitude), pos = project(p.radiusM, 0, known ? p.normalizedAmplitude! * motion : 0);
             return <span key={p.id} className={`${known ? "" : "missing"} ${p.highlighted ? "health-focus-point" : ""}`} style={{ left: `${pos[0] / 10}%`, top: `${pos[1] / 4.2}%` }}>{p.name}{known ? "" : " · 缺测"}</span>;
           })}</div>
         </div>
       </div>
       <div className="measurement-response-3d-axis"><span>0 = 风机中心</span><span>距中心 / m</span><span>最远测点 {fmt(extent)} m（非叶尖）</span></div>
       <div className="measurement-response-3d-legend"><span>0</span><i aria-hidden="true" /><span>{fmt(amplitudeExtent)}</span><span>归一化 {metricLabel} 大小</span><small>灰面：零位参考</small></div>
-      {!compact && referenceToggle}
+      {animate&&<p className="measurement-response-3d-note">各点按计算位移幅值等比例振动，变形放大显示；采用同相与慢速周期示意，不表示实测相位、频率或模态振型。</p>}{!compact && !animate && referenceToggle}
     </> : <div className="measurement-response-3d-empty"><div>
       <strong>{hasAmplitude ? "已有测点幅值，缺少测点位置" : "当前版本暂无可用的测点幅值"}</strong>
       <p>{hasAmplitude ? unknown.length ? `请补充 ${unknown.map(p => p.name).join("、")} 距风机旋转中心的半径（m），才能绘制三维分布。` : "当前有效测点均位于旋转中心，暂不能绘制径向分布。" : "请先选择已有分析结果的叶片。"}</p>

@@ -3,6 +3,7 @@ import React,{useEffect,useState,useRef} from 'react';
 import {api} from './api';
 import {Button,Card,Select,Table} from './common';
 import {Chart} from './charts';
+import {workspacePreviewSeries} from './field-analysis-workspace-data';
 import {numberText} from './measurement-common';
 export function SavedBladeWaveforms({blade,bladeCode}:{blade:any;bladeCode:string}){
  const generation=useRef(0),controller=useRef<AbortController|null>(null);
@@ -13,7 +14,7 @@ export function SavedBladeWaveforms({blade,bladeCode}:{blade:any;bladeCode:strin
   const curves=data.curves.filter((c:any)=>String(c.object.blade)===bladeCode&&c.object.point===p.pointName).sort((a:any,b:any)=>a.object.azimuth_deg-b.object.azimuth_deg);let elapsed=0;
   const fallback=curves.map((c:any)=>{const start=c.time_s[0],data=c.time_s.map((t:number,i:number)=>[(elapsed+t-start)*1000,c.velocity_m_s[i]*1000]);elapsed+=c.time_s[c.time_s.length-1]-start;return {name:c.object.azimuth_deg+'°',type:'line',showSymbol:false,connectNulls:false,data};});
   const saved=data.points?.find((v:any)=>String(v.bladeId)===bladeCode&&v.pointName===p.pointName),blocks=saved?.preview?.series;
-  const series=blocks?.length?blocks.map((b:any)=>({name:b.kind==='measured_processed'?b.azimuth_deg+'°':'拟合接缝',type:'line',showSymbol:false,connectNulls:false,lineStyle:{type:b.kind==='measured_processed'?'solid':'dashed'},data:b.time_s.map((t:number,i:number)=>[t*1000,b.values_m_s[i]*1000])})):fallback;
+  const series=blocks?.length?workspacePreviewSeries(saved.preview,p.plannedAzimuths||[]).map(s=>({...s,type:'line',showSymbol:false,connectNulls:false,lineStyle:{type:s.dashed?'dashed':'solid',color:s.color},itemStyle:{color:s.color},data:s.data.map(([t,v])=>[t!*1000,v])})):fallback;
   return <div key={p.pointName}><strong>{p.pointName}{p.radiusM==null?' · 距离未填写':` · ${p.radiusM} m`}</strong>{saved?.reason&&<p className="hint">{String(saved.reason).includes('JOIN_PREVIEW_UNSUPPORTED')?'接缝未通过拟合保护，保留真实独立片段。':saved.reason}</p>}{series.length?<Chart label={p.pointName+'有效片段排列'} height={250} option={{tooltip:{trigger:'axis'},legend:{top:0},grid:{left:65,right:25,top:40,bottom:65},xAxis:{type:'value',name:'展示累计时间 / ms'},yAxis:{type:'value',name:'mm/s'},dataZoom:[{type:'inside'},{type:'slider',bottom:15,height:20}],series}}/>:<p>缺少有效片段，不填零。</p>}</div>;
  })}</div>}</Card>;
 }

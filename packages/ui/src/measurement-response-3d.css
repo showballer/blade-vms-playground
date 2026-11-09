@@ -141,3 +141,5 @@
   .measurement-response-3d-axis span:nth-child(2) { display: none; }
   .measurement-response-3d-legend small { flex-basis: 100%; margin-left: 0; }
 }
+
+.measurement-motion-speed{display:flex;align-items:center;gap:6px;font-size:12px;white-space:nowrap}.measurement-motion-speed select{border:1px solid #d4deea;border-radius:6px;padding:5px;background:white;color:#234668}.measurement-wind-dataset{display:flex;flex-direction:column;gap:6px;max-width:640px;margin-top:16px}

@@ -5,6 +5,18 @@ export function normalizedAlgorithmOptions(saved:Partial<DesktopAlgorithmOptions
  const mode=saved.targetBandMode||(saved.targetBandHz?'custom':'preview');
  return {...desktopAlgorithmDefaults,...saved,targetBandMode:mode,...(mode!=='custom'?{targetBandHz:null,targetBandSource:null}:{targetBandSource:saved.targetBandSource||'用户指定的响应统计频带；非已确认模态频带'})};
 }
+export function workspaceOptionsForPlatform(saved:DesktopAlgorithmOptions,platform:'desktop'|'web'):DesktopAlgorithmOptions{
+ return {...saved,measurementMode:'outdoor'};
+}
+const desktopBatchNames:Record<string,string>={
+ '1101-78m-背景塔桶-第二组_桌面端导入_2026-11-02':'武川风场-R024-1101-第一组',
+ '第三组全流程_桌面端导入_2026-11-04':'武川风场-R024-1101-第二组',
+};
+export function desktopAnalysisCatalog(catalog:AnalysisJson):AnalysisJson{
+ // Labels only: retain immutable raw manifests, task IDs, source hashes and
+ // historical associations, including the original instrument/turbine labels.
+ return {...catalog,tasks:array<AnalysisTask>(catalog.tasks).map(task=>desktopBatchNames[task.name]?{...task,sourceName:task.name,name:desktopBatchNames[task.name]}:task)};
+}
 export function previewBandForRates(rates:number[]){
  const known=rates.filter(v=>Number.isFinite(v)&&v>0);if(!known.length)return null;
  const nyquist=Math.min(...known)/2;return {band:[Math.min(100,nyquist*.1),Math.min(20000,nyquist)],nyquist};
@@ -85,10 +97,16 @@ export function workspaceAzimuthColor(angle:number,planned:number[]){
  return palette[Math.max(0,order.indexOf(angle))%palette.length];
 }
 export function workspacePreviewSeries(preview:AnalysisJson,planned:number[]){
- return array(preview?.series).map(b=>{
+ return array(preview?.series).map((b,i,blocks)=>{
   const gap=b.kind==='display_gap',measured=b.kind==='measured_processed';
+  const data=array<number>(b.time_s).map((x,j)=>[x,gap||!finite(b.values_m_s?.[j])?null:b.values_m_s[j]*1000]);
+  if(b.kind==='synthetic_display_transition'){
+   const left=blocks[i-1],right=blocks[i+1],last=(left?.time_s?.length||0)-1;
+   if(left?.kind==='measured_processed'&&finite(left.time_s?.[last])&&finite(left.values_m_s?.[last]))data.unshift([left.time_s[last],left.values_m_s[last]*1000]);
+   if(right?.kind==='measured_processed'&&finite(right.time_s?.[0])&&finite(right.values_m_s?.[0]))data.push([right.time_s[0],right.values_m_s[0]*1000]);
+  }
   return {name:gap?`${b.left_azimuth_deg}°→${b.right_azimuth_deg}° 未拟合`:measured?`${b.azimuth_deg??b.azimuth??'实测'}°`:'拟合接缝',
-   data:array<number>(b.time_s).map((x,j)=>[x,gap||!finite(b.values_m_s?.[j])?null:b.values_m_s[j]*1000]),
+   data,
    dashed:!measured,displayOnlyGap:gap,color:gap?'#94a3b8':measured?workspaceAzimuthColor(b.azimuth_deg??b.azimuth,planned):'#d97706'};
  });
 }
