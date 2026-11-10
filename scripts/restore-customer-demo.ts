@@ -12,7 +12,7 @@ import {processingEndpoint} from '../apps/web/lib/measurement-processing';
 import {bladeHealthEndpoint} from '../apps/web/lib/measurement-blade-health';
 const directory=path.resolve('data/customer-demo/20261110');
 const sha=(data:Buffer)=>createHash('sha256').update(data).digest('hex');
-async function main(){try{
+async function main(){let database:ReturnType<typeof pool>|undefined;try{
  const apply=process.argv.includes('--apply');
  const manifest=JSON.parse(await readFile(path.join(directory,'manifest.json'),'utf8'));
  assert.equal(manifest.schema,'customer-demo-20261110-v1');
@@ -38,6 +38,7 @@ async function main(){try{
  for(const rid of config.registration.recordingIds)for(const name of ['manifest.json','chunk-00000000.bin','split-source.csv.gz'])assert(entries.has(rid+'/'+name));
  console.log(JSON.stringify({apply,batch:config.name,recordings:records.length,windDatasets:config.datasets.map((d:any)=>({name:d.name,rows:d.rows.length}))},null,2));
  if(!apply)return;
+ database=pool();
  const username=process.argv.find(v=>v.startsWith('--username='))?.slice(11)||'admin';
  const [user]=await rows<User>('SELECT id,username,name,role,tenant,active FROM users WHERE username=? AND active=1 AND deleted_at IS NULL',[username]);
  assert(user&&['admin','analyst'].includes(user.role),'Existing administrator or analyst required');
@@ -66,7 +67,7 @@ async function main(){try{
  }
  const farm=await ensure('farm','huade-scenario',null,{name:'化德风场'});
  const turbine=await ensure('turbine','020#',farm.id,{name:'20号风机（020#）'});
- const campaign=await ensure('campaign','r025-crack-scenario-20261110',farm.id,{name:config.name,date:'2026-10-18',turbineIds:[turbine.id],weather:'客户演示场景；叶片响应为构造数据，与实测分钟工况作场景关联。'});
+ const campaign=await ensure('campaign','r025-crack-scenario-20261110',farm.id,{name:config.name,date:'2026-10-18',turbineIds:[turbine.id],weather:'叶片响应为构造数据，与分钟工况作关联对照。'});
  assert.equal(campaign.name,config.name);assert.deepEqual(campaign.turbineIds,[turbine.id],'Existing batch must already use 020#; migrate old R025 batch separately');
  const context={farmId:farm.id,campaignId:campaign.id,turbineId:turbine.id};
  const registrations=await listMeasurementRows(user,'measurement_synthetic_imports');
@@ -111,5 +112,5 @@ async function main(){try{
  const result=await bladeHealthEndpoint(user,{action:'evaluate',context});assert.equal(result.blades.length,3);
  for(const b of result.blades){const code=all.find(o=>o.id===b.bladeId)!.code;assert.equal(b.syntheticScenario?.detection?.outsideCount,code==='2'?31:0);assert.equal(b.conditions.filter((c:any)=>c.condition.status==='matched').length,20);assert.equal(b.structuralDamageConfirmed,false);}
  console.log('Restored: 化德60条记录、两份风场数据；三片叶片工况20/20，超限0/31/0。');
-}finally{await pool().end();}}
+}finally{await database?.end();}}
 main().catch(e=>{console.error(e);process.exitCode=1;});

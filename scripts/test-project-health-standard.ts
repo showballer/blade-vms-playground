@@ -42,7 +42,7 @@ assert.equal(evaluateHealthStandard(synthetic,'1',independent.conditions,standar
 assert.throws(()=>buildHealthStandard(sources.map((s,i)=>i? s:{...s,processing:synthetic}),'confirm'),/合成情景/);
 const numeric=syntheticScenarioComparison(synthetic,'1',standard.variants[0]);assert.equal(numeric.comparisons.length,100);assert(numeric.comparisons.some(c=>c.outside));assert.equal(numeric.structuralDamageConfirmed,false);assert.equal(numeric.formalHealthAssessment,false);
 const changed=structuredClone(synthetic);changed.report.workspace.algorithmOptions.detrend='constant';assert.equal(syntheticScenarioComparison(changed,'1',standard.variants[0]).comparisons.length,0);
-assert.equal(healthReportStatus({processingResultId:'s',syntheticScenario:{},label:'裂纹情景（合成）'}),'裂纹情景（合成）');
+assert.equal(healthReportStatus({processingResultId:'s',syntheticScenario:{},label:'损伤'}),'样本检测：待复核（构造样本）');
 console.log('PASS synthetic isolation, no healthy baseline/publication, numeric comparison recomputed and invalidated by configuration changes');
 
 // Detection must follow computed features, never the scenario's blade number or declared defect.
@@ -60,5 +60,6 @@ assert.equal(syntheticScenarioComparison(changed,'1',standard.variants[0]).detec
 const noPoint=structuredClone(synthetic);noPoint.report.records.pop();assert.equal(syntheticScenarioComparison(noPoint,'1',standard.variants[0]).detection.status,'insufficient');
 const noQuality=structuredClone(synthetic);noQuality.report.records[0].quality_assessment.analysis_eligible=false;assert.equal(syntheticScenarioComparison(noQuality,'1',standard.variants[0]).detection.status,'insufficient');
 const invalidLimits=structuredClone(standard.variants[0]);invalidLimits.slots[0].limits.rms.max=NaN;assert.equal(syntheticScenarioComparison(synthetic,'1',invalidLimits).detection.status,'insufficient');
-assert.equal(healthReportStatus({syntheticScenario:{detection:numeric.detection},label:'损伤'}),'演示检测：疑似损伤（场景数据）');
-console.log('PASS shared detector: feature-driven alarms, blade/hypothesis independence, healthy blade 2, fail-closed quality/config/threshold checks and explicit demo report provenance');
+assert.equal(healthReportStatus({syntheticScenario:{detection:numeric.detection},label:'损伤'}),'样本检测：疑似损伤（构造样本）');
+assert.equal(healthReportStatus({syntheticScenario:{detection:healthyDetection.detection},label:'健康'}),'样本检测：响应正常（构造样本）');
+console.log('PASS shared detector: feature-driven alarms, blade/hypothesis independence, healthy blade 2, fail-closed quality/config/threshold checks and explicit sample provenance');

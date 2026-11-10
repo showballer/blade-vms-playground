@@ -73,7 +73,7 @@ export async function bladeHealthWorkspace(user:User,context:any,save=false,pref
     standardSnapshot:null,healthScreening:null,finalDecision:null,structuralDamageConfirmed:false,
     assessmentAlgorithmVersion:SCENARIO_DETECTION_VERSION,rulesVersion:digest(JSON.stringify(scenario?.referenceVariant||null)),
     damageAlgorithm:{...projectDamageContract,name:'健康响应包络检测',mode:'scenario_validation'},
-    evidenceReadiness:{matched:conditions.filter(c=>c.condition.status==='matched').length,total:records.length,association:'synthetic',blockers:['演示检测结果不用于生产决策']}
+    evidenceReadiness:{matched:conditions.filter(c=>c.condition.status==='matched').length,total:records.length,association:'synthetic',blockers:['构造样本的检测结果不作为现场健康或损伤结论']}
    });
   }
   snapshot.inputKey=digest(JSON.stringify([source.id,windRevision,reviewRevision,snapshot.assessmentAlgorithmVersion,snapshot.rulesVersion,rule?.id,reference?.id,identityReview?.id]));

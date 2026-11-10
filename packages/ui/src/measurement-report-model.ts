@@ -1,6 +1,6 @@
 /** User-facing presentation of an immutable health snapshot. No health inference from silence. */
 export function healthReportStatus(blade: any) {
-  if(blade?.syntheticScenario)return blade.syntheticScenario.detection?`演示检测：${blade.syntheticScenario.detection.label}（场景数据）`:blade.label||'合成情景，不作现场评价';
+  if(blade?.syntheticScenario)return `样本检测：${blade.syntheticScenario.detection?.label || '待复核'}（构造样本）`;
   if (!blade?.processingResultId) return (blade?.acquired || blade?.coverage?.acquired) ? '待分析' : '未测量';
   if(blade.standardSnapshot&&blade.healthScreening){
     if(blade.status==='insufficient')return '待复核';
