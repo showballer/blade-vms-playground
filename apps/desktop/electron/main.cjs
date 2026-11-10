@@ -239,7 +239,7 @@ app.whenReady().then(() => {
     height: 1000,
     minWidth: 900,
     minHeight: 640,
-    title: "BladeVMS 现场工作台",
+    title: "BladeVMS · 三维台架结构力学特征测试系统",
     frame: false,
     backgroundColor: "#F5F7FA",
     webPreferences: {

@@ -8,11 +8,11 @@
 - 风场数据集按租户、测量批次、风场、风机保存关联，重新打开恢复。每秒均值仅作为背景工况；工况匹配和健康评价资格分开显示。
 - 实测位移振幅保留原值；增加一阶弯曲形状假设的递增拟合对照，不把拟合当实测或健康判据。
 - 移除“正式评价待补充依据”黄色框，依据收进默认折叠详情；证据不足的正式评价显示灰色“健康状态未核验”。不硬编码“健康”结论。
-- 第二组叶片 2 的 P3 有独立缺陷注入测试记录，健康监测显示“疑似损伤预警（测试副本）”。可在页面重新运行并查看四角度原样/注入波形及检测指标。
+- 已按最新要求撤回第二组叶片 2 的缺陷注入功能及其预警展示；旧注入结果不再进入健康监测或新报告。保留基于实测数据、正常参考与明确规则的响应变化预警。
 
 ## 代码、数据与数据库的区别
 
-Git 包含全部代码改动、迁移/恢复脚本和 `data/health-validation/20261109` 的完整配对测试波形、检测结果及校验清单。原始两组采集 ZIP 继续位于 `data/task-imports/20261105`；历史模态样本保留在 `data/modal-samples/20261106`。
+Git 包含代码改动和迁移/恢复脚本；缺陷注入样本、生成入口及复现脚本已撤回。原始两组采集 ZIP 继续位于 `data/task-imports/20261105`；历史模态样本保留在 `data/modal-samples/20261106`。
 
 Git 不包含数据库、账号/令牌、`.env.local`、`.data` 缓存。其他电脑拉取后需用自己的对象 ID 重新建立关联，不能把本机数据库 ID 当成固定业务标识。
 
@@ -29,16 +29,18 @@ Git 不包含数据库、账号/令牌、`.env.local`、`.data` 缓存。其他�
    脚本匹配已有批次旧名/新名和已确认风场数据集名称；缺失或歧义会停止。若接收环境对象结构不同，按实际归属在页面关联，不套用本机 ID。
 
 3. 在 Web 对两个批次各三片叶片完成整叶片响应分析。健康监测可直接点击“开始整叶片分析”。
-4. 在仓库根目录预览并恢复服务端风场关联与缺陷测试；默认使用数据库中已有 admin 账号，也可传 `--username=分析员用户名`。脚本不创建账号、不复制凭据。
+4. 在仓库根目录预览并恢复服务端风场关联；默认使用数据库中已有 admin 账号，也可传 `--username=分析员用户名`。脚本不创建账号、不复制凭据。
 
    ```sh
    node --env-file=apps/web/.env.local node_modules/tsx/dist/cli.mjs --tsconfig apps/web/tsconfig.json scripts/restore-health-revision.ts
    node --env-file=apps/web/.env.local node_modules/tsx/dist/cli.mjs --tsconfig apps/web/tsconfig.json scripts/restore-health-revision.ts --apply
    ```
 
-   脚本先检查两组整叶片版本和数据集，再保存关联和评价。第二组叶片 2 的 P3 若已有同来源测试则保留，否则按当前采样数据重算；测试副本与原始处理结果独立存储。当前数据每片叶片应匹配 20/20 条，共 120 条。处理参数不同会导致重算数值变化。
+   脚本先检查两组整叶片版本和数据集，再保存关联和评价。是否匹配及健康评价资格由实际记录时间、风机编号和数据来源决定，不预置匹配条数或健康结论。
 
-5. 打开健康监测，选择第二组、叶片 2，进入“缺陷验证（测试）”；其余叶片保留真实的正式评价资格状态。
+5. 打开健康监测核对各片叶片的实测响应、工况与评价状态。旧缺陷注入结果不参与展示或计算。
+
+本机已有任务按用户要求保留原名称和数据；本轮回退不执行上述批次重命名或归档脚本。
 
 ## 验证命令
 
@@ -48,9 +50,9 @@ npm run test:record-analysis
 node_modules/.bin/tsx --tsconfig apps/web/tsconfig.json scripts/test-health-followup.tsx
 node_modules/.bin/tsx --tsconfig apps/web/tsconfig.json scripts/test-web-health-revision.tsx
 node_modules/.bin/tsx packages/ui/src/displacement-display-data.test.ts
-PYTHONPATH=services/acquisition:services/acquisition/tests python -m unittest test_anomaly_validation test_short_preview test_point_displacement -q
-PYTHONPATH=services/acquisition python scripts/verify-health-validation.py
+PYTHONPATH=services/acquisition:services/acquisition/tests python -m unittest test_removed_defect_validation test_short_preview test_point_displacement -q
+node_modules/.bin/tsx --tsconfig apps/web/tsconfig.json scripts/test-health-injection-rollback.ts
 npm run build -w @blade/web
 ```
 
-Node 使用项目支持版本，Python 使用已安装 NumPy/SciPy 等依赖的分析环境。测试确认不会把单个尖峰判作持续异常，测试波形不进入原始分析导出，也不会被正式损伤判断采用。
+Node 使用项目支持版本，Python 使用已安装 NumPy/SciPy 等依赖的分析环境。回归检查覆盖旧缺陷入口拒绝执行、短接缝、位移计算及工况关联；回退不修改原始测量文件。

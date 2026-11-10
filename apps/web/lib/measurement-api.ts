@@ -1,9 +1,11 @@
+import {reportWindIsStale} from './measurement-report-revision';
+import {healthWindSelection} from './measurement-health-wind';
 import {analysisPackageEndpoint} from './measurement-packages';
 import {measurementMemberships} from './measurement-memberships';
 import {formalModalEndpoint} from './measurement-formal-modal';
 import {createBladeReport} from "./measurement-blade-report";
 import {bladeHealthEndpoint} from "./measurement-blade-health";
-import {validateWindTimeSemantics,matchSegmentConditions,windDatasetRevisionInput} from "@blade/ui/measurement-conditions";
+import {validateWindTimeSemantics,matchSegmentConditions} from "@blade/ui/measurement-conditions";
 import {processingEndpoint,processingResult} from "./measurement-processing";
 import {
   audit,
@@ -821,7 +823,17 @@ export async function measurementEndpoint(
         );
         const offset = Math.max(0, Number(url.searchParams.get("offset")) || 0);
         const wind=await windDatasetSummaries(user);
-        return { reports: rs.slice(offset, offset + 20).map(r=>({...r,staleEvaluation:r.windRevision&&r.context?.farmId?digest(JSON.stringify(windDatasetRevisionInput(wind,r.context.farmId)))!==r.windRevision:false})), total: rs.length };
+        const selections=new Map<string,Promise<{id:string}>>();
+        const reports=await Promise.all(rs.slice(offset,offset+20).map(async r=>{
+          const c=r.context;let currentId='';
+          if(c?.farmId&&c?.campaignId&&c?.turbineId){
+            const key=JSON.stringify([c.farmId,c.campaignId,c.turbineId]);
+            if(!selections.has(key))selections.set(key,healthWindSelection(user,c,wind.filter(d=>d.farmId===c.farmId)));
+            currentId=(await selections.get(key)!).id;
+          }
+          return {...r,staleEvaluation:reportWindIsStale(r,wind,currentId)};
+        }));
+        return {reports,total:rs.length};
       }
       if (method === "POST") {
         requireAnalyst(user);

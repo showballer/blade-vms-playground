@@ -1,7 +1,6 @@
-import sharp from "sharp";
+import { buildBladeReportDocx } from './measurement-report-docx';
 import {
   Document,
-  ImageRun,
   HeadingLevel,
   Packer,
   Paragraph,
@@ -20,6 +19,11 @@ export async function measurementReportDocx(user: User, id: string) {
     (r) => r.id === id,
   );
   if (!report) throw new HttpError(404, "报告不存在");
+  if (Array.isArray(report.bladeAssessments)) {
+    const buffer = await buildBladeReportDocx(report);
+    await audit(user, "导出叶片测量分析报告", id);
+    return {buffer, filename: report.reportNumber + ".docx"};
+  }
   const cells = (values: string[]) =>
     new TableRow({
       children: values.map((text) => new TableCell({ children: [p(text)] })),
@@ -28,34 +32,10 @@ export async function measurementReportDocx(user: User, id: string) {
     new Paragraph({ text: report.name, heading: HeadingLevel.TITLE }),
     p(`报告编号：${report.reportNumber}`),
     p(`生成：${report.createdAt} · 编制：${report.author}`),
-    p(report.conclusion),
+    p(`测量记录：${report.rows.length} 条`),
   ];
-  if(report.bladeAssessments){
-    const farm=report.objects?.find((o:any)=>o.id===report.context?.farmId),turbine=report.objects?.find((o:any)=>o.id===report.turbineId);
-    children.push(p(`风场：${farm?.name||farm?.code||'未记录'}；风机：${turbine?.name||turbine?.code||'未记录'}`));
-    children.push(p(`快照校验：${report.snapshotHash}；工况版本：${report.windRevision}`));
-    for(const blade of report.bladeAssessments){
-      children.push(new Paragraph({text:/^[1-3]$/.test(blade.name)?`叶片 ${blade.name}`:blade.name,heading:HeadingLevel.HEADING_1}),p(`结论：${blade.label}`),p([...new Set(blade.reasons||[])].join("；")));
-      if(!blade.processingResultId)continue;
-      children.push(p(`处理 ${blade.processingResultId} / ${blade.processingAlgorithmVersion}；评价 ${blade.assessmentId||"未保存"} / ${blade.assessmentAlgorithmVersion}；${blade.evaluatedAt}`));
-      children.push(p(`采到 ${blade.coverage.observed}；可分析 ${blade.coverage.analyzable}；待复核 ${blade.coverage.review}；缺项 ${(blade.coverage.missing||[]).join("、")||"无"}`));
-      if(blade.geometryEstimates?.length)children.push(p('几何输入为现场估算，方位与投影待核验；仅用于空间响应位置展示，不代表轴向振动或同步振型。'),p('估算依据：'+[...new Set(blade.geometryEstimates.map((g:any)=>g.source||g.reason||JSON.stringify(g)))].join('；')));
-      const group=blade.commonResponse?.find((g:any)=>g.layer==="los_residual")||blade.commonResponse?.[0];
-      if(group?.points?.length){
-        const pts=group.points,valid=pts.filter((p:any)=>Number.isFinite(p.radiusM)&&Number.isFinite(p.mean_half_peak_to_peak_m_s));
-        const xmax=Math.max(1e-6,...pts.map((p:any)=>p.radiusM||0)),ymax=Math.max(1e-9,...valid.map((p:any)=>p.mean_half_peak_to_peak_m_s));
-        const paths=pts.map((p:any,i:number)=>{const x=65+560*p.radiusM/xmax,y=290-240*p.mean_half_peak_to_peak_m_s/ymax;const prior=pts[i-1];return Number.isFinite(p.mean_half_peak_to_peak_m_s)?`${i&&Number.isFinite(prior.mean_half_peak_to_peak_m_s)?'L':'M'}${x},${y}`:'';}).join(' ');
-        const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="720" height="360"><rect width="720" height="360" fill="white"/><path d="M65,35V290H650" stroke="#8ca0b8" fill="none"/><path d="${paths}" stroke="#2867bd" stroke-width="3" fill="none"/>${valid.map((p:any)=>`<circle cx="${65+560*p.radiusM/xmax}" cy="${290-240*p.mean_half_peak_to_peak_m_s/ymax}" r="5" fill="#2867bd"/>`).join('')}<text x="65" y="325" font-size="15">Radius (m) 0 - ${xmax}</text><text x="65" y="23" font-size="15">Mean half peak-to-peak (m/s), max ${ymax.toPrecision(4)}</text></svg>`;
-        const png=await sharp(Buffer.from(svg)).png().toBuffer();children.push(new Paragraph({children:[new ImageRun({data:png,type:'png',transformation:{width:600,height:300}})]}),p(`空间响应：共同角 ${(group.azimuths||[]).join('/')}°，等角度权重，视线速度残差半峰峰值；不是带相位振型。`));
-        children.push(new Table({width:{size:100,type:WidthType.PERCENTAGE},rows:[cells(['测点','半径 m','半峰峰值 m/s','真实处理结果 ID']),...pts.map((pt:any)=>cells([pt.point,n(pt.radiusM),n(pt.mean_half_peak_to_peak_m_s,8),(pt.resultIds||[]).join(', ')]))]}));
-      }
-      children.push(new Paragraph({text:'有效段工况与来源',heading:HeadingLevel.HEADING_2}));
-      for(const c of blade.conditions||[])children.push(p(`${c.point}/${c.azimuthDeg}°：${c.sourceTimes.map((t:any)=>new Date(t.start).toISOString()+' ~ '+new Date(t.end).toISOString()).join('; ')}；风速 ${n(c.condition.windSpeed)} m/s，转速 ${n(c.condition.rpm)} rpm；${c.condition.matchMethod}/${c.condition.timeBasis}；数据集 ${c.condition.datasetIds.join(', ')||'无'}；${c.condition.reasons.join('；')}`));
-      for(const r of blade.records||[])children.push(p(`原始 ${r.id} / ${r.point}/${r.azimuthDeg}°；hash ${r.sourceHash}；质量 ${r.quality?.status||r.quality?.analysis_eligible}；${(r.issues||[]).join(', ')}`));
-    }
-  }
   if (report.coverage)
-    children.push(p(`来源覆盖：已关联 ${report.coverage.registeredSources} 条，已分析 ${report.coverage.analyzedSources} 条，未纳入 ${report.coverage.unanalyzedSources} 条。${report.coverage.meaning}`));
+    children.push(p(`来源覆盖：已关联 ${report.coverage.registeredSources} 条，已分析 ${report.coverage.analyzedSources} 条，未纳入 ${report.coverage.unanalyzedSources} 条。`));
   if (report.excludedSources?.length) {
     children.push(new Paragraph({ text: "未纳入分析的来源", heading: HeadingLevel.HEADING_1 }));
     children.push(new Table({
@@ -101,21 +81,12 @@ export async function measurementReportDocx(user: User, id: string) {
               `${n(r.peaks[0]?.frequencyHz)} / ${n(r.metrics.rmsVelocityMps, 6)}`,
               `${n(r.assessment.frequencyShiftPercent, 1)} / ${n(r.assessment.amplitudeRatio, 2)}`,
               `${n(r.condition.windSpeed)} / ${n(r.condition.rpm)}`,
-              r.diagnosticOnly ? "诊断复核 · 不评价健康" : r.assessment.label,
+              r.diagnosticOnly ? "待复核" : r.assessment.label,
             ]),
           ),
         ],
       }),
     );
-    for (const r of records)
-      children.push(
-        p(
-          `${r.names.position} / ${n(r.azimuthDeg, 1)}°：${r.diagnosticOnly ? "诊断来源，未确认为正式有效测量；" : ""}测量时间 ${new Date(r.measuredAt).toISOString()}；俯仰 ${n(r.angles?.pitchDeg)}°，水平 ${n(r.angles?.yawDeg)}°；保留经过范围 ${n(r.validSeconds)} s；分辨率 ${n(r.resolutionHz)} Hz；风速区间 ${r.condition.windRange?.map((v: number) => n(v)).join("～") || "未匹配"}；转速区间 ${r.condition.rpmRange?.map((v: number) => n(v)).join("～") || "未匹配"}；工况来源 ${r.condition.datasetIds.join(", ") || "未匹配"}；判据 ${r.assessment.reason}；复核 ${r.review?.note || "未复核"}。`,
-        ),
-        p(
-          `追溯：${(r.references || [r.reference]).map((ref: any) => ref.kind + ":" + ref.id).join("、")}；分析 ${r.id}；算法 ${r.algorithmVersion}；参数 ${JSON.stringify(r.parameters)}；原始数据 ${JSON.stringify(r.provenance)}；保留样本区间 ${JSON.stringify(r.ranges || [])}；边界依据 ${JSON.stringify(r.boundaryBasis || null)}；人工标记有效时间区间 ${r.review?.range ? `${n(r.review.range.startSeconds)}–${n(r.review.range.endSeconds)} s` : "无"}。`,
-        ),
-      );
     for (const r of records)
       for (const e of r.events || [])
         children.push(
@@ -134,7 +105,7 @@ export async function measurementReportDocx(user: User, id: string) {
     );
     children.push(
       p(
-        `叶片结论：${records.some((r) => r.assessment.status === "suspected") ? "存在疑似异常，建议人工复核和现场巡检" : records.every((r) => r.assessment.status === "within_reference") ? "已测点未触发组合判据，不能据此排除全部损伤" : "证据不充分，暂不评价结构健康"}。缺失点：${missing.join("、") || "无"}。`,
+        `叶片结论：${records.some((r) => !r.diagnosticOnly && r.assessment.status === "suspected") ? "响应异常，待复核" : records.every((r) => !r.diagnosticOnly && r.assessment.status === "within_reference") ? "未触发响应预警" : "健康状态未核验"}。缺失点：${missing.join("、") || "无"}。`,
       ),
     );
   }
@@ -147,7 +118,7 @@ export async function measurementReportDocx(user: User, id: string) {
     if (!report.rows.some((r: any) => r.context.bladeId === blade.id))
       children.push(
         p(
-          `${report.objects.find((o: any) => o.id === blade.parentId)?.name || "风机"} / ${blade.name}：未测量，不评价。`,
+          `${report.objects.find((o: any) => o.id === blade.parentId)?.name || "风机"} / ${blade.name}：未测量。`,
         ),
       );
   const buffer = await Packer.toBuffer(

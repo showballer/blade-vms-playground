@@ -1,4 +1,5 @@
 "use client";
+import { PRODUCT_NAME } from "./product-name";
 import {PartnerBrand} from "./partner-brand";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -196,9 +197,7 @@ export function BladeApp({ platform }: { platform: "web" | "desktop" }) {
             BLADE VIBRATION MONITORING SYSTEM
           </span>
           <h1>
-            三维台架结构力学
-            <br />
-            特征测试系统
+            {PRODUCT_NAME}
           </h1>
           <p>
             从振动信号到结构状态，
@@ -343,7 +342,7 @@ export function BladeApp({ platform }: { platform: "web" | "desktop" }) {
         </div>
       )}
       <header className="app-header">
-        <PartnerBrand subtitle={platform === "desktop" ? "现场采集工作台" : "三维台架结构力学特征测试系统"} />
+        <PartnerBrand subtitle={PRODUCT_NAME} />
         <div className="header-actions">
           {platform === "desktop" && typeof window !== "undefined" && window.blade && (
             <Button onClick={() => setSyncOpen(true)}><CloudUpload size={15} />回传本机任务</Button>

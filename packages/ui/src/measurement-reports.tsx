@@ -1,4 +1,5 @@
 "use client";
+import { MeasurementReportPreview } from "./measurement-report-preview";
 import React, { useEffect, useState, useRef } from "react";
 import { api, saveBlob } from "./api";
 import { Button, Card, Dialog, Table } from "./common";
@@ -67,7 +68,7 @@ export function MeasurementReports({ canWrite }: { canWrite: boolean }) {
     <div className="stack measurement-workspace">
       <header>
         <h1>报告导出</h1>
-        <p>按测量批次生成工况报告，保留对象、点位与算法结果快照。</p>
+        <p>导出健康监测的测量结果、叶片图表和结论摘要。</p>
       </header>
       <Card title="报告范围">
         <ObjectFilters
@@ -80,10 +81,11 @@ export function MeasurementReports({ canWrite }: { canWrite: boolean }) {
             setPage(0);
           }}
           blade={false}
+          position={false}
         />
         <Button
           variant="primary"
-          disabled={!canWrite || !filter.campaignId || busy || loading}
+          disabled={!canWrite || !filter.campaignId || !filter.turbineId || busy || loading}
           onClick={async () => {
             setBusy(true);
             setError("");
@@ -102,7 +104,7 @@ export function MeasurementReports({ canWrite }: { canWrite: boolean }) {
             }
           }}
         >
-          生成逐叶片报告
+          生成测量报告
         </Button>
         <MeasurementStatus
           loading={loading || busy}
@@ -113,7 +115,7 @@ export function MeasurementReports({ canWrite }: { canWrite: boolean }) {
           }}
         />
         <p className="hint">
-          请选择批次与风机。报告保存三片叶片的覆盖、处理及评价版本；未测和缺项明确列出。
+          选择测量批次和风机后生成报告。
         </p>
       </Card>
       <Card title="已保存报告">
@@ -123,12 +125,12 @@ export function MeasurementReports({ canWrite }: { canWrite: boolean }) {
               <td>{r.reportNumber}</td>
               <td>{r.name}{r.staleEvaluation&&<small>工况已更新，原报告快照保留</small>}</td>
               <td>{timeText(r.createdAt)}</td>
-              <td>{r.processingSnapshots?.reduce((n:number,s:any)=>n+s.records.length,0)??r.rows.length}{r.coverage && <small>来源 {r.coverage.analyzedSources}/{r.coverage.registeredSources} 条已分析</small>}</td>
+              <td>{r.processingSnapshots?.reduce((n:number,s:any)=>n+s.records.length,0)??(r.rows?.length || 0)}{r.coverage && <small>来源 {r.coverage.analyzedSources}/{r.coverage.registeredSources} 条已分析</small>}</td>
               <td>
-                <Button onClick={() => setSelected(r)}>查看</Button>
+                <div className="measurement-toolbar"><Button onClick={() => setSelected(r)}>查看</Button>
                 <Button disabled={busy} onClick={() => void docx(r)}>
                   导出 Word
-                </Button>
+                </Button></div>
               </td>
             </tr>
           ))}
@@ -138,19 +140,14 @@ export function MeasurementReports({ canWrite }: { canWrite: boolean }) {
       {selected && (
         <Dialog title={selected.name} wide onClose={() => setSelected(null)}>
           <div className="measurement-workspace">
+            {selected.bladeAssessments ? <MeasurementReportPreview report={selected}/> : <>
             <p>
               {selected.reportNumber} · {timeText(selected.createdAt)} ·{" "}
               {selected.author}
             </p>
-            <p>{selected.conclusion}</p>{selected.staleEvaluation&&<p className="measurement-diagnostic-note">工况已更新。本报告保持生成时的快照；需要当前结论时请更新评价并生成新报告。</p>}
-            {selected.bladeAssessments&&<Table headers={["叶片","结论","可分析 / 采到","处理 / 评价版本","主要依据"]}>{selected.bladeAssessments.map((b:any)=><tr key={b.bladeId||b.name}><td>{b.name}</td><td>{b.label}</td><td>{b.coverage?`${b.coverage.analyzable} / ${b.coverage.observed}`:"未测"}</td><td>{b.processingResultId?.slice(0,8)||"—"} / {b.assessmentId?.slice(0,8)||"—"}</td><td>{b.reasons?.join("；")}</td></tr>)}</Table>}
-            {selected.snapshotHash&&<p className="hint">快照校验 {selected.snapshotHash} · 生成后不随工况或处理版本修改</p>}
+            {selected.staleEvaluation&&<p className="hint">工况已更新 · 当前显示已保存报告</p>}
             {selected.coverage && <p className={selected.coverage.complete ? "hint" : "measurement-diagnostic-note"}>
               来源覆盖：已关联 {selected.coverage.registeredSources} 条 · 已分析 {selected.coverage.analyzedSources} 条 · 未纳入 {selected.coverage.unanalyzedSources} 条。
-              {!selected.coverage.complete && " 存在缺失观测，不能视为完整一圈。"}
-            </p>}
-            {(selected.hasDiagnostic || selected.rows.some(isDiagnosticMeasurement)) && <p className="measurement-diagnostic-note">
-              含诊断数据：相关波形与频谱仅用于复核，不计为正式健康结论或正常参考。
             </p>}
             <Table
               headers={[
@@ -201,7 +198,8 @@ export function MeasurementReports({ canWrite }: { canWrite: boolean }) {
                 </tr>)}
               </Table>
             </section>}
-            <div className="measurement-toolbar">
+            </>}
+            <div className="measurement-toolbar health-report-actions">
               <Button
                 disabled={busy}
                 variant="primary"

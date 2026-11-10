@@ -1,9 +1,7 @@
 "use client";
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { Crosshair, Hand, LoaderCircle, Plus, RefreshCw, Route, StepForward, Trash2 } from "lucide-react";
+import { Crosshair, LoaderCircle, Plus, RefreshCw, Route, StepForward, Trash2 } from "lucide-react";
 import { Button, CustomSelect } from "./common";
-import { FieldLaserControl } from "./field-device";
-import { FieldTurntableManual } from "./field-turntable";
 import { FieldTurntableHealth } from "./field-turntable-health";
 import { FieldDriveProfile, driveProfileFastPreset } from "./field-drive-profile";
 import { FieldTurntableOriginControl, type FieldOriginReturnMotion } from "./field-turntable-origin-control";
@@ -108,15 +106,15 @@ export function autoFollowBlockers(config: FieldConfig, status: FieldStatus | nu
 }
 
 export function FieldTurntableWorkspace(props: Props) {
-  const [localMode, setMode] = useState<"manual" | "auto" | "segmented">("segmented");
-  const mode = props.routeMode || localMode;
+  const [localMode, setMode] = useState<"auto" | "segmented">("segmented");
+  const mode = (props.routeMode || localMode) === "auto" ? "auto" : "segmented";
   const [autoBusy, setAutoBusy] = useState(false), [originBusy, setOriginBusy] = useState(false);
   const savedOrigins = () => { try { return readSavedWorkOrigins(localStorage.getItem(workOriginStorageKey)); } catch { return readSavedWorkOrigins(null); } };
   const [workOrigin, setWorkOrigin] = useState<FieldWorkOrigin | null>(() => savedOrigins().work);
   const [opticalOrigin, setOpticalOrigin] = useState<FieldWorkOrigin | null>(() => savedOrigins().optical);
   const [originRequired, setOriginRequired] = useState(false);
   const opticalOriginRequired = originRequired || props.opticalOriginRequired === true;
-  const [selectedPorts, setSelectedPorts] = useState({ manual: "", auto: "" });
+  const [selectedPort, setSelectedPort] = useState("");
   const [returnMotion, setReturnMotion] = useState<FieldOriginReturnMotion>(() => {
     let settings;
     try { settings = readAutoFollowSurvey(localStorage.getItem(storageKey)).settings; }
@@ -124,9 +122,8 @@ export function FieldTurntableWorkspace(props: Props) {
     return { speedRpm: settings.maxMoveRpm, maxMoveAccelerationDegS2: settings.maxMoveAccelerationDegS2, followErrorLimitDeg: settings.followErrorLimitDeg };
   });
   const busyChanged = useCallback((value: boolean) => setAutoBusy(value), []);
-  const manualPortChanged = useCallback((port: string) => setSelectedPorts(previous => previous.manual === port ? previous : { ...previous, manual: port }), []);
-  const autoPortChanged = useCallback((port: string) => setSelectedPorts(previous => previous.auto === port ? previous : { ...previous, auto: port }), []);
-  const activePort = props.connectionPort || selectedPorts[mode === "manual" ? "manual" : "auto"];
+  const autoPortChanged = useCallback((port: string) => setSelectedPort(port), []);
+  const activePort = props.connectionPort || selectedPort;
   useEffect(() => { props.onPortChange?.(activePort); }, [activePort, props.onPortChange]);
   const originCheck = useRef("");
   const originLive = useRef({ activePort, status: props.status, workOrigin, opticalOrigin });
@@ -180,15 +177,14 @@ export function FieldTurntableWorkspace(props: Props) {
   const editingLocked = props.disabled || autoBusy || fieldIsActive(props.status) || !!props.status?.deviceBusy;
   const baseLocked = editingLocked || !!props.status?.turntableBusy;
   const locked = baseLocked || originBusy;
-  const selectMode = (next: "manual" | "auto" | "segmented") => { if (!locked) { setMode(next); props.onRouteMode?.(next); } };
+  const selectMode = (next: "auto" | "segmented") => { if (!locked) { setMode(next); props.onRouteMode?.(next); } };
   const modeTabs = <div className="field-view-tabs field-turntable-mode-tabs" data-active={mode} role="tablist" aria-label="转盘作业方式">
-      {(["segmented", "auto", "manual"] as const).map((value, index) => <button key={value} ref={node => { tabs.current[index] = node; }} type="button" role="tab" id={`${id}-${value}-tab`} aria-controls={`${id}-${value === "manual" ? "manual" : "calculated"}-panel`} aria-selected={mode === value} tabIndex={mode === value ? 0 : -1} disabled={locked} onClick={() => selectMode(value)} onKeyDown={event => {
+      {(["segmented", "auto"] as const).map((value, index) => <button key={value} ref={node => { tabs.current[index] = node; }} type="button" role="tab" id={`${id}-${value}-tab`} aria-controls={`${id}-calculated-panel`} aria-selected={mode === value} tabIndex={mode === value ? 0 : -1} disabled={locked} onClick={() => selectMode(value)} onKeyDown={event => {
         if (locked || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
-        event.preventDefault(); const next = event.key === "Home" ? 0 : event.key === "End" ? 2 : (index + (event.key === "ArrowRight" ? 1 : 2)) % 3;
-        selectMode((["segmented", "auto", "manual"] as const)[next]); tabs.current[next]?.focus();
-      }}>{value === "manual" ? <Hand size={16} /> : value === "auto" ? <Route size={16} /> : <StepForward size={16} />}{value === "manual" ? "手动控制" : value === "auto" ? "自动跟随" : "分段采集"}</button>)}
+        event.preventDefault(); const next = event.key === "Home" ? 0 : event.key === "End" ? 1 : (index + 1) % 2;
+        selectMode((["segmented", "auto"] as const)[next]); tabs.current[next]?.focus();
+      }}>{value === "auto" ? <Route size={16} /> : <StepForward size={16} />}{value === "auto" ? "自动跟随" : "分段采集"}</button>)}
     </div>;
-  const manualPanel = <div hidden={mode !== "manual"} role="tabpanel" id={`${id}-manual-panel`} aria-labelledby={`${id}-manual-tab`}><FieldLaserControl deviceIp={props.config.deviceIp} status={props.status} disabled={props.disabled || autoBusy || originBusy} request={props.request} /><FieldTurntableManual status={props.status} disabled={props.disabled || autoBusy || originBusy} request={props.request} onBusy={busyChanged} onStatus={props.onStatus} onRoute={props.onRoute} onAcquisition={props.onAcquisition} workOrigin={workOrigin} connectionPort={props.connectionPort} onPortChange={manualPortChanged} positionedStation={props.positionedStation} /></div>;
   return <div className="field-turntable-workspace field-servo-ui">
     <FieldTurntableOriginControl port={activePort} deviceIp={props.config.deviceIp} status={props.status} disabled={editingLocked || !originBusy && !!props.status?.turntableBusy} origin={workOrigin} opticalOrigin={opticalOrigin} opticalOriginRequired={opticalOriginRequired} returnMotion={returnMotion}
       request={props.request} onVerifiedOrigin={origin => { setOpticalOrigin(origin); if (workOrigin) setWorkOrigin(origin); }} onOrigin={origin => {
@@ -198,12 +194,12 @@ export function FieldTurntableWorkspace(props: Props) {
           try { localStorage.setItem(opticalOriginRequiredKey, "true"); } catch { /* Keep the session fail-closed even if persistence is unavailable. */ }
         }
       }} onStatus={props.onStatus} onBusy={setOriginBusy} />
-    <FieldAutoFollow {...props} routeMode={mode} disabled={props.disabled || originBusy} workOrigin={workOrigin} opticalOrigin={opticalOrigin} opticalOriginRequired={opticalOriginRequired} onPortChange={autoPortChanged} visible={props.visible !== false && mode !== "manual"} onBusy={busyChanged} onReturnMotion={setReturnMotion}
-      modeTabs={modeTabs} manualPanel={manualPanel} calculatedPanel={{ id: `${id}-calculated-panel`, labelledBy: `${id}-${mode === "segmented" ? "segmented" : "auto"}-tab` }} settingsPort={activePort} />
+    <FieldAutoFollow {...props} routeMode={mode} disabled={props.disabled || originBusy} workOrigin={workOrigin} opticalOrigin={opticalOrigin} opticalOriginRequired={opticalOriginRequired} onPortChange={autoPortChanged} visible={props.visible !== false} onBusy={busyChanged} onReturnMotion={setReturnMotion}
+      modeTabs={modeTabs} calculatedPanel={{ id: `${id}-calculated-panel`, labelledBy: `${id}-${mode === "segmented" ? "segmented" : "auto"}-tab` }} settingsPort={activePort} />
   </div>;
 }
 
-export function FieldAutoFollow({ config, onConfig, status, disabled, pollUnavailable = false, request, onStatus, onRecords, onService, onBusy, onRoute, onAcquisition, autoTargetKey, onAutoTarget, visible = true, workOrigin, opticalOrigin, opticalOriginRequired = false, onPortChange, onReturnMotion, connectionPort, routeMode, onPositionTarget, positionedStation, segmentedAutoMove, onConnectionChange, modeTabs, manualPanel, calculatedPanel, settingsPort }: Props & { modeTabs?: React.ReactNode; manualPanel?: React.ReactNode; calculatedPanel?: { id: string; labelledBy: string }; settingsPort?: string; onBusy?: (busy: boolean) => void; onReturnMotion?: (motion: FieldOriginReturnMotion) => void }) {
+export function FieldAutoFollow({ config, onConfig, status, disabled, pollUnavailable = false, request, onStatus, onRecords, onService, onBusy, onRoute, onAcquisition, autoTargetKey, onAutoTarget, visible = true, workOrigin, opticalOrigin, opticalOriginRequired = false, onPortChange, onReturnMotion, connectionPort, routeMode, onPositionTarget, positionedStation, segmentedAutoMove, onConnectionChange, modeTabs, calculatedPanel, settingsPort }: Props & { modeTabs?: React.ReactNode; calculatedPanel?: { id: string; labelledBy: string }; settingsPort?: string; onBusy?: (busy: boolean) => void; onReturnMotion?: (motion: FieldOriginReturnMotion) => void }) {
   const [survey, setSurvey] = useState<AutoFollowSurvey>(defaultAutoFollowSurvey);
   const segmented = routeMode === "segmented";
   const [segment, setSegment] = useState<SegmentSettings>({ ...segmentedDefaults });
@@ -485,8 +481,7 @@ export function FieldAutoFollow({ config, onConfig, status, disabled, pollUnavai
       </div>}
       </section>
     {modeTabs}
-    {manualPanel}
-    <section className="field-card field-follow-configuration" hidden={routeMode === "manual"} role={calculatedPanel ? "tabpanel" : undefined} id={calculatedPanel?.id} aria-labelledby={calculatedPanel?.labelledBy}><div className="field-section-heading"><div><h2>{segmented ? "分段采集配置" : "自动跟随配置"}</h2><p>{config.turbine || config.name || "请先在数据采集填写风机任务"}</p></div><Button type="button" variant="ghost" disabled={locked} onClick={onAcquisition}>前往数据采集</Button></div>
+    <section className="field-card field-follow-configuration" role={calculatedPanel ? "tabpanel" : undefined} id={calculatedPanel?.id} aria-labelledby={calculatedPanel?.labelledBy}><div className="field-section-heading"><div><h2>{segmented ? "分段采集配置" : "自动跟随配置"}</h2><p>{config.turbine || config.name || "请先在数据采集填写风机任务"}</p></div><Button type="button" variant="ghost" disabled={locked} onClick={onAcquisition}>前往数据采集</Button></div>
       <div className="field-auto-core field-auto-survey-core">{numeric("叶轮每圈时间 · s", "periodSeconds", 0, 3600, .5)}{segmented ? <>
         <label>每次开始采集<CustomSelect aria-label="每次开始采集" value={segment.pointsPerStart} disabled={locked} onChange={event => editSegment({ pointsPerStart: Number(event.target.value) as 1 | 2 })}><option value={1}>单点采集</option><option value={2}>两点采集</option></CustomSelect></label>
         <label>圆周移动间隔<CustomSelect aria-label="圆周移动间隔" value={segment.stepDeg} disabled={locked || segment.pointsPerStart === 2} onChange={event => editSegment({ stepDeg: Number(event.target.value) })}>{(segment.pointsPerStart === 2 ? [segmentedPairStepDeg] : [180, 120, 90, 60, 45, 30, 22.5]).map(value => <option key={value} value={value}>{value}° · 一圈 {360 / value} 个点位{segment.pointsPerStart === 2 ? "（固定）" : ""}</option>)}</CustomSelect></label>
@@ -541,7 +536,7 @@ export function FieldAutoFollow({ config, onConfig, status, disabled, pollUnavai
             onFastPreset={() => editSettings({ maxMoveRpm: driveProfileFastPreset.speedRpm })} />
         </>
       </section></div>} /></div></section>
-      {blockers.length > 0 && routeMode !== "manual" && !cycleRunning && <div className="field-auto-blockers" role="status"><strong>当前测点还需完成</strong><ul>{blockers.map(item => <li key={item}>{item}</li>)}</ul></div>}
+      {blockers.length > 0 && !cycleRunning && <div className="field-auto-blockers" role="status"><strong>当前测点还需完成</strong><ul>{blockers.map(item => <li key={item}>{item}</li>)}</ul></div>}
       {error && <p className="field-error" role="alert">{error}</p>}{notice && <p className="field-success" role="status">{notice}</p>}
 
   </div>;

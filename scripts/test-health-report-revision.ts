@@ -1,0 +1,17 @@
+import assert from 'node:assert/strict';
+import {selectedWindRevision,reportWindIsStale} from '../apps/web/lib/measurement-report-revision';
+import {windDatasetRevisionInput} from '../packages/ui/src/measurement-conditions';
+import {digest} from '../apps/web/lib/db';
+const datasets=[{id:'a',farmId:'f',importedAt:'one',rowCount:20},{id:'b',farmId:'f',importedAt:'two',rowCount:30}];
+const report={context:{farmId:'f'},windRevisionMode:'selected-v1',windRevision:selectedWindRevision(datasets,'f','a')};
+assert.equal(reportWindIsStale(report,datasets,'a'),false);
+assert.equal(reportWindIsStale(report,datasets,'b'),true);
+assert.equal(reportWindIsStale(report,datasets.map(d=>d.id==='b'?{...d,timingUpdatedAt:'new'}:d),'a'),false);
+assert.equal(reportWindIsStale(report,datasets.map(d=>d.id==='a'?{...d,timingUpdatedAt:'new'}:d),'a'),true);
+assert.equal(reportWindIsStale(report,[],'a'),true);
+const earlier={...report,windRevisionMode:undefined,bladeAssessments:[{windDatasetId:'a'}]};
+assert.equal(reportWindIsStale(earlier,datasets,'a'),false);
+const legacy={context:{farmId:'f'},windRevision:digest(JSON.stringify(windDatasetRevisionInput(datasets,'f')))};
+assert.equal(reportWindIsStale(legacy,datasets,'a'),false);
+assert.equal(reportWindIsStale({},datasets,'a'),false);
+console.log('PASS report wind revisions: selected dataset, unchanged fresh report, unrelated changes, changed selection, legacy snapshots');

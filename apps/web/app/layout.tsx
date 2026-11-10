@@ -1,7 +1,8 @@
+import { PRODUCT_NAME } from "@blade/ui/product-name";
 import type { Metadata } from "next";
 import "@blade/ui/styles.css";
 export const metadata: Metadata = {
-  title: "BladeVMS · 三维台架结构力学特征测试系统",
+  title: `BladeVMS · ${PRODUCT_NAME}`,
   description: "旋转叶片测振与损伤检测管理平台",
   icons: { icon: "/brand/app-icon.png" },
 };

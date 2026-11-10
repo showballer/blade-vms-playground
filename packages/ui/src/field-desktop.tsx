@@ -1,4 +1,5 @@
 "use client";
+import { PRODUCT_NAME } from "./product-name";
 import {PartnerBrand,AppSymbol} from "./partner-brand";
 import {RetainedPanel} from "./retained-panel";
 import React, { useCallback, useEffect, useId, useRef, useState } from "react";
@@ -83,7 +84,7 @@ const blankConfig: FieldConfig = { deviceIp: "", hostIp: "", name: "", windFarm:
 
 function FieldTitlebar() {
   return <div className="field-titlebar">
-    <div><AppSymbol /><span>BladeVMS</span><span className="field-title-divider" /><span className="field-title-description">旋转叶片测振与损伤检测系统</span></div>
+    <div><AppSymbol /><span>BladeVMS</span><span className="field-title-divider" /><span className="field-title-description">{PRODUCT_NAME}</span></div>
     <div className="field-window-controls">
       <button aria-label="最小化" onClick={() => window.blade?.windowControl("minimize")}><Minus size={14} /></button>
       <button aria-label="最大化或还原" onClick={() => window.blade?.windowControl("maximize")}><Square size={11} /></button>
@@ -103,8 +104,8 @@ export function FieldLoginPanel({ busy, error, available, account, accountUnavai
   const loginName = unified ? account.username || "" : username;
   return <main className="field-auth-shell">
     <section className="field-auth-intro">
-      <PartnerBrand subtitle="现场采集工作台"/>
-      <div><h1>现场采集工作台</h1><p>振动信号采集与分析</p></div>
+      <PartnerBrand subtitle={PRODUCT_NAME}/>
+      <div><h1>{PRODUCT_NAME}</h1><p>振动信号采集与分析</p></div>
       <div className="field-auth-features"><span><HardDrive size={16} />原始数据保存在本机</span><span><Radio size={16} />CH1 振动速度 + RSSI</span><span><ShieldCheck size={16} />{unified ? "统一账号 · 支持限期离线验证" : accountUnavailable ? "正在确认账号配置" : "本机账号独立验证"}</span></div>
     </section>
     <section className="field-auth-card">
@@ -570,7 +571,7 @@ export function FieldDesktopApp() {
       await operate("login", async () => { clearSession(); const next = await fieldCall<FieldSession>({ action: "login", username, password }); acceptSession(next); });
       await refreshAccountInfo().catch(() => {});
     }} /> : session.mustChangePassword || changingPassword ? <main className="field-password-shell"><FieldPasswordPanel mandatory={session.mustChangePassword} account={account} busy={Boolean(busy)} error={error} onSave={savePassword} onCancel={() => { if (session.mustChangePassword) void logout(); else { setChangingPassword(false); setError(""); } }} /></main> : <>
-      <header className="field-header"><PartnerBrand subtitle="现场采集工作台"/><div className="field-header-right"><FieldHeaderLaser deviceIp={config.deviceIp} status={status} disabled={Boolean(busy) || turntableOperationBusy || stoppingCapture} pollUnavailable={statusPollUnavailable} request={fieldCall} onBusy={headerLaserBusyChanged} /><span className={`field-account-header ${account?.offline ? "offline" : ""}`} title={unifiedAccount ? `已绑定 ${account.serverUrl || "Web"}；离线有效期至 ${fieldAccountTime(account.offlineUntil)}` : "原始记录保存在本机"}><ShieldCheck size={13} />{unifiedAccount ? account.offline ? "统一账号 · 离线验证" : "统一账号" : "本机账号"}</span><span className="field-header-user"><span className="field-avatar">{(session.user.name || session.user.username).slice(0, 1).toUpperCase()}</span>{session.user.name || session.user.username}</span><Button variant="ghost" disabled={Boolean(busy) || accountLocked} onClick={openPassword} aria-label={unifiedAccount ? "修改统一密码" : "修改本机密码"}><LockKeyhole size={15} /></Button><Button variant="ghost" disabled={Boolean(busy) || active} onClick={() => void logout()} title={active ? "请先停止并保存采集" : "退出账号"}><LogOut size={15} />退出</Button></div></header>
+      <header className="field-header"><PartnerBrand subtitle={PRODUCT_NAME}/><div className="field-header-right"><FieldHeaderLaser deviceIp={config.deviceIp} status={status} disabled={Boolean(busy) || turntableOperationBusy || stoppingCapture} pollUnavailable={statusPollUnavailable} request={fieldCall} onBusy={headerLaserBusyChanged} /><span className={`field-account-header ${account?.offline ? "offline" : ""}`} title={unifiedAccount ? `已绑定 ${account.serverUrl || "Web"}；离线有效期至 ${fieldAccountTime(account.offlineUntil)}` : "原始记录保存在本机"}><ShieldCheck size={13} />{unifiedAccount ? account.offline ? "统一账号 · 离线验证" : "统一账号" : "本机账号"}</span><span className="field-header-user"><span className="field-avatar">{(session.user.name || session.user.username).slice(0, 1).toUpperCase()}</span>{session.user.name || session.user.username}</span><Button variant="ghost" disabled={Boolean(busy) || accountLocked} onClick={openPassword} aria-label={unifiedAccount ? "修改统一密码" : "修改本机密码"}><LockKeyhole size={15} /></Button><Button variant="ghost" disabled={Boolean(busy) || active} onClick={() => void logout()} title={active ? "请先停止并保存采集" : "退出账号"}><LogOut size={15} />退出</Button></div></header>
       {screen !== "acquisition" && <>{captureControls}{positionControls}</>}
       <div className="field-workspace"><aside className="field-sidebar"><p>现场作业</p><button disabled={turntableOperationBusy} className={screen === "acquisition" ? "active" : ""} onClick={() => setScreen("acquisition")}><Activity size={17} />数据采集</button><button disabled={turntableOperationBusy} className={screen === "modal-capture" ? "active" : ""} onClick={() => setScreen("modal-capture")}><ChartSpline size={17} />模态采集</button><button disabled={turntableOperationBusy} className={screen === "turntable" ? "active" : ""} onClick={() => { setTurntableVisited(true); setScreen("turntable"); }}><Settings size={17} />转盘点位</button><button disabled={turntableOperationBusy} className={screen === "recordings" ? "active" : ""} onClick={() => { setScreen("recordings"); void operate("recordings", refreshRecordings); }}><HardDrive size={17} />本机记录</button><button disabled={turntableOperationBusy} className={screen === "service" ? "active" : ""} onClick={() => setScreen("service")}><Settings size={17} />设备与服务</button><p>记录分析</p><button disabled={turntableOperationBusy} className={screen === "record-analysis" ? "active" : ""} onClick={() => setScreen("record-analysis")}><AudioLines size={17} />旋转测振</button><button disabled={turntableOperationBusy} className={screen === "blade-synthesis" ? "active" : ""} onClick={() => setScreen("blade-synthesis")}><Layers3 size={17} />叶片响应分析</button><button disabled={turntableOperationBusy} className={screen === "modal" ? "active" : ""} onClick={() => setScreen("modal")}><ChartSpline size={17} />模态识别</button>{showRecordAnalysisMenus && <><button disabled={turntableOperationBusy} className={screen === "analysis" ? "active" : ""} onClick={() => setScreen("analysis")}><AudioLines size={17} />信号处理</button><button disabled={turntableOperationBusy} className={screen === "blade-passes" ? "active" : ""} onClick={() => setScreen("blade-passes")}><Layers3 size={17} />叶片片段分析</button></>}</aside>
         <main className="field-content" ref={contentRef}>

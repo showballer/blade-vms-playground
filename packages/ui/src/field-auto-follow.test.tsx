@@ -29,9 +29,9 @@ check("上次换点阶段不会锁住空闲或异常后的配置，仍运行的�
   }
 });
 
-check("生产入口包含手动、自动和分段三个标签，没有试运行与模拟开关", () => {
+check("生产入口只保留分段和自动两个标签，没有手动、试运行与模拟开关", () => {
   const html = renderToStaticMarkup(<FieldTurntableWorkspace {...props} />);
-  assert.ok(html.includes("手动控制")); assert.ok(html.includes("自动跟随")); assert.ok(html.includes("分段采集"));
+  assert.ok(!html.includes("手动控制")); assert.ok(html.includes("自动跟随")); assert.ok(html.includes("分段采集"));
   assert.ok(!html.includes("单点跟随")); assert.ok(!html.includes("转速试运行")); assert.ok(!html.includes("模拟采集"));
   const source = readFileSync(new URL("./field-desktop.tsx", import.meta.url), "utf8");
   assert.ok(!source.includes("FieldSinglePoint")); assert.ok(!source.includes("field-debug-toggle"));
@@ -41,13 +41,15 @@ check("生产入口包含手动、自动和分段三个标签，没有试运行�
 check("默认分段优先且测量、模式与设置按顺序排布", () => {
   const html = renderToStaticMarkup(<FieldTurntableWorkspace {...props} />);
   const tabs = [...html.matchAll(/role="tab"[^>]*>(.*?)<\/button>/g)].map(match => match[1].replace(/<[^>]*>/g, ""));
-  assert.deepEqual(tabs.slice(0, 3), ["分段采集", "自动跟随", "手动控制"]);
+  assert.deepEqual(tabs.slice(0, 2), ["分段采集", "自动跟随"]);
   assert.match(html, /data-active="segmented"/);
   assert.ok(html.indexOf("设置归零") < html.indexOf("测量设置"));
   assert.ok(html.indexOf("测量设置") < html.indexOf('aria-label="转盘作业方式"'));
   assert.ok(html.indexOf("分段采集配置") < html.indexOf('class="field-card field-turntable-settings-card"'));
   const manual = renderToStaticMarkup(<FieldTurntableWorkspace {...props} routeMode="manual" />);
   assert.ok(manual.includes('aria-label="打开转盘设置"'));
+  assert.match(manual, /data-active="segmented"/);
+  assert.doesNotMatch(manual, /manual-panel|手动控制/);
 });
 check("分段采集复用测量与五测点配置，提供单段点数、移动间隔和逐点定位", () => {
   const html = renderToStaticMarkup(<FieldTurntableWorkspace {...props} routeMode="segmented" onPositionTarget={() => {}} />);

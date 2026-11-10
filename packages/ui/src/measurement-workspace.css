@@ -694,4 +694,4 @@
 .measurement-response-3d-labels .health-focus-point{color:#c22e45}
 @media(max-width:900px){.health-local-conclusion{align-items:flex-start;flex-wrap:wrap}.health-local-conclusion-actions{width:100%;padding-left:74px}.health-slot-outcome{align-items:flex-start;flex-direction:column;gap:4px}}
 @media(max-width:600px){.health-local-conclusion{padding:16px}.health-local-conclusion-actions{padding-left:0}.health-local-waveform-metrics{gap:12px}}
-.measurement-fault-actions{display:flex;gap:16px;align-items:end;flex-wrap:wrap;margin:18px 0}.measurement-fault-actions>label{display:grid;gap:6px;min-width:180px}.measurement-fault-banner{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:14px 18px;background:#fff7f3;border:1px solid #f2c5b8;border-radius:9px;font-size:14px}.measurement-fault-banner>.btn{margin-left:auto}.measurement-wind-dataset{display:grid;gap:6px;margin-top:12px;max-width:620px}
+.measurement-wind-dataset{display:grid;gap:6px;margin-top:12px;max-width:620px}

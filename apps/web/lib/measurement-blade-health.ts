@@ -1,8 +1,9 @@
+import {selectedWindRevision} from './measurement-report-revision';
 import {damageContract,responseWarning} from '@blade/ui/response-health-policy';
 import {audit,digest,HttpError,type User} from './db';
 import {objects,listMeasurementRows,saveMeasurementRow,requireAnalyst} from './measurement-store';
 import {processingSelection,processingSummaries,processingResult,processingEndpoint} from './measurement-processing';
-import {matchSegmentConditions,processingSegmentTimes,windDatasetRevisionInput} from '@blade/ui/measurement-conditions';
+import {matchSegmentConditions,processingSegmentTimes} from '@blade/ui/measurement-conditions';
 import {bladeDisplaySlots} from '@blade/ui/measurement-domain';
 import {wholeBladeVersion} from './measurement-version-policy';
 import {healthWindSelection,saveHealthWindSelection} from './measurement-health-wind';
@@ -10,7 +11,7 @@ import {healthEvidenceReadiness} from '@blade/ui/measurement-health-readiness';
 const same=(r:any,c:any)=>['farmId','campaignId','turbineId'].every(k=>r.context?.[k]===c[k]);
 export async function bladeHealthWorkspace(user:User,context:any,save=false,preferredId?:string,preferredIds:Record<string,string>={},windDatasetId?:string){
  if(!context?.farmId||!context?.campaignId||!context?.turbineId)throw new HttpError(400,'请选择风场、批次和风机');
- const [all,processing,allDatasets,history,reviews,healthRules,modalVersions,faultTests]=await Promise.all([objects(user),processingSummaries(user,{}),listMeasurementRows(user,'wind_datasets'),listMeasurementRows(user,'measurement_blade_assessments'),listMeasurementRows(user,'measurement_reviews'),listMeasurementRows(user,'measurement_health_rules'),listMeasurementRows(user,'measurement_formal_modal'),listMeasurementRows(user,'measurement_health_tests')]);
+ const [all,processing,allDatasets,history,reviews,healthRules,modalVersions]=await Promise.all([objects(user),processingSummaries(user,{}),listMeasurementRows(user,'wind_datasets'),listMeasurementRows(user,'measurement_blade_assessments'),listMeasurementRows(user,'measurement_reviews'),listMeasurementRows(user,'measurement_health_rules'),listMeasurementRows(user,'measurement_formal_modal')]);
  history.sort((a,b)=>Date.parse(b.evaluatedAt)-Date.parse(a.evaluatedAt));
  const turbine=all.find(o=>o.id===context.turbineId&&o.parentId===context.farmId&&o.kind==='turbine');if(!turbine)throw new HttpError(400,'风机归属无效');
  const selected=await processingSelection(user,{farmId:context.farmId,campaignId:context.campaignId,turbineId:context.turbineId});
@@ -18,7 +19,7 @@ export async function bladeHealthWorkspace(user:User,context:any,save=false,pref
  const windSelection=await healthWindSelection(user,context,windChoices,windDatasetId);windDatasetId=windSelection.id;
  const datasets=windChoices.filter(d=>d.id===windDatasetId);
  const windCode=turbine.windTurbineCode||turbine.code;
- const windRevision=digest(JSON.stringify([windDatasetId??'legacy_auto',windDatasetRevisionInput(datasets,context.farmId)]));
+ const windRevision=selectedWindRevision(datasets,context.farmId,windDatasetId);
  if(preferredId&&!processing.some(p=>p.id===preferredId&&p.status==='complete'&&same(p,context)))throw new HttpError(400,'所选处理版本不属于当前批次或无权访问');
  processing.sort((a,b)=>Number(b.id===preferredId)-Number(a.id===preferredId));
  const cached=new Map<string,any>();const blades=[];
@@ -58,31 +59,12 @@ export async function bladeHealthWorkspace(user:User,context:any,save=false,pref
   else {snapshot.assessmentId=previous?.inputKey===snapshot.inputKey?previous.id:null;}
   blades.push(snapshot);
  }
- return {context,windRevision,windDatasetId:windDatasetId||null,windSelectionSource:windSelection.source,windDatasets:windChoices.map(d=>({id:d.id,name:d.name,start:d.start,end:d.end,timeSemantics:d.timeSemantics})),blades,faultTests:faultTests.filter(t=>same(t,context)).map(t=>({id:t.id,context:t.context,name:t.name,point:t.point,label:t.label,status:t.status,test_only:true,sourceProcessingResultId:t.sourceProcessingResultId,createdAt:t.createdAt})),history:history.filter(r=>r.context?.farmId===context.farmId&&r.context?.turbineId===context.turbineId).map(r=>({id:r.id,context:r.context,name:r.name,status:r.status,label:r.label,coverage:r.coverage,processingResultId:r.processingResultId,windRevision:r.windRevision,evaluatedAt:r.evaluatedAt})),damageAlgorithm:damageContract,healthRules,referenceChoices:processing.filter(p=>p.published&&p.context?.turbineId===context.turbineId).map(p=>({id:p.id,name:p.name,context:p.context,finishedAt:p.finishedAt})),formalMethods:['decay','frf','ssi_cov'],datasetCount:datasets.length};
+ return {context,windRevision,windDatasetId:windDatasetId||null,windSelectionSource:windSelection.source,windDatasets:windChoices.map(d=>({id:d.id,name:d.name,start:d.start,end:d.end,timeSemantics:d.timeSemantics})),blades,history:history.filter(r=>r.context?.farmId===context.farmId&&r.context?.turbineId===context.turbineId).map(r=>({id:r.id,context:r.context,name:r.name,status:r.status,label:r.label,coverage:r.coverage,processingResultId:r.processingResultId,windRevision:r.windRevision,evaluatedAt:r.evaluatedAt})),damageAlgorithm:damageContract,healthRules,referenceChoices:processing.filter(p=>p.published&&p.context?.turbineId===context.turbineId).map(p=>({id:p.id,name:p.name,context:p.context,finishedAt:p.finishedAt})),formalMethods:['decay','frf','ssi_cov'],datasetCount:datasets.length};
 }
-export async function bladeHealthEndpoint(user:User,b:any){if(b.action==='damage')return damageContract;
+export async function bladeHealthEndpoint(user:User,b:any){
+ if(b.action==='fault-test'||b.action==='fault-test-detail')throw new HttpError(410,'缺陷注入功能已撤回，请使用实测数据分析');
+ if(b.action==='damage')return damageContract;
  if(b.action==='select-wind'){await saveHealthWindSelection(user,b.context,b.windDatasetId);await audit(user,'保存健康监测风场数据集关联',JSON.stringify({context:b.context,windDatasetId:b.windDatasetId}));return bladeHealthWorkspace(user,b.context,false,undefined,b.processingResultIds);}
- if(b.action==='fault-test-detail'){
-  const test=(await listMeasurementRows(user,'measurement_health_tests')).find(t=>t.id===b.testId);
-  if(!test)throw new HttpError(404,'缺陷测试记录不存在或无权访问');return test;
- }
- if(b.action==='fault-test'){
-  requireAnalyst(user);const source=await processingResult(user,b.processingResultId),all=await objects(user);
-  const blade=all.find(o=>o.active&&o.kind==='blade'&&o.id===b.bladeId&&o.parentId===b.context?.turbineId);
-  if(!blade||!same(source,b.context)||source.context.bladeId&&source.context.bladeId!==blade.id||source.status!=='complete')throw new HttpError(400,'请选择当前批次已完成的整叶片处理版本');
-  const selected=await processingSelection(user,{...b.context,bladeId:blade.id});
-  if(!wholeBladeVersion(source,String(blade.code),selected?.task.recordingIds||[]))throw new HttpError(400,'测试需基于覆盖当前全部来源的整叶片分析');
-  const point=typeof b.point==='string'?b.point:'P3';
-  const own=source.report.records.filter((r:any)=>String(r.object?.blade)===String(blade.code)&&r.object?.point===point&&r.quality_assessment?.analysis_eligible&&r.representative);
-  if(!own.length)throw new HttpError(400,'所选测点没有可用于缺陷验证的有效连续段');
-  const byAngle=new Map<number,any>();for(const r of own)if(!byAngle.has(r.object.azimuth_deg))byAngle.set(r.object.azimuth_deg,r);
-  const ids=[...byAngle.values()].sort((a,b)=>a.object.azimuth_deg-b.object.azimuth_deg).map(r=>r.representative);
-  const result=await processingEndpoint(user,{request:{action:'extended',jobId:source.id,kind:'defect_validation',resultIds:ids}});
-  if(!result.available)throw new HttpError(400,'测点有效段不足，无法执行缺陷注入验证');
-  const alarm=result.items.some((i:any)=>i.available&&i.detection.suspectedDamage),status=alarm?'warning':result.status==='normal'?'normal':'insufficient';
-  const saved=await saveMeasurementRow(user,'measurement_health_tests',{name:`${source.name} · 叶片${blade.code} · ${point} · 缺陷注入测试`,context:{farmId:b.context.farmId,campaignId:b.context.campaignId,turbineId:b.context.turbineId,bladeId:blade.id},sourceKeys:source.sourceKeys,references:source.references,sourceProcessingResultId:source.id,point,createdAt:new Date().toISOString(),test_only:true,structuralDamageConfirmed:false,status,label:alarm?'疑似损伤预警（测试副本）':status==='normal'?'未触发测试阈值':'测试证据不足',result});
-  await audit(user,'运行缺陷注入与预警验证',saved.id);return saved;
- }
  if(b.action==='analyze'){
   requireAnalyst(user);const scope={farmId:b.context?.farmId,campaignId:b.context?.campaignId,turbineId:b.context?.turbineId,bladeId:b.bladeId};
   const all=await objects(user);if(!scope.bladeId||!all.some(o=>o.active&&o.kind==='blade'&&o.id===scope.bladeId&&o.parentId===scope.turbineId))throw new HttpError(400,'请选择当前风机的叶片');

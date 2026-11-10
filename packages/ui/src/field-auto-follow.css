@@ -77,10 +77,9 @@
 .field-app .field-auto-follow .field-auto-point-choice { width: 18px; height: 18px; min-height: 18px; margin: 0; accent-color: var(--field-ui-primary); cursor: pointer; }
 @media (max-width: 640px) { .field-auto-point-choice { grid-column: 1; grid-row: 1; align-self: center; } }
 
-.field-turntable-workspace .field-turntable-mode-tabs { grid-template-columns: repeat(3, minmax(0, 1fr)); width: 492px; }
-.field-turntable-mode-tabs::before { width: calc((100% - 8px) / 3); }
+.field-turntable-workspace .field-turntable-mode-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); width: 336px; }
+.field-turntable-mode-tabs::before { width: calc((100% - 8px) / 2); }
 .field-turntable-mode-tabs[data-active="auto"]::before { transform: translateX(100%); }
-.field-turntable-mode-tabs[data-active="manual"]::before { transform: translateX(200%); }
 .field-segment-point-position { display: flex; flex-basis: 100%; align-items: end; flex-wrap: wrap; gap: var(--field-ui-space-3); margin-top: var(--field-ui-space-2); }
 .field-segment-point-position > label { width: 160px; }
 .field-segment-point-position > .field-subtext { margin: 0; align-self: center; }

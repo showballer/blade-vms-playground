@@ -2044,3 +2044,23 @@ pre {
   cursor: pointer;
 }
 .fra-displacement-compare input[type="checkbox"] { margin: 0; }
+
+/* Report preview shares the Word report's hierarchy and snapshot. */
+.health-report-preview { display: grid; gap: 24px; color: #202d3d; }
+.health-report-cover { border-bottom: 2px solid #dbe6f3; padding: 8px 0 20px; }
+.health-report-cover small { color: #3268a8; font-size: 11px; letter-spacing: .12em; }
+.health-report-cover h2 { font-size: 26px; margin: 10px 0; }
+.health-report-cover p { font-weight: 600; }
+.health-report-meta { display: flex; gap: 8px 24px; flex-wrap: wrap; color: #62758b; font-size: 12px; margin-top: 12px; }
+.health-report-preview h3 { margin: 0 0 12px; font-size: 18px; }
+.health-report-preview h4 { margin: 0 0 6px; font-size: 14px; }
+.health-report-preview section > p { margin: 0 0 14px; }
+.health-report-blade { border-top: 1px solid #dbe6f3; padding-top: 20px; }
+.health-report-blade header { display: flex; justify-content: space-between; gap: 12px; align-items: center; flex-wrap: wrap; }
+.health-report-status { background: #edf1f6; border-radius: 6px; padding: 6px 10px; font-size: 13px; color: #52677f; }
+.health-report-charts { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,340px),1fr)); gap: 24px; margin: 20px 0; }
+.health-report-conditions { font-size: 13px; color: #62758b; margin-top: 14px!important; }
+.health-report-actions { padding-top: 18px; border-top: 1px solid #dbe6f3; margin-top: 24px; }
+
+.health-report-spatial { margin: 20px 0; }
+.health-report-spatial img { display: block; width: 100%; max-height: 340px; object-fit: contain; }

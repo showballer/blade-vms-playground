@@ -563,7 +563,7 @@ class RecordAnalysisManager:
             except (ValueError,TypeError) as exc:return {'available':False,'reasonCode':getattr(exc,'code','INSUFFICIENT_OBSERVATION'),'message':str(exc)}
         if kind=="point_band":return self._point_band(body)
         if kind=="point_displacement":return self._point_displacement(body)
-        if kind=="defect_validation":return self._defect_validation(body)
+        if kind=="defect_validation":raise SignalError("INVALID_ANALYSIS_KIND","Defect injection has been removed")
         result=self._load_segment(body.get("jobId"),body.get("resultId"));real=result.analysis_input()
         try:
             if kind=="stft":
@@ -589,53 +589,6 @@ class RecordAnalysisManager:
             else:raise SignalError("INVALID_ANALYSIS_KIND","unknown extension")
             return json_safe({"available":True,"kind":kind,"resultId":result.result_id,"layer":result.layer,"basis":result.basis,"data":data,"parameters":p},include_arrays=True)
         except (SignalError,TypeError) as exc:return {"available":False,"kind":kind,"resultId":result.result_id,"reasonCode":getattr(exc,"code","ANALYSIS_PARAMETERS_REQUIRED"),"message":str(exc)}
-
-    def _defect_validation(self,body):
-        from .anomaly import VERSION, inject_local_response, paired_response_screen
-        ids=body.get('resultIds')
-        if not isinstance(ids,list) or not ids or len(ids)>16 or any(not isinstance(v,str) for v in ids) or len(ids)!=len(set(ids)) or body.get('parameters',{}):
-            raise SignalError('INVALID_CONFIG','Select 1 to 16 distinct real representatives; fault test policy is versioned')
-        report=self.result({'jobId':body['jobId']})
-        allowed={r['representative'] for r in report['records'] if r.get('representative') and r.get('quality_assessment',{}).get('analysis_eligible')}
-        if not set(ids)<=allowed:raise SignalError('REPRESENTATIVE_REQUIRED','Only eligible real representatives are accepted')
-        results=[self._load_segment(body['jobId'],rid) for rid in ids]
-        if len({(r.parameters['object']['blade'],r.parameters['object']['point'],r.layer,r.basis) for r in results})!=1:
-            raise SignalError('AGGREGATION_BASIS_MISMATCH','Fault tests must use one blade, point and direction')
-        key=hashlib.sha256(json.dumps([VERSION,ids],sort_keys=True).encode()).hexdigest()
-        directory=self._directory(body['jobId'])/'diagnostic-tests';directory.mkdir(exist_ok=True)
-        items=[];arrays={}
-        for index,r in enumerate(results):
-            real=r.analysis_input();original=real.values_m_s
-            try:
-                injected,injection=inject_local_response(original)
-                detected=paired_response_screen(original,injected,real.sample_rate_hz)
-                control=paired_response_screen(original,original,real.sample_rate_hz)
-                i=plot_indices(original,injected)
-                arrays['time_'+str(index)]=real.time_s
-                arrays['reference_'+str(index)]=original
-                arrays['test_'+str(index)]=injected
-                items.append({'available':True,'resultId':r.result_id,'object':r.parameters['object'],'sourceHash':real.source_hash,
-                    'sourceRange':[real.source_start,real.source_end],'sampleRateHz':real.sample_rate_hz,'injection':injection,
-                    'detection':detected,'control':control,'plot':{'time_s':real.time_s[i]-real.time_s[0],
-                    'reference_m_s':original[i],'test_m_s':injected[i],'display_only':True}})
-            except SignalError as exc:items.append({'available':False,'resultId':r.result_id,'object':r.parameters['object'],'reason':str(exc)})
-        # Test arrays are stored separately, never replacing captured/processed segments.
-        if arrays:
-            import os
-            import tempfile
-            fd,tmp=tempfile.mkstemp(prefix='fault-',suffix='.npz',dir=directory)
-            try:
-                with os.fdopen(fd,'wb') as output:np.savez_compressed(output,**arrays)
-                os.replace(tmp,directory/(key+'.npz'))
-            finally:
-                if os.path.exists(tmp):os.unlink(tmp)
-        usable=[item for item in items if item['available']]
-        status='warning' if any(item['detection']['suspectedDamage'] for item in usable) else 'normal' if usable and all(item['control']['status']=='normal' for item in usable) else 'insufficient'
-        value=json_safe({'available':bool(arrays),'test_only':True,'kind':'defect_validation','algorithmVersion':VERSION,'status':status,
-            'artifactId':key,'sourceJobId':body['jobId'],'structuralDamageConfirmed':False,'items':items,
-            'limitation':'Paired artificial response anomaly test only; source is not a verified healthy reference and no structural damage is confirmed'},include_arrays=True)
-        dump(directory/(key+'.json'),value)
-        return value
 
     def _point_displacement(self,body):
         from .displacement import summarize_displacement

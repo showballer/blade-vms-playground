@@ -303,7 +303,7 @@ else {
     if (process.platform === 'darwin' && app.dock) app.dock.setIcon(icon);
     const workArea = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
     win = new BrowserWindow({ ...initialWindowBounds(workArea), icon,
-      title: 'BladeVMS 现场采集工作台', frame: false, backgroundColor: '#F5F7FA',
+      title: 'BladeVMS · 三维台架结构力学特征测试系统', frame: false, backgroundColor: '#F5F7FA',
       webPreferences: { preload: path.join(__dirname, 'field-preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
     entryUrl = process.env.BLADE_DEV_URL === 'http://127.0.0.1:5210'
       ? 'http://127.0.0.1:5210/' : pathToFileURL(path.join(__dirname, '../dist/index.html')).href;

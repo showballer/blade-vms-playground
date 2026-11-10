@@ -87,6 +87,7 @@ export async function processingSummaries(user:User,context:any={}){
 export async function processingResult(user:User,id:string){return stored(user,id);}
 export async function processingEndpoint(user:User,b:any,signal?:AbortSignal){
  const command=b.request||{},action=command.action;
+ if(action==='extended'&&command.kind==='defect_validation')throw new HttpError(410,'缺陷注入功能已撤回，请使用实测数据分析');
  if(action==='capabilities'||action==='contract')return worker(user,action==='contract'?'contract':'capabilities');
  if(action==='history')return {results:await processingSummaries(user,b.context)};
  if(action==='catalog'||action==='start'){
@@ -157,7 +158,6 @@ export async function processingEndpoint(user:User,b:any,signal?:AbortSignal){
  }
  if(action==='review'){requireAnalyst(user);if(!value.report.records.some((r:any)=>r.recording_id===command.recordingId))throw new HttpError(403,'复核来源不属于该版本');return worker(owner,'review',{...command,action:undefined,jobId:value.workerJobId,actor:user.name||user.id});}
  if(action==='waveforms')return savedRead(value,'waveforms',{jobId:value.workerJobId,...packageParameters},signal);
- if(action==='extended'&&command.kind==='defect_validation')requireAnalyst(user);
  if(action==='extended'||action==='preview')return savedRead(value,action,{...command,action:undefined,jobId:value.workerJobId,...packageParameters},signal);
  throw new HttpError(400,'不支持的Web处理动作');
 }

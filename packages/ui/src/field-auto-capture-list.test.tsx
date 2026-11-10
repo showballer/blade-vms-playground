@@ -266,10 +266,11 @@ check("数据采集自动模式隐藏重复开始入口，保留普通与手动�
   const automatic = renderToStaticMarkup(<FieldAcquisition {...acquisitionProps} />);
   assert.ok(!automatic.includes('type="submit"'));
   assert.ok(!automatic.includes("另一个未校准测点不应阻塞当前行"));
-  for (const label of ["风机任务", "手动点位", "自动跟随", "叶片与测点", "振动速度", "实时信号分析"]) assert.ok(automatic.includes(label), label);
+  for (const label of ["风机任务", "分段采集", "自动跟随", "叶片与测点", "振动速度", "实时信号分析"]) assert.ok(automatic.includes(label), label);
   for (const removed of ["任务信息", "测量对象、风机编号与测点（可选）", 'aria-label="数据采集视图"', 'class="field-view-tabs"']) assert.ok(!automatic.includes(removed), removed);
   assert.ok(automatic.indexOf("field-realtime-analysis") > automatic.indexOf("field-capture-chart"), "实时分析固定在波形之后");
-  assert.ok(automatic.indexOf("分段采集") < automatic.indexOf("自动跟随") && automatic.indexOf("自动跟随") < automatic.indexOf("手动点位"));
+  assert.ok(automatic.indexOf("分段采集") < automatic.indexOf("自动跟随"));
+  assert.ok(!automatic.includes("手动点位"));
   assert.ok(!automatic.includes("模拟"));
   for (const removed of ["本次记录", "叶片跟随流程", "field-capture-status", "field-capture-aside"]) assert.ok(!automatic.includes(removed), removed);
   const manual = renderToStaticMarkup(<FieldAcquisition {...acquisitionProps} link={{ ...acquisitionProps.link!, mode: "manual", route: { ...route, kind: "manual" } }} />);
