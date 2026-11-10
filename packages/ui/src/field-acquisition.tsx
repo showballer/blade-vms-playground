@@ -1,6 +1,6 @@
 "use client";
 import React, { memo, useEffect, useRef, useState } from "react";
-import { ChevronRight, Crosshair, Pause, Play, Square } from "lucide-react";
+import { ChevronRight, Crosshair, Info, Pause, Play, Square } from "lucide-react";
 import { Button } from "./common";
 import { CustomSelect } from "./custom-select";
 import { FieldWaveChart, FieldWaveOptions, hasWave, waveBounds, waveLimit, type TimeMode, type VelocityUnit } from "./field-waveform";
@@ -87,7 +87,7 @@ export const FieldAcquisition = memo(function FieldAcquisition({ config, onConfi
             <label>输入场景<CustomSelect disabled={active || !!busy} aria-label="输入场景" value={simulation.scenario} onChange={event => setSimulation(previous => ({ ...previous, scenario: event.target.value as FieldSimulation["scenario"] }))}>{metadata?.scenarios.map(item => <option key={item.id} value={item.id}>{item.label}</option>) || <option value="baseline">源文件回放</option>}</CustomSelect></label>
           </> : <><label>设备 IP<input required maxLength={15} value={config.deviceIp} onChange={event => update("deviceIp", event.target.value)} placeholder="设备 IPv4 地址" /></label><label>本机网卡 IP<input required maxLength={15} value={config.hostIp} onChange={event => update("hostIp", event.target.value)} placeholder="连接设备的网卡 IPv4 地址" /></label></>}
         </fieldset>
-        {!active && !autoLinked && (startError || linked && positioningError) && <p className="field-notice warning" role="status">{[...new Set([startError, linked ? positioningError : ""].filter(Boolean))].join("；")}</p>}
+        {!active && !autoLinked && (startError || linked && positioningError) && <p className="field-notice warning field-capture-validation" role="status"><Info size={16} aria-hidden="true" /><span>{[...new Set([startError, linked ? positioningError : ""].filter(Boolean))].join("；")}</span></p>}
         {metadataError && source === "simulation" && <p className="field-error" role="alert">{metadataError}<Button type="button" disabled={active || !!busy} onClick={() => setMetadataRevision(value => value + 1)}>重新读取</Button></p>}
         {source === "device" && !status?.service.dllConfigured && <p className="field-capture-driver-note">请先在“设备与服务”中配置设备驱动。</p>}
         {source === "device" && link && <section className="field-capture-link field-servo-ui" aria-label="转盘联动采集">

@@ -349,6 +349,8 @@
 .field-capture-inputs .custom-select { display: grid; margin-top: 7px; width: 100%; min-width: 0; }
 .field-capture-inputs .custom-select-trigger { min-height: 40px; border: 1px solid #d5dfeb; border-radius: 6px; background: #fbfcfe; color: #293c57; font: inherit; padding-block: 8px; padding-left: 11px; }
 .field-capture-inputs > .btn { min-height: 40px; padding-inline: 18px; }
+.field-capture-setup .field-capture-validation { margin: 14px 0 0; padding: 10px 12px; border-radius: 8px; line-height: 20px; }
+.field-capture-validation > span { min-width: 0; }
 .field-capture-driver-note { margin: 10px 0 0; color: #7c8ba0; font-size: 12px; line-height: 1.6; }
 .field-text-button { display: inline-flex; align-items: center; justify-content: center; gap: 4px; flex: none; border: 0; background: transparent; color: #2d6cc0; font: inherit; font-size: 12px; padding: 6px 0; cursor: pointer; }
 .field-text-button:hover { color: #164d98; text-decoration: underline; }
