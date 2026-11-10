@@ -1,0 +1,57 @@
+{
+  "schema": "customer-demo-20261110-v1",
+  "archives": [
+    {
+      "file": "P1-recordings.zip",
+      "bytes": 66539277,
+      "sha256": "521915f811ee1d21d17909262fb1829f4456ce1e9a245d7c0e2c6f31c541b656",
+      "records": 12
+    },
+    {
+      "file": "P2-recordings.zip",
+      "bytes": 57982309,
+      "sha256": "f9871c680a4c45dade55f5b29e85683acd3331af41658b1f5a366a14ec3f2c1f",
+      "records": 12
+    },
+    {
+      "file": "P3-recordings.zip",
+      "bytes": 30689724,
+      "sha256": "d12585ca04fa7e1c02ac85821adf41e559c4d16bc9e4be23c354bf09f96b7542",
+      "records": 12
+    },
+    {
+      "file": "P4-recordings.zip",
+      "bytes": 23243475,
+      "sha256": "5b5ab4f2e2bf814f69070557b2e1f788797a040dcc4d1941057125cd5ad1d635",
+      "records": 12
+    },
+    {
+      "file": "P5-recordings.zip",
+      "bytes": 21203305,
+      "sha256": "c684ce0e17c0585cd641abc09f49c7c5625adbeec9c5722398f6459dc76d370e",
+      "records": 12
+    }
+  ],
+  "files": [
+    {
+      "file": "settings.json",
+      "sha256": "318f49c22fb680864c9fd70fccb1be5d65df17320673cb2eb43ae1a0069425a9",
+      "bytes": 5005880
+    },
+    {
+      "file": "时间对齐与来源.json",
+      "sha256": "783924244415fca4196ed4860cda3a0f2b4a15f7b367b373a8ca17abcf398994",
+      "bytes": 33021
+    },
+    {
+      "file": "化德风场_020#_20261018_20261018_minute.csv",
+      "sha256": "68e86a017a734f48834f1ae50c693ef4a25cce7c66a88ec24f6cb88e60833904",
+      "bytes": 110252
+    },
+    {
+      "file": "损伤检测核验.json",
+      "sha256": "8c454e9ee35ba20816e859f98e4ee059644a67abb7421085ca4b1b5baa3475ff",
+      "bytes": 2876
+    }
+  ]
+}

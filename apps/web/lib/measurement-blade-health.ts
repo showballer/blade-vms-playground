@@ -1,5 +1,8 @@
+import {evaluateHealthStandard,standardConditionEligible,syntheticProcessing} from '@blade/ui/blade-health-standard';
+import {syntheticScenarioComparison,SCENARIO_DETECTION_VERSION} from '@blade/ui/synthetic-scenario-comparison';
+import {projectDamageContract,currentHealthStandard,healthStandardCatalog,publishHealthStandard,saveHealthIdentity,saveHealthDecision} from './measurement-health-standard';
 import {selectedWindRevision} from './measurement-report-revision';
-import {damageContract,responseWarning} from '@blade/ui/response-health-policy';
+import {responseWarning} from '@blade/ui/response-health-policy';
 import {audit,digest,HttpError,type User} from './db';
 import {objects,listMeasurementRows,saveMeasurementRow,requireAnalyst} from './measurement-store';
 import {processingSelection,processingSummaries,processingResult,processingEndpoint} from './measurement-processing';
@@ -19,6 +22,7 @@ export async function bladeHealthWorkspace(user:User,context:any,save=false,pref
  const windSelection=await healthWindSelection(user,context,windChoices,windDatasetId);windDatasetId=windSelection.id;
  const datasets=windChoices.filter(d=>d.id===windDatasetId);
  const windCode=turbine.windTurbineCode||turbine.code;
+ const [standard,identityReviews,decisions]=await Promise.all([currentHealthStandard(user,context,windCode),listMeasurementRows(user,'measurement_health_identity_reviews'),listMeasurementRows(user,'measurement_health_decisions')]);
  const windRevision=selectedWindRevision(datasets,context.farmId,windDatasetId);
  if(preferredId&&!processing.some(p=>p.id===preferredId&&p.status==='complete'&&same(p,context)))throw new HttpError(400,'所选处理版本不属于当前批次或无权访问');
  processing.sort((a,b)=>Number(b.id===preferredId)-Number(a.id===preferredId));
@@ -47,23 +51,54 @@ export async function bladeHealthWorkspace(user:User,context:any,save=false,pref
   const referenceConditions=referenceRecords.map((r:any)=>({condition:matchSegmentConditions(datasets,context.farmId,windCode,processingSegmentTimes(r))}));
   const warning=reasons.length?{status:'insufficient',label:'证据不足',reason:reasons.join('；'),comparisons:[]}:responseWarning({...source,conditions},{...reference,conditions:referenceConditions},rule?{...rule,bladeCode:blade?.code}:null);
   if(warning.reason&&!reasons.length)reasons.push(warning.reason);
-  const snapshot:any={context:{...context,bladeId:blade!.id,positionId:undefined},bladeId:blade!.id,name:slot.name,status:warning.status,label:warning.label,reasons,responseWarning:warning,ruleSnapshot:rule||null,referenceSnapshot:reference?{id:reference.id,algorithmVersion:reference.algorithmVersion,sourceFingerprints:reference.report.sourceFingerprints,conditions:referenceConditions}:null,damageAlgorithm:damageContract,
+  const snapshot:any={context:{...context,bladeId:blade!.id,positionId:undefined},bladeId:blade!.id,name:slot.name,status:warning.status,label:warning.label,reasons,responseWarning:warning,ruleSnapshot:rule||null,referenceSnapshot:reference?{id:reference.id,algorithmVersion:reference.algorithmVersion,sourceFingerprints:reference.report.sourceFingerprints,conditions:referenceConditions}:null,damageAlgorithm:projectDamageContract,
    sourceKeys:source.sourceKeys,references:source.references,processingResultId:source.id,processingAlgorithmVersion:source.algorithmVersion,processingCreatedAt:source.finishedAt,
    geometryEstimates:records.flatMap(r=>r.segments?.[0]?.parameters?.geometry_correction?[{recordingId:r.recording_id,...r.segments[0].parameters.geometry_correction}]:[]),
    coverage:{acquired:expectedIds.length,purpose:'synthesis',observed:records.length,analyzable:eligible.length,review:blocked.length,missing,points:coverage},commonResponse:(source.report.commonResponse||[]).filter((g:any)=>String(g.blade)===String(blade?.code)),
    records:records.map(r=>({id:r.recording_id,point:r.object?.point,azimuthDeg:r.object?.azimuth_deg,representative:r.representative,resultIds:(r.segments||[]).map((s:any)=>s.result_id),issues:r.issues,quality:r.quality_assessment,sourceQuality:r.source_quality,sourceHash:r.source_hash,review:ownReviews.find(v=>v.recordingId===r.recording_id)||null})),
    modalResults:modalVersions.filter(r=>r.published&&r.context?.turbineId===turbine.id&&r.context?.campaignId===context.campaignId&&r.context?.bladeId===blade?.id).map(r=>({id:r.id,method:r.method,result:r.result,sourceSha256:r.sourceSha256,publishedAt:r.publishedAt})),conditions,evidenceReadiness:healthEvidenceReadiness({conditions,records,rule,reference,published:!!source.published}),qualityEvents,features:peaks,windDatasetId:windDatasetId||null,windTurbineCode:windCode,windRevision,reviewRevision,assessmentAlgorithmVersion:'blade-evidence-v2.2.0',rulesVersion:'response-warning-v22',evaluatedAt:new Date().toISOString(),structuralDamageConfirmed:false,probability:null,
    previousId:previous?.id||null,stale:!!previous&&(previous.windRevision!==windRevision||previous.processingResultId!==source.id||previous.reviewRevision!==reviewRevision)};
-  snapshot.inputKey=digest(JSON.stringify([source.id,windRevision,reviewRevision,snapshot.assessmentAlgorithmVersion,snapshot.rulesVersion,rule?.id,reference?.id]));
+  const identityReview=identityReviews.find(r=>same(r,context)&&r.context?.bladeId===blade?.id&&r.processingResultId===source.id&&JSON.stringify(r.sourceHashes)===JSON.stringify(records.map((r:any)=>r.source_hash).sort()));
+  if(standard){
+   const screened=evaluateHealthStandard(source,String(blade?.code),conditions,standard,!!identityReview);
+   Object.assign(snapshot,{healthScreening:screened,conditions:conditions.map(c=>({...c,condition:{...c.condition,envelopeEligible:standardConditionEligible(c.condition)}})),standardSnapshot:standard,identityReview:identityReview||null,damageAlgorithm:projectDamageContract,status:screened.status,label:screened.label,reasons:screened.reasons,assessmentAlgorithmVersion:'project-envelope-assessment-1',rulesVersion:standard.id,evidenceReadiness:{matched:conditions.filter(c=>c.condition.status==='matched').length,total:conditions.length,association:conditions.every(c=>c.condition.status==='matched')?'matched':'partial',blockers:screened.status==='insufficient'?screened.reasons:[]}});
+  }
+  if(syntheticProcessing(source)){
+   const scenario=(await listMeasurementRows(user,'measurement_synthetic_imports')).find(r=>r.context?.campaignId===context.campaignId&&r.context?.turbineId===context.turbineId);
+   const comparison=syntheticScenarioComparison(source,String(blade?.code),scenario?.referenceVariant);
+   Object.assign(snapshot,{
+    syntheticScenario:{name:scenario?.name||source.name,dataOrigin:'synthetic',referenceStandardName:scenario?.referenceStandardName,referenceVariantName:scenario?.referenceVariant?.name,timeAlignment:scenario?.timeAlignment||null,...comparison},
+    status:'synthetic',label:comparison.detection.label,
+    reasons:comparison.detection.reasons,
+    standardSnapshot:null,healthScreening:null,finalDecision:null,structuralDamageConfirmed:false,
+    assessmentAlgorithmVersion:SCENARIO_DETECTION_VERSION,rulesVersion:digest(JSON.stringify(scenario?.referenceVariant||null)),
+    damageAlgorithm:{...projectDamageContract,name:'健康响应包络检测',mode:'scenario_validation'},
+    evidenceReadiness:{matched:conditions.filter(c=>c.condition.status==='matched').length,total:records.length,association:'synthetic',blockers:['演示检测结果不用于生产决策']}
+   });
+  }
+  snapshot.inputKey=digest(JSON.stringify([source.id,windRevision,reviewRevision,snapshot.assessmentAlgorithmVersion,snapshot.rulesVersion,rule?.id,reference?.id,identityReview?.id]));
+  snapshot.screeningKey=snapshot.inputKey;
+  const decision=decisions.filter(d=>d.inputKey===snapshot.inputKey&&d.context?.bladeId===blade?.id).sort((a,b)=>Date.parse(b.createdAt)-Date.parse(a.createdAt))[0];
+  if(decision&&snapshot.healthScreening&&snapshot.status!=='insufficient'){
+   snapshot.finalDecision=decision;snapshot.label=decision.conclusion==='damaged'?'损伤':decision.conclusion==='healthy'?'健康':'待复核';snapshot.status=decision.conclusion==='damaged'?'damaged':decision.conclusion==='healthy'?'normal':'review';snapshot.structuralDamageConfirmed=decision.conclusion==='damaged';snapshot.inputKey=digest(JSON.stringify([snapshot.screeningKey,decision.id]));
+  }
+  snapshot.stale=!!previous&&previous.inputKey!==snapshot.inputKey;
   if(save){requireAnalyst(user);const prior=history.find(h=>h.inputKey===snapshot.inputKey&&h.bladeId===blade?.id);const saved=prior||await saveMeasurementRow(user,'measurement_blade_assessments',snapshot);snapshot.assessmentId=saved.id; snapshot.evaluatedAt=saved.evaluatedAt;snapshot.stale=false;}
   else {snapshot.assessmentId=previous?.inputKey===snapshot.inputKey?previous.id:null;}
   blades.push(snapshot);
  }
- return {context,windRevision,windDatasetId:windDatasetId||null,windSelectionSource:windSelection.source,windDatasets:windChoices.map(d=>({id:d.id,name:d.name,start:d.start,end:d.end,timeSemantics:d.timeSemantics})),blades,history:history.filter(r=>r.context?.farmId===context.farmId&&r.context?.turbineId===context.turbineId).map(r=>({id:r.id,context:r.context,name:r.name,status:r.status,label:r.label,coverage:r.coverage,processingResultId:r.processingResultId,windRevision:r.windRevision,evaluatedAt:r.evaluatedAt})),damageAlgorithm:damageContract,healthRules,referenceChoices:processing.filter(p=>p.published&&p.context?.turbineId===context.turbineId).map(p=>({id:p.id,name:p.name,context:p.context,finishedAt:p.finishedAt})),formalMethods:['decay','frf','ssi_cov'],datasetCount:datasets.length};
+ return {context,windRevision,windDatasetId:windDatasetId||null,windSelectionSource:windSelection.source,windDatasets:windChoices.map(d=>({id:d.id,name:d.name,start:d.start,end:d.end,timeSemantics:d.timeSemantics})),blades,history:history.filter(r=>r.context?.farmId===context.farmId&&r.context?.turbineId===context.turbineId).map(r=>({id:r.id,context:r.context,name:r.name,status:r.status,label:r.label,coverage:r.coverage,processingResultId:r.processingResultId,windRevision:r.windRevision,evaluatedAt:r.evaluatedAt,isScenario:!!r.syntheticScenario,scenarioDetection:r.syntheticScenario?.detection||null})),damageAlgorithm:projectDamageContract,standard,healthRules,referenceChoices:processing.filter(p=>p.published&&p.context?.turbineId===context.turbineId).map(p=>({id:p.id,name:p.name,context:p.context,finishedAt:p.finishedAt})),formalMethods:['decay','frf','ssi_cov'],datasetCount:datasets.length};
 }
 export async function bladeHealthEndpoint(user:User,b:any){
  if(b.action==='fault-test'||b.action==='fault-test-detail')throw new HttpError(410,'缺陷注入功能已撤回，请使用实测数据分析');
- if(b.action==='damage')return damageContract;
+ if(b.action==='damage')return projectDamageContract;
+ if(b.action==='standard-catalog')return healthStandardCatalog(user,b.context);
+ if(b.action==='publish-standard')return publishHealthStandard(user,b);
+ if(b.action==='verify-identity'||b.action==='publish-decision'){
+  requireAnalyst(user);const w=await bladeHealthWorkspace(user,b.context,false,b.processingResultId,b.processingResultIds);const blade=w.blades.find(v=>v.bladeId===b.bladeId);if(!blade?.processingResultId)throw new HttpError(400,'请选择已分析的叶片');
+  if(b.action==='verify-identity'){const review=await saveHealthIdentity(user,b,blade);await audit(user,'核验叶片身份及分组',review.id);return {review};}
+  return saveHealthDecision(user,b,blade);
+ }
  if(b.action==='select-wind'){await saveHealthWindSelection(user,b.context,b.windDatasetId);await audit(user,'保存健康监测风场数据集关联',JSON.stringify({context:b.context,windDatasetId:b.windDatasetId}));return bladeHealthWorkspace(user,b.context,false,undefined,b.processingResultIds);}
  if(b.action==='analyze'){
   requireAnalyst(user);const scope={farmId:b.context?.farmId,campaignId:b.context?.campaignId,turbineId:b.context?.turbineId,bladeId:b.bladeId};

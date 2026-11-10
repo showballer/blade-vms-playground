@@ -466,7 +466,9 @@ export async function measurementEndpoint(
   if (resource === "wind-datasets") {
     if (path.length === 1 && method === "GET") {
       const [datasets,all,evaluations]=await Promise.all([windDatasetSummaries(user),objects(user),listMeasurementRows(user,"measurement_blade_assessments")]);
-      const latest=[...new Map(evaluations.sort((a,b)=>Date.parse(a.evaluatedAt)-Date.parse(b.evaluatedAt)).map(e=>[JSON.stringify([e.context?.campaignId,e.bladeId]),e])).values()];
+      const activeIds=new Set(all.filter(o=>o.active).map(o=>o.id));
+      const current=evaluations.filter(e=>['farmId','campaignId','turbineId'].every(key=>activeIds.has(e.context?.[key])));
+      const latest=[...new Map(current.sort((a,b)=>Date.parse(a.evaluatedAt)-Date.parse(b.evaluatedAt)).map(e=>[JSON.stringify([e.context?.campaignId,e.bladeId]),e])).values()];
       return {objects:all,datasets:datasets.map(d=>{const linked=latest.filter(e=>e.conditions?.some((c:any)=>c.condition.datasetIds.includes(d.id)));return {...d,associationSummary:{campaigns:new Set(linked.map(e=>e.context.campaignId)).size,segments:linked.reduce((n,e)=>n+e.conditions.filter((c:any)=>c.condition.datasetIds.includes(d.id)).flatMap((c:any)=>c.sourceTimes).length,0),basis:"saved_assessment_snapshot"}};})};
     }
     if(path.length===3&&id==="timing"&&method==="PUT"){

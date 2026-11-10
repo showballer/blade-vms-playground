@@ -1,6 +1,14 @@
 /** User-facing presentation of an immutable health snapshot. No health inference from silence. */
 export function healthReportStatus(blade: any) {
+  if(blade?.syntheticScenario)return blade.syntheticScenario.detection?`演示检测：${blade.syntheticScenario.detection.label}（场景数据）`:blade.label||'合成情景，不作现场评价';
   if (!blade?.processingResultId) return (blade?.acquired || blade?.coverage?.acquired) ? '待分析' : '未测量';
+  if(blade.standardSnapshot&&blade.healthScreening){
+    if(blade.status==='insufficient')return '待复核';
+    if(blade.finalDecision?.conclusion==='damaged')return '损伤（人工复核确认）';
+    if(blade.finalDecision?.conclusion==='inconclusive')return '待复核';
+    if(blade.healthScreening.status==='normal')return blade.healthScreening.baselineMember?'健康（基线样本）':'健康（项目响应标准）';
+    return '疑似损伤，待复核';
+  }
   if (!blade.ruleSnapshot || !blade.referenceSnapshot || blade.evidenceReadiness?.blockers?.length || blade.status === 'insufficient') return '健康状态未核验';
   if (['warning', 'alarm', 'suspected', 'critical'].includes(blade.status)) return '响应异常，待复核';
   if (['normal', 'within_reference'].includes(blade.status)) return '未触发响应预警';
@@ -37,10 +45,10 @@ export function measurementReportModel(report: any) {
     const matched = conditions.filter((c:any) => c.condition?.status === 'matched' && Number.isFinite(c.condition.windSpeed) && Number.isFinite(c.condition.rpm));
     const notes: string[] = [];
     const reasons = [...(b.reasons || []), ...(b.evidenceReadiness?.blockers || [])];
-    if (!b.ruleSnapshot || !b.referenceSnapshot) notes.push('尚未建立正常参考和预警判据，暂不能判断是否健康。');
+    if (!b.standardSnapshot&&(!b.ruleSnapshot || !b.referenceSnapshot)) notes.push('尚未建立正常参考和预警判据，暂不能判断是否健康。');
     if (reasons.some(r => /身份/.test(r))) notes.push('采集记录对应的物理叶片身份仍需现场核对。');
     if (conditions.some((c:any) => c.condition?.reasons?.some((r:string) => /平移|测试副本/.test(r))) || reasons.some(r => /平移|测试副本/.test(r))) notes.push('关联工况含时间平移测试副本，仅供展示，不作为同期实测依据。');
-    else if (conditions.some((c:any) => !c.condition?.healthEligible) || reasons.some(r => /工况/.test(r))) notes.push('工况关联尚不满足健康评价要求，需核对同期风速、转速及采样口径。');
+    else if (!b.standardSnapshot&&(conditions.some((c:any) => !c.condition?.healthEligible) || reasons.some(r => /工况/.test(r)))) notes.push('工况关联尚不满足健康评价要求，需核对同期风速、转速及采样口径。');
     if ((b.coverage?.review || 0) > 0) notes.push(`${b.coverage.review} 条记录待复核。`);
     if (b.coverage?.missing?.length) notes.push('部分测点或角度缺失，需要补充测量。');
     if (b.geometryEstimates?.some((c:any) => Number.isFinite(c.values?.radius_from_hub_m))) notes.push('测点位置使用估算尺寸，不作为实测空间定位结果。');
@@ -53,6 +61,7 @@ export function measurementReportModel(report: any) {
       estimatedPositions:!!b.geometryEstimates?.some((c:any) => Number.isFinite(c.values?.radius_from_hub_m)),
       matched:matched.length, conditionCount:conditions.length, shiftedConditions,
       wind:range(matched.map((c:any) => c.condition.windSpeed), 'm/s'), rpm:range(matched.map((c:any) => c.condition.rpm), 'rpm'),
+      healthStandard:b.standardSnapshot?{id:b.standardSnapshot.id,name:b.standardSnapshot.name,approval:b.standardSnapshot.approval,approvedBy:b.standardSnapshot.approvedBy,validation:b.standardSnapshot.validation}:null,screening:b.healthScreening||null,finalDecision:b.finalDecision||null,
       notes};
   });
   const dates = (report.bladeAssessments || []).flatMap((b:any) => (b.conditions || []).flatMap((c:any) => (c.sourceTimes || []).flatMap((t:any) => [t.start, t.end]))).filter((t:any) => t !== null && t !== undefined && t !== '').map((t:any) => new Date(t).getTime()).filter(Number.isFinite);

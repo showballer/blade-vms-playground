@@ -145,6 +145,7 @@ export function ObjectFilters({
   blade = true,
   campaign = true,
   disabled = false,
+  scenarioNotice = 'full',
 }: {
   objects: MeasurementObject[];
   memberships?: MeasurementContext[];
@@ -155,6 +156,7 @@ export function ObjectFilters({
   blade?: boolean;
   campaign?: boolean;
   disabled?: boolean;
+  scenarioNotice?: 'full' | 'demo';
 }) {
   // Only reconcile when a complete catalog arrives. User changes are normalized
   // below in one update; retained hidden pages must not rewrite shared selection.
@@ -201,6 +203,7 @@ export function ObjectFilters({
           />
         );
       })}
+      {value.campaignId && objects.find(o=>o.id===value.campaignId)?.weather?.startsWith('合成情景') && (scenarioNotice==='demo'?<span role="note" className="tag blue">演示环境 · 场景数据</span>:<p role="note" className="health-standard-note">{objects.find(o=>o.id===value.campaignId)?.weather}</p>)}
     </div>
   );
 }

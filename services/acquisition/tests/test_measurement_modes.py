@@ -70,6 +70,18 @@ class MeasurementModesTest(unittest.TestCase):
         self.assertFalse(preview['analysis_eligible']);self.assertEqual(len(preview['joins']),3)
         self.assertEqual(len([b for b in preview['blocks'] if b['kind']=='measured_processed']),4)
 
+    def test_split_import_preserves_synthetic_origin_and_cannot_certify_identity(self):
+        for marker in ({'source':'simulation'}, {'source':'measured','simulation':{'dataOrigin':'synthetic','hypothesis':'crack'}}, {'dataOrigin':'synthetic'}):
+            with self.subTest(marker=marker):
+                (self.source/'1号叶片_0度.csv.gz').write_bytes(sample_file(**marker,identityVerified=True,diagnosticOnly=False,validMeasurement=True))
+                imported=self.imported()
+                record=next(load_raw(self.manager.recordings,r) for r in imported['recordingIds'] if load_raw(self.manager.recordings,r).manifest['pointCycle']['bladeId']=='1' and load_raw(self.manager.recordings,r).manifest['pointCycle']['azimuthDeg']==0)
+                self.assertEqual(record.manifest['source'],'simulation')
+                self.assertTrue(record.manifest['simulation'])
+                self.assertTrue(record.manifest['diagnosticOnly'])
+                self.assertFalse(record.manifest['validMeasurement'])
+                self.assertFalse(record.manifest['pointCycle']['identityVerified'])
+
     def test_declared_context_is_removed_before_waveform_spectrum_and_statistics(self):
         from scipy.signal import detrend,welch
         # A background step must not leak into the blade residual. A real

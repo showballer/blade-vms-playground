@@ -11,8 +11,8 @@ async function main(){
  }
  await assert.rejects(processingEndpoint(user,{request:{action:'extended',kind:'defect_validation',parameters:{point:'P3'}}}),e=>e instanceof HttpError&&e.status===410);
  const capability=await bladeHealthEndpoint(user,{action:'damage'});
- assert.equal(capability.enabled,false,'rollback must not substitute a hardcoded damage detector');
- assert.equal(capability.status,'algorithm_not_connected');
+ assert.equal(capability.enabled,true,'project envelope screening is connected; no injection endpoint is restored');
+ assert.equal(capability.status,'connected');
  console.log('PASS withdrawn defect injection: old health and processing requests rejected before persistence/worker access');
 }
 main().catch(e=>{console.error(e);process.exitCode=1;});

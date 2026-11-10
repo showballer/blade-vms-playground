@@ -27,7 +27,9 @@
     "./measurement-conditions": "./src/measurement-conditions.ts",
     "./response-health-policy": "./src/response-health-policy.ts",
     "./measurement-health-readiness": "./src/measurement-health-readiness.ts",
-    "./modal-result-comparison": "./src/modal-result-comparison.ts"
+    "./modal-result-comparison": "./src/modal-result-comparison.ts",
+    "./blade-health-standard": "./src/blade-health-standard.ts",
+    "./synthetic-scenario-comparison": "./src/synthetic-scenario-comparison.ts"
   },
   "dependencies": {
     "react": "19.2.8",

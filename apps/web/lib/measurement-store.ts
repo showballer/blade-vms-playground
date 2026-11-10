@@ -8,6 +8,9 @@ export const measurementKinds = [
   "measurement_reports",
   "measurement_processing",
   "measurement_blade_assessments",
+  "measurement_health_standards",
+  "measurement_health_identity_reviews",
+  "measurement_health_decisions",
   "wind_datasets",
 ] as const;
 import { randomUUID } from "node:crypto";
@@ -61,6 +64,9 @@ export async function listMeasurementRows(user: User, kind: string) {
     "measurement_modal",
     "measurement_processing",
     "measurement_blade_assessments",
+  "measurement_health_standards",
+  "measurement_health_identity_reviews",
+  "measurement_health_decisions",
     "measurement_health_tests",
   ].includes(kind)
     ? filterMeasurementAccess(user, listed)
@@ -438,7 +444,11 @@ export async function measurementSources(user: User, selection: SourceSelection 
   const captures = captureResult.rows.map(r => ({ raw: r.body.recording, tenant: r.tenant, kind: "capture" as const, id: r.id }));
   // An imported native capture is an implementation copy, even if its original
   // capture is on another page. Never advertise it as a second user source.
-  const candidates = [...tasks, ...captures, ...imports].filter(r => r.tenant === user.tenant && !isHealthDemo(r.raw) &&
+  // Explicitly registered synthetic imports may be viewed and processed. Their
+  // origin remains synthetic; health publication is blocked independently.
+  const registered = (await readMeasurementRows(user,'measurement_synthetic_imports')).filter(r=>r.ownerId===user.id);
+  const syntheticIds = new Set(registered.flatMap(r=>r.recordingIds||[]));
+  const candidates = [...tasks, ...captures, ...imports].filter(r => r.tenant === user.tenant && (!isHealthDemo(r.raw) || r.kind==='import'&&syntheticIds.has(r.id)) &&
     !(r.kind === "import" && r.raw.cloudCaptureId) && (!references || references.some(ref => ref.kind === r.kind && ref.id === r.id)));
   const bindings = scopedBindings || await sourceBindings(user, candidates.map(r => sourceKey(user, { kind: r.kind, id: r.id })));
   const activeObjects=new Map((await objects(user)).map(o=>[o.id,o.active]));

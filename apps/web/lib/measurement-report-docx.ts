@@ -52,6 +52,7 @@ export async function buildBladeReportDocx(report:any){
   if(spatial)children.push(new Paragraph({spacing:{after:140},children:[new ImageRun({data:await sharp(Buffer.from(spatial)).png().toBuffer(),type:'png',transformation:{width:670,height:268}})]}));
   else children.push(text('缺少有效位移幅值或测点位置，暂不能绘制三维分布。',{size:21,color:muted}));
   if(b.points.length)children.push(table(['测点','距中心 m','速度半峰峰值 mm/s',...(hasDisplacement?['位移半峰峰值 mm']:[])],b.points.map((p:any)=>[p.name,num(p.radiusM,2),num(p.velocityMmS,3),...(hasDisplacement?[num(p.displacementMm,5)]:[])]),hasDisplacement?[1300,2200,3350,3350]:[1800,2800,5600]));
+  if(b.healthStandard){children.push(heading('健康判据与复核'),text(`${b.healthStandard.name} · ${b.healthStandard.id} · ${b.screening?.baselineMember?'健康基线回代检查':'独立数据筛查'}`),text('确认依据：'+b.healthStandard.approval),text(b.healthStandard.validation));const exceeded=(b.screening?.comparisons||[]).filter((c:any)=>c.outside);if(exceeded.length)children.push(table(['测点 / 角度','超限指标','本次值','允许范围'],exceeded.map((c:any)=>[`${c.point} / ${c.angle}°`,`${c.name} ${c.unit}`,num(c.value,5),`${num(c.min,5)} ～ ${num(c.max,5)}`]),[1800,2800,2400,3200]));if(b.finalDecision)children.push(text(`复核：${b.finalDecision.reviewer} · ${b.finalDecision.createdAt}`),text(b.finalDecision.note),text('依据：'+b.finalDecision.evidence));}
   children.push(heading('关联工况'),text(`匹配 ${b.matched} / ${b.conditionCount} 条 · 风速 ${b.wind} · 转速 ${b.rpm}`,{size:21}));
   if(b.shiftedConditions)children.push(text('工况来源：时间平移关联，非同期实测。',{size:19,color:muted}));
  }

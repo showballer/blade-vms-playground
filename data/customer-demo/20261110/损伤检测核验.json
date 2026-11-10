@@ -1,0 +1,118 @@
+{
+  "name": "化德风场B071-20",
+  "context": {
+    "farmId": "obj-5ef29a52a6bf9c3a931f32aac696f5533746606f180545ba",
+    "campaignId": "obj-0f9de9b3e1298d967f98d7fc3ef344f1859bf6cf42019e27",
+    "turbineId": "obj-3a2bc93a17b79fbb14cbf98e0435fc3b34bd8fefa418df23"
+  },
+  "mode": "scenario_validation",
+  "blades": [
+    {
+      "blade": "叶片 1",
+      "label": "响应正常",
+      "status": "normal",
+      "risk": "normal",
+      "compared": 100,
+      "outside": 0,
+      "affected": 0,
+      "points": [],
+      "algorithmVersion": "blade-response-envelope-1.1",
+      "processingResultId": "4b3f641b-1872-4e1b-b560-639c172f6ddb",
+      "assessmentId": "767f535b-cb7f-4118-ab15-5c2fc703b79d",
+      "matched": 20
+    },
+    {
+      "blade": "叶片 2",
+      "label": "疑似损伤",
+      "status": "alarm",
+      "risk": "high",
+      "compared": 100,
+      "outside": 31,
+      "affected": 15,
+      "points": [
+        {
+          "point": "P2",
+          "angles": [
+            0,
+            90,
+            270
+          ],
+          "metrics": [
+            "速度半峰峰值"
+          ],
+          "outsideCount": 3
+        },
+        {
+          "point": "P3",
+          "angles": [
+            0,
+            90,
+            180,
+            270
+          ],
+          "metrics": [
+            "速度 RMS",
+            "速度半峰峰值",
+            "主响应峰频率"
+          ],
+          "outsideCount": 9
+        },
+        {
+          "point": "P4",
+          "angles": [
+            0,
+            90,
+            180,
+            270
+          ],
+          "metrics": [
+            "速度 RMS",
+            "速度半峰峰值",
+            "主响应峰频率",
+            "峰值因子"
+          ],
+          "outsideCount": 10
+        },
+        {
+          "point": "P5",
+          "angles": [
+            0,
+            90,
+            180,
+            270
+          ],
+          "metrics": [
+            "速度 RMS",
+            "速度半峰峰值",
+            "主响应峰频率"
+          ],
+          "outsideCount": 9
+        }
+      ],
+      "algorithmVersion": "blade-response-envelope-1.1",
+      "processingResultId": "dd80d829-5ae5-44de-981a-4a2c287a61a3",
+      "assessmentId": "e099c3e1-ce21-4578-8f38-43857186aeac",
+      "matched": 20
+    },
+    {
+      "blade": "叶片 3",
+      "label": "响应正常",
+      "status": "normal",
+      "risk": "normal",
+      "compared": 100,
+      "outside": 0,
+      "affected": 0,
+      "points": [],
+      "algorithmVersion": "blade-response-envelope-1.1",
+      "processingResultId": "200ae4a5-65b1-4913-8cb0-52e75bcd3f2d",
+      "assessmentId": "29748840-2ae8-4318-ba1a-26e1b22578a0",
+      "matched": 20
+    }
+  ],
+  "checks": {
+    "actualCurrentFeatures": true,
+    "numberAndHypothesisIndependent": true,
+    "formalPublicationDisabled": true
+  },
+  "saved": true
+}

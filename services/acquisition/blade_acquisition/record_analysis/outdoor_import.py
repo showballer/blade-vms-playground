@@ -179,6 +179,11 @@ def commit(manager, body):
            'importSource':{'format':FORMAT,'fileName':f['fileName'],'sha256':f['sha256'],'importId':token,'originalHeader':head,'manifestContent':state['sourceManifests'],'originalManifests':{k:hashlib.sha256(json.dumps(v,sort_keys=True).encode()).hexdigest() for k,v in state['sourceManifests'].items()}},
            'outdoorSegment':{'schema':FORMAT,'rawFile':'split-source.csv.gz','sourceClock':f['sourceClock'],'mappingSource':'file_name' if f.get('bladeId') else 'user_confirmed','sourceRecordingId':head.get('sourceRecordingId'),'originalCaptureKey':head.get('physicalCaptureId')},
            'pointCycle':{'collectionId':collection,'bladeId':blade,'radialPointId':hashlib.sha256((blade+'\0'+point).encode()).hexdigest()[:32],'radialPointName':point,'radiusM':radius,'azimuthDeg':angle,'identityVerified':head.get('identityVerified',False)}}
+        # The split-file container must not erase a declared synthetic origin.
+        # Both desktop and Web use these top-level fields to isolate test data.
+        if head.get('source') in ('simulation','demo','mock') or head.get('simulation') or head.get('dataOrigin')=='synthetic':
+            m.update(source='simulation',simulation=head.get('simulation') or {'dataOrigin':'synthetic','declaredSource':head.get('source')},diagnosticOnly=True,validMeasurement=False)
+            m['pointCycle']['identityVerified']=False
         prepared.append((f,m))
     planned=[{k:m['pointCycle'][k] for k in ('bladeId','radialPointId','radialPointName','radiusM','azimuthDeg')} for _,m in prepared]
     made=[]

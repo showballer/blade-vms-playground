@@ -1,0 +1,4 @@
+# Byte-preserving snapshots: SHA-256 must remain identical on Windows and macOS.
+*.zip binary
+*.csv binary
+*.json -text

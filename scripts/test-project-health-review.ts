@@ -1,0 +1,15 @@
+import assert from 'node:assert/strict';
+import {validateHealthDecision} from '../apps/web/lib/measurement-health-standard';
+const blade={processingResultId:'p',standardSnapshot:{id:'s'},healthScreening:{status:'normal'},status:'normal',inputKey:'current'};
+const request={inputKey:'current',conclusion:'healthy',note:'已复核',evidence:'现场检测报告编号'};
+assert.doesNotThrow(()=>validateHealthDecision(request,blade));
+assert.throws(()=>validateHealthDecision({...request,inputKey:'old'},blade),/已经变化/);
+assert.throws(()=>validateHealthDecision({...request,conclusion:'damaged'},blade),/未见超限/);
+assert.throws(()=>validateHealthDecision({...request,evidence:''},blade),/依据/);
+assert.throws(()=>validateHealthDecision(request,{...blade,status:'insufficient'}),/适用性/);
+const abnormal={...blade,healthScreening:{status:'alarm'},status:'alarm'};
+assert.doesNotThrow(()=>validateHealthDecision({...request,conclusion:'damaged'},abnormal));
+assert.doesNotThrow(()=>validateHealthDecision({...request,conclusion:'inconclusive'},abnormal));
+assert.throws(()=>validateHealthDecision({...request,conclusion:'damaged'},{...abnormal,syntheticScenario:{}}),/合成情景/);
+assert.throws(()=>validateHealthDecision(request,abnormal),/不能直接发布健康/);
+console.log('PASS health publication: version-bound decisions, no healthy override of alarms, damage requires an abnormal version and documented evidence');
