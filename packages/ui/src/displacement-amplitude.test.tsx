@@ -16,23 +16,19 @@ const radii = [7.05, 21.15, 35.25, 49.35, 63.45];
 for (const [blade, actual] of cases) {
   const input = actual.map((actualMm, i) => Object.freeze({point: `P${i + 1}`, radiusM: radii[i], actualMm, angleCount: 4, plannedAngleCount: 4}));
   const before = JSON.stringify(input), rows = displacementAmplitudeRows(Object.freeze(input));
-  const fitted = displacementAmplitudeOption(rows, 'fit')!;
+  const fitted = displacementAmplitudeOption(rows)!;
   assert.equal(fitted.series.length, 1);
   assert.equal(fitted.series[0].name, '递增拟合');
   assert(rows.every((p, i) => !i || p.displayMm! > rows[i - 1].displayMm!), `${blade} trend`);
   assert.deepEqual(fitted.series[0].data, rows.map(p => [p.radiusM, p.displayMm]));
-  const measured = displacementAmplitudeOption(rows, 'actual')!;
-  assert.equal(measured.series[0].name, '实测计算');
-  assert.deepEqual(measured.series[0].data, input.map(p => [p.radiusM, p.actualMm]));
-  const compared = displacementAmplitudeOption(rows, 'compare')!;
-  assert.equal(compared.series.length, 2);
-  assert.deepEqual(compared.series[1].data, measured.series[0].data);
-  assert.equal(JSON.stringify(input), before, 'View changes cannot rewrite the measured result');
+  assert.deepEqual(rows.map(p => p.actualMm), [...actual]);
+  assert.equal(JSON.stringify(input), before, 'Fitting cannot rewrite the measured result');
   const markup = renderToStaticMarkup(<DisplacementAmplitude points={input} context={blade} loading={false}/>);
   assert(markup.includes('叶片各测点平均位移振幅'));
-  assert(markup.includes('<option value="fit" selected="">递增拟合</option>'), 'Main chart defaults to fit');
+  assert(!markup.includes('位移振幅显示方式') && !markup.includes('<select'), 'Main chart has no view selector');
+  assert(markup.includes('递增拟合用于趋势展示'), 'Main chart always shows the fit');
   assert(markup.includes('实测计算 · mm') && markup.includes('递增拟合 · mm'));
-  assert(!markup.includes('SYN-DISPLACEMENT-DISPLAY'), 'One amplitude card contains the view switch');
+  assert(!markup.includes('SYN-DISPLACEMENT-DISPLAY'), 'One amplitude card contains the results');
 }
 const partial = displacementAmplitudeRows([
   {point:'P1',radiusM:7.05,actualMm:1,angleCount:4,plannedAngleCount:4},
@@ -40,11 +36,12 @@ const partial = displacementAmplitudeRows([
   {point:'P3',radiusM:35.25,actualMm:2,angleCount:4,plannedAngleCount:4},
 ]);
 assert.equal(partial[1].displayMm, null, 'Missing points are not reconstructed');
-assert.equal(displacementAmplitudeOption(partial, 'fit')!.series[0].data[1][1], null);
+assert.equal(displacementAmplitudeOption(partial)!.series[0].data[1][1], null);
 const noRadius = displacementAmplitudeRows(partial.map(p => ({...p,radiusM:null})));
-assert.equal(displacementAmplitudeOption(noRadius, 'fit'), null);
-assert(displacementAmplitudeOption(noRadius, 'actual'), 'Actual values remain accessible without geometry');
-assert.equal(displacementAmplitudeOption([], 'fit'), null);
+assert.equal(displacementAmplitudeOption(noRadius), null);
+const noRadiusMarkup = renderToStaticMarkup(<DisplacementAmplitude points={noRadius} loading={false} context="missing geometry"/>);
+assert(noRadiusMarkup.includes('实测计算 · mm') && noRadiusMarkup.includes('已有实测计算值见下表'), 'Actual values remain in the table without geometry');
+assert.equal(displacementAmplitudeOption([]), null);
 const loading = renderToStaticMarkup(<DisplacementAmplitude points={partial} loading context="loading"/>);
 assert(loading.includes('正在读取真实分析结果') && !loading.includes('<table>'));
-console.log('PASS displacement amplitude: six blades increasing in fit view; measured values, gaps, loading and view separation preserved');
+console.log('PASS displacement amplitude: six blades use fixed fit view; measured values, gaps and loading preserved');

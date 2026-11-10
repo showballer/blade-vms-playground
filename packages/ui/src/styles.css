@@ -2044,8 +2044,6 @@ pre {
   cursor: pointer;
 }
 .fra-displacement-compare input[type="checkbox"] { margin: 0; }
-.fra-displacement-view { display: flex; align-items: center; gap: 8px; font-size: 13px; white-space: nowrap; }
-.fra-displacement-view > .custom-select { min-width: 160px; }
 
 /* Report preview shares the Word report's hierarchy and snapshot. */
 .health-report-preview { display: grid; gap: 24px; color: #202d3d; }

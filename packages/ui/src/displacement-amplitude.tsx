@@ -1,6 +1,5 @@
 "use client";
-import React, {useMemo, useState} from 'react';
-import {CustomSelect} from './common';
+import React, {useMemo} from 'react';
 import {AnalysisCard, lineOption} from './field-record-analysis-charts';
 import {increasingDisplacementDisplay} from './displacement-display-data';
 import {valueText} from './field-record-analysis-data';
@@ -12,7 +11,6 @@ export type DisplacementAmplitudePoint = {
   angleCount: number;
   plannedAngleCount: number;
 };
-export type DisplacementAmplitudeView = 'fit' | 'actual' | 'compare';
 
 export function displacementAmplitudeRows(points: readonly DisplacementAmplitudePoint[]) {
   const fitted = increasingDisplacementDisplay(points.flatMap(p =>
@@ -25,17 +23,14 @@ export function displacementAmplitudeRows(points: readonly DisplacementAmplitude
 
 export function displacementAmplitudeOption(
   rows: ReturnType<typeof displacementAmplitudeRows>,
-  view: DisplacementAmplitudeView,
 ) {
   const categorical = rows.some(p => p.radiusM == null || !Number.isFinite(p.radiusM));
   const ordered = categorical ? rows : [...rows].sort((a, b) => a.radiusM! - b.radiusM!);
-  const makeSeries = (fit: boolean) => ({
-    name: fit ? '递增拟合' : '实测计算',
-    color: fit ? '#2563eb' : '#d97706',
-    dashed: !fit && view === 'compare',
-    data: ordered.map((p, i) => [categorical ? i : p.radiusM!, fit ? p.displayMm : p.actualMm]),
-  });
-  const series = view === 'compare' ? [makeSeries(true), makeSeries(false)] : [makeSeries(view === 'fit')];
+  const series = [{
+    name: '递增拟合',
+    color: '#2563eb',
+    data: ordered.map((p, i) => [categorical ? i : p.radiusM!, p.displayMm]),
+  }];
   if (!series.some(s => s.data.some(pair => pair[1] != null && Number.isFinite(pair[1])))) return null;
   const option = lineOption(series, categorical ? '测点' : '距旋转中心 / m', '平均位移振幅 / mm',
     categorical ? {categories: ordered.map(p => p.point)} : {});
@@ -62,19 +57,12 @@ export function DisplacementAmplitude({points, loading, context, reason, childre
   reason?: string;
   children?: React.ReactNode;
 }) {
-  const [view, setView] = useState<DisplacementAmplitudeView>('fit');
   const rows = useMemo(() => displacementAmplitudeRows(points), [points]);
-  const option = useMemo(() => displacementAmplitudeOption(rows, view), [rows, view]);
-  const label = view === 'fit' ? '递增拟合' : view === 'actual' ? '实测计算' : '拟合与实测对照';
+  const option = useMemo(() => displacementAmplitudeOption(rows), [rows]);
   return <AnalysisCard id="SYN-AMPLITUDE" title="叶片各测点平均位移振幅"
-    context={`${context} · ${label}`} loading={loading} option={option} expandOnPlotClick
-    subtitle={view === 'actual' ? '各角度位移半峰峰值等权平均 · mm' : '递增拟合用于趋势展示 · mm'}
-    reason={reason || (view === 'fit' ? '至少需要两个带有效半径和位移的测点；可切换实测计算查看已有数据。' : '没有可计算位移的有效连续段')}
-    headerActions={<label className="fra-displacement-view">显示
-      <CustomSelect aria-label="位移振幅显示方式" value={view} onChange={e => setView(e.target.value as DisplacementAmplitudeView)}>
-        <option value="fit">递增拟合</option><option value="actual">实测计算</option><option value="compare">拟合与实测对照</option>
-      </CustomSelect>
-    </label>}>
+    context={`${context} · 递增拟合`} loading={loading} option={option} expandOnPlotClick
+    subtitle="递增拟合用于趋势展示 · mm"
+    reason={reason || '至少需要两个带有效半径和位移的测点；已有实测计算值见下表。'}>
     {!loading && <>
       <div className="dra-table-wrap"><table>
         <thead><tr><th>测点 / 半径</th><th>递增拟合 · mm</th><th>实测计算 · mm</th><th>使用 / 计划角度</th></tr></thead>
