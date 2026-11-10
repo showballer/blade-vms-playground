@@ -6,6 +6,8 @@ export function healthReportStatus(blade: any) {
     if(blade.status==='insufficient')return '待复核';
     if(blade.finalDecision?.conclusion==='damaged')return '损伤（人工复核确认）';
     if(blade.finalDecision?.conclusion==='inconclusive')return '待复核';
+    if(blade.finalDecision?.conclusion==='healthy')return '健康（人工复核确认）';
+    if(blade.healthScreening.status==='normal'&&blade.healthScreening.assessmentScope==='response_reference'&&!blade.healthScreening.baselineMember)return '响应正常（健康参考范围内）';
     if(blade.healthScreening.status==='normal')return blade.healthScreening.baselineMember?'健康（基线样本）':'健康（项目响应标准）';
     return '疑似损伤，待复核';
   }
@@ -44,6 +46,8 @@ export function measurementReportModel(report: any) {
     const shiftedConditions = conditions.some((c:any) => c.condition?.reasons?.some((r:string) => /平移/.test(r))) || [...(b.reasons || []), ...(b.evidenceReadiness?.blockers || [])].some((r:string) => /平移/.test(r));
     const matched = conditions.filter((c:any) => c.condition?.status === 'matched' && Number.isFinite(c.condition.windSpeed) && Number.isFinite(c.condition.rpm));
     const notes: string[] = [];
+    if(b.healthScreening?.scopeNote) notes.push(b.healthScreening.scopeNote);
+    if(b.healthScreening?.baselineMember) notes.push('用户确认的健康基线样本，本次为基线回代检查，不是独立检出验证。');
     const reasons = [...(b.reasons || []), ...(b.evidenceReadiness?.blockers || [])];
     if (!b.standardSnapshot&&(!b.ruleSnapshot || !b.referenceSnapshot)) notes.push('尚未建立正常参考和预警判据，暂不能判断是否健康。');
     if (reasons.some(r => /身份/.test(r))) notes.push('采集记录对应的物理叶片身份仍需现场核对。');
@@ -61,7 +65,7 @@ export function measurementReportModel(report: any) {
       estimatedPositions:!!b.geometryEstimates?.some((c:any) => Number.isFinite(c.values?.radius_from_hub_m)),
       matched:matched.length, conditionCount:conditions.length, shiftedConditions,
       wind:range(matched.map((c:any) => c.condition.windSpeed), 'm/s'), rpm:range(matched.map((c:any) => c.condition.rpm), 'rpm'),
-      healthStandard:b.standardSnapshot?{id:b.standardSnapshot.id,name:b.standardSnapshot.name,approval:b.standardSnapshot.approval,approvedBy:b.standardSnapshot.approvedBy,validation:b.standardSnapshot.validation}:null,screening:b.healthScreening||null,finalDecision:b.finalDecision||null,
+      healthStandard:b.standardSnapshot?{mode:b.standardSnapshot.mode||'same_condition',id:b.standardSnapshot.id,name:b.standardSnapshot.name,approval:b.standardSnapshot.approval,approvedBy:b.standardSnapshot.approvedBy,validation:b.standardSnapshot.validation}:null,screening:b.healthScreening||null,finalDecision:b.finalDecision||null,
       notes};
   });
   const dates = (report.bladeAssessments || []).flatMap((b:any) => (b.conditions || []).flatMap((c:any) => (c.sourceTimes || []).flatMap((t:any) => [t.start, t.end]))).filter((t:any) => t !== null && t !== undefined && t !== '').map((t:any) => new Date(t).getTime()).filter(Number.isFinite);

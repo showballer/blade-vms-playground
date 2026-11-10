@@ -7,7 +7,8 @@ function detection(comparisons:any[]){const result=responseEnvelopeDecision(comp
 export function syntheticScenarioComparison(processing:any,bladeCode:string,variant:any){
  const fail=(reason:string)=>({comparisons:[],reason,detection:{...detection([]),reasons:[reason]},formalHealthAssessment:false,structuralDamageConfirmed:false});
  if(!syntheticProcessing(processing)||!variant)return fail('没有已登记的场景来源或参考标准');
- if(healthProcessingSignature(processing)!==variant.signature)return fail('处理配置与参考场景不同，不沿用旧数值对照；请恢复导入时方案');
+ if(![1,2].includes(variant.signatureVersion??1))return fail('参考标准的处理签名版本无效');
+ if(healthProcessingSignature(processing,variant.signatureVersion??1)!==variant.signature)return fail('处理配置与参考场景不同，不沿用旧数值对照；请恢复导入时方案');
  const observations=healthObservations(processing,bladeCode);
  if(observations.length!==20||new Set(observations.map((o:any)=>o.point+'|'+o.angle)).size!==20||!['P1','P2','P3','P4','P5'].every(point=>[0,90,180,270].every(angle=>observations.some((o:any)=>o.point===point&&o.angle===angle)))||observations.some((o:any)=>!o.eligible||STANDARD_METRICS.some(m=>!Number.isFinite(o.values[m.key])||o.values[m.key]<0)||!(o.values.rms>0)||!(o.values.amplitude>0)||!(o.values.frequency>0)))return fail('连续段特征或测点角度覆盖不完整');
  const comparisons:any[]=[];

@@ -1,0 +1,4405 @@
+{
+  "schema": "wuchuan-health-reference-20261110-v1",
+  "confirmationType": "user_declared_healthy",
+  "approval": "用户于2026-11-10声明本任务为健康叶片数据，授权按当前仓库数值及测点、角度分组建立健康响应参考。保留历史修订标记；目前未完成同期工况关联，本标准用于响应范围筛查，尚非独立损伤检出验证。",
+  "geometry": {
+    "instrumentDistanceM": 78,
+    "hubHeightM": 90,
+    "bladeLengthM": 70.5,
+    "rootReservePercent": 10,
+    "tipReservePercent": 10,
+    "radiiM": {
+      "P1": 7.05,
+      "P2": 21.15,
+      "P3": 35.25,
+      "P4": 49.35,
+      "P5": 63.45
+    },
+    "positionBasis": "estimated_from_blade_length",
+    "source": "用户提供尺寸，五点在10%至90%区间内等分，半径为估算位置"
+  },
+  "tasks": [
+    {
+      "name": "武川风场 R001 风机测量任务",
+      "farm": "武川风场",
+      "turbineCode": "R001",
+      "mode": "response_reference",
+      "aliases": [
+        "1101-78m-背景塔桶-第二组_桌面端导入_2026-11-02"
+      ],
+      "archives": [
+        {
+          "path": "data/task-imports/20261105/1101-78m-背景塔桶-第二组_桌面端导入_2026-11-02/叶片1.zip",
+          "bytes": 35665746,
+          "sha256": "9eaa896fe1bb64910d5face96f693eb75348d14d9bb6a6064fe2691fd3f638bd",
+          "records": 20
+        },
+        {
+          "path": "data/task-imports/20261105/1101-78m-背景塔桶-第二组_桌面端导入_2026-11-02/叶片2.zip",
+          "bytes": 33792467,
+          "sha256": "ec523ef1f40962d502388d117970390cd60acfb5df42b396fcf0e4058437f73c",
+          "records": 20
+        },
+        {
+          "path": "data/task-imports/20261105/1101-78m-背景塔桶-第二组_桌面端导入_2026-11-02/叶片3.zip",
+          "bytes": 31288882,
+          "sha256": "b6cc41812234b8abbf1a9dadce765d6240cd467cc776af11c032cca08645b00f",
+          "records": 20
+        }
+      ],
+      "blades": [
+        {
+          "code": "1",
+          "algorithmVersion": "unified-record-analysis-2.2.0",
+          "algorithmOptions": {
+            "lowHz": null,
+            "highHz": null,
+            "window": "hann",
+            "detrend": "linear",
+            "geometry": {
+              "direction": "los",
+              "signSource": null,
+              "inputOverrides": {
+                "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                "values": {
+                  "hub_height_m": 90,
+                  "blade_length_m": 70.5,
+                  "horizontal_distance_m": 78
+                }
+              },
+              "instrumentSign": null,
+              "distanceMeaning": "unknown",
+              "recordOverrides": {
+                "1b7cd654ebfba3f569b375f89221707c": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 7.05,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "3626f93408123faaaa6459fea168e74c": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 21.15,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "4269ca17776d34d24714a1cdedcb965f": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 21.15,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "4b45761da8de3bf0e6f8b5e19367dace": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 7.05,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "55704fa0d8aa5c5c3c3d603f6273a8ba": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 21.15,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "6679678490c0c950196b9e17768d4021": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 7.05,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "69970faca0c58e9f2555b8a1a7d27b95": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 35.25,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "79eb4548d911487b812be82d78d52f5c": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 49.35,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "7cc3cf4fcd0a0e05fc5117895a5774e7": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 49.35,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "865b47b3b5f2f14f944001db624f123e": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 49.35,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "96bb96243dc57b038d0432b5f852a10a": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 35.25,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "9beee9bad8b189ff040f6adef19867cd": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 63.45,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "afff1fda11aaaab224e951eec3129c75": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 35.25,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "b959e60ea378ecc77ea879d806d02f25": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 63.45,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "bba69fdd6ee9776719eb09d208fe2cdc": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 7.05,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "bcb98d9942eb831f00e8db78b4a31a2b": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 35.25,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "de85122fe0a774141292ca09ac5b4c8d": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 63.45,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "e03ba20115efbdcd6129cc6374ef9e84": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 21.15,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "ef2dc48fdb52a487cbae5ae2b27ebe4e": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 63.45,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "ffe6dbd5ba1071f6607fe4ec56818cec": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 49.35,
+                    "horizontal_distance_m": 78
+                  }
+                }
+              },
+              "minAbsProjection": null,
+              "observationModel": "unknown",
+              "maxProjectionGain": null,
+              "uprightAssumption": false,
+              "axialDominanceDeclared": false
+            },
+            "filterKind": "none",
+            "filterOrder": 4,
+            "targetBandHz": null,
+            "targetBandMode": "preview",
+            "measurementMode": "outdoor",
+            "targetBandSource": null
+          },
+          "observations": [
+            {
+              "recordingId": "4b45761da8de3bf0e6f8b5e19367dace",
+              "sourceHash": "dc9cc361528c4d1a2fb571074f2bb05abb25918d87550bb4ea240bf6dcd11b40",
+              "point": "P1",
+              "angle": 0,
+              "radiusM": 7.05,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 2.2271714922048997,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.1209442502583306,
+                "amplitude": 0.7581812504116874,
+                "frequency": 12167.037861915367,
+                "crest": 6.397641156810082,
+                "kurtosis": 5.774859908514905
+              }
+            },
+            {
+              "recordingId": "6679678490c0c950196b9e17768d4021",
+              "sourceHash": "5a699b9297f278d0aa967ba990d277a147027b703d5a2d806ec8cbed731f7a07",
+              "point": "P1",
+              "angle": 90,
+              "radiusM": 7.05,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 2.1881838074398248,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.1214897235071302,
+                "amplitude": 0.6950796867676011,
+                "frequency": 2901.5317286652084,
+                "crest": 5.885944083309635,
+                "kurtosis": 5.487271241084347
+              }
+            },
+            {
+              "recordingId": "bba69fdd6ee9776719eb09d208fe2cdc",
+              "sourceHash": "dccdddf5c0feb249bf638f1bca451c9983f0644e842c1853f5fc088af99c198e",
+              "point": "P1",
+              "angle": 180,
+              "radiusM": 7.05,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 2.1978021978021975,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.11837052772916126,
+                "amplitude": 0.7035777886466246,
+                "frequency": 3692.307692307693,
+                "crest": 6.201433469739738,
+                "kurtosis": 5.689168756520855
+              }
+            },
+            {
+              "recordingId": "1b7cd654ebfba3f569b375f89221707c",
+              "sourceHash": "465a19de8de0ca8334d9a9b90f2c276689862ee806b2a11f77dba453fc8d92bb",
+              "point": "P1",
+              "angle": 270,
+              "radiusM": 7.05,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 2.127659574468085,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.12065117064767111,
+                "amplitude": 0.7409898230316183,
+                "frequency": 14053.1914893617,
+                "crest": 6.39990643518211,
+                "kurtosis": 5.491919373812792
+              }
+            },
+            {
+              "recordingId": "55704fa0d8aa5c5c3c3d603f6273a8ba",
+              "sourceHash": "d35afc4dd0d56793ab1b5ab43094fdc9ecbf298909a0ba6efc9e9a8b5159d8a6",
+              "point": "P2",
+              "angle": 0,
+              "radiusM": 21.15,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 9.25925925925926,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.3499156822439383,
+                "amplitude": 0.928339876925946,
+                "frequency": 1101.851851851852,
+                "crest": 4.0925455064594285,
+                "kurtosis": 3.552629112011015
+              }
+            },
+            {
+              "recordingId": "e03ba20115efbdcd6129cc6374ef9e84",
+              "sourceHash": "7f274eb921a0715e961d013b01ccb59cb7c0ff28973eba9846cd8a9ecfa47275",
+              "point": "P2",
+              "angle": 90,
+              "radiusM": 21.15,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 9.345794392523365,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.4210367524333414,
+                "amplitude": 1.0873409712348772,
+                "frequency": 317.7570093457944,
+                "crest": 4.024992450975339,
+                "kurtosis": 3.508727628636631
+              }
+            },
+            {
+              "recordingId": "4269ca17776d34d24714a1cdedcb965f",
+              "sourceHash": "6550cbd6a8e3757869be1e0bc1c32d9269013c93f70bc5abd301f3c652dd7164",
+              "point": "P2",
+              "angle": 180,
+              "radiusM": 21.15,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 9.523809523809524,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.4381215474282888,
+                "amplitude": 1.027587598343935,
+                "frequency": 200,
+                "crest": 3.4497610102031735,
+                "kurtosis": 3.13584415272386
+              }
+            },
+            {
+              "recordingId": "3626f93408123faaaa6459fea168e74c",
+              "sourceHash": "8579570edf747a01b07dbf96deef64fc29496ead81de788cada4c2ea7b3d48c9",
+              "point": "P2",
+              "angle": 270,
+              "radiusM": 21.15,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 9.433962264150944,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.3888447860339632,
+                "amplitude": 0.9721191112513844,
+                "frequency": 452.83018867924534,
+                "crest": 3.753014150144168,
+                "kurtosis": 3.1370913911103937
+              }
+            },
+            {
+              "recordingId": "afff1fda11aaaab224e951eec3129c75",
+              "sourceHash": "cc8f3be7972629756843cd8e46d6b7925736a8dc7d1a157fc3114c26956999b0",
+              "point": "P3",
+              "angle": 0,
+              "radiusM": 35.25,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 17.857142857142858,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.7409182160812697,
+                "amplitude": 1.6870163483420797,
+                "frequency": 3142.857142857143,
+                "crest": 3.533353205348578,
+                "kurtosis": 3.994008043565203
+              }
+            },
+            {
+              "recordingId": "bcb98d9942eb831f00e8db78b4a31a2b",
+              "sourceHash": "27b6a51cd520af80be563fda911c9f61a3433e3beeefc281ec00ca71167d1c68",
+              "point": "P3",
+              "angle": 90,
+              "radiusM": 35.25,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 17.543859649122805,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.6878372690366474,
+                "amplitude": 1.7152205920472146,
+                "frequency": 526.3157894736843,
+                "crest": 3.842276291562696,
+                "kurtosis": 3.977779634937769
+              }
+            },
+            {
+              "recordingId": "69970faca0c58e9f2555b8a1a7d27b95",
+              "sourceHash": "7efe4298bb1b790aa585c215d98224a5083c2490a05c292e77efe222be12619d",
+              "point": "P3",
+              "angle": 180,
+              "radiusM": 35.25,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 17.241379310344826,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.7330891333518788,
+                "amplitude": 1.6447750156262997,
+                "frequency": 896.5517241379312,
+                "crest": 3.300436705833731,
+                "kurtosis": 3.308647658624572
+              }
+            },
+            {
+              "recordingId": "96bb96243dc57b038d0432b5f852a10a",
+              "sourceHash": "16f5a369c281db761667f6aa92154374075f4a66fb1f040648f360ec9f5f95d7",
+              "point": "P3",
+              "angle": 270,
+              "radiusM": 35.25,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 17.543859649122805,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.6894109360748388,
+                "amplitude": 1.5568593370497774,
+                "frequency": 736.8421052631579,
+                "crest": 3.397039196919987,
+                "kurtosis": 3.139780136540889
+              }
+            },
+            {
+              "recordingId": "865b47b3b5f2f14f944001db624f123e",
+              "sourceHash": "8b3c1c4e23ab197bd223e530479e2a43769afb6fc066624f4034736adadef5cb",
+              "point": "P4",
+              "angle": 0,
+              "radiusM": 49.35,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 33.333333333333336,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.9019504503445728,
+                "amplitude": 1.9501086608572549,
+                "frequency": 1200,
+                "crest": 3.12816862509478,
+                "kurtosis": 3.4392060429150555
+              }
+            },
+            {
+              "recordingId": "ffe6dbd5ba1071f6607fe4ec56818cec",
+              "sourceHash": "2a9d3caf17538e55964b3fbc5ce1b2eb9842f008d8d2e6a285303c631876042f",
+              "point": "P4",
+              "angle": 90,
+              "radiusM": 49.35,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 31.25,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.8301954047285871,
+                "amplitude": 1.6608013642896111,
+                "frequency": 156.25,
+                "crest": 2.787081176356673,
+                "kurtosis": 2.6410551879079747
+              }
+            },
+            {
+              "recordingId": "7cc3cf4fcd0a0e05fc5117895a5774e7",
+              "sourceHash": "366f6303295d5e290d84bc836f2890c80ba036cfcfed9a2bfd627319f637e25f",
+              "point": "P4",
+              "angle": 180,
+              "radiusM": 49.35,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 31.25,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.8575400339637388,
+                "amplitude": 1.9433575263399772,
+                "frequency": 468.75,
+                "crest": 3.218819963526625,
+                "kurtosis": 3.7778098839418206
+              }
+            },
+            {
+              "recordingId": "79eb4548d911487b812be82d78d52f5c",
+              "sourceHash": "6deb81ef89a18072f3fdceef356732632d51db679199b29092ab6657471a8784",
+              "point": "P4",
+              "angle": 270,
+              "radiusM": 49.35,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 32.25806451612903,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.7424990578252663,
+                "amplitude": 1.701056257917312,
+                "frequency": 258.06451612903226,
+                "crest": 3.5673673708606355,
+                "kurtosis": 4.209625740497921
+              }
+            },
+            {
+              "recordingId": "b959e60ea378ecc77ea879d806d02f25",
+              "sourceHash": "335fac861f3387a86ac9389f4c3941f626b3bcc3936a7c83c1c206f32d3e5426",
+              "point": "P5",
+              "angle": 0,
+              "radiusM": 63.45,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 71.42857142857143,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.3126044951803826,
+                "amplitude": 2.708043249989597,
+                "frequency": 1214.2857142857142,
+                "crest": 2.8396481316915336,
+                "kurtosis": 2.876933862153911
+              }
+            },
+            {
+              "recordingId": "de85122fe0a774141292ca09ac5b4c8d",
+              "sourceHash": "5bf8852cccbb39f024cb2f901fec6c3547fd3dc42a7805daf1aea37f216b3d69",
+              "point": "P5",
+              "angle": 90,
+              "radiusM": 63.45,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 76.92307692307692,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.1441500902741488,
+                "amplitude": 2.374171582022422,
+                "frequency": 615.3846153846154,
+                "crest": 2.602993139787055,
+                "kurtosis": 2.377178898881537
+              }
+            },
+            {
+              "recordingId": "ef2dc48fdb52a487cbae5ae2b27ebe4e",
+              "sourceHash": "eec05fc3e2585d3baa10a030c90270f10a9e573ff018c6d1e8127738e4c5ec9d",
+              "point": "P5",
+              "angle": 180,
+              "radiusM": 63.45,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 76.92307692307692,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.8291030016515988,
+                "amplitude": 1.9395346368174395,
+                "frequency": 384.6153846153846,
+                "crest": 3.3287777008753516,
+                "kurtosis": 3.2073939279064554
+              }
+            },
+            {
+              "recordingId": "9beee9bad8b189ff040f6adef19867cd",
+              "sourceHash": "96119c07732fc9ba64773d6315327d881c60faa335675655b1595dc5afbcae7a",
+              "point": "P5",
+              "angle": 270,
+              "radiusM": 63.45,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 76.92307692307692,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.8846360572890136,
+                "amplitude": 2.0212222536796554,
+                "frequency": 846.1538461538461,
+                "crest": 3.0819691166883363,
+                "kurtosis": 2.8195782629283466
+              }
+            }
+          ]
+        },
+        {
+          "code": "2",
+          "algorithmVersion": "unified-record-analysis-2.2.0",
+          "algorithmOptions": {
+            "lowHz": null,
+            "highHz": null,
+            "window": "hann",
+            "detrend": "linear",
+            "geometry": {
+              "direction": "los",
+              "signSource": null,
+              "inputOverrides": {
+                "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                "values": {
+                  "hub_height_m": 90,
+                  "blade_length_m": 70.5,
+                  "horizontal_distance_m": 78
+                }
+              },
+              "instrumentSign": null,
+              "distanceMeaning": "unknown",
+              "recordOverrides": {
+                "0373dc77aad40c0c6372f4db71a546be": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 63.45,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "141fe5401e69a4d6b749c673a50818ce": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 63.45,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "1ddadd7e3b1743a786c026d0e07e4573": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 21.15,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "219117e94e095ede00e394effb14f2ac": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 21.15,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "303f8b2a26d78eebd886659911a5a183": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 7.05,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "367fc1407340929f3c6ace9445c09fb6": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 35.25,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "3836d727c98f6ffbfc3c5dc630c9b951": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 49.35,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "4f8b91c5d0a31a0e28fd20d7e7481a93": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 21.15,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "64d45b2a09ab6ca61c97e78042aaee0c": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 7.05,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "797de2f7626b13ad53852225e580c30b": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 21.15,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "80840c170aa7836aa23f7465dc579433": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 35.25,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "841d657b921300a785b623e83b281d9d": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 49.35,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "9863c3f2ff917d83b75ab83863346e80": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 49.35,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "a00f37856bf0166d3a554d4567c47a13": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 35.25,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "b17e602835101c95d2d15715b3adbb16": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 35.25,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "cbbf1135a1a18c9b0bd791d2f0a8be95": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 7.05,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "d8868a2e3509cb93f2346b1382ef7659": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 63.45,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "e992d4e68d523d65ad1c5d571d74d050": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 49.35,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "f5cf5016c7471204cfe6a8554b9b2e16": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 63.45,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "f7f78c83fd626cb74961975c86cf0ce1": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 7.05,
+                    "horizontal_distance_m": 78
+                  }
+                }
+              },
+              "minAbsProjection": null,
+              "observationModel": "unknown",
+              "maxProjectionGain": null,
+              "uprightAssumption": false,
+              "axialDominanceDeclared": false
+            },
+            "filterKind": "none",
+            "filterOrder": 4,
+            "targetBandHz": null,
+            "targetBandMode": "preview",
+            "measurementMode": "outdoor",
+            "targetBandSource": null
+          },
+          "observations": [
+            {
+              "recordingId": "303f8b2a26d78eebd886659911a5a183",
+              "sourceHash": "7aae04c2bc525d8e8a949d0436db90551483c5df34eb0ec6c36dc92dd9fd2876",
+              "point": "P1",
+              "angle": 0,
+              "radiusM": 7.05,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 2.1881838074398248,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.1214010686900627,
+                "amplitude": 0.7700525462176706,
+                "frequency": 7840.262582056894,
+                "crest": 6.9092020480886704,
+                "kurtosis": 5.6144257506102715
+              }
+            },
+            {
+              "recordingId": "cbbf1135a1a18c9b0bd791d2f0a8be95",
+              "sourceHash": "91241c95b62c9bb1e6475d3cd0ce542a22bb0c14efd013619e32320cb8c08fbb",
+              "point": "P1",
+              "angle": 90,
+              "radiusM": 7.05,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 66.66666666666667,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.1667860964805393,
+                "amplitude": 0.7465096859019915,
+                "frequency": 8133.333333333334,
+                "crest": 5.124210921536551,
+                "kurtosis": 4.131965548812179
+              }
+            },
+            {
+              "recordingId": "f7f78c83fd626cb74961975c86cf0ce1",
+              "sourceHash": "4625fbcdb8127ebff8db996badafc8d9ecf5ae3bda8b35b367049ecd2b8676b8",
+              "point": "P1",
+              "angle": 180,
+              "radiusM": 7.05,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 2.1739130434782608,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.11918166648248309,
+                "amplitude": 0.731379380597478,
+                "frequency": 13156.521739130436,
+                "crest": 6.255969136393608,
+                "kurtosis": 5.65929195814015
+              }
+            },
+            {
+              "recordingId": "64d45b2a09ab6ca61c97e78042aaee0c",
+              "sourceHash": "01b9432584b9440da0c21bfb6dd18160cc8944c71e4eb588840fabc6eb7ff845",
+              "point": "P1",
+              "angle": 270,
+              "radiusM": 7.05,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 2.155172413793103,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.11962454480643872,
+                "amplitude": 0.7601572173985922,
+                "frequency": 1760.7758620689656,
+                "crest": 6.507657725389326,
+                "kurtosis": 5.490974234658904
+              }
+            },
+            {
+              "recordingId": "4f8b91c5d0a31a0e28fd20d7e7481a93",
+              "sourceHash": "4408ed96347a5ea0c7e1e7790503345ba43adf4384b1a6306fb790f875ede8a1",
+              "point": "P2",
+              "angle": 0,
+              "radiusM": 21.15,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 9.090909090909092,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.3959493221884748,
+                "amplitude": 0.9889979421330958,
+                "frequency": 1409.0909090909092,
+                "crest": 3.624587776957681,
+                "kurtosis": 3.027240443959434
+              }
+            },
+            {
+              "recordingId": "797de2f7626b13ad53852225e580c30b",
+              "sourceHash": "46c2860e1f90bf37abf3ee3a7e0ef519c32da2b665f0d304f91d3545afd682af",
+              "point": "P2",
+              "angle": 90,
+              "radiusM": 21.15,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 9.25925925925926,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.4647834156995766,
+                "amplitude": 1.06265989852497,
+                "frequency": 287.03703703703707,
+                "crest": 3.3474502048626795,
+                "kurtosis": 2.931616699000254
+              }
+            },
+            {
+              "recordingId": "219117e94e095ede00e394effb14f2ac",
+              "sourceHash": "adeeb4fe0c41fb777c823c35b504f03c31e5b63ebb3a8dbf078d5a1f9f9cce31",
+              "point": "P2",
+              "angle": 180,
+              "radiusM": 21.15,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 9.708737864077671,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.42172942840743693,
+                "amplitude": 1.01657436837066,
+                "frequency": 1446.601941747573,
+                "crest": 3.6137219699881937,
+                "kurtosis": 3.3476604425133827
+              }
+            },
+            {
+              "recordingId": "1ddadd7e3b1743a786c026d0e07e4573",
+              "sourceHash": "395174763729ec2bc60a83ca1d4c97bdf2f51bdfbc827ecf2fdf00be4ab0dae9",
+              "point": "P2",
+              "angle": 270,
+              "radiusM": 21.15,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 9.25925925925926,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.31583834840770786,
+                "amplitude": 0.8296565175221886,
+                "frequency": 990.7407407407408,
+                "crest": 4.015942178761074,
+                "kurtosis": 3.6082823931340218
+              }
+            },
+            {
+              "recordingId": "b17e602835101c95d2d15715b3adbb16",
+              "sourceHash": "001ceca5100c46e0c5e7a74a5be73927096842a8abf0848f7bafdbe6338b6356",
+              "point": "P3",
+              "angle": 0,
+              "radiusM": 35.25,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 17.241379310344826,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.7822208975035608,
+                "amplitude": 1.692373461012456,
+                "frequency": 1051.7241379310346,
+                "crest": 3.318915243976369,
+                "kurtosis": 3.2346881898421858
+              }
+            },
+            {
+              "recordingId": "a00f37856bf0166d3a554d4567c47a13",
+              "sourceHash": "76cbeec7dc920258c793556bc0d8fcf1fc84cc02878c4197e2334fdd716d9527",
+              "point": "P3",
+              "angle": 90,
+              "radiusM": 35.25,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 17.241379310344826,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.7131551184578666,
+                "amplitude": 1.5922131706574236,
+                "frequency": 172.41379310344828,
+                "crest": 3.330321682123664,
+                "kurtosis": 3.85391227442864
+              }
+            },
+            {
+              "recordingId": "80840c170aa7836aa23f7465dc579433",
+              "sourceHash": "74273fe73e2b5e08ab8722be31b0f3b9db67890909572745e3d0927db3ab25b6",
+              "point": "P3",
+              "angle": 180,
+              "radiusM": 35.25,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 16.949152542372882,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.7697796199172723,
+                "amplitude": 1.6950207507396986,
+                "frequency": 389.8305084745763,
+                "crest": 3.334036966566153,
+                "kurtosis": 3.4885304807194792
+              }
+            },
+            {
+              "recordingId": "367fc1407340929f3c6ace9445c09fb6",
+              "sourceHash": "1c5d91845dae2e7a7bc7eb4755d2a19f5fbb485506a8a1718e25cc2575e3458b",
+              "point": "P3",
+              "angle": 270,
+              "radiusM": 35.25,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 17.543859649122805,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.7341108611996041,
+                "amplitude": 1.5935523222132724,
+                "frequency": 1473.6842105263158,
+                "crest": 3.23657457908728,
+                "kurtosis": 3.4195616922622087
+              }
+            },
+            {
+              "recordingId": "e992d4e68d523d65ad1c5d571d74d050",
+              "sourceHash": "e46bfc25d7dd04f70edcce27d55bc26027b2895267edeef62457ef4d21d29b05",
+              "point": "P4",
+              "angle": 0,
+              "radiusM": 49.35,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 32.25806451612903,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.006003716249233,
+                "amplitude": 2.2194729510974462,
+                "frequency": 1838.7096774193549,
+                "crest": 2.876628157391502,
+                "kurtosis": 2.440541235405825
+              }
+            },
+            {
+              "recordingId": "841d657b921300a785b623e83b281d9d",
+              "sourceHash": "cc373470bc69e0fd99aee1c6b27acec7e1a5240a1f25eba935ee438b2b82f5a4",
+              "point": "P4",
+              "angle": 90,
+              "radiusM": 49.35,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 32.25806451612903,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.8201203295768935,
+                "amplitude": 1.7275602012736562,
+                "frequency": 1774.1935483870968,
+                "crest": 3.1657948765131723,
+                "kurtosis": 3.4050012381623844
+              }
+            },
+            {
+              "recordingId": "3836d727c98f6ffbfc3c5dc630c9b951",
+              "sourceHash": "c35c4f300790353d99d49e7c3fc83953fe70a47a2d073c264d42dfc4ecab5ad1",
+              "point": "P4",
+              "angle": 180,
+              "radiusM": 49.35,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 31.25,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.8617934061136585,
+                "amplitude": 1.7880124304467593,
+                "frequency": 2656.25,
+                "crest": 2.8283092013887607,
+                "kurtosis": 2.785853100128514
+              }
+            },
+            {
+              "recordingId": "9863c3f2ff917d83b75ab83863346e80",
+              "sourceHash": "8a06adacfb9ea3e8205539c0c33a2498d1b107357fd5bf0962677b652ef5a957",
+              "point": "P4",
+              "angle": 270,
+              "radiusM": 49.35,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 32.25806451612903,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.765518711099918,
+                "amplitude": 1.6890274057939316,
+                "frequency": 1096.774193548387,
+                "crest": 3.158249492999875,
+                "kurtosis": 3.0833045559778074
+              }
+            },
+            {
+              "recordingId": "0373dc77aad40c0c6372f4db71a546be",
+              "sourceHash": "15c12d1c7fcafb1c9a77b9154f41c60233afdd3302505d672335e1202a669753",
+              "point": "P5",
+              "angle": 0,
+              "radiusM": 63.45,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 475.2851711026616,
+              "featureCoverage": {
+                "totalSegments": 38,
+                "shapeSegments": 23,
+                "shortShapeExcluded": 15
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.871021526247519,
+                "amplitude": 3.0856882093282656,
+                "frequency": 2376.425855513308,
+                "crest": 3.726759045651335,
+                "kurtosis": 6.771082884576705
+              }
+            },
+            {
+              "recordingId": "f5cf5016c7471204cfe6a8554b9b2e16",
+              "sourceHash": "8de763b8845dc6c6c2f1104dd230fc993a4d5e818f58bf4d954c181677908deb",
+              "point": "P5",
+              "angle": 90,
+              "radiusM": 63.45,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 71.42857142857143,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.1733102793018986,
+                "amplitude": 2.5253975874908017,
+                "frequency": 571.4285714285714,
+                "crest": 2.752627533088702,
+                "kurtosis": 2.452140823366333
+              }
+            },
+            {
+              "recordingId": "d8868a2e3509cb93f2346b1382ef7659",
+              "sourceHash": "179986ef61ceb3765fc3d45c580f4c55fede0b1da44ea40c83d6f7b9f1d3a302",
+              "point": "P5",
+              "angle": 180,
+              "radiusM": 63.45,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 76.92307692307692,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.9928854866020456,
+                "amplitude": 2.266982707665921,
+                "frequency": 153.84615384615384,
+                "crest": 2.8812066490295543,
+                "kurtosis": 2.256736263645426
+              }
+            },
+            {
+              "recordingId": "141fe5401e69a4d6b749c673a50818ce",
+              "sourceHash": "68ac932560686ef7e599cc8d8a07dc43725e5c9305a0f787f96d1be6efb80a1c",
+              "point": "P5",
+              "angle": 270,
+              "radiusM": 63.45,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 71.42857142857143,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.4456426582920628,
+                "amplitude": 0.9957287890763076,
+                "frequency": 2500,
+                "crest": 2.832468817397401,
+                "kurtosis": 2.442892239315914
+              }
+            }
+          ]
+        },
+        {
+          "code": "3",
+          "algorithmVersion": "unified-record-analysis-2.2.0",
+          "algorithmOptions": {
+            "lowHz": null,
+            "highHz": null,
+            "window": "hann",
+            "detrend": "linear",
+            "geometry": {
+              "direction": "los",
+              "signSource": null,
+              "inputOverrides": {
+                "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                "values": {
+                  "hub_height_m": 90,
+                  "blade_length_m": 70.5,
+                  "horizontal_distance_m": 78
+                }
+              },
+              "instrumentSign": null,
+              "distanceMeaning": "unknown",
+              "recordOverrides": {
+                "06fb1e99550465cb013113798f535db9": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 7.05,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "089bfe2e0094566d36c958451a8bd736": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 63.45,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "2d473510ee30b63c29dba8dbdb2cd4b1": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 49.35,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "3ad5d2791e9c125e82b48fa95f798547": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 35.25,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "3c2728565d7a905ecab024c529f6f407": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 7.05,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "419446499584990711e6f3e54ab88fa1": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 21.15,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "4b5a5dfd745fea6fb8590a77eacdf3ea": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 49.35,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "538bb1eea491eb7c37875ae421ee68bd": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 7.05,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "615dfbcd6510c13fa826c99c51cb609d": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 21.15,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "66244e47735ea44ac788cb378004ad40": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 63.45,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "6ee0fa76222da544dfe32021395e5e55": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 35.25,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "729cdd7324c8a87ced7507e7cc3ad6f7": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 63.45,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "87e04ebcaba3d9f80f00f5c6f0e7a6ec": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 35.25,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "8a241fbebe5039dc7acde467513fddff": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 49.35,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "c3883bcd36b081ec7de7f2fb0e8c5e0d": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 49.35,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "c4ca81301e9917446ce3f24d130f6f95": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 21.15,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "cf9329d832a033a34fa2cc4037c5421b": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 63.45,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "ed501a7ecdaf705a9a571798ca255b2b": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 35.25,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "f5ac71fb4a8920ef1a834892dccf467f": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 7.05,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "f990da6fb15e3d09562508d78e728a3d": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 21.15,
+                    "horizontal_distance_m": 78
+                  }
+                }
+              },
+              "minAbsProjection": null,
+              "observationModel": "unknown",
+              "maxProjectionGain": null,
+              "uprightAssumption": false,
+              "axialDominanceDeclared": false
+            },
+            "filterKind": "none",
+            "filterOrder": 4,
+            "targetBandHz": null,
+            "targetBandMode": "preview",
+            "measurementMode": "outdoor",
+            "targetBandSource": null
+          },
+          "observations": [
+            {
+              "recordingId": "f5ac71fb4a8920ef1a834892dccf467f",
+              "sourceHash": "d14628202f5e314e8867a3a3a2975ac274159f655a255742f8afb41c627492ad",
+              "point": "P1",
+              "angle": 0,
+              "radiusM": 7.05,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 2.1978021978021975,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.12049639772359338,
+                "amplitude": 0.765353335941436,
+                "frequency": 7997.802197802199,
+                "crest": 6.357289786787899,
+                "kurtosis": 5.690857443588749
+              }
+            },
+            {
+              "recordingId": "06fb1e99550465cb013113798f535db9",
+              "sourceHash": "382e54d766628c09886b92f59e2a6a1a6f38e569126781ece5d3bec3eb9d852c",
+              "point": "P1",
+              "angle": 90,
+              "radiusM": 7.05,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 2.1691973969631237,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.12027707786484595,
+                "amplitude": 0.7388850221003653,
+                "frequency": 3316.702819956616,
+                "crest": 6.1867716926952445,
+                "kurtosis": 5.560538416455149
+              }
+            },
+            {
+              "recordingId": "3c2728565d7a905ecab024c529f6f407",
+              "sourceHash": "20c14e00309e0a927f050600abd4891bf5d468358b70afce42952e628c680324",
+              "point": "P1",
+              "angle": 180,
+              "radiusM": 7.05,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 166.66666666666666,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.18403407964272853,
+                "amplitude": 0.6220707422572609,
+                "frequency": 5500,
+                "crest": 3.806458611813638,
+                "kurtosis": 3.474451896136315
+              }
+            },
+            {
+              "recordingId": "538bb1eea491eb7c37875ae421ee68bd",
+              "sourceHash": "b4ae82189b4d273f5dc8515ec2911770fa7f5e2d94bc4997b4bdc4d358caae7b",
+              "point": "P1",
+              "angle": 270,
+              "radiusM": 7.05,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 83.33333333333333,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.18558868411026663,
+                "amplitude": 0.5754701721568678,
+                "frequency": 11833.333333333332,
+                "crest": 3.341795989505884,
+                "kurtosis": 2.9009009989147376
+              }
+            },
+            {
+              "recordingId": "419446499584990711e6f3e54ab88fa1",
+              "sourceHash": "f2be58a90da9644b5f4443ae66bbfa31d1ac6a5c16be0ea0d728d6e70a93dffb",
+              "point": "P2",
+              "angle": 0,
+              "radiusM": 21.15,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 9.090909090909092,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.4061510250256811,
+                "amplitude": 0.9928996812007708,
+                "frequency": 654.5454545454546,
+                "crest": 3.6793308323978353,
+                "kurtosis": 3.23038868503252
+              }
+            },
+            {
+              "recordingId": "615dfbcd6510c13fa826c99c51cb609d",
+              "sourceHash": "17b93c90827e4a959ad26c1b1f10fa97972d6840795849d49b41530555508b73",
+              "point": "P2",
+              "angle": 90,
+              "radiusM": 21.15,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 9.25925925925926,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.43946678225725583,
+                "amplitude": 1.1080395896535435,
+                "frequency": 129.62962962962962,
+                "crest": 3.7984492274044026,
+                "kurtosis": 3.279000576307459
+              }
+            },
+            {
+              "recordingId": "c4ca81301e9917446ce3f24d130f6f95",
+              "sourceHash": "84a32a091de23d513d54409aeee9ab9e341084f290b749f5d36d8c094de126a9",
+              "point": "P2",
+              "angle": 180,
+              "radiusM": 21.15,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 9.523809523809524,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.4221915717934998,
+                "amplitude": 1.0200929699406849,
+                "frequency": 380.95238095238096,
+                "crest": 3.657952943715269,
+                "kurtosis": 3.160048860954431
+              }
+            },
+            {
+              "recordingId": "f990da6fb15e3d09562508d78e728a3d",
+              "sourceHash": "8a741964791fe523e44cddb719eeb97167513fdecd30e1818e208af6c81c2ca8",
+              "point": "P2",
+              "angle": 270,
+              "radiusM": 21.15,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 9.090909090909092,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.3344131682012534,
+                "amplitude": 1.0092001430122188,
+                "frequency": 672.7272727272727,
+                "crest": 4.856449532118163,
+                "kurtosis": 3.4135594137862064
+              }
+            },
+            {
+              "recordingId": "3ad5d2791e9c125e82b48fa95f798547",
+              "sourceHash": "5d887700801bc72b258560f1144f7894067f6538f0099bcc0e64ed3cbfbc568c",
+              "point": "P3",
+              "angle": 0,
+              "radiusM": 35.25,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 17.241379310344826,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.7173549765886105,
+                "amplitude": 1.55416934201413,
+                "frequency": 500.00000000000006,
+                "crest": 3.357998030510496,
+                "kurtosis": 3.703535064191958
+              }
+            },
+            {
+              "recordingId": "ed501a7ecdaf705a9a571798ca255b2b",
+              "sourceHash": "46e03eda19ac5bab5b0595b6dc632b2b910c71ff82cd8c1cac9762206d3b4563",
+              "point": "P3",
+              "angle": 90,
+              "radiusM": 35.25,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 17.241379310344826,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.6892636816644749,
+                "amplitude": 1.5961729884484406,
+                "frequency": 879.3103448275863,
+                "crest": 3.5051166358915418,
+                "kurtosis": 3.944578176006664
+              }
+            },
+            {
+              "recordingId": "87e04ebcaba3d9f80f00f5c6f0e7a6ec",
+              "sourceHash": "89d00fcaa4fae590012e673f98f3a61754a3638cb1ed62a87086593966ff585a",
+              "point": "P3",
+              "angle": 180,
+              "radiusM": 35.25,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 17.241379310344826,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.7255625936431032,
+                "amplitude": 1.584462836501257,
+                "frequency": 1310.344827586207,
+                "crest": 3.254434622377183,
+                "kurtosis": 3.9569253814284417
+              }
+            },
+            {
+              "recordingId": "6ee0fa76222da544dfe32021395e5e55",
+              "sourceHash": "cbadbd8290370027390ccbe60e0b5b558eb331eb4fd69211a6ed47fa2fd737ff",
+              "point": "P3",
+              "angle": 270,
+              "radiusM": 35.25,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 17.857142857142858,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.7469723514579132,
+                "amplitude": 1.5379808900044905,
+                "frequency": 446.42857142857144,
+                "crest": 3.021596226334033,
+                "kurtosis": 3.375417814617516
+              }
+            },
+            {
+              "recordingId": "2d473510ee30b63c29dba8dbdb2cd4b1",
+              "sourceHash": "91ef1df2cdda533dd0f8e593c6c36b9be205aaa59562019afa29546b0890531b",
+              "point": "P4",
+              "angle": 0,
+              "radiusM": 49.35,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 31.25,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.8018993115442137,
+                "amplitude": 1.7992799920508604,
+                "frequency": 156.25,
+                "crest": 3.340966582324139,
+                "kurtosis": 3.223017709880884
+              }
+            },
+            {
+              "recordingId": "4b5a5dfd745fea6fb8590a77eacdf3ea",
+              "sourceHash": "e27d77604ccd8f70e6fa57b44cae9527d08dac084e718f3ce9b407130a165169",
+              "point": "P4",
+              "angle": 90,
+              "radiusM": 49.35,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 31.25,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.8779957420366549,
+                "amplitude": 1.8534025233430795,
+                "frequency": 875,
+                "crest": 2.9799361291682493,
+                "kurtosis": 2.937822852272101
+              }
+            },
+            {
+              "recordingId": "c3883bcd36b081ec7de7f2fb0e8c5e0d",
+              "sourceHash": "7bcc983e393642d29ad53c484446ff580a8a91c899eb64f57c75da477b921470",
+              "point": "P4",
+              "angle": 180,
+              "radiusM": 49.35,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 31.25,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.7921609912252809,
+                "amplitude": 1.620266012078385,
+                "frequency": 718.75,
+                "crest": 2.9974545860274016,
+                "kurtosis": 3.622489719773349
+              }
+            },
+            {
+              "recordingId": "8a241fbebe5039dc7acde467513fddff",
+              "sourceHash": "6b6e474196a059988db3b6ca26ae1adaffdb97c3c6c19b5c895a0a09d2db8c84",
+              "point": "P4",
+              "angle": 270,
+              "radiusM": 49.35,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 32.25806451612903,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.7006432093531021,
+                "amplitude": 1.5852322098297873,
+                "frequency": 677.4193548387096,
+                "crest": 3.2973221219935764,
+                "kurtosis": 3.7093903921956417
+              }
+            },
+            {
+              "recordingId": "66244e47735ea44ac788cb378004ad40",
+              "sourceHash": "82f07641b140706f7931cc7b2a9f52770bcbc5e1137c19a39676f328f96a2eb1",
+              "point": "P5",
+              "angle": 0,
+              "radiusM": 63.45,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 71.42857142857143,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.2558486113496656,
+                "amplitude": 2.8300896126407444,
+                "frequency": 1071.4285714285716,
+                "crest": 3.111364061892757,
+                "kurtosis": 2.477438889676552
+              }
+            },
+            {
+              "recordingId": "cf9329d832a033a34fa2cc4037c5421b",
+              "sourceHash": "a26cca83dd0cac0a3937ec4e9ac9aa10af8bc7ed73656fe396b9657778b3f5a3",
+              "point": "P5",
+              "angle": 90,
+              "radiusM": 63.45,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 62.5,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.0634374148861403,
+                "amplitude": 2.5509004613703485,
+                "frequency": 2375,
+                "crest": 3.301181483415231,
+                "kurtosis": 2.8563839048905018
+              }
+            },
+            {
+              "recordingId": "729cdd7324c8a87ced7507e7cc3ad6f7",
+              "sourceHash": "4c4f19ab3e13df73d250ab0ccece8c2b858d2c78b71e12bab9ba91ac608dd8bf",
+              "point": "P5",
+              "angle": 180,
+              "radiusM": 63.45,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 71.42857142857143,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.047762016463062,
+                "amplitude": 2.215837924642206,
+                "frequency": 142.85714285714286,
+                "crest": 2.7923956820228573,
+                "kurtosis": 2.470447799946431
+              }
+            },
+            {
+              "recordingId": "089bfe2e0094566d36c958451a8bd736",
+              "sourceHash": "64104384de54f79374d43d22ae7c56558b1f94c05ca45935314f62d4814fb32b",
+              "point": "P5",
+              "angle": 270,
+              "radiusM": 63.45,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 71.42857142857143,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.7201336231149605,
+                "amplitude": 1.4786716185178277,
+                "frequency": 2000,
+                "crest": 2.538938476844859,
+                "kurtosis": 2.584518975051002
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "武川风场 R024 风机测量任务",
+      "farm": "武川风场",
+      "turbineCode": "R024",
+      "mode": "response_reference",
+      "aliases": [
+        "第三组全流程_桌面端导入_2026-11-04"
+      ],
+      "archives": [
+        {
+          "path": "data/task-imports/20261105/第三组全流程_桌面端导入_2026-11-04/叶片1.zip",
+          "bytes": 47627619,
+          "sha256": "1c5cf416bfed45539a8e46d8afa198696e9567a10e90d47aebb25ec9d41dc142",
+          "records": 20
+        },
+        {
+          "path": "data/task-imports/20261105/第三组全流程_桌面端导入_2026-11-04/叶片2.zip",
+          "bytes": 47355782,
+          "sha256": "2726d242d921d11436d71b21fb974f8d49d2bcdfbaea2b81c4dfe094307603a0",
+          "records": 20
+        },
+        {
+          "path": "data/task-imports/20261105/第三组全流程_桌面端导入_2026-11-04/叶片3.zip",
+          "bytes": 47301981,
+          "sha256": "a616a22491b7af321ae9f6d3f7d4ad553cc09d8dfeb305b0936464039e6392bd",
+          "records": 20
+        }
+      ],
+      "blades": [
+        {
+          "code": "1",
+          "algorithmVersion": "unified-record-analysis-2.2.0",
+          "algorithmOptions": {
+            "lowHz": null,
+            "highHz": null,
+            "window": "hann",
+            "detrend": "linear",
+            "geometry": {
+              "direction": "los",
+              "signSource": null,
+              "inputOverrides": {
+                "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                "values": {
+                  "hub_height_m": 90,
+                  "blade_length_m": 70.5,
+                  "horizontal_distance_m": 78
+                }
+              },
+              "instrumentSign": null,
+              "distanceMeaning": "unknown",
+              "recordOverrides": {
+                "03d19be16ed59f40afa2aba88ff59641": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 21.15,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "0a4ea71f54b8f7f40bf7a9a49b350fb7": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 35.25,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "1d985d724e55aa595cb303d4e186890e": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 21.15,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "21511eedbcea0e8e0c092f874bb538e1": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 7.05,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "39fb0187fd866f15ee290c44f2cc6822": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 63.45,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "57e7aba86112205f97102ff89f4bc0af": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 63.45,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "5af5eea3da2cb800ec35a04a936ef2eb": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 35.25,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "5d413a68d3072d178fe988891faa3ae9": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 49.35,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "61f7ad45b7fbf6c4bbb8f0bb7791b02b": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 49.35,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "66f769fa24624c781e015f41ccb17ac5": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 21.15,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "6c43d594f3d1d28cb59dfa5baa07164a": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 7.05,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "7496ffe8e93a30ef3a91191d007060c1": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 7.05,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "78cab2b7102e1aaced670a8d1581be81": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 63.45,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "9000aa2e887092a9164fb9a8a456492a": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 21.15,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "a8b1d9d6e28de8f470b58de6fe33dfb3": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 35.25,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "b5098ad7d2ae2bf7cf1cde228d3cdedf": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 35.25,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "c8461eec32d10b7326cd7308a22e8471": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 63.45,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "db3cfeef5ed4e5d42c9c91719f774084": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 49.35,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "e188be755c5c114aeba021eb1418598e": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 49.35,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "ec89d2dabebbbd2a69419c1755b7bde3": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 7.05,
+                    "horizontal_distance_m": 78
+                  }
+                }
+              },
+              "minAbsProjection": null,
+              "observationModel": "unknown",
+              "maxProjectionGain": null,
+              "uprightAssumption": false,
+              "axialDominanceDeclared": false
+            },
+            "filterKind": "none",
+            "filterOrder": 4,
+            "targetBandHz": null,
+            "targetBandMode": "preview",
+            "measurementMode": "outdoor",
+            "targetBandSource": null
+          },
+          "observations": [
+            {
+              "recordingId": "21511eedbcea0e8e0c092f874bb538e1",
+              "sourceHash": "35b3de86f98517da0f862aea890fd019a0437460a6541732f6f6480425436b76",
+              "point": "P1",
+              "angle": 0,
+              "radiusM": 7.05,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 1.733102253032929,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.7482840504350309,
+                "amplitude": 1.9094447305075724,
+                "frequency": 119.5840554592721,
+                "crest": 3.421014084211897,
+                "kurtosis": 2.1246039871839706
+              }
+            },
+            {
+              "recordingId": "6c43d594f3d1d28cb59dfa5baa07164a",
+              "sourceHash": "9c89ada22d29af909af26f94fac98f3133055d1043fe73774456abc1317df3e3",
+              "point": "P1",
+              "angle": 90,
+              "radiusM": 7.05,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 1.718213058419244,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.7771919866821727,
+                "amplitude": 1.855845377387983,
+                "frequency": 1230.2405498281787,
+                "crest": 3.127864520024426,
+                "kurtosis": 2.121300680476941
+              }
+            },
+            {
+              "recordingId": "ec89d2dabebbbd2a69419c1755b7bde3",
+              "sourceHash": "4d3b39cd87797278a1ed5307e2d2c3a7749e2ac4c799d8b9fb30d2cb7278bddb",
+              "point": "P1",
+              "angle": 180,
+              "radiusM": 7.05,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 1.663893510815308,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.752881021723671,
+                "amplitude": 1.9033680647781193,
+                "frequency": 1334.442595673877,
+                "crest": 3.3934860904165025,
+                "kurtosis": 2.1455100920034367
+              }
+            },
+            {
+              "recordingId": "7496ffe8e93a30ef3a91191d007060c1",
+              "sourceHash": "0fe79c8880d185e53508753f1aa21893278eeb64841393010d24c53f843bb8d7",
+              "point": "P1",
+              "angle": 270,
+              "radiusM": 7.05,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 1.6891891891891893,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.7447857494198842,
+                "amplitude": 1.906455193560718,
+                "frequency": 984.7972972972972,
+                "crest": 3.409474241938668,
+                "kurtosis": 2.135841357857779
+              }
+            },
+            {
+              "recordingId": "1d985d724e55aa595cb303d4e186890e",
+              "sourceHash": "655f72d89bbc055807c016962e57fa4b134eea32257bb1004001c114f943a657",
+              "point": "P2",
+              "angle": 0,
+              "radiusM": 21.15,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 2.1052631578947367,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.1404764321083702,
+                "amplitude": 2.484077163137485,
+                "frequency": 397.89473684210526,
+                "crest": 2.862327083001283,
+                "kurtosis": 2.204549850366419
+              }
+            },
+            {
+              "recordingId": "9000aa2e887092a9164fb9a8a456492a",
+              "sourceHash": "927100c53d47888ad8af4e47b6be0c309fdf8036b808d9873b2819392b167113",
+              "point": "P2",
+              "angle": 90,
+              "radiusM": 21.15,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 2.1052631578947367,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.1275369471706596,
+                "amplitude": 2.4468231406995864,
+                "frequency": 271.57894736842104,
+                "crest": 2.821244961403929,
+                "kurtosis": 2.159589248898107
+              }
+            },
+            {
+              "recordingId": "03d19be16ed59f40afa2aba88ff59641",
+              "sourceHash": "010de50b1b114460058a0412d51eb0b1c90cae6cadcd6c8c26a4674181c8d748",
+              "point": "P2",
+              "angle": 180,
+              "radiusM": 21.15,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 2.1052631578947367,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.14285996149357,
+                "amplitude": 2.5628876897865127,
+                "frequency": 1280,
+                "crest": 2.9978867849748956,
+                "kurtosis": 2.243425890259178
+              }
+            },
+            {
+              "recordingId": "66f769fa24624c781e015f41ccb17ac5",
+              "sourceHash": "33d002640554ea594c90d6f3ee4dd9fccfe591f7566295ddd540c575797ee7ea",
+              "point": "P2",
+              "angle": 270,
+              "radiusM": 21.15,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 2.079002079002079,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.1308165828825172,
+                "amplitude": 2.398826818992948,
+                "frequency": 733.8877338877339,
+                "crest": 2.8031159206339096,
+                "kurtosis": 2.21683444249963
+              }
+            },
+            {
+              "recordingId": "a8b1d9d6e28de8f470b58de6fe33dfb3",
+              "sourceHash": "aca7b90313495f1f452906d31ae2d1df2b44a3cbf5bba44e62468b386b1316b0",
+              "point": "P3",
+              "angle": 0,
+              "radiusM": 35.25,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 7.2992700729927,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.233719055321413,
+                "amplitude": 2.8999990680193983,
+                "frequency": 2248.175182481752,
+                "crest": 2.972047339721607,
+                "kurtosis": 2.135037405642903
+              }
+            },
+            {
+              "recordingId": "b5098ad7d2ae2bf7cf1cde228d3cdedf",
+              "sourceHash": "47f0c74ffab23d773ff488ee30c9a80bd58c66a563d9665bf91e9f1268126d72",
+              "point": "P3",
+              "angle": 90,
+              "radiusM": 35.25,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 7.194244604316546,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.2393057697729115,
+                "amplitude": 2.878425953247852,
+                "frequency": 194.24460431654677,
+                "crest": 3.0522480616463796,
+                "kurtosis": 2.213452844833487
+              }
+            },
+            {
+              "recordingId": "5af5eea3da2cb800ec35a04a936ef2eb",
+              "sourceHash": "74a79687b9e1be9cce36f4492d4722783ee77fa3bc92a119548dea69b9efa7be",
+              "point": "P3",
+              "angle": 180,
+              "radiusM": 35.25,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 7.575757575757575,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.3229741079138355,
+                "amplitude": 2.857928878281343,
+                "frequency": 1257.5757575757575,
+                "crest": 2.760272108929006,
+                "kurtosis": 2.110126530359163
+              }
+            },
+            {
+              "recordingId": "0a4ea71f54b8f7f40bf7a9a49b350fb7",
+              "sourceHash": "1070f781ece8562a6df5a27e120715c3e32d822ee68a5308ff96dbb1863023a1",
+              "point": "P3",
+              "angle": 270,
+              "radiusM": 35.25,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 7.246376811594202,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.1927871554973697,
+                "amplitude": 2.891671021595487,
+                "frequency": 427.53623188405805,
+                "crest": 3.0442204363840224,
+                "kurtosis": 2.2468965082987875
+              }
+            },
+            {
+              "recordingId": "db3cfeef5ed4e5d42c9c91719f774084",
+              "sourceHash": "b602296577e9c5134acf45a15765ff9ca1e25c259235e24268557437da400c63",
+              "point": "P4",
+              "angle": 0,
+              "radiusM": 49.35,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 22.72727272727273,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.5139708335572035,
+                "amplitude": 3.158485562061554,
+                "frequency": 954.5454545454546,
+                "crest": 2.8097058692311836,
+                "kurtosis": 2.7347858338983726
+              }
+            },
+            {
+              "recordingId": "5d413a68d3072d178fe988891faa3ae9",
+              "sourceHash": "2f615a57db039094d6735987238c7a98f67d1ccfedf2bba1a6e4b95cf9092435",
+              "point": "P4",
+              "angle": 90,
+              "radiusM": 49.35,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 22.72727272727273,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.6209464555372384,
+                "amplitude": 3.231025309957771,
+                "frequency": 1272.727272727273,
+                "crest": 2.6997965403841753,
+                "kurtosis": 2.5861014705772245
+              }
+            },
+            {
+              "recordingId": "61f7ad45b7fbf6c4bbb8f0bb7791b02b",
+              "sourceHash": "c8afe40e6bb962bb3960fb31feed28146f7103efa81101082ef3ebf8a1539cab",
+              "point": "P4",
+              "angle": 180,
+              "radiusM": 49.35,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 22.22222222222222,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.615077061478646,
+                "amplitude": 3.311715574132495,
+                "frequency": 266.66666666666663,
+                "crest": 2.6957172043635644,
+                "kurtosis": 2.4440319856757973
+              }
+            },
+            {
+              "recordingId": "e188be755c5c114aeba021eb1418598e",
+              "sourceHash": "5e0e82815082f7eebc45f1a5b446e140c26dc4f3026aaeff69fc508e0f86874c",
+              "point": "P4",
+              "angle": 270,
+              "radiusM": 49.35,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 22.72727272727273,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.5588074639419818,
+                "amplitude": 3.2696369878292852,
+                "frequency": 1363.6363636363635,
+                "crest": 2.744073648543608,
+                "kurtosis": 2.5512351830478934
+              }
+            },
+            {
+              "recordingId": "57e7aba86112205f97102ff89f4bc0af",
+              "sourceHash": "a517155e5be2cf20808f9fe1584b9c95596789d97b4ea8c60610b3c5f261370d",
+              "point": "P5",
+              "angle": 0,
+              "radiusM": 63.45,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 52.631578947368425,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 2.1797159760278406,
+                "amplitude": 4.5900946305730415,
+                "frequency": 2263.157894736842,
+                "crest": 2.606913278370508,
+                "kurtosis": 2.2731160629410923
+              }
+            },
+            {
+              "recordingId": "39fb0187fd866f15ee290c44f2cc6822",
+              "sourceHash": "351b24797a34da2079aab2df34b927c889c64e211736a0fb4555cbae6731c7d5",
+              "point": "P5",
+              "angle": 90,
+              "radiusM": 63.45,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 52.631578947368425,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 2.320792910722723,
+                "amplitude": 4.636426910425693,
+                "frequency": 2894.7368421052633,
+                "crest": 2.523119606552809,
+                "kurtosis": 2.5805119404435324
+              }
+            },
+            {
+              "recordingId": "c8461eec32d10b7326cd7308a22e8471",
+              "sourceHash": "ca46f257041aed7b853fc937926fcfe5780c6bb5b02d7e1ff229306ec446b9c4",
+              "point": "P5",
+              "angle": 180,
+              "radiusM": 63.45,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 52.631578947368425,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 2.0868749869856975,
+                "amplitude": 4.529125477515094,
+                "frequency": 1526.3157894736844,
+                "crest": 2.647037051285942,
+                "kurtosis": 2.5365835713623235
+              }
+            },
+            {
+              "recordingId": "78cab2b7102e1aaced670a8d1581be81",
+              "sourceHash": "8618f0dd7ae7f3c8d478c472ddc30daa7efeab9a06f23e6be7348b27cd541e01",
+              "point": "P5",
+              "angle": 270,
+              "radiusM": 63.45,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 50,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.9334750775336285,
+                "amplitude": 4.282670258643453,
+                "frequency": 1450,
+                "crest": 2.759139246332796,
+                "kurtosis": 2.6112381664614857
+              }
+            }
+          ]
+        },
+        {
+          "code": "2",
+          "algorithmVersion": "unified-record-analysis-2.2.0",
+          "algorithmOptions": {
+            "lowHz": null,
+            "highHz": null,
+            "window": "hann",
+            "detrend": "linear",
+            "geometry": {
+              "direction": "los",
+              "signSource": null,
+              "inputOverrides": {
+                "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                "values": {
+                  "hub_height_m": 90,
+                  "blade_length_m": 70.5,
+                  "horizontal_distance_m": 78
+                }
+              },
+              "instrumentSign": null,
+              "distanceMeaning": "unknown",
+              "recordOverrides": {
+                "0746afe93146257b563267f6eea97154": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 35.25,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "1bbe25aa2440a9102bc2070a6885afa9": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 35.25,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "32c0e4e7ec2b9376ca16e829f02ce8de": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 21.15,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "40768969c4adeb21a903551477dcf933": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 7.05,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "52ef95cfbbc056c0ef32d82ac3192191": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 7.05,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "537a794a926469d2257843f9e2460066": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 35.25,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "61da59ee3ff9b072bca5bffd07cd7a9f": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 35.25,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "647906852e89309554a1bb11d8dd6a81": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 7.05,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "761307f993215dbbbee9f3ed293245ab": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 63.45,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "8afee134dce7fbbfa349c1111dcb6b43": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 63.45,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "8f74b0d49e95aeff4cdc8c969cf2aa54": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 49.35,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "92657e4c7b4196a6cc3409ae6676b368": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 49.35,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "b7546eb6a7067c3f4fb100b837c70d77": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 21.15,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "c757bf64853361c0fc32d9822464e04b": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 21.15,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "d3961caf6f9d37165e6d8812cd25d7b7": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 63.45,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "d561a1e12045699b33240737e04a3760": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 49.35,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "d6ed8ba4e3d69b1f59a0f536471a82ef": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 7.05,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "db78d920fb93c5bc0df0a5ca2334332b": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 63.45,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "e0d66a25fbd470c4356fe695f969702e": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 49.35,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "edd941bdddd5a39f9fd22456f6cd12c3": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 21.15,
+                    "horizontal_distance_m": 78
+                  }
+                }
+              },
+              "minAbsProjection": null,
+              "observationModel": "unknown",
+              "maxProjectionGain": null,
+              "uprightAssumption": false,
+              "axialDominanceDeclared": false
+            },
+            "filterKind": "none",
+            "filterOrder": 4,
+            "targetBandHz": null,
+            "targetBandMode": "preview",
+            "measurementMode": "outdoor",
+            "targetBandSource": null
+          },
+          "observations": [
+            {
+              "recordingId": "40768969c4adeb21a903551477dcf933",
+              "sourceHash": "b8a522560a05824c6876b36b11ee19b88a7f3542b7b49126d27f311a9caa8044",
+              "point": "P1",
+              "angle": 0,
+              "radiusM": 7.05,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 1.7482517482517483,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.768011805912449,
+                "amplitude": 1.8668942101813557,
+                "frequency": 680.0699300699301,
+                "crest": 3.2473898081589865,
+                "kurtosis": 2.1542767355817496
+              }
+            },
+            {
+              "recordingId": "52ef95cfbbc056c0ef32d82ac3192191",
+              "sourceHash": "816b988432f8a570cad82059594a9fb6441fed5470b5837c13956669b472ef9c",
+              "point": "P1",
+              "angle": 90,
+              "radiusM": 7.05,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 1.718213058419244,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.7371522749904775,
+                "amplitude": 1.8330949257889224,
+                "frequency": 1140.8934707903782,
+                "crest": 3.362483816984836,
+                "kurtosis": 2.165962299684939
+              }
+            },
+            {
+              "recordingId": "647906852e89309554a1bb11d8dd6a81",
+              "sourceHash": "836d273c165a25588f4bce7371bebf6d5c744d4bf37be64c3e58eae7883561a6",
+              "point": "P1",
+              "angle": 180,
+              "radiusM": 7.05,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 1.7152658662092626,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.7380209781314542,
+                "amplitude": 1.8053372064461295,
+                "frequency": 1636.3636363636365,
+                "crest": 3.230281380800646,
+                "kurtosis": 2.159965735064133
+              }
+            },
+            {
+              "recordingId": "d6ed8ba4e3d69b1f59a0f536471a82ef",
+              "sourceHash": "c0860ba45fe7c9ec5aec984af13e70ffb988ec058ddfdb6babc8ec0460f98a82",
+              "point": "P1",
+              "angle": 270,
+              "radiusM": 7.05,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 1.6891891891891893,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.7464732993177994,
+                "amplitude": 1.801210919247537,
+                "frequency": 888.5135135135135,
+                "crest": 3.195080384901112,
+                "kurtosis": 2.1196514892435623
+              }
+            },
+            {
+              "recordingId": "32c0e4e7ec2b9376ca16e829f02ce8de",
+              "sourceHash": "d9c8cfaadc60fd51f972d0573e588fbbda762a79855c53e5ffced459484ae2d4",
+              "point": "P2",
+              "angle": 0,
+              "radiusM": 21.15,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 2.141327623126338,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.1313376956643126,
+                "amplitude": 2.5499578139511705,
+                "frequency": 432.5481798715204,
+                "crest": 2.833287095739461,
+                "kurtosis": 2.199901395780295
+              }
+            },
+            {
+              "recordingId": "edd941bdddd5a39f9fd22456f6cd12c3",
+              "sourceHash": "b839ca8899c0db9e94c0aa1c62a200698f5244723aa2951aa58934605d0c3aea",
+              "point": "P2",
+              "angle": 90,
+              "radiusM": 21.15,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 2.1141649048625792,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.1148560810427095,
+                "amplitude": 2.462250050767844,
+                "frequency": 135.30655391120507,
+                "crest": 2.8923609370850154,
+                "kurtosis": 2.2713956510674467
+              }
+            },
+            {
+              "recordingId": "c757bf64853361c0fc32d9822464e04b",
+              "sourceHash": "5242e6d68e1d5f5ed75578da77da3b74d91d9c593a9a519f823e8764d024cfab",
+              "point": "P2",
+              "angle": 180,
+              "radiusM": 21.15,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 2.1367521367521367,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.1327095033933643,
+                "amplitude": 2.4536560466074686,
+                "frequency": 692.3076923076923,
+                "crest": 2.859846528749859,
+                "kurtosis": 2.1348820401424566
+              }
+            },
+            {
+              "recordingId": "b7546eb6a7067c3f4fb100b837c70d77",
+              "sourceHash": "afa4a877464f62544a6496d9dd16f4336a0ad016693d3aff9aad743f1f5e53a9",
+              "point": "P2",
+              "angle": 270,
+              "radiusM": 21.15,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 2.100840336134454,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.1224520553932382,
+                "amplitude": 2.426192735876665,
+                "frequency": 634.453781512605,
+                "crest": 2.808402154487615,
+                "kurtosis": 2.1184358654741877
+              }
+            },
+            {
+              "recordingId": "1bbe25aa2440a9102bc2070a6885afa9",
+              "sourceHash": "ec7188ff64d75dc0b506a9d2fc0f1ceaf375deda5c80a645d16d9f41b80218a7",
+              "point": "P3",
+              "angle": 0,
+              "radiusM": 35.25,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 7.194244604316546,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.2052735276089976,
+                "amplitude": 2.7863821752107594,
+                "frequency": 1676.2589928057555,
+                "crest": 3.081816894017232,
+                "kurtosis": 2.314232041328477
+              }
+            },
+            {
+              "recordingId": "537a794a926469d2257843f9e2460066",
+              "sourceHash": "ce0992cd4dd065e6e7243f7593aed86101b98e82b707b712cfe1fdfe52524d15",
+              "point": "P3",
+              "angle": 90,
+              "radiusM": 35.25,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 7.2992700729927,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.2542318742747998,
+                "amplitude": 2.7745825563593147,
+                "frequency": 1087.5912408759125,
+                "crest": 2.919895884904595,
+                "kurtosis": 2.2555750154380987
+              }
+            },
+            {
+              "recordingId": "61da59ee3ff9b072bca5bffd07cd7a9f",
+              "sourceHash": "d96fa701071f575b387d0abf630f6bf3c298aa911df19c92bbd21141eb60d585",
+              "point": "P3",
+              "angle": 180,
+              "radiusM": 35.25,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 7.462686567164178,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.29156132064102,
+                "amplitude": 2.8511505764125897,
+                "frequency": 970.1492537313434,
+                "crest": 2.7877157446611913,
+                "kurtosis": 2.086051928646921
+              }
+            },
+            {
+              "recordingId": "0746afe93146257b563267f6eea97154",
+              "sourceHash": "a6f6a80b2969e671cb545b030d7aba283af9b82e5f6a2d783d61d21888a1ba23",
+              "point": "P3",
+              "angle": 270,
+              "radiusM": 35.25,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 7.2992700729927,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.264089549005534,
+                "amplitude": 2.88926273196474,
+                "frequency": 1598.5401459854018,
+                "crest": 3.0288610783640646,
+                "kurtosis": 2.199363172817588
+              }
+            },
+            {
+              "recordingId": "e0d66a25fbd470c4356fe695f969702e",
+              "sourceHash": "999a6781616d97723cb5aa256bcd52240085d8a17ea013f76cc1485cbd73d898",
+              "point": "P4",
+              "angle": 0,
+              "radiusM": 49.35,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 22.72727272727273,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.5411081526246748,
+                "amplitude": 3.269723307471715,
+                "frequency": 204.54545454545456,
+                "crest": 2.7374416675164337,
+                "kurtosis": 2.2046263617307287
+              }
+            },
+            {
+              "recordingId": "92657e4c7b4196a6cc3409ae6676b368",
+              "sourceHash": "f3f9e615f8666645c5b14cba7e00b1e172f6bdacdc639605a3b6d53e5b47a8e0",
+              "point": "P4",
+              "angle": 90,
+              "radiusM": 49.35,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 22.22222222222222,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.606713420920232,
+                "amplitude": 3.4790342932209297,
+                "frequency": 333.3333333333333,
+                "crest": 2.840726442286414,
+                "kurtosis": 2.5140447979483875
+              }
+            },
+            {
+              "recordingId": "8f74b0d49e95aeff4cdc8c969cf2aa54",
+              "sourceHash": "b718499f13907054a1501d658f04b4a6b679fce624033a3830414fc23c86f808",
+              "point": "P4",
+              "angle": 180,
+              "radiusM": 49.35,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 22.22222222222222,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.6165490239731868,
+                "amplitude": 3.3603774447642953,
+                "frequency": 133.33333333333331,
+                "crest": 2.6666785850432735,
+                "kurtosis": 2.4207023396275127
+              }
+            },
+            {
+              "recordingId": "d561a1e12045699b33240737e04a3760",
+              "sourceHash": "9f894a59666db74af7f899ec8284b77c49619b706f29f275017fd65fc2284cad",
+              "point": "P4",
+              "angle": 270,
+              "radiusM": 49.35,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 22.22222222222222,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.5673889000684422,
+                "amplitude": 3.081525929242237,
+                "frequency": 400,
+                "crest": 2.5174287542507794,
+                "kurtosis": 2.4026710879586313
+              }
+            },
+            {
+              "recordingId": "d3961caf6f9d37165e6d8812cd25d7b7",
+              "sourceHash": "513f372882a301462651ae0a45bc7a0aecb4010689e295163201665770a4a38a",
+              "point": "P5",
+              "angle": 0,
+              "radiusM": 63.45,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 52.631578947368425,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.948667767394436,
+                "amplitude": 4.259015185591869,
+                "frequency": 157.89473684210526,
+                "crest": 2.731364130676837,
+                "kurtosis": 2.593525962426292
+              }
+            },
+            {
+              "recordingId": "761307f993215dbbbee9f3ed293245ab",
+              "sourceHash": "5c8a0a92a3767a638cbd51f17c7e67ad832be28db38d0c15305d3c76b3eb38fa",
+              "point": "P5",
+              "angle": 90,
+              "radiusM": 63.45,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 52.631578947368425,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 2.19328001098806,
+                "amplitude": 4.915545898189986,
+                "frequency": 1789.4736842105265,
+                "crest": 2.454891688401068,
+                "kurtosis": 2.151472014331774
+              }
+            },
+            {
+              "recordingId": "8afee134dce7fbbfa349c1111dcb6b43",
+              "sourceHash": "bcd4494f39f30659a8309353503055183065453203b9081b0df22bcaf2598df8",
+              "point": "P5",
+              "angle": 180,
+              "radiusM": 63.45,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 52.631578947368425,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.9195351143063055,
+                "amplitude": 4.341841042484025,
+                "frequency": 1368.421052631579,
+                "crest": 2.7726834292716545,
+                "kurtosis": 2.207894954592017
+              }
+            },
+            {
+              "recordingId": "db78d920fb93c5bc0df0a5ca2334332b",
+              "sourceHash": "eaca3ba88df18f56f07bd7f97f7636c46f44cc219518c7a6518b2d69a31242cd",
+              "point": "P5",
+              "angle": 270,
+              "radiusM": 63.45,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 50,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.8182313654662312,
+                "amplitude": 3.9382783041704306,
+                "frequency": 1500,
+                "crest": 2.7097901845095773,
+                "kurtosis": 2.5290807905249175
+              }
+            }
+          ]
+        },
+        {
+          "code": "3",
+          "algorithmVersion": "unified-record-analysis-2.2.0",
+          "algorithmOptions": {
+            "lowHz": null,
+            "highHz": null,
+            "window": "hann",
+            "detrend": "linear",
+            "geometry": {
+              "direction": "los",
+              "signSource": null,
+              "inputOverrides": {
+                "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                "values": {
+                  "hub_height_m": 90,
+                  "blade_length_m": 70.5,
+                  "horizontal_distance_m": 78
+                }
+              },
+              "instrumentSign": null,
+              "distanceMeaning": "unknown",
+              "recordOverrides": {
+                "04244f497c485a5c2ceb0c6d6359da8f": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 49.35,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "06462a4ea5c7f16d7c49d52f6863ab0e": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 21.15,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "143b7f6f14a808720a634c8f61409e14": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 21.15,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "1ba15296a596cf71f9e40c584a160885": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 63.45,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "2fac748ba31def13a1e3315ab5a051d9": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 63.45,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "33fd91d1d8ffe4ec6e26576493982587": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 63.45,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "37c6341997f3cd1a8f05083f8d5cb292": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 63.45,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "3a35346ba85fcce7b50c50b022f18f2a": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 49.35,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "413d5db9a0f28b2f523ef2858777445c": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 35.25,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "572aea7e4079ce08a749a76fee844cf3": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 21.15,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "83de873c06f2c7e24f7a69d1aea753db": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 49.35,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "8a813c837c9bd5d7e58499866aecb8e3": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 7.05,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "9ac5557c1f4590d2ed07e825440474a8": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 7.05,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "9fa2dfbe8a27b8a3bd24a114395f2aae": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 35.25,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "caa1829d5f4a69f4b6c151dda3d97d9c": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 49.35,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "e1b14f28a3ce78255a9fcfb15d682a5e": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 35.25,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "e3b5a1a340f51889a8d1b71b05c207b5": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 35.25,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "f4d7a491f25cbaaf7149308f6710236b": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 21.15,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "f50f0b54d8cea9c15e67c1f94c8fcf29": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 7.05,
+                    "horizontal_distance_m": 78
+                  }
+                },
+                "f88fe4568c7cfbb50ae72172a549be67": {
+                  "reason": "估算位置：假设旋转中心高度90m、中心至叶尖70.5m，5点等分10%至90%；非实测半径，仅用于位置展示，不修改原始波形或LOS幅值",
+                  "source": "用户2026-11-05提供塔筒高度90m、单叶片70.5m；前后预留10%",
+                  "values": {
+                    "hub_height_m": 90,
+                    "blade_length_m": 70.5,
+                    "radius_from_hub_m": 7.05,
+                    "horizontal_distance_m": 78
+                  }
+                }
+              },
+              "minAbsProjection": null,
+              "observationModel": "unknown",
+              "maxProjectionGain": null,
+              "uprightAssumption": false,
+              "axialDominanceDeclared": false
+            },
+            "filterKind": "none",
+            "filterOrder": 4,
+            "targetBandHz": null,
+            "targetBandMode": "preview",
+            "measurementMode": "outdoor",
+            "targetBandSource": null
+          },
+          "observations": [
+            {
+              "recordingId": "f88fe4568c7cfbb50ae72172a549be67",
+              "sourceHash": "c0a6f10f131b375dbe94d60fc05c437182bbfec9e6c96531dc577a96a4b00a31",
+              "point": "P1",
+              "angle": 0,
+              "radiusM": 7.05,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 1.7574692442882252,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.7420152772665386,
+                "amplitude": 1.7787087136795487,
+                "frequency": 804.9209138840071,
+                "crest": 3.1379964957582778,
+                "kurtosis": 2.136634781277625
+              }
+            },
+            {
+              "recordingId": "f50f0b54d8cea9c15e67c1f94c8fcf29",
+              "sourceHash": "921eaafbde4c0f17a1d403d4ffe455b1d0b65e581ad3257219b358e4e3c0fa5d",
+              "point": "P1",
+              "angle": 90,
+              "radiusM": 7.05,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 1.7636684303350971,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.743308856144962,
+                "amplitude": 1.803376167169645,
+                "frequency": 472.663139329806,
+                "crest": 3.1737850827068055,
+                "kurtosis": 2.1355851460693227
+              }
+            },
+            {
+              "recordingId": "8a813c837c9bd5d7e58499866aecb8e3",
+              "sourceHash": "7e77a433e00b041528d383e04948bd0f17251c2a25ebd0838aa341621d835b38",
+              "point": "P1",
+              "angle": 180,
+              "radiusM": 7.05,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 1.7006802721088436,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.740398857753989,
+                "amplitude": 1.8809300478731872,
+                "frequency": 923.469387755102,
+                "crest": 3.3638351041338264,
+                "kurtosis": 2.169899458980154
+              }
+            },
+            {
+              "recordingId": "9ac5557c1f4590d2ed07e825440474a8",
+              "sourceHash": "bff52fe9a10c6e02baebb05172064db1d18896e1f30f4a47fe8b5b0369393e23",
+              "point": "P1",
+              "angle": 270,
+              "radiusM": 7.05,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 1.718213058419244,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 0.7371005942622063,
+                "amplitude": 1.8258509489083368,
+                "frequency": 115.12027491408936,
+                "crest": 3.248526387201182,
+                "kurtosis": 2.09897197576345
+              }
+            },
+            {
+              "recordingId": "143b7f6f14a808720a634c8f61409e14",
+              "sourceHash": "3bd0b68b263eac974961e52c034d031c7e64d5e2ed31b7f62f459a35ee1c9a14",
+              "point": "P2",
+              "angle": 0,
+              "radiusM": 21.15,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 2.141327623126338,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.1356211615052485,
+                "amplitude": 2.538429811338534,
+                "frequency": 1126.338329764454,
+                "crest": 2.926739521921722,
+                "kurtosis": 2.1115414204764904
+              }
+            },
+            {
+              "recordingId": "572aea7e4079ce08a749a76fee844cf3",
+              "sourceHash": "291f800b3ef5dd79f68cee5c453ee353c5324d8da0588be2ddaebfd8e01c428c",
+              "point": "P2",
+              "angle": 90,
+              "radiusM": 21.15,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 2.1231422505307855,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.1025251085933143,
+                "amplitude": 2.4190212471263086,
+                "frequency": 467.0912951167728,
+                "crest": 2.8370946662354166,
+                "kurtosis": 2.0478691794527935
+              }
+            },
+            {
+              "recordingId": "f4d7a491f25cbaaf7149308f6710236b",
+              "sourceHash": "92ca91d2115f2aa1d54648fde1f673bcc7272e4fc1afdd7942ef19fbe4c961ae",
+              "point": "P2",
+              "angle": 180,
+              "radiusM": 21.15,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 2.150537634408602,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.1265063114184468,
+                "amplitude": 2.6513556893904395,
+                "frequency": 393.54838709677426,
+                "crest": 3.154107034993582,
+                "kurtosis": 2.096478628560625
+              }
+            },
+            {
+              "recordingId": "06462a4ea5c7f16d7c49d52f6863ab0e",
+              "sourceHash": "b1f603591a463f1dbf911fc97f88eecb888ed5621a9d6955c3f00f78d8ad83ba",
+              "point": "P2",
+              "angle": 270,
+              "radiusM": 21.15,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 2.0833333333333335,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.1235589860043766,
+                "amplitude": 2.4748207082562694,
+                "frequency": 764.5833333333334,
+                "crest": 2.8797835171193022,
+                "kurtosis": 2.118092424413069
+              }
+            },
+            {
+              "recordingId": "e1b14f28a3ce78255a9fcfb15d682a5e",
+              "sourceHash": "a023eda291c9d8e4431ca6a44bd6b080222a2be642084f22835a87de4f7278b6",
+              "point": "P3",
+              "angle": 0,
+              "radiusM": 35.25,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 7.142857142857142,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.2179689362406394,
+                "amplitude": 2.719523654099355,
+                "frequency": 1364.2857142857144,
+                "crest": 2.8646796126041716,
+                "kurtosis": 2.079355000030413
+              }
+            },
+            {
+              "recordingId": "413d5db9a0f28b2f523ef2858777445c",
+              "sourceHash": "6cf42fa8cbc5d6b389940377f3c3e57e9f5e3c06b24790d5e87065e697001ca7",
+              "point": "P3",
+              "angle": 90,
+              "radiusM": 35.25,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 7.575757575757575,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.2833197448297848,
+                "amplitude": 2.8187582882349793,
+                "frequency": 568.1818181818181,
+                "crest": 2.8715440605912237,
+                "kurtosis": 2.1355284205728204
+              }
+            },
+            {
+              "recordingId": "e3b5a1a340f51889a8d1b71b05c207b5",
+              "sourceHash": "e2dfb3a09affe9d6c5aa299b2bd947a387169a2a4e2896aa5534b7e349ffd3f1",
+              "point": "P3",
+              "angle": 180,
+              "radiusM": 35.25,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 7.352941176470588,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.2257051168102238,
+                "amplitude": 2.680910152131734,
+                "frequency": 1926.4705882352944,
+                "crest": 2.8271917221020937,
+                "kurtosis": 2.2187256072868573
+              }
+            },
+            {
+              "recordingId": "9fa2dfbe8a27b8a3bd24a114395f2aae",
+              "sourceHash": "d1fd6380d00d76e8c1f85e9d2d6ba2ccab0f5d3d4577154bd6a177d2058b4919",
+              "point": "P3",
+              "angle": 270,
+              "radiusM": 35.25,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 7.352941176470588,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.200492651513133,
+                "amplitude": 2.654031561670891,
+                "frequency": 279.41176470588243,
+                "crest": 2.8811521345345854,
+                "kurtosis": 2.2326356630468176
+              }
+            },
+            {
+              "recordingId": "3a35346ba85fcce7b50c50b022f18f2a",
+              "sourceHash": "a7e6b49a15f2369145f3684e949c59a2cb81281e3a32435556a4d4544357ccd3",
+              "point": "P4",
+              "angle": 0,
+              "radiusM": 49.35,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 22.22222222222222,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.4727873880857696,
+                "amplitude": 3.279339443120897,
+                "frequency": 311.1111111111111,
+                "crest": 3.0223142210396,
+                "kurtosis": 2.6731768800047453
+              }
+            },
+            {
+              "recordingId": "caa1829d5f4a69f4b6c151dda3d97d9c",
+              "sourceHash": "3f99bf27d04c81d4f1a3acf75b4ad252829db5751c48599c0d8647a4cd05e280",
+              "point": "P4",
+              "angle": 90,
+              "radiusM": 49.35,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 21.73913043478261,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.6128112646513053,
+                "amplitude": 3.520146435955082,
+                "frequency": 1086.9565217391305,
+                "crest": 2.9057864170678656,
+                "kurtosis": 2.440145402501451
+              }
+            },
+            {
+              "recordingId": "04244f497c485a5c2ceb0c6d6359da8f",
+              "sourceHash": "5d7c0491fe3257e7697310b58898184686e0801c5c5d627f8c5116ce37fb56a7",
+              "point": "P4",
+              "angle": 180,
+              "radiusM": 49.35,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 22.22222222222222,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.6164670302172304,
+                "amplitude": 3.29414130256715,
+                "frequency": 622.2222222222222,
+                "crest": 2.7710576843506782,
+                "kurtosis": 2.5063185996401303
+              }
+            },
+            {
+              "recordingId": "83de873c06f2c7e24f7a69d1aea753db",
+              "sourceHash": "be9712161eee177dde6ff68b227c075b4cf80b05fbb85964de6431bc282f5ff3",
+              "point": "P4",
+              "angle": 270,
+              "radiusM": 49.35,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 22.22222222222222,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.4452818969859935,
+                "amplitude": 3.2880880384159705,
+                "frequency": 200,
+                "crest": 3.0003613502805115,
+                "kurtosis": 2.5690105856969256
+              }
+            },
+            {
+              "recordingId": "33fd91d1d8ffe4ec6e26576493982587",
+              "sourceHash": "5a63c635bd2973bb45a8b9e068b3d123e12bbc64392e8c4aa1390c79f1792b73",
+              "point": "P5",
+              "angle": 0,
+              "radiusM": 63.45,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 50,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 2.1987819344766,
+                "amplitude": 4.587744160534169,
+                "frequency": 1500,
+                "crest": 2.3001574565563745,
+                "kurtosis": 2.140400533342256
+              }
+            },
+            {
+              "recordingId": "2fac748ba31def13a1e3315ab5a051d9",
+              "sourceHash": "b12cd67be667febd16965317c99ed18f8033eb064cec0753863f1fed8dfc0dd3",
+              "point": "P5",
+              "angle": 90,
+              "radiusM": 63.45,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 52.631578947368425,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 2.2365250249212316,
+                "amplitude": 4.684977387579961,
+                "frequency": 947.3684210526316,
+                "crest": 2.6670384464488035,
+                "kurtosis": 2.3409879562739215
+              }
+            },
+            {
+              "recordingId": "1ba15296a596cf71f9e40c584a160885",
+              "sourceHash": "93c95a15ce4ebcfff844269c7f16ac3c60f57e006ed50fe10682235d9cae2fc2",
+              "point": "P5",
+              "angle": 180,
+              "radiusM": 63.45,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 50,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.8544287124018064,
+                "amplitude": 4.181240220195928,
+                "frequency": 100,
+                "crest": 2.738342181165923,
+                "kurtosis": 2.0674659574287495
+              }
+            },
+            {
+              "recordingId": "37c6341997f3cd1a8f05083f8d5cb292",
+              "sourceHash": "4df932ee6d9597df043622e89c56f4fc8de07c447794bf90c53ed8c69cc37c8b",
+              "point": "P5",
+              "angle": 270,
+              "radiusM": 63.45,
+              "layer": "los_residual",
+              "basis": "los",
+              "sampleRateHz": 250000,
+              "resolutionHz": 50,
+              "featureCoverage": {
+                "totalSegments": 1,
+                "shapeSegments": 1,
+                "shortShapeExcluded": 0
+              },
+              "eligible": true,
+              "values": {
+                "rms": 1.733392510332571,
+                "amplitude": 3.8799526702527056,
+                "frequency": 1050,
+                "crest": 2.7586831548751576,
+                "kurtosis": 2.466894126398951
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

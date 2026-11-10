@@ -63,3 +63,64 @@ const invalidLimits=structuredClone(standard.variants[0]);invalidLimits.slots[0]
 assert.equal(healthReportStatus({syntheticScenario:{detection:numeric.detection},label:'损伤'}),'样本检测：疑似损伤（构造样本）');
 assert.equal(healthReportStatus({syntheticScenario:{detection:healthyDetection.detection},label:'健康'}),'样本检测：响应正常（构造样本）');
 console.log('PASS shared detector: feature-driven alarms, blade/hypothesis independence, healthy blade 2, fail-closed quality/config/threshold checks and explicit sample provenance');
+
+// Response-only reference is explicit; legacy standards still require contemporaneous conditions.
+const responseSources=sources.slice(0,3).map(s=>({...structuredClone(s),conditions:[]}));
+const responseSourceJson=JSON.stringify(responseSources);
+const responseStandard=buildHealthStandard(responseSources,'user declared these three blades healthy',{mode:'response_reference'});
+assert.equal(JSON.stringify(responseSources),responseSourceJson);
+assert.equal(responseStandard.mode,'response_reference');
+assert.equal(responseStandard.policy.conditionsRequired,false);
+assert.equal(responseStandard.variants[0].windRange,null);
+assert.throws(()=>buildHealthStandard(responseSources,'confirm'),/两个独立批次/);
+for(const s of responseSources){
+ const result=evaluateHealthStandard(s.processing,s.bladeCode,[],responseStandard,false);
+ assert.equal(result.status,'normal');assert.equal(result.label,'健康');assert.equal(result.baselineMember,true);
+ assert.equal(result.comparisons.length,100);assert.equal(result.formalHealthAssessment,false);
+ assert.match(result.scopeNote||'',/未控制风速和转速差异/);
+}
+const responseIndependent=evaluateHealthStandard(p,'1',[],responseStandard,true);
+assert.equal(responseIndependent.label,'响应正常');assert.equal(responseIndependent.baselineMember,false);
+assert.equal(healthReportStatus({...snap,status:'normal',healthScreening:responseIndependent}),'响应正常（健康参考范围内）');
+assert.equal(evaluateHealthStandard(p,'1',[],responseStandard,false).status,'insufficient');
+assert.equal(evaluateHealthStandard(faulty.processing,'1',[],responseStandard,true).status,'alarm');
+assert.equal(evaluateHealthStandard(freq.processing,'1',[],responseStandard,true).status,'warning');
+for(const blocked of [missing,config,quality,badRadius,lowResolution])assert.equal(evaluateHealthStandard(blocked.processing,'1',[],responseStandard,true).status,'insufficient');
+assert.equal(evaluateHealthStandard(synthetic,'1',[],responseStandard,true).status,'insufficient');
+assert.equal(evaluateHealthStandard(p,'1',[],standard,true).status,'insufficient');
+assert.equal(evaluateHealthStandard(p,'1',[],{...responseStandard,mode:'unknown'},true).status,'insufficient');
+const corruptStandard=structuredClone(responseStandard);corruptStandard.variants[0].slots[0].limits.rms.max=NaN;
+assert.equal(evaluateHealthStandard(p,'1',[],corruptStandard,true).status,'insufficient');
+assert.throws(()=>buildHealthStandard(responseSources,'confirm',{mode:'unknown' as any}),/类型无效/);
+console.log('PASS explicit response reference: six guard categories, baseline resubstitution, independent anomaly screening, immutable inputs and fail-closed mode/thresholds');
+
+// Identical geometry attached to different recording IDs is the same calculation.
+const geometries=responseSources.map(s=>{
+ const copy:any=structuredClone(s),g=copy.processing.report.workspace.algorithmOptions.geometry;
+ g.inputOverrides={values:{hub_height_m:90},source:`review-${s.bladeCode}`};
+ g.recordOverrides=Object.fromEntries(copy.processing.report.records.map((r:any)=>[r.recording_id,{values:{radius_from_hub_m:r.object.radius_from_hub_m,horizontal_distance_m:78},source:r.recording_id}]));
+ return copy;
+});
+const geometryBefore=JSON.stringify(geometries);
+assert.equal(new Set(geometries.map(s=>healthProcessingSignature(s.processing,2))).size,1);
+assert.equal(new Set(geometries.map(s=>healthProcessingSignature(s.processing))).size,3);
+const mapped=buildHealthStandard(geometries,'confirmed',{mode:'response_reference'});
+assert.equal(mapped.variants.length,1);
+assert.equal(JSON.stringify(geometries),geometryBefore);
+const changedGeometry=structuredClone(geometries[1].processing);
+Object.values<any>(changedGeometry.report.workspace.algorithmOptions.geometry.recordOverrides)[0].values.horizontal_distance_m=100;
+assert.notEqual(healthProcessingSignature(changedGeometry,2),healthProcessingSignature(geometries[1].processing,2));
+assert.equal(evaluateHealthStandard(changedGeometry,'2',[],mapped,true).status,'insufficient');
+console.log('PASS geometry signature: distinct record IDs/provenance match, numerical overrides stay guarded');
+
+// Saved legacy standards must still compare against their original, unnormalized signature.
+const legacy=structuredClone(mapped),legacyProcessing:any=structuredClone(geometries[0].processing);
+delete legacy.variants[0].signatureVersion;
+legacy.variants[0].signature=healthProcessingSignature(legacyProcessing);
+assert.equal(evaluateHealthStandard(legacyProcessing,'1',[],legacy,false).status,'normal');
+legacyProcessing.syntheticScenario={id:'legacy-scenario'};
+assert.equal(syntheticScenarioComparison(legacyProcessing,'1',legacy.variants[0]).comparisons.length,100);
+const badSignature=structuredClone(mapped);badSignature.variants[0].signatureVersion=99;
+assert.equal(evaluateHealthStandard(geometries[0].processing,'1',[],badSignature,false).status,'insufficient');
+assert.equal(syntheticScenarioComparison(legacyProcessing,'1',badSignature.variants[0]).detection.status,'insufficient');
+console.log('PASS legacy signature compatibility and unknown-version rejection');

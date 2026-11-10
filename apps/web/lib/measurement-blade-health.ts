@@ -10,7 +10,7 @@ import {matchSegmentConditions,processingSegmentTimes} from '@blade/ui/measureme
 import {bladeDisplaySlots} from '@blade/ui/measurement-domain';
 import {wholeBladeVersion} from './measurement-version-policy';
 import {healthWindSelection,saveHealthWindSelection} from './measurement-health-wind';
-import {healthEvidenceReadiness} from '@blade/ui/measurement-health-readiness';
+import {healthEvidenceReadiness,healthWindDatasets} from '@blade/ui/measurement-health-readiness';
 const same=(r:any,c:any)=>['farmId','campaignId','turbineId'].every(k=>r.context?.[k]===c[k]);
 export async function bladeHealthWorkspace(user:User,context:any,save=false,preferredId?:string,preferredIds:Record<string,string>={},windDatasetId?:string){
  if(!context?.farmId||!context?.campaignId||!context?.turbineId)throw new HttpError(400,'请选择风场、批次和风机');
@@ -18,10 +18,10 @@ export async function bladeHealthWorkspace(user:User,context:any,save=false,pref
  history.sort((a,b)=>Date.parse(b.evaluatedAt)-Date.parse(a.evaluatedAt));
  const turbine=all.find(o=>o.id===context.turbineId&&o.parentId===context.farmId&&o.kind==='turbine');if(!turbine)throw new HttpError(400,'风机归属无效');
  const selected=await processingSelection(user,{farmId:context.farmId,campaignId:context.campaignId,turbineId:context.turbineId});
- const windChoices=allDatasets.filter(d=>d.farmId===context.farmId);
+ const windCode=turbine.windTurbineCode||turbine.code;
+ const windChoices=healthWindDatasets(allDatasets,context.farmId,windCode);
  const windSelection=await healthWindSelection(user,context,windChoices,windDatasetId);windDatasetId=windSelection.id;
  const datasets=windChoices.filter(d=>d.id===windDatasetId);
- const windCode=turbine.windTurbineCode||turbine.code;
  const [standard,identityReviews,decisions]=await Promise.all([currentHealthStandard(user,context,windCode),listMeasurementRows(user,'measurement_health_identity_reviews'),listMeasurementRows(user,'measurement_health_decisions')]);
  const windRevision=selectedWindRevision(datasets,context.farmId,windDatasetId);
  if(preferredId&&!processing.some(p=>p.id===preferredId&&p.status==='complete'&&same(p,context)))throw new HttpError(400,'所选处理版本不属于当前批次或无权访问');
@@ -61,7 +61,7 @@ export async function bladeHealthWorkspace(user:User,context:any,save=false,pref
   const identityReview=identityReviews.find(r=>same(r,context)&&r.context?.bladeId===blade?.id&&r.processingResultId===source.id&&JSON.stringify(r.sourceHashes)===JSON.stringify(records.map((r:any)=>r.source_hash).sort()));
   if(standard){
    const screened=evaluateHealthStandard(source,String(blade?.code),conditions,standard,!!identityReview);
-   Object.assign(snapshot,{healthScreening:screened,conditions:conditions.map(c=>({...c,condition:{...c.condition,envelopeEligible:standardConditionEligible(c.condition)}})),standardSnapshot:standard,identityReview:identityReview||null,damageAlgorithm:projectDamageContract,status:screened.status,label:screened.label,reasons:screened.reasons,assessmentAlgorithmVersion:'project-envelope-assessment-1',rulesVersion:standard.id,evidenceReadiness:{matched:conditions.filter(c=>c.condition.status==='matched').length,total:conditions.length,association:conditions.every(c=>c.condition.status==='matched')?'matched':'partial',blockers:screened.status==='insufficient'?screened.reasons:[]}});
+   Object.assign(snapshot,{healthScreening:screened,conditions:conditions.map(c=>({...c,condition:{...c.condition,envelopeEligible:standardConditionEligible(c.condition)}})),standardSnapshot:standard,identityReview:identityReview||null,damageAlgorithm:projectDamageContract,status:screened.status,label:screened.label,reasons:screened.reasons,assessmentAlgorithmVersion:'project-envelope-assessment-1',rulesVersion:standard.id,evidenceReadiness:{matched:conditions.filter(c=>c.condition.status==='matched').length,total:conditions.length,association:conditions.length&&conditions.every(c=>c.condition.status==='matched')?'matched':conditions.some(c=>c.condition.status==='matched')?'partial':'unmatched',blockers:screened.status==='insufficient'?screened.reasons:[]}});
   }
   if(syntheticProcessing(source)){
    const scenario=(await listMeasurementRows(user,'measurement_synthetic_imports')).find(r=>r.context?.campaignId===context.campaignId&&r.context?.turbineId===context.turbineId);

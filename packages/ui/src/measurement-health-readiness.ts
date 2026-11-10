@@ -1,9 +1,12 @@
 /** Association is independent of the evidence required for a structural assessment. */
+export function healthWindDatasets<T extends {farmId?:string;rows?:{turbineCode?:string}[]}>(datasets:T[],farmId:string,turbineCode:string):T[]{
+  return datasets.filter(d=>d.farmId===farmId&&d.rows?.some(r=>String(r.turbineCode)===String(turbineCode)));
+}
 export function resolveHealthWindDataset(choices: {id:string}[], requested: unknown, saved?: {windDatasetId:string} | null) {
   if (requested !== undefined && typeof requested !== 'string') throw Error('风场数据集编号无效');
   const id = requested !== undefined ? requested as string : saved ? saved.windDatasetId : choices.length === 1 ? choices[0].id : '';
   if (id && !choices.some(d => d.id === id)) {
-    if (requested !== undefined) throw Error('风场数据集不存在或不属于当前风场');
+    if (requested !== undefined) throw Error('风场数据集不存在或未包含当前风场、风机的数据');
     return {id:'',source:'unavailable' as const};
   }
   return {id,source:requested !== undefined ? 'selected' as const : saved ? 'saved' as const : id ? 'single_dataset' as const : 'unselected' as const};

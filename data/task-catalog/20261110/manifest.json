@@ -1,0 +1,103 @@
+{
+  "schema": "blade-current-tasks-20261110-v1",
+  "tasks": [
+    {
+      "name": "武川风场 R001 风机测量任务",
+      "farm": "武川风场",
+      "turbineCode": "R001",
+      "records": 60,
+      "archives": [
+        {
+          "path": "data/task-imports/20261105/1101-78m-背景塔桶-第二组_桌面端导入_2026-11-02/叶片1.zip",
+          "bytes": 35665746,
+          "sha256": "9eaa896fe1bb64910d5face96f693eb75348d14d9bb6a6064fe2691fd3f638bd",
+          "records": 20
+        },
+        {
+          "path": "data/task-imports/20261105/1101-78m-背景塔桶-第二组_桌面端导入_2026-11-02/叶片2.zip",
+          "bytes": 33792467,
+          "sha256": "ec523ef1f40962d502388d117970390cd60acfb5df42b396fcf0e4058437f73c",
+          "records": 20
+        },
+        {
+          "path": "data/task-imports/20261105/1101-78m-背景塔桶-第二组_桌面端导入_2026-11-02/叶片3.zip",
+          "bytes": 31288882,
+          "sha256": "b6cc41812234b8abbf1a9dadce765d6240cd467cc776af11c032cca08645b00f",
+          "records": 20
+        }
+      ]
+    },
+    {
+      "name": "武川风场 R024 风机测量任务",
+      "farm": "武川风场",
+      "turbineCode": "R024",
+      "records": 60,
+      "archives": [
+        {
+          "path": "data/task-imports/20261105/第三组全流程_桌面端导入_2026-11-04/叶片1.zip",
+          "bytes": 47627619,
+          "sha256": "1c5cf416bfed45539a8e46d8afa198696e9567a10e90d47aebb25ec9d41dc142",
+          "records": 20
+        },
+        {
+          "path": "data/task-imports/20261105/第三组全流程_桌面端导入_2026-11-04/叶片2.zip",
+          "bytes": 47355782,
+          "sha256": "2726d242d921d11436d71b21fb974f8d49d2bcdfbaea2b81c4dfe094307603a0",
+          "records": 20
+        },
+        {
+          "path": "data/task-imports/20261105/第三组全流程_桌面端导入_2026-11-04/叶片3.zip",
+          "bytes": 47301981,
+          "sha256": "a616a22491b7af321ae9f6d3f7d4ad553cc09d8dfeb305b0936464039e6392bd",
+          "records": 20
+        }
+      ]
+    },
+    {
+      "name": "化德风场B071-20",
+      "farm": "化德风场",
+      "turbineCode": "020#",
+      "records": 60,
+      "archives": [
+        {
+          "path": "data/customer-demo/20261110/P1-recordings.zip",
+          "bytes": 66539277,
+          "sha256": "521915f811ee1d21d17909262fb1829f4456ce1e9a245d7c0e2c6f31c541b656",
+          "records": 12
+        },
+        {
+          "path": "data/customer-demo/20261110/P2-recordings.zip",
+          "bytes": 57982309,
+          "sha256": "f9871c680a4c45dade55f5b29e85683acd3331af41658b1f5a366a14ec3f2c1f",
+          "records": 12
+        },
+        {
+          "path": "data/customer-demo/20261110/P3-recordings.zip",
+          "bytes": 30689724,
+          "sha256": "d12585ca04fa7e1c02ac85821adf41e559c4d16bc9e4be23c354bf09f96b7542",
+          "records": 12
+        },
+        {
+          "path": "data/customer-demo/20261110/P4-recordings.zip",
+          "bytes": 23243475,
+          "sha256": "5b5ab4f2e2bf814f69070557b2e1f788797a040dcc4d1941057125cd5ad1d635",
+          "records": 12
+        },
+        {
+          "path": "data/customer-demo/20261110/P5-recordings.zip",
+          "bytes": 21203305,
+          "sha256": "c684ce0e17c0585cd641abc09f49c7c5625adbeec9c5722398f6459dc76d370e",
+          "records": 12
+        }
+      ]
+    }
+  ],
+  "reference": {
+    "path": "data/task-catalog/20261110/wuchuan-reference.json",
+    "sha256": "3c19e3fb98cef87734cc6c7d88293064dc7abb19311c5dc58cb3fbf432d6ead2"
+  },
+  "windAndHuadeConfig": {
+    "path": "data/customer-demo/20261110/settings.json",
+    "sha256": "318f49c22fb680864c9fd70fccb1be5d65df17320673cb2eb43ae1a0069425a9"
+  }
+}

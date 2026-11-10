@@ -1,6 +1,6 @@
 import {digest,HttpError,pool,rows,unpack,type User,type RecordItem} from './db';
 import {objects,requireAnalyst,listMeasurementRows} from './measurement-store';
-import {resolveHealthWindDataset} from '@blade/ui/measurement-health-readiness';
+import {resolveHealthWindDataset,healthWindDatasets} from '@blade/ui/measurement-health-readiness';
 
 const kind = 'health_wind_bindings';
 const scopeKeys = ['farmId','campaignId','turbineId'] as const;
@@ -22,7 +22,7 @@ export async function saveHealthWindSelection(user:User,context:any,windDatasetI
   const campaign=all.find(o=>o.active&&o.id===target.campaignId&&o.kind==='campaign'&&o.parentId===target.farmId);
   if(!farm||!turbine||!campaign||campaign.turbineIds?.length&&!campaign.turbineIds.includes(turbine.id))throw new HttpError(400,'请选择同一风场、批次与风机');
   if(typeof windDatasetId!=='string')throw new HttpError(400,'请选择风场数据集，或明确取消关联');
-  try {resolveHealthWindDataset(datasets.filter(d=>d.farmId===target.farmId),windDatasetId);}
+  try {resolveHealthWindDataset(healthWindDatasets(datasets,target.farmId,turbine.windTurbineCode||turbine.code),windDatasetId);}
   catch(e){throw new HttpError(400,(e as Error).message);}
   const body=JSON.stringify({context:target,windDatasetId,updatedAt:new Date().toISOString(),updatedBy:user.id});
   await pool().execute('INSERT INTO records(id,kind,tenant,body,created_by) VALUES(?,?,?,?,?) ON DUPLICATE KEY UPDATE body=?',[bindingId(user,target),kind,user.tenant,body,user.id,body]);
