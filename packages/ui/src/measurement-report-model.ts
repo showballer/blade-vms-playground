@@ -1,6 +1,6 @@
 /** User-facing presentation of an immutable health snapshot. No health inference from silence. */
 export function healthReportStatus(blade: any) {
-  if(blade?.syntheticScenario)return `样本检测：${blade.syntheticScenario.detection?.label || '待复核'}（构造样本）`;
+  if(blade?.syntheticScenario)return `检测结果：${blade.syntheticScenario.detection?.label || '待复核'}`;
   if (!blade?.processingResultId) return (blade?.acquired || blade?.coverage?.acquired) ? '待分析' : '未测量';
   if(blade.standardSnapshot&&blade.healthScreening){
     if(blade.status==='insufficient')return '待复核';
@@ -69,8 +69,12 @@ export function measurementReportModel(report: any) {
       notes};
   });
   const dates = (report.bladeAssessments || []).flatMap((b:any) => (b.conditions || []).flatMap((c:any) => (c.sourceTimes || []).flatMap((t:any) => [t.start, t.end]))).filter((t:any) => t !== null && t !== undefined && t !== '').map((t:any) => new Date(t).getTime()).filter(Number.isFinite);
+  // Keep provenance once in the summary, scoped to the affected blades in mixed reports.
+  // Derive it from the saved snapshot so re-exporting old reports preserves their origin.
+  const validationBlades = [...new Set<string>((report.bladeAssessments || []).flatMap((b:any, i:number) => b.syntheticScenario ? [blades[i].name || `叶片 ${i + 1}`] : []))];
+  const sourceNotice = validationBlades.length ? `算法验证样本（${validationBlades.join('、')}）` : null;
   return {title:'叶片测量分析报告', task:name(report.campaignId || report.context?.campaignId), farm:name(report.context?.farmId), turbine:name(report.turbineId || report.context?.turbineId),
     number:report.reportNumber || '未编号', author:report.author || '未记录', created:reportDate(report.createdAt), measured:dates.length ? `${reportDate(Math.min(...dates))} ～ ${reportDate(Math.max(...dates))}` : '未记录',
-    blades, acquired:blades.reduce((n:number,b:any) => n+b.acquired,0), analyzable:blades.reduce((n:number,b:any) => n+b.analyzable,0),
+    blades, sourceNotice, acquired:blades.reduce((n:number,b:any) => n+b.acquired,0), analyzable:blades.reduce((n:number,b:any) => n+b.analyzable,0),
     notes:[...new Set<string>(blades.flatMap((b:any) => b.notes))]};
 }

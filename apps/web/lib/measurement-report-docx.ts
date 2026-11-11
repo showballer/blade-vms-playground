@@ -37,7 +37,8 @@ export async function buildBladeReportDocx(report:any){
  const m=measurementReportModel(report),children:any[]=[];
  children.push(text('MEASUREMENT REPORT',{color:'000000',bold:true,size:22}),new Paragraph({style:'Title',spacing:{before:120,after:260},children:[new TextRun({text:m.title,bold:true,size:44,color:'000000'})]}),text(m.task,{size:26}),text(`${m.farm}  /  ${m.turbine}`,{color:muted}),
   table(['报告信息','内容'],[['报告编号',m.number],['测量时间',m.measured],['生成时间',m.created],['编制人员',m.author]], [2100,8100]),heading('测量概况'),text(`本批次采到 ${m.acquired} 条记录，其中 ${m.analyzable} 条可用于响应分析。`),
-  table(['叶片','可分析 / 采到','健康核验状态'],m.blades.map((b:any)=>[b.name,`${b.analyzable} / ${b.acquired}`,b.status]),[1600,2400,6200]));
+  ...(m.sourceNotice?[text('数据来源：'+m.sourceNotice,{size:21,color:muted})]:[]),
+  table(['叶片','可分析 / 采到','评价结果'],m.blades.map((b:any)=>[b.name,`${b.analyzable} / ${b.acquired}`,b.status]),[1600,2400,6200]));
  for(const b of m.blades){
   children.push(new Paragraph({heading:'Heading1',pageBreakBefore:true,spacing:{after:200},children:[new TextRun({text:`${b.name}  /  测量结果`,bold:true,size:36,color:'000000'})]}),text(b.status,{bold:true,color:blue,size:26}),text(`可分析 ${b.analyzable} / 采到 ${b.acquired} 条 · 待复核 ${b.review} 条`,{color:muted}));
   const hasDisplacement=b.points.some((p:any)=>Number.isFinite(p.displacementMm));

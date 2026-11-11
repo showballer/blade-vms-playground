@@ -31,6 +31,15 @@ assert.equal(healthReportStatus({processingResultId:null}),'未测量');
 assert.equal(reportDate(null),'未记录');assert.equal(reportDate(''),'未记录');assert.equal(reportNumber(null),'—');assert.equal(reportNumber(NaN),'—');
 assert.deepEqual(measurementReportModel({...report,faultTests:[]}),m,'legacy injected warnings must not affect report output');
 assert.equal(measurementReportModel({...report,displacementSnapshots:[]}).blades[0].points[0].displacementMm,null);
+assert.equal(m.sourceNotice,null,'measured reports must not be relabeled as validation data');
+const validationReport={...report,bladeAssessments:[1,2,3].map(n=>({...blade,bladeId:`b${n}`,name:String(n),syntheticScenario:{dataOrigin:'synthetic',detection:{label:n===2?'疑似损伤':'响应正常'}}}))};
+const validationBefore=JSON.stringify(validationReport),validationModel=measurementReportModel(validationReport);
+assert.deepEqual(validationModel.blades.map((b:any)=>b.status),['检测结果：响应正常','检测结果：疑似损伤','检测结果：响应正常']);
+assert.equal(validationModel.sourceNotice,'算法验证样本（叶片 1、叶片 2、叶片 3）');
+const mixed=measurementReportModel({...report,bladeAssessments:[{...blade,name:'1'},validationReport.bladeAssessments[1]]});
+assert.equal(mixed.sourceNotice,'算法验证样本（叶片 2）');
+assert.equal(mixed.blades[0].status,'健康状态未核验');
+assert.equal(JSON.stringify(validationReport),validationBefore,'presentation changes must not rewrite provenance or stored results');
 console.log('PASS health report: measured coverage independent of legacy rows, no false healthy status, test/version isolation, exact chart units, immutable snapshots');
 
 const spatialPoints=[{name:'P1',radiusM:7.05,displacementMm:1},{name:'P2',radiusM:21.15,displacementMm:2},{name:'P3',radiusM:35.25,displacementMm:1.5}];

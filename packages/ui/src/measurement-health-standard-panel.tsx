@@ -45,7 +45,7 @@ export function HealthStandardEvidence({blade,canWrite,onIdentity,onDecision}:{b
    <p>参考标准：{scenario.referenceStandardName||'已登记健康参考'} · {scenario.referenceVariantName}</p>
    <p className="hint">检测版本：{d?.algorithmVersion||'—'} · 当前整叶片版本：{blade.processingResultId?.slice(0,8)}</p>
    <details><summary>检测方法与判定规则</summary><p>逐测点、逐角度比较速度 RMS、速度半峰峰值、主响应峰频率、峰值因子和峭度，共100项指标。速度与形状特征取有效连续段最大值；频率取代表段请求频带内最强响应峰。</p><p>任一指标超限触发疑似损伤预警；同一测点/角度至少两项指标超限，或至少两个测点/角度出现超限，判为高风险。频率比较包含频率分辨率容差。该规则识别响应异常，不能单独判定裂纹类型、位置或尺寸。</p></details>
-   <details><summary>数据来源与适用范围</summary><p>波形依据健康参考构造，预警根据当前波形特征计算。关联的分钟工况用于背景对照，波形时钟已对齐到工况日期，不代表同期现场实测；检测结果不能作为现场健康或结构损伤确诊。</p></details>
+   <details><summary>数据来源与适用范围</summary><p>当前使用算法验证数据，非现场实测，预警根据当前波形特征计算。关联的分钟工况用于背景对照，波形时钟已对齐到工况日期，不代表同期现场实测；检测结果不能作为现场健康或结构损伤确诊。</p></details>
   </Card>{!!d?.pointEvidence?.length&&<Card title="异常测点分布"><Table headers={['测点','异常角度','超限项数','异常指标']}>{d.pointEvidence.map((p:any)=><tr key={p.point}><td>{p.point}</td><td>{p.angles.join(' / ')}°</td><td>{p.outsideCount}</td><td>{p.metrics.join('、')}</td></tr>)}</Table></Card>}
   <Card title="检测指标与阈值"><label><input type="checkbox" checked={onlyOutside} onChange={e=>setOnlyOutside(e.target.checked)}/>仅显示超限项</label><Table headers={['测点 / 角度','指标','本次值','参考范围','结果']}>{rows.map((c:any)=><tr key={c.recordingId+c.metric}><td>{c.point} / {c.angle}°</td><td>{c.name} · {c.unit}</td><td>{numberText(c.value,5)}</td><td>{numberText(c.min,5)} ～ {numberText(c.max,5)}</td><td>{c.outside?'超限':'范围内'}</td></tr>)}</Table>{!rows.length&&<p>{scenario.comparisons?.length?'全部指标均在参考范围内。':scenario.reason||'暂无可比较指标，请检查参考场景与处理配置。'}</p>}</Card></div>;
  }
