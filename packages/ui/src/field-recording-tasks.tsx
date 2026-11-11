@@ -3,13 +3,15 @@ import { Download, LoaderCircle } from "lucide-react";
 import { Button } from "./common";
 import { CustomSelect } from "./custom-select";
 import { fieldDate, type FieldRecording } from "./field-types";
+import { recordingCollectionId } from "./field-recording-identity";
 
 const text = (value: unknown) => typeof value === "string" ? value.trim() : "";
 const identifier = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{32}$/.test(value);
 // Match the task namespace used by the blade summary; never group by display name.
 export function recordingTaskKey(record: FieldRecording): string {
   const cycle = record.pointCycle;
-  const [kind, id] = identifier(cycle?.collectionId) ? ["collection", cycle.collectionId]
+  const collection = recordingCollectionId(record);
+  const [kind, id] = collection ? ["collection", collection]
     : identifier(cycle?.sessionId) ? ["session", cycle.sessionId]
     : identifier(record.captureSessionId) ? ["capture", record.captureSessionId] : ["record", record.id];
   return JSON.stringify([kind, id, JSON.stringify([text(record.windFarm), text(record.turbine), text(record.object)])]);

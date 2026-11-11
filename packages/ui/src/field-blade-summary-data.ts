@@ -1,15 +1,16 @@
 import { fieldDate, type FieldAutomaticRecord, type FieldPlannedStation, type FieldRecording, type FieldSyncItem } from "./field-types";
+import { importedCollectionId } from "./field-recording-identity";
 
-export type BladeStationState = "observed" | "diagnostic_pass" | "unconfirmed_pass" | "missing_entry" | "missing_exit" | "signal_gap" | "cancelled" | "failed" | "incomplete" | "unrecorded";
+export type BladeStationState = "observed" | "saved" | "diagnostic_pass" | "unconfirmed_pass" | "missing_entry" | "missing_exit" | "signal_gap" | "cancelled" | "failed" | "incomplete" | "unrecorded";
 export type BladeStationSummary = {
   id: string; index: number; azimuthDeg: number | null; planned: boolean;
   state: BladeStationState; records: FieldRecording[]; samples: number;
 };
 export type BladeRecordGroup = {
-  key: string; sessionId: string; sessionIds: string[]; executionMode: "continuous" | "manual_segments"; collectionId: string | null; taskName: string; bladeId: string; radialPointId: string; radialPointName: string;
+  key: string; sessionId: string; sessionIds: string[]; executionMode: "continuous" | "manual_segments" | "imported"; collectionId: string | null; taskName: string; bladeId: string; radialPointId: string; radialPointName: string;
   windFarm: string; turbine: string; measurementObject: string;
   radiusM: number | null; lapIndex: number; plannedCount: number | null; stations: BladeStationSummary[];
-  observedCount: number; diagnosticCount: number; gapCount: number; failedCount: number; incompleteCount: number; pendingCount: number;
+  observedCount: number; savedCount: number; diagnosticCount: number; gapCount: number; failedCount: number; incompleteCount: number; pendingCount: number;
   recordCount: number; samples: number; uploadedCount: number; pendingUploadCount: number; failedUploadCount: number;
   unknownUploadCount: number; planConflict: boolean; hasSimulation: boolean; latestAt: number;
 };
@@ -132,6 +133,8 @@ function state(record: FieldRecording): BladeStationState {
   if (record.status !== "complete") return "incomplete";
   // A saved file or an RSSI value alone does not prove a confirmed passage.
   if (completion === "unconfirmed_pass") return "unconfirmed_pass";
+  // Import coverage describes saved files, not observed passages or health.
+  if (importedCollectionId(record)) return sampleCount(record.samples) > 0 ? "saved" : "incomplete";
   // Early-arrival diagnostics are saved passes, but not validated measurements.
   if (completion === "diagnostic_pass") return record.pointCycle?.passCompleteness !== "confirmed" ? "unconfirmed_pass" :
     sampleCount(record.samples) > 0 && realRecord(record) ? "diagnostic_pass" : "incomplete";
@@ -139,13 +142,101 @@ function state(record: FieldRecording): BladeStationState {
   return "incomplete";
 }
 
-function emptyGroup(sessionId: string, bladeId: string, radialPointId: string, radialPointName: string, radiusM: number | null, lapIndex: number, session: Session): BladeRecordGroup {
+type GroupContext = Pick<Session, "sessionIds" | "collectionId" | "collectionConflict" | "windFarm" | "turbine" | "measurementObject" | "taskName" | "conflict" | "latestAt"> & { executionMode: BladeRecordGroup["executionMode"] };
+function emptyGroup(sessionId: string, bladeId: string, radialPointId: string, radialPointName: string, radiusM: number | null, lapIndex: number, session: GroupContext): BladeRecordGroup {
   return { key: key(sessionId, objectScope(session), bladeId, radialPointId, lapIndex), sessionId, sessionIds: [...session.sessionIds], executionMode: session.executionMode, collectionId: session.collectionConflict ? null : session.collectionId,
     windFarm: session.windFarm, turbine: session.turbine, measurementObject: session.measurementObject,
     taskName: session.taskName, bladeId, radialPointId, radialPointName, radiusM, lapIndex,
-    plannedCount: null, stations: [], observedCount: 0, diagnosticCount: 0, gapCount: 0, failedCount: 0, incompleteCount: 0, pendingCount: 0,
+    plannedCount: null, stations: [], observedCount: 0, savedCount: 0, diagnosticCount: 0, gapCount: 0, failedCount: 0, incompleteCount: 0, pendingCount: 0,
     recordCount: 0, samples: 0, uploadedCount: 0, pendingUploadCount: 0, failedUploadCount: 0, unknownUploadCount: 0,
     planConflict: session.conflict || session.collectionConflict, hasSimulation: false, latestAt: session.latestAt };
+}
+
+const validAzimuth = (value: unknown): value is number => finite(value) && value >= 0 && value < 360;
+const validRadius = (value: unknown): value is number => finite(value) && value > 0 && value <= 1000;
+type ImportedStation = { bladeId: string; radialPointId: string; radialPointName: string; radiusM: number | null; azimuthDeg: number };
+function importedPlan(value: unknown): ImportedStation[] | null {
+  if (!Array.isArray(value) || !value.length || value.length > 200) return null;
+  const seen = new Set<string>(), result: ImportedStation[] = [];
+  for (const item of value) {
+    if (!item || !id(item.bladeId) || !id(item.radialPointId) || !validAzimuth(item.azimuthDeg) ||
+        item.radiusM != null && !validRadius(item.radiusM)) return null;
+    const identity = key(item.bladeId, item.radialPointId, item.azimuthDeg);
+    if (seen.has(identity)) return null;
+    seen.add(identity);
+    result.push({ bladeId: item.bladeId, radialPointId: item.radialPointId,
+      radialPointName: text(item.radialPointName) || item.radialPointId,
+      radiusM: validRadius(item.radiusM) ? item.radiusM : null, azimuthDeg: item.azimuthDeg });
+  }
+  return result.sort((a, b) => key(a.bladeId, a.radialPointId).localeCompare(key(b.bladeId, b.radialPointId)) || a.azimuthDeg - b.azimuthDeg);
+}
+
+/** Imported files have no live controller session, lap or station counters.
+ * Use their explicit object/point/angle manifest without inventing those fields. */
+function addImportedGroups(records: FieldRecording[], groups: Map<string, BladeRecordGroup>) {
+  const plans = new Map<string, string>();
+  for (const record of records) {
+    const meta = record.pointCycle!, task = importedCollectionId(record)!;
+    const context: GroupContext = { executionMode: "imported", sessionIds: new Set(), collectionId: task,
+      collectionConflict: false, conflict: false, taskName: text(record.name) || "未命名采集任务",
+      windFarm: text(record.windFarm), turbine: text(record.turbine), measurementObject: text(record.object), latestAt: recordTime(record) };
+    const ensure = (point: Omit<ImportedStation, "azimuthDeg">) => {
+      const groupKey = key("imported", task, objectScope(context), point.bladeId, point.radialPointId);
+      let group = groups.get(groupKey);
+      if (!group) {
+        group = emptyGroup(task, point.bladeId, point.radialPointId, point.radialPointName, point.radiusM, 1, context);
+        group.key = groupKey; groups.set(groupKey, group);
+      }
+      if (point.radiusM !== null) {
+        if (group.radiusM !== null && group.radiusM !== point.radiusM) group.planConflict = true;
+        else group.radiusM = point.radiusM;
+      }
+      group.latestAt = Math.max(group.latestAt, context.latestAt);
+      return group;
+    };
+    const actual = ensure({ bladeId: meta.bladeId!, radialPointId: meta.radialPointId!,
+      radialPointName: text(meta.radialPointName) || text(record.point) || meta.radialPointId!,
+      radiusM: validRadius(meta.radiusM) ? meta.radiusM : null });
+    if (meta.radiusM != null && !validRadius(meta.radiusM)) actual.planConflict = true;
+    const plan = importedPlan(meta.plannedStations);
+    if (meta.plannedStations !== undefined && !plan) actual.planConflict = true;
+    if (plan) {
+      const byPoint = new Map<string, ImportedStation[]>();
+      for (const item of plan) {
+        const pointKey = key(item.bladeId, item.radialPointId);
+        byPoint.set(pointKey, [...(byPoint.get(pointKey) || []), item]);
+      }
+      for (const stations of byPoint.values()) {
+        const group = ensure(stations[0]);
+        const signature = JSON.stringify(stations.map(({ radialPointName: _name, ...station }) => station));
+        if (plans.has(group.key) && plans.get(group.key) !== signature) { group.planConflict = true; continue; }
+        plans.set(group.key, signature);
+        group.plannedCount = stations.length;
+        for (const item of stations) {
+          if (item.radiusM !== group.radiusM) group.planConflict = true;
+          let station = group.stations.find(station => station.azimuthDeg === item.azimuthDeg);
+          if (!station) {
+            station = { id: key("angle", item.azimuthDeg), index: 0, azimuthDeg: item.azimuthDeg,
+              planned: true, state: "unrecorded", records: [], samples: 0 };
+            group.stations.push(station);
+          } else station.planned = true;
+        }
+      }
+      if (!plan.some(item => item.bladeId === meta.bladeId && item.radialPointId === meta.radialPointId && item.azimuthDeg === meta.azimuthDeg)) actual.planConflict = true;
+    }
+    let station = actual.stations.find(item => item.azimuthDeg === meta.azimuthDeg);
+    if (!station) {
+      station = { id: key("angle", meta.azimuthDeg!), index: 0, azimuthDeg: meta.azimuthDeg!,
+        planned: false, state: "unrecorded", records: [], samples: 0 };
+      actual.stations.push(station);
+    }
+    station.records.push(record);
+    actual.hasSimulation ||= record.source === "simulation" || !!record.simulation;
+  }
+  for (const group of groups.values()) if (group.executionMode === "imported") {
+    group.stations.sort((a, b) => a.azimuthDeg! - b.azimuthDeg!).forEach((station, index) => { station.index = index + 1; });
+    if (group.plannedCount !== null && group.stations.some(station => !station.planned)) group.planConflict = true;
+  }
 }
 
 /** Groups saved station observations; never reconstructs identity or missing waveforms. */
@@ -159,11 +250,17 @@ export function summarizeBladeRecords(recordings: readonly FieldRecording[], syn
   const sessions = new Map<string, Session>();
   const sessionScopes = new Map<string, Set<string>>();
   const sessionPlans = new Map<string, Set<string>>();
+  const imports: FieldRecording[] = [];
   let ungroupedCount = 0;
   // Earlier snapshots establish the original plan; contradictory later plans are visible.
   for (const record of [...unique.values()].sort((a, b) => recordTime(a) - recordTime(b) || a.id.localeCompare(b.id))) {
     if (!record.pointCycle) continue;
-    if (!automatic(record)) { ungroupedCount++; continue; }
+    if (!automatic(record)) {
+      const meta = record.pointCycle;
+      if (importedCollectionId(record) && id(meta.bladeId) && id(meta.radialPointId) && validAzimuth(meta.azimuthDeg)) imports.push(record);
+      else ungroupedCount++;
+      continue;
+    }
     const meta = record.pointCycle;
     const taskId = collectionId(meta.collectionId);
     const scope = { windFarm: text(record.windFarm), turbine: text(record.turbine), measurementObject: text(record.object) };
@@ -228,6 +325,7 @@ export function summarizeBladeRecords(recordings: readonly FieldRecording[], syn
       group.hasSimulation ||= record.source === "simulation" || !!record.simulation;
     }
   }
+  addImportedGroups(imports, groups);
   const sync = new Map(syncItems.map(item => [item.recordingId, item]));
   for (const [groupKey, group] of groups) {
     group.key = groupKey;
@@ -239,6 +337,7 @@ export function summarizeBladeRecords(recordings: readonly FieldRecording[], syn
       group.samples += station.samples;
       group.recordCount += station.records.length;
       if (station.state === "observed") group.observedCount++;
+      if (station.state === "saved") group.savedCount++;
       if (station.state === "diagnostic_pass") group.diagnosticCount++;
       if (["missing_entry", "missing_exit", "signal_gap"].includes(station.state)) group.gapCount++;
       if (station.state === "failed") group.failedCount++;
@@ -296,7 +395,7 @@ export function getAutoCaptureTargetState(recordings: readonly FieldRecording[],
   summary: BladeRecordSummary = summarizeBladeRecords(recordings)): "complete" | "diagnostic_complete" | "configuration_changed" | "partial" | "empty" {
   if (!collectionId(target.collectionId)) return "empty";
   if (target.radiusM !== undefined && (!finite(target.radiusM) || target.radiusM < .001 || target.radiusM > 1000)) return "empty";
-  const candidates = summary.groups.filter(group => group.collectionId === target.collectionId &&
+  const candidates = summary.groups.filter(group => group.executionMode !== "imported" && group.collectionId === target.collectionId &&
     group.bladeId === target.bladeId && group.radialPointId === target.radialPointId &&
     (target.windFarm === undefined || group.windFarm === text(target.windFarm)) &&
     (target.turbine === undefined || group.turbine === text(target.turbine)) &&
@@ -329,4 +428,4 @@ export function getAutoCaptureTargetState(recordings: readonly FieldRecording[],
   return latest.some(group => group.diagnosticCount > 0) ? "diagnostic_complete" : "complete";
 }
 
-export const bladeStationLabel = (value: BladeStationState) => ({ diagnostic_pass: "测试经过已记录", unconfirmed_pass: "完整性待确认", observed: "已观测回波通过", missing_entry: "未确认进入", missing_exit: "未确认离开", signal_gap: "信号中断", cancelled: "已取消", failed: "采集失败", incomplete: "记录未完成", unrecorded: "未收到记录" })[value];
+export const bladeStationLabel = (value: BladeStationState) => ({ saved: "已保存", diagnostic_pass: "测试经过已记录", unconfirmed_pass: "完整性待确认", observed: "已观测回波通过", missing_entry: "未确认进入", missing_exit: "未确认离开", signal_gap: "信号中断", cancelled: "已取消", failed: "采集失败", incomplete: "记录未完成", unrecorded: "未收到记录" })[value];

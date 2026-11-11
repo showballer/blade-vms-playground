@@ -7,6 +7,7 @@ import { fieldCanStart, fieldDate, fieldIsActive, fieldSampleX, validateFieldCon
 import { FieldAccountPanel, FieldCloudSyncPanel, FieldBindAccountDialog, FieldUnbindAccountDialog, fieldAccountServerDefault, fieldAccountTime, fieldAccountUsesPlainHttp } from "./field-account";
 import { clampWaveRange, formatWaveTime, waveBounds, waveScaleDraft, type WaveScaleDraft } from "./field-waveform";
 import { FieldDeviceSnapshot } from "./field-device";
+import { FieldRecordingSource } from "./field-recording-dialog";
 import { FieldCycleProgress } from "./field-cycle-progress";
 import { FieldAcquisition } from "./field-acquisition";
 import { FieldTurntableManual, manualAngleRecordReady, manualAxisMotionError, manualPointRecallError } from "./field-turntable";
@@ -414,7 +415,7 @@ check("户外导入与设备记录混合显示，缺少转盘角度不白屏也�
   const html = renderToStaticMarkup(<FieldRecordingList recordings={records} busy={false} onSelect={() => {}} onExport={() => {}} />);
   assert.ok(html.includes("叶片2 · P1 · 0°"));
   assert.ok(html.includes("叶片3 · P5 · 270°"));
-  assert.equal((html.match(/>户外导入<\/span>/g) || []).length, 2);
+  assert.doesNotMatch(html, />户外导入<\/span>/);
   assert.equal((html.match(/轴1/g) || []).length, 2);
   assert.ok(html.includes("轴1 — · 轴2 0.000°"));
   assert.ok(html.includes("轴1 12.346° · 轴2 -3.500°"));
@@ -422,11 +423,17 @@ check("户外导入与设备记录混合显示，缺少转盘角度不白屏也�
   assert.equal((html.match(/>查看波形<\/button>/g) || []).length, 4);
   assert.equal((html.match(/>导出原始数据<\/button>/g) || []).length, 4);
 });
-check("模拟记录必须展示来源且不会因模拟来源掩盖异常状态", () => {
-  const html = renderToStaticMarkup(<FieldRecordingList recordings={[{ id: "simulation", name: "模拟风机", source: "simulation", simulation: { point: "P2", scenario: "impact" }, samples: 1200, sampleRate: 2000, startedAt: "2026-09-22T01:00:00Z", status: "error", error: "write failed" }]} busy={false} onSelect={() => {}} />);
-  assert.match(html, />模拟<\/span>/);
+check("记录列表不重复展示来源标签，详情保留来源且异常状态不被掩盖", () => {
+  const record: FieldRecording = { id: "simulation", name: "风机任务", source: "simulation", simulation: { point: "P2", scenario: "impact" }, samples: 1200, sampleRate: 2000, startedAt: "2026-09-22T01:00:00Z", status: "error", error: "write failed" };
+  const html = renderToStaticMarkup(<FieldRecordingList recordings={[record]} busy={false} onSelect={() => {}} />);
+  assert.doesNotMatch(html, />模拟<\/span>/);
   assert.ok(html.includes("异常记录"));
   assert.ok(!html.includes("已完成"));
+  const details = renderToStaticMarkup(<FieldRecordingSource recording={record} />);
+  assert.match(details, /<summary>记录来源<\/summary>/);
+  assert.match(details, /计算生成 · 非设备实测/);
+  assert.doesNotMatch(details, /<details[^>]*\bopen/);
+  assert.equal(record.source, "simulation");
 });
 check("记录契约使用 samples / endedAt / status，异常不能显示完成", () => {
   const html = renderToStaticMarkup(<FieldRecordingList recordings={[{ id: "test", name: "实测记录", samples: 1200, sampleRate: 2000, startedAt: "2026-09-09T01:00:00Z", endedAt: "2026-09-09T01:00:01Z", status: "error", error: "device disconnected" }]} busy={false} onSelect={() => {}} />);
