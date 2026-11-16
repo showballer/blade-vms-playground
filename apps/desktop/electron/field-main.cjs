@@ -7,7 +7,7 @@ const { createLocalAuth } = require('./local-auth.cjs');
 const { createUnifiedAuth } = require('./unified-auth.cjs');
 const { createFieldService, failure } = require('./field-service.cjs');
 const { initialWindowBounds } = require('./field-window.cjs');
-const { installBundledRecordings } = require('./field-bundled-recordings.cjs');
+const { installBundledCatalog } = require('./field-bundled-recordings.cjs');
 const { createAnalysisSync } = require('./field-analysis-sync.cjs');
 const { createFieldCloudSync } = require('./field-cloud-sync.cjs');
 const { createCaptureTracker } = require('./field-capture-tracker.cjs');
@@ -278,7 +278,7 @@ else {
       // local index; never copy credentials, settings, capture journals or queues.
       if (app.isPackaged) {
         try {
-          const imported = installBundledRecordings({ bundleDir: path.join(process.resourcesPath, 'bundled-recordings'), dataDir });
+          const imported = installBundledCatalog({ bundleDir: path.join(process.resourcesPath, 'bundled-recordings'), dataDir });
           if (imported.conflicts?.length || imported.interrupted?.length)
             dialog.showErrorBox('部分预置记录未导入', '检测到已有同编号记录或未完成的导入，已保留本机数据。请查看数据目录中的 bundled-recordings-state.json。');
         } catch (error) {

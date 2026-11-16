@@ -1,6 +1,6 @@
 {
   "name": "@blade/desktop",
-  "version": "1.5.9",
+  "version": "1.5.10",
   "private": true,
   "type": "module",
   "description": "BladeVMS 现场采集与分析工作台",
@@ -12,7 +12,7 @@
     "prebuild": "node ../../scripts/prepare-desktop.mjs",
     "build": "vite build",
     "verify:windows-payload": "node ../../scripts/verify-windows-payload.cjs --write-nsis",
-    "package:windows": "npm run verify:windows-payload && npm run build && electron-builder --win nsis zip --x64",
+    "package:windows": "node ../../scripts/prepare-windows-task-data.cjs && npm run verify:windows-payload && npm run build && electron-builder --win nsis zip --x64",
     "package:mac": "node ../../scripts/package-macos.cjs"
   },
   "devDependencies": {
@@ -54,6 +54,13 @@
         "filter": [
           "**/*",
           "!.gitkeep"
+        ]
+      },
+      {
+        "from": "resources/bundled-recordings",
+        "to": "bundled-recordings",
+        "filter": [
+          "**/*"
         ]
       }
     ],

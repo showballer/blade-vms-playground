@@ -11,6 +11,12 @@ on:
       - 'services/acquisition/**'
       - 'vendor/polytec/**'
       - 'scripts/*windows*'
+      - 'scripts/auto-follow-ui-smoke.cjs'
+      - 'scripts/build-auto-follow-ui-review.cjs'
+      - 'scripts/test-field-bundled-recordings.cjs'
+      - 'data/task-catalog/**'
+      - 'data/task-imports/**'
+      - 'data/customer-demo/**'
       - 'scripts/test-field-service.cjs'
       - 'scripts/test-field-window.cjs'
       - 'scripts/field-waveform-smoke.cjs'
@@ -61,6 +67,8 @@ jobs:
         run: npm ci
       - name: Unit tests and type checks
         run: |
+          npm run test:bundled-recordings
+          if ($LASTEXITCODE -ne 0) { throw 'Bundled task migration tests failed' }
           npm run test:field
           if ($LASTEXITCODE -ne 0) { throw 'Field unit tests failed' }
           npm run test:single-point:ui
@@ -91,6 +99,10 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: npm run package:windows
+      - name: Verify bundled tasks and readable blade waveforms in the frozen service
+        run: |
+          node scripts/test-windows-bundled-data.cjs apps/desktop/release/win-unpacked/resources
+          if ($LASTEXITCODE -ne 0) { throw 'Bundled task import and waveform checks failed' }
       - name: Verify packaged simulation, realtime analysis and complete CSV export
         run: |
           node scripts/test-windows-simulation.cjs --resources apps/desktop/release/win-unpacked/resources
@@ -107,10 +119,10 @@ jobs:
         run: |
           npx electron scripts/auto-follow-ui-smoke.cjs
           if ($LASTEXITCODE -ne 0) { throw 'Automatic following UI interaction checks failed' }
-      - name: Verify ordinary capture and manual positioning capture without hardware
+      - name: Verify ordinary capture and automatic point capture without hardware
         run: |
           npx electron scripts/field-position-smoke.cjs
-          if ($LASTEXITCODE -ne 0) { throw 'Ordinary and manual joint acquisition UI checks failed' }
+          if ($LASTEXITCODE -ne 0) { throw 'Ordinary and automatic acquisition UI checks failed' }
       - name: Verify waveform and device configuration UI without hardware
         run: npm run test:field-waveform
       - name: Verify frozen runtime, install, login, coexistence and uninstall
@@ -149,6 +161,7 @@ jobs:
           name: windows-verification-evidence
           path: |
             artifacts/windows-bundle-smoke/
+            artifacts/windows-bundled-data-smoke/
             artifacts/windows-simulation-smoke/report.json
             artifacts/windows-motion-trial-smoke/report.json
             artifacts/field-waveform-smoke/
@@ -179,7 +192,7 @@ jobs:
           This draft does not update the production download endpoint.
           "@
           $notes | Set-Content -Encoding utf8NoBOM apps/desktop/release/BUILD_NOTES.md
-          $evidence = @('artifacts/windows-bundle-smoke', 'artifacts/windows-simulation-smoke', 'artifacts/windows-motion-trial-smoke', 'artifacts/field-waveform-smoke', 'artifacts/field-position-smoke', 'artifacts/windows-blade-passes-smoke', 'artifacts/auto-follow-ui-review')
+          $evidence = @('artifacts/windows-bundled-data-smoke', 'artifacts/windows-bundle-smoke', 'artifacts/windows-simulation-smoke', 'artifacts/windows-motion-trial-smoke', 'artifacts/field-waveform-smoke', 'artifacts/field-position-smoke', 'artifacts/windows-blade-passes-smoke', 'artifacts/auto-follow-ui-review')
           foreach ($item in $evidence) { if (-not (Test-Path -LiteralPath $item -PathType Container)) { throw "Missing verification evidence: $item" } }
           Compress-Archive -Path $evidence -DestinationPath apps/desktop/release/windows-verification-evidence.zip
           $assets = @(

@@ -8,7 +8,7 @@ const { createHash, randomBytes } = require('node:crypto');
 const ID = /^[a-f0-9]{32}$/;
 const HASH = /^[a-f0-9]{64}$/;
 const CHUNK = /^chunk-[0-9]{8}\.bin$/;
-const FILE = /^(?:manifest\.json|source-export-manifest\.json|chunk-[0-9]{8}\.bin|unpaired-rssi\.bin)$/;
+const FILE = /^(?:manifest\.json|source-export-manifest\.json|split-source\.csv\.gz|chunk-[0-9]{8}\.bin|unpaired-rssi\.bin)$/;
 const PRIVATE_KEY = /^(?:(?:local|unified)?account(?:Id|Binding)?|owner(?:Id)?|tenant(?:Id)?|user(?:Id|name)?|password(?:Hash|Salt)?|credentials?|authorization|(?:local|unified)?auth|(?:access|refresh|session)?token|cloudSync|cloudBinding|syncOrigin|uploadQueue)$/i;
 const STATE = 'bundled-recordings-state.json';
 const DIAGNOSTIC = 'bundled-recordings-error.json';
@@ -84,6 +84,8 @@ function recording(directoryPath, id, taskName, names, privateCheck = true) {
     samples += (size - 32) / 29;
   }
   if (samples !== manifest.samples) fail(`原始样本数量不符：${id}`);
+  if (manifest.outdoorSegment?.rawFile && (manifest.outdoorSegment.rawFile !== 'split-source.csv.gz' || !names.includes('split-source.csv.gz')))
+    fail(`缺少户外分段原始文件：${id}`);
   if (names.includes('source-export-manifest.json')) {
     const source = json(path.join(directoryPath, 'source-export-manifest.json'));
     if (privateCheck && JSON.stringify(clean(source)) !== JSON.stringify(source)) fail(`来源元数据含账号或同步字段：${id}`);
@@ -237,4 +239,41 @@ function installBundledRecordings({ bundleDir, dataDir }) {
   }
 }
 
-module.exports = { prepareBundledRecordings, installBundledRecordings };
+/** Multiple independently named tasks, with the same idempotent per-record ledger. */
+function installBundledCatalog({ bundleDir, dataDir }) {
+  if (!exists(path.join(bundleDir, 'catalog.json'))) return installBundledRecordings({ bundleDir, dataDir });
+  directory(bundleDir);
+  const catalog = json(path.join(bundleDir, 'catalog.json'));
+  if (catalog.schemaVersion !== 1 || !Array.isArray(catalog.tasks) || !catalog.tasks.length || catalog.tasks.length > 20)
+    fail('任务目录结构无效');
+  const ledgerFile = path.join(dataDir, STATE);
+  const ledger = exists(ledgerFile) ? json(ledgerFile, 8 * 1024 * 1024) : null;
+  const ids = new Set(), dirs = new Set();
+  // Preflight all tasks before importing any task. Never accept path traversal or
+  // let two task packages claim the same local recording.
+  for (const task of catalog.tasks) {
+    if (!task || !ID.test(task.directory) || dirs.has(task.directory) || !HASH.test(task.bundleId)) fail('任务目录路径无效');
+    dirs.add(task.directory);
+    const dir = directory(path.join(bundleDir, task.directory)), manifest = packageManifest(dir);
+    if (manifest.bundleId !== task.bundleId || manifest.taskName !== task.taskName) fail('任务目录身份不符');
+    for (const record of manifest.records) {
+      if (ids.has(record.id)) fail('不同任务包含重复记录');
+      ids.add(record.id);
+      if (ledger?.schemaVersion === 1 && ledger.records?.[record.id]?.bundleId === manifest.bundleId &&
+          ['imported', 'existing', 'conflict'].includes(ledger.records[record.id].status)) continue;
+      const source = path.join(dir, 'records', record.id);
+      verifyFiles(source, record);
+      recording(source, record.id, manifest.taskName, record.files.map(file => file.path));
+    }
+  }
+  const result = { status: 'skipped', imported: [], skipped: [], conflicts: [], interrupted: [], tasks: [] };
+  for (const task of catalog.tasks) {
+    const imported = installBundledRecordings({ bundleDir: path.join(bundleDir, task.directory), dataDir });
+    result.tasks.push(imported);
+    for (const key of ['imported', 'skipped', 'conflicts', 'interrupted']) result[key].push(...imported[key]);
+  }
+  result.status = result.conflicts.length || result.interrupted.length ? 'partial' : result.imported.length ? 'installed' : 'skipped';
+  return result;
+}
+
+module.exports = { prepareBundledRecordings, installBundledRecordings, installBundledCatalog };

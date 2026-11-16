@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
-const { prepareBundledRecordings, installBundledRecordings } = require('../apps/desktop/electron/field-bundled-recordings.cjs');
+const { prepareBundledRecordings, installBundledRecordings, installBundledCatalog } = require('../apps/desktop/electron/field-bundled-recordings.cjs');
 const taskName = '10241804-叶片2-P1至P5';
 const idA = 'a'.repeat(32), idB = 'b'.repeat(32), idC = 'c'.repeat(32);
 const sha = value => createHash('sha256').update(value).digest('hex');
@@ -148,4 +148,37 @@ test('build output cannot overwrite existing data, selected task must exist and 
   assert.throws(() => prepareBundledRecordings({ recordingsDir: f.source, taskName: 'missing', outputDir: path.join(f.root, 'missing') }), /找不到任务/);
   const next = path.join(f.root, 'next'), file = path.join(f.source, idA, 'manifest.json'); write(file, { ...read(file), status: 'incomplete' });
   assert.throws(() => prepareBundledRecordings({ recordingsDir: f.source, taskName, outputDir: next }), /完整状态/); assert.equal(fs.existsSync(next), false);
+});
+
+test('multiple tasks import once, preserve modified existing records, and do not restore deletions', t => {
+  const f = fixture(t), collection = path.join(f.root, 'collection'); fs.mkdirSync(collection);
+  fs.renameSync(f.bundle, path.join(collection, idA));
+  const second = prepareBundledRecordings({ recordingsDir: f.source, taskName: taskName + '-other', outputDir: path.join(collection, idB) });
+  write(path.join(collection, 'catalog.json'), { schemaVersion: 1, tasks: [
+    { directory: idA, bundleId: f.summary.bundleId, taskName },
+    { directory: idB, bundleId: second.bundleId, taskName: taskName + '-other' },
+  ] });
+  const install = () => installBundledCatalog({ bundleDir: collection, dataDir: f.data });
+  fs.mkdirSync(path.join(f.data, 'recordings', idA), { recursive: true });
+  fs.writeFileSync(path.join(f.data, 'recordings', idA, 'keep.txt'), 'user record');
+  const first = install(); assert.deepEqual(first.conflicts, [idA]); assert.deepEqual(first.imported, [idB, idC]);
+  fs.rmSync(path.join(f.data, 'recordings', idB), { recursive: true });
+  assert.equal(install().imported.length, 0);
+  assert.equal(fs.existsSync(path.join(f.data, 'recordings', idB)), false);
+  assert.equal(fs.readFileSync(path.join(f.data, 'recordings', idA, 'keep.txt'), 'utf8'), 'user record');
+  const bad = read(path.join(collection, 'catalog.json')); bad.tasks[1].directory = '../outside';
+  write(path.join(collection, 'catalog.json'), bad); assert.throws(install, /目录路径/);
+});
+
+test('outdoor raw sources and original quality metadata survive bundling', t => {
+  const f = fixture(t, false), file = path.join(f.source, idA, 'manifest.json');
+  write(file, { ...read(file), source: 'simulation', diagnosticOnly: true, validMeasurement: false,
+    outdoorSegment: { rawFile: 'split-source.csv.gz' } });
+  assert.throws(f.build, /户外分段原始文件/);
+  const raw = Buffer.from('exact original compressed source'); fs.writeFileSync(path.join(f.source, idA, 'split-source.csv.gz'), raw);
+  f.build(); f.install();
+  const imported = read(path.join(f.data, 'recordings', idA, 'manifest.json'));
+  assert.equal(imported.source, 'simulation'); assert.equal(imported.validMeasurement, false);
+  assert.equal(imported.diagnosticOnly, true);
+  assert.deepEqual(fs.readFileSync(path.join(f.data, 'recordings', idA, 'split-source.csv.gz')), raw);
 });

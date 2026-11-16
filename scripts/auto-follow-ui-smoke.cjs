@@ -29,8 +29,8 @@ app.whenReady().then(async()=>{try{
  win=new BrowserWindow({width:1366,height:768,show:false,webPreferences:{nodeIntegration:false,contextIsolation:true,sandbox:true,backgroundThrottling:false}});
  win.webContents.session.webRequest.onBeforeRequest((d,c)=>c({cancel:!d.url.startsWith('file:')&&!d.url.startsWith('data:')}));
  await win.loadFile(path.join(output,'index.html'));await waitFor('window.__autoFixture?.ready&&window.__autoFixture.routes?.auto');
- await check('只在进入自动页枚举串口一次，唯一串口自动选择，不读取位置或运动',async()=>{
-  assert.equal(await calls('turntablePorts'),0);await click('自动跟随');await waitFor('document.querySelector("input[aria-label=自动跟随转盘串口]").value==="COM3"');
+ await check('进入转盘页枚举串口一次，切换采集方式不重复枚举，不读取位置或运动',async()=>{
+  assert.equal(await calls('turntablePorts'),1);await click('自动跟随');await waitFor('document.querySelector("input[aria-label=自动跟随转盘串口]").value==="COM3"');
   assert.equal(await calls('turntablePorts'),1);assert.equal(await calls('turntable'),0);
   await input('叶轮每圈时间 · s','31');await input('叶轮每圈时间 · s','30');assert.equal(await calls('turntablePorts'),1);
   assert.ok(await run('!!document.querySelector(".field-auto-port-control button[aria-label=刷新转盘串口]")'));
@@ -90,11 +90,11 @@ app.whenReady().then(async()=>{try{
   await action('恢复测点2计算角度');assert.equal(await theoretical('2','P2'),true);assert.equal(await calibrated('2','P1'),true);
   assert.equal(await run(target('2','P2')+'.route.cycle.startAtCurrentPose'),false);
  });
- await check('移除测点手动瞄准跳转，顶部手动标签仍可用；返回时保留其他点校准',async()=>{
+ await check('无手动点位标签，切换分段采集保留其他点校准且不触发设备',async()=>{
   assert.equal(await run('document.querySelectorAll("button[aria-label^=手动瞄准测点]").length'),0);
-  const before=await calls('turntable'),ports=await calls('turntablePorts');await click('手动控制');
-  assert.equal(await run('document.querySelector("[role=tab][aria-selected=true]").textContent'),'手动控制');
-  assert.equal(await calls('turntable'),before);await click('自动跟随');await waitFor('window.__autoFixture.calls.filter(c=>c.action==="turntablePorts").length==='+String(ports+1));
+  const before=await calls('turntable'),ports=await calls('turntablePorts');await click('分段采集');
+  assert.equal(await run('document.querySelector("[role=tab][aria-selected=true]").textContent'),'分段采集');
+  assert.equal(await calls('turntable'),before);await click('自动跟随');await waitFor('window.__autoFixture.calls.filter(c=>c.action==="turntablePorts").length==='+String(ports));
   assert.equal(await calibrated('2','P1'),true);
  });
  await check('不同叶片同名测点互不覆盖，公共几何改变恢复各点理论计算',async()=>{
@@ -149,13 +149,13 @@ app.whenReady().then(async()=>{try{
   assert.equal(await run('document.querySelector("input[aria-label=自动跟随转盘串口]").value'),'COM4');
   await run('window.__autoFixture.inject(structuredClone(window.__autoFixture.initial))');await pause(50);
   await run('window.__autoFixture.holdPorts=true;window.__autoFixture.releasePorts=null');await action('刷新转盘串口');await waitFor('typeof window.__autoFixture.releasePorts==="function"');
-  await click('手动控制');await run('window.__autoFixture.holdPorts=false;window.__autoFixture.releasePorts()');await pause(60);
-  assert.equal(await run('document.querySelector("input[aria-label=自动跟随转盘串口]").value'),'COM4');await click('自动跟随');await waitFor('document.querySelector("input[aria-label=自动跟随转盘串口]").value==="COM3"');
+  await run('window.__autoFixture.setVisible(false)');await pause(60);await run('window.__autoFixture.holdPorts=false;window.__autoFixture.releasePorts()');await pause(60);
+  assert.equal(await run('document.querySelector("input[aria-label=自动跟随转盘串口]").value'),'COM4');await run('window.__autoFixture.setVisible(true)');await waitFor('document.querySelector("input[aria-label=自动跟随转盘串口]").value==="COM3"');
  });
  await check('重载保留全部配置和选择，不恢复校准，不自动采集或读取位置',async()=>{
   await action('校准测点1');assert.equal(await calibrated('2','P1'),true);const selected=await run('window.__autoFixture.routes.auto.selectedTargetKey');
   await new Promise(r=>{win.webContents.once('did-finish-load',r);win.webContents.reload();});await waitFor('window.__autoFixture?.routes?.auto?.targets?.length===6');
-  assert.equal(await calls('turntable'),0);assert.equal(await calls('turntablePorts'),0);await click('自动跟随');
+  assert.equal(await calls('turntable'),0);assert.equal(await calls('turntablePorts'),1);await click('自动跟随');
   assert.equal(await run('window.__autoFixture.routes.auto.selectedTargetKey'),selected);assert.equal(await theoretical('2','P1'),true);
   assert.equal(await run('window.__autoFixture.routes.auto.cycle.geometry.hubHeightDeltaM'),.85);
   assert.equal(await run('document.querySelector('+JSON.stringify(inputSelector('叶片长度 · m'))+').value'),'0.5');

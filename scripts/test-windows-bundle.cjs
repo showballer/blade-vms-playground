@@ -379,7 +379,7 @@ async function validateInstalledAutoFollow(cdp, field, output, { expectedRecordi
   await click('.field-sidebar button', '转盘点位');
   await waitFor(() => cdp.evaluate(`Array.from(document.querySelectorAll('[role=tab]')).some(item => item.textContent.trim() === '自动跟随' && !item.closest('[hidden]'))`),
     'installed turntable work-mode tabs');
-  assert.deepEqual(await cdp.evaluate(`[...document.querySelectorAll('.field-turntable-mode-tabs [role=tab]')].map(item=>item.textContent.trim())`), ['分段采集', '自动跟随', '手动控制']);
+  assert.deepEqual(await cdp.evaluate(`[...document.querySelectorAll('.field-turntable-mode-tabs [role=tab]')].map(item=>item.textContent.trim())`), ['分段采集', '自动跟随']);
   assert.equal((await snapshot()).selectedMode, '分段采集', 'New installations must default to segmented capture');
   await click('[role=tab]', '自动跟随');
   const initial = await waitFor(async () => { const value = await snapshot(); return value?.pointCount === 1 && value; },
@@ -483,6 +483,11 @@ async function validateInstalledAutoFollow(cdp, field, output, { expectedRecordi
 
 async function validateInstalledDesktop(directory, environment, temporary, output) {
   const executable = path.join(directory, 'BladeVMS.exe');
+  const bundleRoot = path.join(directory, 'resources', 'bundled-recordings');
+  const bundledCatalog = JSON.parse(fs.readFileSync(path.join(bundleRoot, 'catalog.json'), 'utf8'));
+  assert.equal(bundledCatalog.tasks.length, 3);
+  const expectedRecordingIds = bundledCatalog.tasks.flatMap(task => JSON.parse(fs.readFileSync(path.join(bundleRoot, task.directory, 'manifest.json'), 'utf8')).records.map(r => r.id));
+  assert.equal(expectedRecordingIds.length, 180);
   const serviceExe = path.join(directory, 'resources', 'acquisition', 'BladeAcquisition.exe');
   const profile = path.join(temporary, 'isolated UI profile 中文');
   fs.mkdirSync(profile, { recursive: true });
@@ -534,7 +539,7 @@ async function validateInstalledDesktop(directory, environment, temporary, outpu
     assert.equal((await executableProcesses(serviceExe)).length, 1, 'Exactly one app-owned acquisition service');
     const frame = await field({ action: 'frame' });
     assert.equal(frame.status, 200); assert.deepEqual(frame.data.waveform.values, []);
-    assert.deepEqual((await field({ action: 'recordings' })).data.recordings, []);
+    assert.deepEqual((await field({ action: 'recordings' })).data.recordings.map(r => r.id).sort(), [...expectedRecordingIds].sort());
     await waitFor(async () => (await idleWaveformUi(cdp)).emptyCount === 2, 'empty velocity and RSSI waveform UI');
     assertIdleWaveformUi(await idleWaveformUi(cdp));
     const text = await body();
@@ -563,10 +568,10 @@ async function validateInstalledDesktop(directory, environment, temporary, outpu
       'valid test-only configuration enables the ready start control');
     assertIdle((await field({ action: 'status' })).data);
     assert.deepEqual((await field({ action: 'frame' })).data.waveform.values, []);
-    assert.deepEqual((await field({ action: 'recordings' })).data.recordings, []);
+    assert.deepEqual((await field({ action: 'recordings' })).data.recordings.map(r => r.id).sort(), [...expectedRecordingIds].sort());
     const screenshot = await cdp.send('Page.captureScreenshot', { format: 'png' });
     fs.writeFileSync(path.join(output, 'installed-windows-acquisition-idle.png'), Buffer.from(screenshot.data, 'base64'));
-    const automaticFollowUi = await validateInstalledAutoFollow(cdp, field, output);
+    const automaticFollowUi = await validateInstalledAutoFollow(cdp, field, output, { expectedRecordingIds });
     const viewports = [[1366, 768, 1], [1280, 720, 1], [1024, 600, 1], [853, 480, 1.5]];
     for (const [width, height, scale] of viewports) {
       await cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: scale, mobile: false });

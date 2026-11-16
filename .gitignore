@@ -30,3 +30,5 @@ apps/desktop/build/staging-*/
 services/acquisition/build-*/
 services/acquisition/dist-*/
 services/acquisition/build-*.log
+
+apps/desktop/resources/bundled-recordings/

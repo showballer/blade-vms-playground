@@ -22,8 +22,9 @@ const ready={service:{state:'ready',dllConfigured:true,generation:1},state:'idle
 window.__autoFixture={calls:[],statusUpdates:[],noHardware:true};
 function App(){
  const [status,setStatus]=useState(ready),[config,setConfig]=useState({name:'1号风机检修任务',deviceIp:'198.51.100.10',hostIp:'198.51.100.11',object:'风机叶片',turbine:'WT01',point:''});
- const [autoTargetKey,setAutoTargetKey]=useState(''),[routeMode,setRouteMode]=useState('manual');
+ const [autoTargetKey,setAutoTargetKey]=useState(''),[routeMode,setRouteMode]=useState('segmented');
  window.__autoFixture.inject=next=>setStatus(next);window.__autoFixture.initial=ready;
+ const [visible,setVisible]=useState(true);window.__autoFixture.setVisible=setVisible;
  window.__autoFixture.select=key=>setAutoTargetKey(key);
  const accept=next=>{window.__autoFixture.statusUpdates.push(next.state);setStatus(next);};
  async function request(options){
@@ -40,7 +41,7 @@ function App(){
   throw Error('此离线验收页不提供真实设备操作');
  }
  useEffect(()=>{window.__autoFixture.ready=true;},[]);
- return <div className="field-app"><header className="field-header"><div className="field-brand">BladeVMS <small>隔离界面验收 · 不连接设备</small></div></header><div className="field-workspace"><aside className="field-sidebar"><p>现场作业</p><button>数据采集</button><button className="active">转盘点位</button><button>本机记录</button><button>设备与服务</button></aside><main className="field-content"><div className="field-page-heading"><h1>转盘点位控制</h1></div><FieldTurntableWorkspace config={config} onConfig={setConfig} status={status} disabled={false} request={request} onStatus={accept} onService={()=>{}} onRecords={()=>{}} routeMode={routeMode} onRouteMode={setRouteMode} autoTargetKey={autoTargetKey} onAutoTarget={setAutoTargetKey} onRoute={route=>{window.__autoFixture.routes={...window.__autoFixture.routes,[route.kind]:route};}} onAcquisition={()=>{window.__autoFixture.navigation=(window.__autoFixture.navigation||0)+1;}} /></main></div></div>;
+ return <div className="field-app"><header className="field-header"><div className="field-brand">BladeVMS <small>隔离界面验收 · 不连接设备</small></div></header><div className="field-workspace"><aside className="field-sidebar"><p>现场作业</p><button>数据采集</button><button className="active">转盘点位</button><button>本机记录</button><button>设备与服务</button></aside><main className="field-content"><div className="field-page-heading"><h1>转盘点位控制</h1></div><FieldTurntableWorkspace visible={visible} config={config} onConfig={setConfig} status={status} disabled={false} request={request} onStatus={accept} onService={()=>{}} onRecords={()=>{}} routeMode={routeMode} onRouteMode={setRouteMode} autoTargetKey={autoTargetKey} onAutoTarget={setAutoTargetKey} onRoute={route=>{window.__autoFixture.routes={...window.__autoFixture.routes,[route.kind]:route};}} onAcquisition={()=>{window.__autoFixture.navigation=(window.__autoFixture.navigation||0)+1;}} /></main></div></div>;
 }
 createRoot(document.getElementById('root')).render(<App/>);
 `;
